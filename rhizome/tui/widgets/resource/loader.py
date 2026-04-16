@@ -247,11 +247,16 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         key = ("resource", resource_id)
         if self._states.get(key) != LoadState.PENDING:
             return
-        new_state = LoadState.DEFAULT if success else LoadState.UNLOADED
-        if new_state == LoadState.UNLOADED:
-            self._states.pop(key, None)
+        if success:
+            self._states[key] = LoadState.DEFAULT
         else:
-            self._states[key] = new_state
+            self._states.pop(key, None)
+            # Failure: also revert all descendant section states that were
+            # propagated when the resource was originally toggled.
+            resource = next((r for r in self._resources if r.id == resource_id), None)
+            if resource is not None:
+                for s in getattr(resource, "sections", None) or []:
+                    self._states.pop(("section", s.id), None)
         self._tree._invalidate_label_cache()
         self._update_spinner_timer()
         self._update_hint()
@@ -352,9 +357,10 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         # Propagate to all descendant sections.
         self._propagate_to_descendants(data, new_state)
 
-        # Propagate upward: if all siblings are now unloaded, unload the parent.
-        if new_state == LoadState.UNLOADED:
-            self._propagate_unload_to_ancestors(data)
+        # Propagate upward: if all siblings now share the same state, promote
+        # that state to the parent (recursively up to the resource root).
+        if isinstance(data, ResourceSection):
+            self._propagate_state_to_ancestors(data)
 
         self._tree._invalidate_label_cache()
         self._update_spinner_timer()
@@ -396,31 +402,47 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             else:
                 self._states[key] = new_state
 
-    def _propagate_unload_to_ancestors(self, data: NodeData) -> None:
-        """Walk up from *data*: if all children of a parent are UNLOADED, unload the parent too."""
-        if isinstance(data, ResourceSection):
-            resource = next((r for r in self._resources if r.id == data.resource_id), None)
-            if resource is None:
-                return
-            all_sections = getattr(resource, "sections", None) or []
+    def _propagate_state_to_ancestors(self, data: NodeData) -> None:
+        """Walk up from *data*: if all children of a parent share the same
+        state, promote that state to the parent.  Repeats up to the resource
+        root.  PENDING nodes are never overwritten.
+        """
+        if not isinstance(data, ResourceSection):
+            return
+        resource = next((r for r in self._resources if r.id == data.resource_id), None)
+        if resource is None:
+            return
+        all_sections = getattr(resource, "sections", None) or []
 
-            current_parent_id = data.parent_id
-            while current_parent_id is not None:
-                siblings = [s for s in all_sections if s.parent_id == current_parent_id]
-                if all(self._states.get(("section", s.id), LoadState.UNLOADED) == LoadState.UNLOADED for s in siblings):
-                    parent_key = ("section", current_parent_id)
-                    if self._states.get(parent_key) != LoadState.PENDING:
+        # Walk up through section parents.
+        current_parent_id = data.parent_id
+        while current_parent_id is not None:
+            children = [s for s in all_sections if s.parent_id == current_parent_id]
+            child_states = {self._states.get(("section", s.id), LoadState.UNLOADED) for s in children}
+            if len(child_states) == 1:
+                agreed = next(iter(child_states))
+                parent_key = ("section", current_parent_id)
+                if self._states.get(parent_key) != LoadState.PENDING:
+                    if agreed == LoadState.UNLOADED:
                         self._states.pop(parent_key, None)
-                    parent_section = next((s for s in all_sections if s.id == current_parent_id), None)
-                    current_parent_id = parent_section.parent_id if parent_section else None
-                else:
-                    break
+                    else:
+                        self._states[parent_key] = agreed
+                parent_section = next((s for s in all_sections if s.id == current_parent_id), None)
+                current_parent_id = parent_section.parent_id if parent_section else None
+            else:
+                break
 
-            top_sections = [s for s in all_sections if s.parent_id is None]
-            if all(self._states.get(("section", s.id), LoadState.UNLOADED) == LoadState.UNLOADED for s in top_sections):
-                res_key = ("resource", resource.id)
-                if self._states.get(res_key) != LoadState.PENDING:
+        # Check whether all top-level sections agree → promote to resource root.
+        top_sections = [s for s in all_sections if s.parent_id is None]
+        top_states = {self._states.get(("section", s.id), LoadState.UNLOADED) for s in top_sections}
+        if len(top_states) == 1:
+            agreed = next(iter(top_states))
+            res_key = ("resource", resource.id)
+            if self._states.get(res_key) != LoadState.PENDING:
+                if agreed == LoadState.UNLOADED:
                     self._states.pop(res_key, None)
+                else:
+                    self._states[res_key] = agreed
 
     # -- Embedding & manager sync --------------------------------------
 
@@ -466,48 +488,57 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         self._sync_manager_state()
 
     def _sync_manager_state(self) -> None:
-        """Build ResourceLoadState from loader states and push to the manager."""
+        """Build ResourceLoadState from loader states and push to the manager.
+
+        Contract: for a resource with sections, if every section resolves to
+        the same LoadMode (and none are unloaded), the state is collapsed to
+        ``root_state=<mode>, sections={}``.  Otherwise ``root_state`` is
+        ``None`` and only the per-section modes are provided.  For a resource
+        without sections, ``root_state`` is the resolved mode directly.
+        """
         if self._resource_manager is None:
             return
 
-        section_to_resource: dict[int, Resource] = {}
-        for r in self._resources:
-            for s in getattr(r, "sections", None) or []:
-                section_to_resource[s.id] = r
-
         resource_map: dict[int, ResourceLoadState] = {}
 
-        for (kind, obj_id), load_state in self._states.items():
-            if load_state in (LoadState.UNLOADED, LoadState.PENDING):
-                continue
+        for resource in self._resources:
+            sections = getattr(resource, "sections", None) or []
 
-            if kind == "resource":
-                resource = next((r for r in self._resources if r.id == obj_id), None)
-                if resource is None:
+            if not sections:
+                # No sections — root state only.
+                load_state = self._states.get(("resource", resource.id), LoadState.UNLOADED)
+                if load_state in (LoadState.UNLOADED, LoadState.PENDING):
                     continue
                 mode = self._resolve_load_mode(resource, load_state)
-                if mode is None:
+                if mode is not None:
+                    resource_map[resource.id] = ResourceLoadState(root_state=mode, sections={})
+            else:
+                # Has sections — resolve each, then check uniformity.
+                section_modes: dict[int, LoadMode | None] = {}
+                for s in sections:
+                    sec_state = self._states.get(("section", s.id), LoadState.UNLOADED)
+                    if sec_state in (LoadState.UNLOADED, LoadState.PENDING):
+                        section_modes[s.id] = None
+                    else:
+                        section_modes[s.id] = self._resolve_load_mode(resource, sec_state)
+
+                active = {sid: m for sid, m in section_modes.items() if m is not None}
+                if not active:
                     continue
-                rls = resource_map.get(obj_id, ResourceLoadState())
-                resource_map[obj_id] = ResourceLoadState(
-                    root_state=mode,
-                    sections=rls.sections,
-                )
-            elif kind == "section":
-                resource = section_to_resource.get(obj_id)
-                if resource is None:
-                    continue
-                mode = self._resolve_load_mode(resource, load_state)
-                if mode is None:
-                    continue
-                rid = resource.id
-                rls = resource_map.get(rid, ResourceLoadState())
-                new_sections = dict(rls.sections)
-                new_sections[obj_id] = mode
-                resource_map[rid] = ResourceLoadState(
-                    root_state=rls.root_state,
-                    sections=new_sections,
-                )
+
+                unique_modes = set(active.values())
+                if len(unique_modes) == 1 and len(active) == len(sections):
+                    # Every section agrees on the same mode — collapse to root.
+                    resource_map[resource.id] = ResourceLoadState(
+                        root_state=next(iter(unique_modes)),
+                        sections={},
+                    )
+                else:
+                    # Divergent — per-section detail, root is None.
+                    resource_map[resource.id] = ResourceLoadState(
+                        root_state=None,
+                        sections=active,
+                    )
 
         self._resource_manager.set_state(resource_map)
 
