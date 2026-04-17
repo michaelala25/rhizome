@@ -16,9 +16,9 @@ from textual.widgets._tree import TreeNode, TOGGLE_STYLE
 
 from rhizome.db import Resource
 from rhizome.db.models import ResourceSection
+from rhizome.resources import LoadMode, NodeKey
 
 from rhizome.tui.types import Arrangement
-from rhizome.tui.widgets.resource.view_model import LoadState
 
 if TYPE_CHECKING:
     from rhizome.tui.widgets.resource.loader import ResourceLoader
@@ -63,7 +63,7 @@ def _fmt_tokens(n: int | None) -> str:
     return str(n)
 
 
-def _state_key(data: NodeData) -> tuple[str, int]:
+def _state_key(data: NodeData) -> NodeKey:
     if isinstance(data, Resource):
         return ("resource", data.id)
     return ("section", data.id)
@@ -234,11 +234,21 @@ class LoaderTree(Tree[NodeData]):
 
         loader = self._loader
         key = _state_key(data)
-        state = loader._states.get(key, LoadState.UNLOADED)
+        effective = loader._effective_mode(key)
         is_cursor = node is self.cursor_node
 
+        # Determine whether this resource (or this section's owning resource)
+        # is pending embedding.
+        if isinstance(data, Resource):
+            resource_pending = data.id in loader._pending_resources
+            section_under_pending = False
+        else:
+            owning = _owning_resource(node)
+            resource_pending = False
+            section_under_pending = owning.id in loader._pending_resources
+
         # -- Pending state: spinner, no checkbox -----------------------
-        if state == LoadState.PENDING:
+        if resource_pending:
             spinner = _SPINNER_FRAMES[loader._spinner_frame]
             return Text.assemble(
                 (f"{spinner} ", _PENDING),
@@ -247,22 +257,19 @@ class LoaderTree(Tree[NodeData]):
             )
 
         # -- Section under pending resource: greyed out, locked ---------
-        if isinstance(data, ResourceSection):
-            resource = _owning_resource(node)
-            res_state = loader._states.get(("resource", resource.id), LoadState.UNLOADED)
-            if res_state == LoadState.PENDING:
-                label_style = _PENDING_CURSOR if is_cursor else _PENDING
-                if node._allow_expand:
-                    icon = self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE
-                    icon_style = base_style + TOGGLE_STYLE
-                else:
-                    icon = ""
-                    icon_style = base_style
-                return Text.assemble(
-                    (icon, icon_style),
-                    ("[-] ", _PENDING),
-                    (str(node._label), label_style),
-                )
+        if section_under_pending:
+            label_style = _PENDING_CURSOR if is_cursor else _PENDING
+            if node._allow_expand:
+                icon = self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE
+                icon_style = base_style + TOGGLE_STYLE
+            else:
+                icon = ""
+                icon_style = base_style
+            return Text.assemble(
+                (icon, icon_style),
+                ("[-] ", _PENDING),
+                (str(node._label), label_style),
+            )
 
         # -- Expand/collapse icon --------------------------------------
         if node._allow_expand:
@@ -273,15 +280,17 @@ class LoaderTree(Tree[NodeData]):
             icon_style = base_style
 
         # -- Checkbox --------------------------------------------------
-        partial = state in (LoadState.DEFAULT, LoadState.CONTEXT_STUFFED) and loader._is_partially_loaded(data)
-        if state == LoadState.UNLOADED:
+        partial = loader._is_partially_loaded(data)
+        if effective is None and not partial:
             checkbox, cb_style = "[ ] ", _UNCHECKED
-        elif state == LoadState.DEFAULT:
-            checkbox = "[/] " if partial else "[✓] "
-            cb_style = _CHECKED_GREEN
-        else:  # CONTEXT_STUFFED
+        elif effective == LoadMode.CONTEXT_STUFFED or (
+            effective is None and loader._descendant_modes_only_cs(data)
+        ):
             checkbox = "[/] " if partial else "[✓] "
             cb_style = _CHECKED_AMBER
+        else:  # LOADED, or partial with at least one LOADED descendant
+            checkbox = "[/] " if partial else "[✓] "
+            cb_style = _CHECKED_GREEN
 
         # -- Name styling ----------------------------------------------
         if is_cursor and self.has_focus:
@@ -323,7 +332,7 @@ class LoaderTree(Tree[NodeData]):
                 if meta_parts:
                     suffix = "  " + " │ ".join(meta_parts)
 
-        if state == LoadState.CONTEXT_STUFFED:
+        if effective == LoadMode.CONTEXT_STUFFED:
             suffix += "  ctx"
 
         # -- Truncate name to fit within available width ---------------
@@ -354,7 +363,7 @@ class LoaderTree(Tree[NodeData]):
         if not vertical:
             if isinstance(data, Resource):
                 meta_end = suffix
-                if state == LoadState.CONTEXT_STUFFED:
+                if effective == LoadMode.CONTEXT_STUFFED:
                     meta_end = suffix[: -len("  ctx")]
                     text.append(meta_end, style=_META)
                     text.append("  ctx", style=_CTX_TAG)
@@ -363,13 +372,13 @@ class LoaderTree(Tree[NodeData]):
             else:
                 if suffix:
                     meta_end = suffix
-                    if state == LoadState.CONTEXT_STUFFED:
+                    if effective == LoadMode.CONTEXT_STUFFED:
                         meta_end = suffix[: -len("  ctx")]
                         text.append(meta_end, style=_META)
                         text.append("  ctx", style=_CTX_TAG)
                     else:
                         text.append(suffix, style=_META)
-                elif state == LoadState.CONTEXT_STUFFED:
+                elif effective == LoadMode.CONTEXT_STUFFED:
                     text.append("  ctx", style=_CTX_TAG)
         elif suffix:
             # Vertical: only the ctx tag if present

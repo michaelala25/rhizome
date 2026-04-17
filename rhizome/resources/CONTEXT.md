@@ -4,7 +4,7 @@ Resource processing services — higher-level operations on document resources t
 
 ## Modules
 
-- **manager.py** — `ResourceManager`: tracks per-resource load state on two independent axes (`in_vector_store`, `context_stuffed`) and computes net diffs between agent `stream()` calls. Created by `ChatPane` and shared between `AgentSession` (which calls `consume()` to drain changes) and `ResourceViewer` (which calls `notify_load_state_changed()` on user toggles). Exposes `set_context_stuffed()`, `set_vector_loaded()`, and `full_unload()` as mutation methods. The translation from `ResourceLoader` tri-state to two-axis calls lives in `ResourceViewer.on_resource_loader_state_changed()`. Exports `ResourceState`, `ResourceAction`, `ResourceChange`.
+- **manager.py** — `ResourceManager`: tracks load state in minimum-description-length (MDL) form — a flat `dict[NodeKey, LoadMode]` where `NodeKey = tuple[Literal["resource","section"], int]`. An entry at a node means "this node and every descendant are loaded at this mode" unless a descendant overrides with its own entry. The `ResourceLoader` widget pushes full snapshots via `set_state()` on every user toggle; `AgentSession.stream()` calls `consume()` at the start of each stream to get the key-level diff against the last consumed snapshot. Also hosts the embedding lifecycle (`ensure_embedded()`, `is_embedding_in_progress()`) used by the loader to compute vector-store embeddings on demand. Exports `LoadMode`, `NodeKey`, `NodeKind`, `ResourceManager`, `ResourceStateChange`.
 
 ## Subpackages
 
@@ -14,5 +14,5 @@ Resource processing services — higher-level operations on document resources t
 
 - **`rhizome/db/`** — This package does NOT handle persistence. Database models (`Resource`, `ResourceSection`, `ResourceChunk`) and operations live in `rhizome/db/`.
 - **`rhizome/agent/tools/`** — Agent tools call into this package to trigger section detection. This package has no dependency on the agent layer.
-- **`rhizome/tui/widgets/`** — `ResourceViewer` translates `ResourceLoader` tri-state changes into `ResourceManager` two-axis calls. This package has no dependency on the TUI layer.
+- **`rhizome/tui/widgets/`** — `ResourceLoader` holds the authoritative MDL state and pushes snapshots to `ResourceManager.set_state()` on every user toggle. This package has no dependency on the TUI layer.
 - **`rhizome/agent/session.py`** — `AgentSession` holds a `ResourceManager` reference and calls `consume()` at the start of each `stream()` invocation.

@@ -17,16 +17,7 @@ from __future__ import annotations
 import enum
 
 from rhizome.db import Resource, Topic
-
-
-
-class LoadState(enum.Enum):
-    """Load state for a resource or section."""
-
-    UNLOADED = "unloaded"
-    DEFAULT = "default"          # loaded per resource's loading_preference
-    CONTEXT_STUFFED = "context"  # override: context-stuffed directly
-    PENDING = "pending"          # embedding in progress — locked, shows spinner
+from rhizome.resources import LoadMode, NodeKey
 
 
 # ======================================================================
@@ -55,13 +46,19 @@ class ResourceLinkerViewModel:
 class ResourceLoaderViewModel:
     """State for the ResourceLoader widget.
 
-    ``states`` maps ``(kind, id)`` tuples — where *kind* is ``"resource"``
-    or ``"section"`` — to their current :class:`LoadState`.
+    ``states`` is an MDL-form dict: an entry at ``(kind, id)`` means that
+    node and every descendant are loaded at the given :class:`LoadMode`,
+    unless a descendant has its own overriding entry.  Absence = unloaded.
+
+    ``pending_resources`` holds resource ids currently computing embeddings;
+    pending resources are rendered with a spinner, are locked against
+    further toggles, and are filtered out when syncing state to the manager.
     """
 
     def __init__(self) -> None:
         self.resources: list[Resource] = []
-        self.states: dict[tuple[str, int], LoadState] = {}
+        self.states: dict[NodeKey, LoadMode] = {}
+        self.pending_resources: set[int] = set()
         self.show_ids: bool = False
         self.spinner_frame: int = 0
 
