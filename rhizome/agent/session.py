@@ -39,6 +39,40 @@ from rhizome.resources import ResourceManager
 from rhizome.tui.options import Options
 
 
+def _merge_resource_messages_into_queue(
+    queued: list[BaseMessage],
+    resource_messages: list[BaseMessage],
+) -> list[BaseMessage]:
+    """Splice context-stuffing messages into ``queued`` at the right position.
+
+    We place them immediately **before** the last ``HumanMessage`` whose
+    content does **not** start with ``"[System]"`` — i.e. immediately
+    before the user's current turn.  This keeps the CS content adjacent
+    to the user's input while ensuring it lands after the SystemMessage
+    (system prompt) on the very first turn.
+
+    RemoveMessages and HumanMessages are treated identically here: the
+    ``add_messages`` reducer handles removals by id regardless of
+    position, so we just insert them at the same spot.
+
+    Falls back to appending at the end if ``queued`` has no non-``[System]``
+    HumanMessage (e.g. only system-prompt or settings-injection messages).
+    """
+    if not resource_messages:
+        return queued
+
+    insert_at = len(queued)
+    for i in range(len(queued) - 1, -1, -1):
+        msg = queued[i]
+        if isinstance(msg, HumanMessage):
+            content = msg.content if isinstance(msg.content, str) else ""
+            if not content.startswith("[System]"):
+                insert_at = i
+                break
+
+    return queued[:insert_at] + resource_messages + queued[insert_at:]
+
+
 def get_agent_kwargs(options: Options) -> dict[str, Any]:
     """Build provider-specific kwargs from the current options."""
     provider = options.get(Options.Agent.Provider)
@@ -280,11 +314,14 @@ class AgentSession:
         # add_messages reducer appends these new messages.
         queued = self._drain_queue()
 
-        # Consume resource changes since the last stream() call.
+        # Consume resource state changes since the last stream(): the manager
+        # returns HumanMessages for new or replaced context-stuffed content
+        # and RemoveMessages for resources that lost all CS entries.  Splice
+        # them in just before the user's current turn (see the helper for
+        # the exact rule and the first-turn SystemMessage ordering).
         if self._resource_manager is not None:
-            _resource_changes = self._resource_manager.consume()
-            # TODO: act on resource changes (context-stuff injection,
-            # vector store updates, agent notifications, etc.)
+            resource_messages = await self._resource_manager.consume()
+            queued = _merge_resource_messages_into_queue(queued, resource_messages)
 
         # Build the initial state input.  Only include state fields when we
         # actually have new values — omitted keys are left untouched in the

@@ -70,6 +70,27 @@ async def get_resource(
     return result.scalar_one_or_none()
 
 
+async def get_resource_with_content_and_sections(
+    session: AsyncSession,
+    resource_id: int,
+) -> Resource | None:
+    """Get a resource by ID, eagerly loading content and sections.
+
+    Used by the context-stuffing pipeline to build ``HumanMessage`` blocks
+    for the agent: the caller needs ``resource.content.raw_text`` plus the
+    full section list to compute per-section text ranges.
+    """
+    result = await session.execute(
+        select(Resource)
+        .where(Resource.id == resource_id)
+        .options(
+            selectinload(Resource.content),
+            selectinload(Resource.sections),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_resources(session: AsyncSession) -> list[Resource]:
     """List all resources (without chunks or raw_text body)."""
     result = await session.execute(
