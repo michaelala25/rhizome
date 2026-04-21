@@ -72,9 +72,10 @@ _GUIDE_TOOLS = frozenset({
 })
 
 _RESOURCE_TOOLS = frozenset({
-    "add_resource",
-    "list_resources",
-    "get_resource_info",
+    # "add_resource",
+    # "list_resources",
+    # "get_resource_info",
+    "query_resources",
 })
 
 _REVIEW_TOOLS = frozenset({

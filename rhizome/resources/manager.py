@@ -17,6 +17,10 @@ list of messages to inject into the graph state:
   sections updates content without appending duplicates.
 - For every resource that had CS content before and has none now, emit a
   :class:`RemoveMessage` with the same id to drop it from graph state.
+- Whenever the LOADED scope changes, emit a single vector-store digest
+  :class:`HumanMessage` (id ``rhizome-vector-store-digest``) listing what's
+  currently queryable via the ``query_resources`` tool, or a
+  :class:`RemoveMessage` with that id when the LOADED scope becomes empty.
 
 Owner resolution (which resource a section belongs to) is done on demand
 via a single batched DB lookup at the top of :meth:`consume`; sections are
@@ -29,7 +33,7 @@ from collections import defaultdict
 import enum
 from typing import Literal
 
-from langchain_core.messages import BaseMessage, RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +68,11 @@ class LoadMode(enum.Enum):
 
 NodeKind = Literal["resource", "section"]
 NodeKey = tuple[NodeKind, int]
+
+
+# Deterministic id for the vector-store digest message so the add_messages
+# reducer can replace (or remove) a prior digest in place on every toggle.
+VECTOR_STORE_DIGEST_MESSAGE_ID = "rhizome-vector-store-digest"
 
 
 def _fmt_state(state: dict[NodeKey, LoadMode]) -> str:
@@ -254,6 +263,41 @@ class ResourceManager:
             for chunk in chunks
         ]
 
+    async def _build_vector_store_digest_message(
+        self,
+        loaded_scope: set[NodeKey],
+    ) -> BaseMessage:
+        """Build a digest of what's queryable via the ``query_resources`` tool.
+
+        Driven directly off the LOADED MDL scope (not the rebuilt store)
+        since the scope is the canonical "what the user chose to load"
+        view; the store is just its chunk-level materialization.  Returns
+        a ``RemoveMessage`` when the scope is empty.
+        """
+        if not loaded_scope:
+            return RemoveMessage(id=VECTOR_STORE_DIGEST_MESSAGE_ID)
+
+        by_rid = await self._group_by_rid(loaded_scope)
+        lines = ["Resources loaded:"]
+
+        async with self._session_factory() as session:
+            for rid in sorted(by_rid):
+                nodes = by_rid[rid]
+                resource = await session.get(Resource, rid)
+                title = resource.name if resource is not None else "<unknown resource>"
+                if ("resource", rid) in nodes:
+                    lines.append(f"- {rid} {title} - fully loaded")
+                else:
+                    lines.append(f"- {rid} {title} - subsections:")
+                    for sid in sorted(sid for kind, sid in nodes if kind == "section"):
+                        section = await session.get(ResourceSection, sid)
+                        sub_title = section.title if section is not None else "<unknown section>"
+                        lines.append(f"  - {sid} {sub_title}")
+
+        return HumanMessage(
+            content="\n".join(lines),
+            id=VECTOR_STORE_DIGEST_MESSAGE_ID,
+        )
 
     async def _build_context_stuffed_messages(
         self,
@@ -319,16 +363,22 @@ class ResourceManager:
         """Diff ``_current`` vs ``_next`` and return messages for the graph.
 
         Emits one HumanMessage per resource whose CS entry set changed (new
-        content or replacement of existing content), and one RemoveMessage
-        per resource that lost all its CS entries.  Advances ``_current`` to
-        ``_next`` after producing the diff.
+        content or replacement of existing content), one RemoveMessage per
+        resource that lost all its CS entries, and — whenever the LOADED
+        scope changes — either a digest HumanMessage describing the new
+        vector-store contents or a RemoveMessage dropping the prior digest.
+        Advances ``_current`` to ``_next`` after producing the diff.
         """
 
-        # First, rebuild the vector store
+        messages: list[BaseMessage] = []
+
+        # First, rebuild the vector store and emit a digest summarizing its
+        # contents so the agent knows what `query_resources` can retrieve.
         old_loaded: set[NodeKey] = set(k for k, m in self._current.items() if m == LoadMode.LOADED)
         new_loaded: set[NodeKey] = set(k for k, m in self._next.items() if m == LoadMode.LOADED)
         if old_loaded != new_loaded:
             await self._build_vector_store(new_loaded)
+            messages.append(await self._build_vector_store_digest_message(new_loaded))
 
         # Second, compute message diff for context-stuffed resources/sections
         old_cs: set[NodeKey] = set(k for k, m in self._current.items() if m == LoadMode.CONTEXT_STUFFED)
@@ -337,12 +387,11 @@ class ResourceManager:
         old_cs_by_rid = await self._group_by_rid(old_cs)
         new_cs_by_rid = await self._group_by_rid(new_cs)
 
-        messages: list[BaseMessage] = []
         if old_cs_by_rid != new_cs_by_rid:
-            messages = await self._build_context_stuffed_messages(
+            messages.extend(await self._build_context_stuffed_messages(
                 old_cs_by_rid,
-                new_cs_by_rid
-            )
+                new_cs_by_rid,
+            ))
 
         self._current = dict(self._next)
 
