@@ -1,16 +1,19 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     JSON,
     LargeBinary,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     func,
 )
@@ -20,6 +23,28 @@ from sqlalchemy.orm import (
     mapped_column,
     relationship,
 )
+
+
+class UTCDateTime(TypeDecorator):
+    """DateTime that enforces aware UTC values. SQLite stores/retrieves naive
+    strings, so we reattach tzinfo=UTC on load and reject naive values on save."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("UTCDateTime requires timezone-aware datetime")
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class EntryType(enum.Enum):
@@ -230,6 +255,17 @@ class Flashcard(Base):
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     answer_text: Mapped[str] = mapped_column(Text, nullable=False)
     testing_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- FSRS scheduling state ---
+    # due IS NULL means the card is parked (not scheduled for spaced repetition).
+    # Integer values for fsrs_state match py-fsrs's State IntEnum:
+    # 1=Learning, 2=Review, 3=Relearning.
+    fsrs_state: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    fsrs_step: Mapped[int | None] = mapped_column(Integer, nullable=True, server_default="0")
+    stability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    difficulty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    due: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True, index=True)
+    last_review: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     session: Mapped["ReviewSession | None"] = relationship(back_populates="flashcards")
     flashcard_entries: Mapped[list["FlashcardEntry"]] = relationship(
