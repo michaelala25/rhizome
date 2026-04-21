@@ -234,19 +234,95 @@ async def clear_chunks(
 async def get_chunks(
     session: AsyncSession,
     resource_id: int,
+    *,
+    embedded_only: bool = False,
 ) -> list[ResourceChunk]:
-    """Get all chunks for a resource, ordered by chunk_index."""
-    result = await session.execute(
+    """Get all chunks for a resource, ordered by chunk_index.
+
+    When ``embedded_only`` is True, skip rows where ``embedding IS NULL``.
+    """
+    stmt = select(ResourceChunk).where(ResourceChunk.resource_id == resource_id)
+    if embedded_only:
+        stmt = stmt.where(ResourceChunk.embedding.is_not(None))
+    result = await session.execute(stmt.order_by(ResourceChunk.chunk_index))
+    return list(result.scalars().all())
+
+
+async def get_chunks_for_section(
+    session: AsyncSession,
+    section_id: int,
+    *,
+    embedded_only: bool = False,
+) -> list[ResourceChunk]:
+    """Get all chunks linked to a section via ``resource_chunk_section``.
+
+    Ordered by ``chunk_index``.  Links are populated at ingestion by
+    :func:`link_chunks_to_sections`, which is the single source of truth
+    for section/chunk membership.
+    """
+    stmt = (
         select(ResourceChunk)
-        .where(ResourceChunk.resource_id == resource_id)
-        .order_by(ResourceChunk.chunk_index)
+        .join(ResourceChunkSection, ResourceChunkSection.chunk_id == ResourceChunk.id)
+        .where(ResourceChunkSection.section_id == section_id)
     )
+    if embedded_only:
+        stmt = stmt.where(ResourceChunk.embedding.is_not(None))
+    result = await session.execute(stmt.order_by(ResourceChunk.chunk_index))
     return list(result.scalars().all())
 
 
 # -----------------------------------------------------------------------
 # Sections
 # -----------------------------------------------------------------------
+
+async def get_section_resource_ids(
+    session: AsyncSession,
+    section_ids: list[int] | set[int] | tuple[int, ...],
+) -> dict[int, int]:
+    """Batch-resolve ``{section_id: resource_id}`` for the given section ids.
+
+    Sections that don't exist (e.g. deleted) are absent from the result —
+    callers should handle missing keys as "unknown owner".  Returns an empty
+    dict when given no ids.
+    """
+    if not section_ids:
+        return {}
+    result = await session.execute(
+        select(ResourceSection.id, ResourceSection.resource_id)
+        .where(ResourceSection.id.in_(list(section_ids)))
+    )
+    return {row.id: row.resource_id for row in result.all()}
+
+
+def compute_section_end_offsets(
+    sections: list[ResourceSection],
+    raw_text_len: int,
+) -> dict[int, int]:
+    """Return ``{section_id: end_offset}`` for sections with a ``start_offset``.
+
+    A section's effective end is the ``start_offset`` of the next section
+    (in document order) at depth ≤ this section's depth — i.e. the next
+    sibling or parent-sibling — or ``raw_text_len`` if no such section
+    exists.  Sections without a ``start_offset`` are skipped and absent
+    from the result.
+
+    This is the single source of truth for "where does a section end?":
+    the section tree stores only start offsets, and ends are derived on
+    demand to avoid drift when sections are inserted or deleted.
+    """
+    offset_sections = sorted(
+        [s for s in sections if s.start_offset is not None],
+        key=lambda s: s.start_offset,  # type: ignore[arg-type, return-value]
+    )
+    ends: dict[int, int] = {}
+    for i, sec in enumerate(offset_sections):
+        end = raw_text_len
+        for j in range(i + 1, len(offset_sections)):
+            if offset_sections[j].depth <= sec.depth:
+                end = offset_sections[j].start_offset  # type: ignore[assignment]
+                break
+        ends[sec.id] = end
+    return ends
 
 async def insert_sections(
     session: AsyncSession,
@@ -334,58 +410,52 @@ async def link_chunks_to_sections(
     if not chunks or not sections:
         return 0
 
-    # Filter to sections that have a start_offset.
-    offset_sections = [s for s in sections if s.start_offset is not None]
-    if not offset_sections:
+    raw_text_result = await session.execute(
+        select(ResourceContent.raw_text).where(
+            ResourceContent.resource_id == resource_id,
+        )
+    )
+    raw_text = raw_text_result.scalar_one_or_none()
+    if not raw_text:
+        _log.debug("No raw_text for resource %d; cannot link chunks", resource_id)
+        return 0
+    raw_text_len = len(raw_text)
+
+    section_ends = compute_section_end_offsets(sections, raw_text_len)
+    if not section_ends:
         _log.debug("No sections with start_offset for resource %d", resource_id)
         return 0
 
-    # Compute effective end for each section: the start_offset of the next
-    # section at the same depth or shallower (i.e. the next sibling or
-    # parent-sibling), or infinity if none exists.
-    sec_starts = [s.start_offset for s in offset_sections]
-    sec_ends: list[float] = []
-    for i, sec in enumerate(offset_sections):
-        end: float = float("inf")
-        for j in range(i + 1, len(offset_sections)):
-            if offset_sections[j].depth <= sec.depth:
-                end = offset_sections[j].start_offset
-                break
-        sec_ends.append(end)
+    offset_sections = [s for s in sections if s.id in section_ends]
 
     _log.debug(
         "link_chunks_to_sections: resource=%d, %d chunks, %d sections with offsets",
         resource_id, len(chunks), len(offset_sections),
     )
-    for i, sec in enumerate(offset_sections):
+    for sec in offset_sections:
         _log.debug(
-            "  section pos=%d depth=%d id=%d title=%r range=[%d, %s)",
+            "  section pos=%d depth=%d id=%d title=%r range=[%d, %d)",
             sec.position, sec.depth, sec.id, sec.title,
-            sec_starts[i], sec_ends[i] if sec_ends[i] != float("inf") else "inf",
+            sec.start_offset, section_ends[sec.id],
         )
 
     count = 0
     per_section_chunks: dict[int, list[tuple[int, int, int]]] = {}
     for chunk in chunks:
-        for j in range(len(offset_sections)):
-            if chunk.start_offset < sec_ends[j] and chunk.end_offset > sec_starts[j]:
-                session.add(ResourceChunkSection(
-                    chunk_id=chunk.id, section_id=offset_sections[j].id,
-                ))
-                per_section_chunks.setdefault(offset_sections[j].id, []).append(
+        for sec in offset_sections:
+            if chunk.start_offset < section_ends[sec.id] and chunk.end_offset > sec.start_offset:
+                session.add(ResourceChunkSection(chunk_id=chunk.id, section_id=sec.id))
+                per_section_chunks.setdefault(sec.id, []).append(
                     (chunk.chunk_index, chunk.start_offset, chunk.end_offset)
                 )
                 count += 1
 
-    for i, sec in enumerate(offset_sections):
+    for sec in offset_sections:
         linked = per_section_chunks.get(sec.id, [])
-        chunk_detail = ", ".join(
-            f"#{idx}[{s}:{e}]" for idx, s, e in linked
-        ) or "(none)"
-        end_str = sec_ends[i] if sec_ends[i] != float("inf") else "inf"
+        chunk_detail = ", ".join(f"#{idx}[{s}:{e}]" for idx, s, e in linked) or "(none)"
         _log.debug(
-            "  -> section id=%d title=%r range=[%d, %s): %d chunks: %s",
-            sec.id, sec.title, sec.start_offset, end_str,
+            "  -> section id=%d title=%r range=[%d, %d): %d chunks: %s",
+            sec.id, sec.title, sec.start_offset, section_ends[sec.id],
             len(linked), chunk_detail,
         )
 

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from langchain_core.messages import HumanMessage
 
 from rhizome.db.models import Resource
+from rhizome.db.operations import compute_section_end_offsets
 from rhizome.logs import get_logger
 
 if TYPE_CHECKING:
@@ -43,7 +44,7 @@ def resource_context_message_id(resource_id: int) -> str:
 
 def build_resource_context_message(
     resource: Resource,
-    cs_entries: list[NodeKey],
+    cs_entries: set[NodeKey],
 ) -> HumanMessage | None:
     """Build the context-stuffing ``HumanMessage`` for a single resource.
 
@@ -73,7 +74,7 @@ def build_resource_context_message(
         return None
 
     sections_by_id = {s.id: s for s in resource.sections}
-    section_ends = _compute_section_end_offsets(resource, len(raw_text))
+    section_ends = compute_section_end_offsets(resource.sections, len(raw_text))
 
     ordered = sorted(cs_entries, key=lambda e: _entry_sort_key(e, sections_by_id))
 
@@ -115,29 +116,6 @@ def build_resource_context_message(
         f"</resource>"
     )
     return HumanMessage(content=content, id=resource_context_message_id(resource.id))
-
-
-def _compute_section_end_offsets(resource: Resource, raw_text_len: int) -> dict[int, int]:
-    """Return ``{section_id: end_offset}`` using the same-or-shallower rule.
-
-    End offset = start of the next section (in document order) at depth
-    ≤ this section's depth, or the end of ``raw_text`` if none exists.
-    Sections without a ``start_offset`` are skipped and will not appear as
-    keys in the result.
-    """
-    offset_sections = sorted(
-        [s for s in resource.sections if s.start_offset is not None],
-        key=lambda s: s.start_offset,  # type: ignore[arg-type, return-value]
-    )
-    ends: dict[int, int] = {}
-    for i, sec in enumerate(offset_sections):
-        end = raw_text_len
-        for j in range(i + 1, len(offset_sections)):
-            if offset_sections[j].depth <= sec.depth:
-                end = offset_sections[j].start_offset  # type: ignore[assignment]
-                break
-        ends[sec.id] = end
-    return ends
 
 
 def _entry_sort_key(entry: NodeKey, sections_by_id: dict[int, object]) -> tuple[int, int]:

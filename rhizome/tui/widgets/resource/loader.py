@@ -600,10 +600,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             for k, v in self._states.items()
             if self._cache.owning_resource_id(k) not in self._pending_resources
         }
-        self._resource_manager.set_state(
-            filtered,
-            section_owners=dict(self._cache.resource_id_by_section_id),
-        )
+        self._resource_manager.set_state(filtered)
 
     # -- Actions -------------------------------------------------------
 
