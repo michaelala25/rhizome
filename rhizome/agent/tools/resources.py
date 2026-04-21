@@ -5,24 +5,31 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
+import numpy as np
 from langchain.tools import tool
 import pymupdf
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from sqlalchemy import select
 
 from rhizome.agent.tools.visibility import ToolVisibility, tool_visibility
-from rhizome.db.models import LoadingPreference
+from rhizome.db.models import LoadingPreference, ResourceChunk, ResourceContent
 from rhizome.db.operations import (
     add_chunks,
     create_resource,
     get_resource,
     list_resources,
 )
+from rhizome.logs import get_logger
+from rhizome.resources import ResourceManager
 from rhizome.resources.embeddings import (
     chunk_text,
+    embed_batch,
     embed_chunks,
     get_voyage_api_key,
 )
+
+_log = get_logger("agent.tools.resources")
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +61,17 @@ def _estimate_tokens(text: str) -> int:
 # Tool
 # ---------------------------------------------------------------------------
 
-def build_resource_tools(session_factory) -> dict:
-    """Build resource management tools with session_factory closed over."""
+def build_resource_tools(
+    session_factory,
+    resource_manager: ResourceManager | None = None,
+) -> dict:
+    """Build resource management tools with session_factory closed over.
+
+    ``resource_manager``, when provided, exposes the ``query_resources``
+    retrieval tool by closing over the manager's live vector store — there
+    is no other clean way to give a stateless tool a handle to the index
+    that the UI rebuilds on every loader toggle.
+    """
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("add_resource", description=(
@@ -178,8 +194,81 @@ def build_resource_tools(session_factory) -> dict:
             lines.append(f"  Summary: {resource.summary}")
         return "\n".join(lines)
 
+    @tool_visibility(ToolVisibility.DEFAULT)
+    @tool("query_resources", description=(
+        "Semantic search over the currently-loaded resource chunks. Embeds "
+        "the query, runs it against the vector store built from the user's "
+        "LOADED resources/sections, and returns the top-k matches with their "
+        "resource name, section breadcrumb, similarity score, and chunk text. "
+        "Returns an explanatory message if no resources are currently loaded."
+    ))
+    async def query_resources_tool(query: str, k: int = 5) -> str:
+        if resource_manager is None:
+            return (
+                "query_resources is unavailable: this agent session was built "
+                "without a ResourceManager."
+            )
+        if not query.strip():
+            return "Error: query must not be empty."
+        if k <= 0:
+            return "Error: k must be a positive integer."
+
+        store = resource_manager.vector_store
+        if store.is_empty():
+            return (
+                "No resources are currently loaded into the vector store. "
+                "Ask the user to toggle a resource or section to LOADED via "
+                "the resource loader, then retry."
+            )
+
+        try:
+            api_key = get_voyage_api_key()
+            vecs = await embed_batch([query], api_key)
+        except Exception as e:
+            _log.exception("query_resources: failed to embed query")
+            return f"Error embedding query: {e}"
+
+        query_vec = np.asarray(vecs[0], dtype=np.float32)
+        hits = await store.query(query_vec, k)
+        if not hits:
+            return f"No matches found for {query!r}."
+
+        # Hydrate chunk text by joining chunk offsets against resource content
+        chunk_ids = [meta.chunk_id for meta, _ in hits]
+        async with session_factory() as session:
+            chunk_rows = (await session.execute(
+                select(ResourceChunk).where(ResourceChunk.id.in_(chunk_ids))
+            )).scalars().all()
+            chunks_by_id = {c.id: c for c in chunk_rows}
+
+            rids = {c.resource_id for c in chunks_by_id.values()}
+            raw_texts: dict[int, str] = {}
+            if rids:
+                content_rows = (await session.execute(
+                    select(ResourceContent.resource_id, ResourceContent.raw_text)
+                    .where(ResourceContent.resource_id.in_(rids))
+                )).all()
+                raw_texts = {r.resource_id: r.raw_text or "" for r in content_rows}
+
+        lines = [f"{len(hits)} match(es) for {query!r}:"]
+        for rank, (meta, score) in enumerate(hits, start=1):
+            breadcrumb = meta.section_breadcrumb or "(no section)"
+            chunk = chunks_by_id.get(meta.chunk_id)
+            if chunk is None:
+                text = "[chunk row not found]"
+            else:
+                raw = raw_texts.get(chunk.resource_id, "")
+                text = raw[chunk.start_offset:chunk.end_offset] if raw else "[resource content missing]"
+            lines.append(
+                f"\n[{rank}] score={score:.3f} | {meta.resource_name} \u203a {breadcrumb} "
+                f"(chunk_id={meta.chunk_id})"
+            )
+            lines.append(text)
+        return "\n".join(lines)
+
     return {
         "add_resource": add_resource_tool,
         "list_resources": list_resources_tool,
         "get_resource_info": get_resource_info_tool,
+        "query_resources": query_resources_tool,
     }

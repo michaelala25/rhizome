@@ -155,7 +155,7 @@ class AgentSession:
             *build_flashcard_proposal_tools(session_factory, answerer, comparator).values(),
             *build_sql_tools(session_factory).values(),
             *build_guide_tools().values(),
-            *build_resource_tools(session_factory).values(),
+            *build_resource_tools(session_factory, self._resource_manager).values(),
         ]
 
         # Build the commit subagent and add its tools to the root agent's tool list.
