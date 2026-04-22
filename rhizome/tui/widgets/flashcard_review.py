@@ -15,7 +15,6 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Static, TextArea
 
-from rhizome.agent.subagents.flashcard_validator import build_scorer_subagent
 from rhizome.logs import get_logger
 
 from .interrupt import InterruptWidgetBase
@@ -128,8 +127,14 @@ class FlashcardReview(InterruptWidgetBase):
     DISABLE_CHILDREN_ON_DEACTIVATE = False
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> Self:
-        """Construct from an interrupt value dict."""
+    def from_interrupt(cls, value: dict[str, Any], context: Any = None) -> Self:
+        """Construct from an interrupt value dict.
+
+        ``context`` is an ``AgentContext`` whose ``scorer_subagent`` is pulled
+        out and handed to the widget — the widget doesn't own the scorer, it
+        borrows one from the session so rebuilds driven by option changes
+        flow through correctly."""
+        scorer = getattr(context, "scorer_subagent", None) if context is not None else None
         return cls(
             cards=value["cards"],
             user_input_enabled=value.get("user_input_enabled", True),
@@ -139,6 +144,7 @@ class FlashcardReview(InterruptWidgetBase):
             show_complete_status=value.get("show_complete_status", True),
             counter_start=value.get("counter_start"),
             counter_total=value.get("counter_total"),
+            scorer=scorer,
         )
 
     BINDINGS = [
@@ -322,6 +328,7 @@ class FlashcardReview(InterruptWidgetBase):
         again_behaviour: AgainBehaviour = AgainBehaviour.QUEUE,
         collapse_on_complete: bool = True,
         show_complete_status: bool = True,
+        scorer: Any = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -359,15 +366,22 @@ class FlashcardReview(InterruptWidgetBase):
         self._session_cancelled = False
         self._collapsed = False
 
-        # Auto-scoring: the scorer subagent is owned by the widget (built at
-        # construction time, lightweight). While a card's score is in flight,
-        # its index is in ``_scoring_indices``. If scoring fails for a card,
-        # its index is added to ``_scoring_failed_indices`` — manual rating
-        # actions become permitted for that card even in auto-score mode.
-        self._scorer = build_scorer_subagent() if auto_score else None
+        # Auto-scoring: the scorer subagent is owned by the AgentSession and
+        # passed in at construction time (via ``from_interrupt`` pulling it
+        # off AgentContext). While a card's score is in flight, its index is
+        # in ``_scoring_indices``. If scoring fails for a card, its index is
+        # added to ``_scoring_failed_indices`` — manual rating actions become
+        # permitted for that card even in auto-score mode.
+        self._scorer = scorer
         self._scoring_task: asyncio.Task | None = None
         self._scoring_indices: set[int] = set()
         self._scoring_failed_indices: set[int] = set()
+        if auto_score and self._scorer is None:
+            _logger.warning(
+                "FlashcardReview constructed with auto_score=True but no "
+                "scorer provided; auto-score actions will immediately fall "
+                "back to manual rating."
+            )
 
     def compose(self) -> ComposeResult:
         yield Button("▼", id="fr-collapse")
@@ -758,12 +772,20 @@ class FlashcardReview(InterruptWidgetBase):
         if state == CardState.HIDDEN:
             self._reveal_current()
         elif state == CardState.REVEALED:
-            if self._auto_score and self._index not in self._scoring_failed_indices:
+            if (
+                self._auto_score
+                and self._scorer is not None
+                and self._index not in self._scoring_failed_indices
+            ):
                 # Block re-triggering scoring if one's already in flight.
                 if self._scoring_task is None:
                     self._scoring_task = asyncio.create_task(
                         self._start_auto_scoring(self._index)
                     )
+            elif self._auto_score and self._scorer is None:
+                # No scorer available — surface manual fallback immediately.
+                self._scoring_failed_indices.add(self._index)
+                self._refresh_view()
             else:
                 self._rate(3)  # "good"
 

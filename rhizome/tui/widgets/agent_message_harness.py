@@ -10,6 +10,7 @@ from textual.widgets.markdown import Markdown, MarkdownStream
 
 from langchain.messages import AIMessageChunk, ToolMessage
 
+from rhizome.agent.context import AgentContext
 from rhizome.agent.tools import TOOL_VISIBILITY, ToolVisibility
 from rhizome.logs import get_logger
 from rhizome.tui.types import Mode, Role
@@ -254,7 +255,7 @@ class AgentMessageHarness(Widget):
         """Callback for ``"updates"`` chunks from the agent stream."""
         await self.post_update(payload)
 
-    async def on_interrupt(self, interrupt_value: Any) -> Any:
+    async def on_interrupt(self, interrupt_value: Any, context: AgentContext) -> Any:
         """Callback for graph interrupts. Blocks until the user responds.
 
         Dispatches to the appropriate interrupt widget based on the ``"type"``
@@ -282,7 +283,7 @@ class AgentMessageHarness(Widget):
         elif itype == "sql_confirmation":
             widget = SqlConfirmation.from_interrupt(interrupt_value)
         elif itype == "flashcard_review":
-            widget = FlashcardReview.from_interrupt(interrupt_value)
+            widget = FlashcardReview.from_interrupt(interrupt_value, context)
         else:
             raise ValueError(f"Unknown interrupt type: {itype!r}")
         self._interrupt_widget = widget

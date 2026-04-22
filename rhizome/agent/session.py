@@ -31,6 +31,7 @@ from rhizome.agent.subagents.commit import build_commit_subagent, build_commit_s
 from rhizome.agent.subagents.flashcard_validator import (
     build_answerer_subagent,
     build_comparator_subagent,
+    build_scorer_subagent,
 )
 
 from rhizome.logs import get_logger
@@ -140,30 +141,34 @@ class AgentSession:
             self._dump_dir = log_dir / f"agent-stream-{max_idx + 1}"
             self._dump_dir.mkdir(parents=True, exist_ok=True)
 
-        # Build the flashcard validation subagents so flashcard_proposal_create
-        # can run inline validation when validate=True.
-        answerer = build_answerer_subagent(**dict(self._agent_kwargs))
-        comparator = build_comparator_subagent(**dict(self._agent_kwargs))
+        # Flashcard subagents live on the session so they can be rebuilt if
+        # options change. The answerer/comparator are passed directly into the
+        # flashcard-proposal tools (tool-level invocation). The scorer is no
+        # longer wired into review tools — FlashcardReview pulls it off
+        # AgentContext at interrupt time and runs scoring inside the widget.
+        self._answerer_subagent = build_answerer_subagent(**dict(self._agent_kwargs))
+        self._comparator_subagent = build_comparator_subagent(**dict(self._agent_kwargs))
+        self._scorer_subagent = build_scorer_subagent(**dict(self._agent_kwargs))
 
         # Build all tool groups (each closed over session_factory and/or chat_pane).
-        # The flashcard scorer is constructed inside FlashcardReview itself, so
-        # it doesn't need to be wired through the tool layer anymore.
         self._tools: list = [
             *build_core_tools(session_factory).values(),
             *build_app_tools(session_factory, chat_pane).values(),
             *build_review_tools(session_factory).values(),
-            *build_flashcard_proposal_tools(session_factory, answerer, comparator).values(),
+            *build_flashcard_proposal_tools(
+                session_factory, self._answerer_subagent, self._comparator_subagent
+            ).values(),
             *build_sql_tools(session_factory).values(),
             *build_guide_tools().values(),
             *build_resource_tools(session_factory, self._resource_manager).values(),
         ]
 
         # Build the commit subagent and add its tools to the root agent's tool list.
-        commit_subagent = build_commit_subagent(
+        self._commit_subagent = build_commit_subagent(
             session_factory, chat_pane, **dict(self._agent_kwargs)
         )
         self._tools.extend(
-            build_commit_subagent_tools(session_factory, chat_pane, commit_subagent)
+            build_commit_subagent_tools(session_factory, chat_pane, self._commit_subagent)
         )
 
         self._model, self._agent, middleware = build_root_agent(
@@ -289,7 +294,7 @@ class AgentSession:
         topic_name: str = "",
         on_message: Callable[[str, Any], Awaitable[None]] | None = None,
         on_update: Callable[[str, Any], Awaitable[None]] | None = None,
-        on_interrupt: Callable[[Any], Awaitable[Any]] | None = None,
+        on_interrupt: Callable[[Any, AgentContext], Awaitable[Any]] | None = None,
         post_chunk_handler: Callable[[], Any] | None = None,
     ) -> None:
         """Stream agent output using callbacks, with interrupt/resume support.
@@ -302,7 +307,7 @@ class AgentSession:
         Callbacks:
             on_message(kind, payload) — called for each ``"messages"`` chunk
             on_update(kind, payload) — called for each ``"updates"`` chunk
-            on_interrupt(interrupt_value) — called when the graph interrupts;
+            on_interrupt(interrupt_value, context) — called when the graph interrupts;
                 must return the resume value to continue the graph
             post_chunk_handler() — called after every chunk (e.g. for scrolling)
         """
@@ -361,7 +366,13 @@ class AgentSession:
                     ))
                 self._last_injected_settings = dict(user_settings)
 
-            context = AgentContext(user_settings=user_settings)
+            context = AgentContext(
+                user_settings=user_settings,
+                answerer_subagent=self._answerer_subagent,
+                comparator_subagent=self._comparator_subagent,
+                scorer_subagent=self._scorer_subagent,
+                commit_subagent=self._commit_subagent,
+            )
 
             while True:
                 interrupted = False
@@ -390,7 +401,7 @@ class AgentSession:
                             value = getattr(interrupt_value, "value", interrupt_value)
 
                             # Pass to interrupt handler
-                            resume = await on_interrupt(value)
+                            resume = await on_interrupt(value, context)
 
                             # Construct the Command break, restarting the stream with
                             # Command(resume) as the next input.

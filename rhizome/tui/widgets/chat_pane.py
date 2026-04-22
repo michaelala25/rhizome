@@ -1530,6 +1530,14 @@ class ChatPane(Widget, DockContainerMixin):
 
         again_behaviour = AgainBehaviour.MARK if again_mark else AgainBehaviour.QUEUE
 
+        # Dev harness runs outside the agent-session interrupt flow, so there's
+        # no AgentContext to borrow a scorer from — build a one-off here when
+        # auto-score is requested.
+        scorer = None
+        if auto_score:
+            from rhizome.agent.subagents.flashcard_validator import build_scorer_subagent
+            scorer = build_scorer_subagent()
+
         area = self.query_one("#message-area")
         review = FlashcardReview(
             sample_cards,
@@ -1538,6 +1546,7 @@ class ChatPane(Widget, DockContainerMixin):
             again_behaviour=again_behaviour,
             counter_start=counter_start,
             counter_total=counter_total,
+            scorer=scorer,
         )
         await area.mount(review)
         area.scroll_end(animate=False)
