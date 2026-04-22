@@ -42,8 +42,6 @@ from rhizome.logs import get_logger
 
 _logger = get_logger("agent.review_tools")
 
-# Match the constant in FlashcardReview to avoid cross-layer import.
-AUTO_SCORE = -1
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +133,12 @@ async def _update_scope_in_db(
 # Tool builder
 # ---------------------------------------------------------------------------
 
-def build_review_tools(session_factory, scorer=None) -> dict:
-    """Build all review-mode tool functions with session_factory closed over."""
+def build_review_tools(session_factory) -> dict:
+    """Build all review-mode tool functions with session_factory closed over.
+
+    Flashcard auto-scoring is handled inside ``FlashcardReview`` (the TUI
+    widget), so the scorer subagent is no longer constructed or passed in
+    here."""
 
     # -------------------------------------------------------------------
     # review_get_past_sessions
@@ -455,7 +457,12 @@ def build_review_tools(session_factory, scorer=None) -> dict:
 
         # Build card data for the widget
         card_data = [
-            {"id": fc.id, "question": fc.question_text, "answer": fc.answer_text}
+            {
+                "id": fc.id,
+                "question": fc.question_text,
+                "answer": fc.answer_text,
+                "testing_notes": fc.testing_notes,
+            }
             for fc in flashcards
         ]
 
@@ -477,7 +484,6 @@ def build_review_tools(session_factory, scorer=None) -> dict:
         session_id = review_state["session_id"]
 
         again_ids: list[int] = []
-        auto_cards: list[dict] = []
         scored_count = 0
         user_answers: dict[int, str] = {}
 
@@ -499,19 +505,9 @@ def build_review_tools(session_factory, scorer=None) -> dict:
             if score == 1:
                 # "again" — requeue at end
                 again_ids.append(fc_id)
-            elif score == AUTO_SCORE:
-                # Auto — will be scored by subagent below
-                auto_cards.append({
-                    "id": fc_id,
-                    "question": fc.question_text,
-                    "answer": fc.answer_text,
-                    "user_answer": user_answer,
-                    "testing_notes": fc.testing_notes,
-                    "entry_ids": entry_ids,
-                    "duration": card_result.get("duration"),
-                })
             elif score is not None:
-                # Self-scored — record interaction immediately
+                # Scored (manual or auto, both come through as 1-4 now) —
+                # record interaction immediately.
                 interaction_count += 1
                 async with session_factory() as session:
                     await add_review_interaction(
@@ -527,64 +523,6 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                 for eid in entry_ids:
                     new_coverage[eid] = new_coverage.get(eid, 0) + 1
                 scored_count += 1
-
-        # Score auto cards via subagent
-        auto_scored: list[dict] = []
-        if auto_cards and scorer is not None:
-            scorer_input = "Score the following flashcard answers:\n\n" + "\n---\n".join(
-                f"Flashcard {ac['id']}:\n"
-                f"  Question: {ac['question']}\n"
-                f"  Expected answer: {ac['answer']}\n"
-                f"  User's answer: {ac['user_answer'] or '(blank)'}\n"
-                f"  Time spent: {ac['duration']}s\n"
-                + (f"  Testing notes: {ac['testing_notes']}\n" if ac.get("testing_notes") else "")
-                for ac in auto_cards
-            )
-
-            _logger.debug("Invoking scorer subagent with %d card(s)", len(auto_cards))
-            _, _, _ = await scorer.ainvoke(scorer_input)
-
-            if scorer.structured_response is not None:
-                scores_by_id = {
-                    r.flashcard_id: r for r in scorer.structured_response.results
-                }
-                auto_card_map = {ac["id"]: ac for ac in auto_cards}
-
-                for fc_id, ac in auto_card_map.items():
-                    scorer_result = scores_by_id.get(fc_id)
-                    if scorer_result is None:
-                        _logger.warning("Scorer did not return result for flashcard %d", fc_id)
-                        continue
-
-                    auto_score = scorer_result.score
-                    feedback = scorer_result.feedback
-
-                    if auto_score == 1:
-                        again_ids.append(fc_id)
-                    else:
-                        interaction_count += 1
-                        async with session_factory() as session:
-                            await add_review_interaction(
-                                session,
-                                session_id=session_id,
-                                entry_ids=ac["entry_ids"],
-                                summary=feedback,
-                                score=auto_score,
-                                position=interaction_count,
-                                flashcard_id=fc_id,
-                            )
-                            await apply_rating(session, fc_id, Rating(auto_score))
-                            await session.commit()
-                        for eid in ac["entry_ids"]:
-                            new_coverage[eid] = new_coverage.get(eid, 0) + 1
-
-                    auto_scored.append({
-                        "id": fc_id,
-                        "score": auto_score,
-                        "feedback": feedback,
-                    })
-            else:
-                _logger.warning("Scorer subagent failed to produce structured output")
 
         # Requeue "again" cards at end
         new_queue.extend(again_ids)
@@ -608,15 +546,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                 q = fc.question_text if fc else "?"
                 parts.append(f"  - Flashcard {fc_id} (Q: {q}): {answer or '(blank)'}")
         if scored_count:
-            parts.append(f"{scored_count} card(s) self-scored and recorded.")
-        if auto_scored:
-            parts.append(f"{len(auto_scored)} card(s) auto-scored by subagent:")
-            for asc in auto_scored:
-                score_labels = {1: "again", 2: "hard", 3: "good", 4: "easy"}
-                label = score_labels.get(asc['score'], str(asc['score']))
-                parts.append(f"  - Flashcard {asc['id']}: {label} ({asc['score']}/4) — {asc['feedback']}")
-        if auto_cards and not auto_scored:
-            parts.append(f"{len(auto_cards)} card(s) marked 'auto' but scorer failed — not recorded.")
+            parts.append(f"{scored_count} card(s) scored and recorded.")
         if again_ids:
             parts.append(f"{len(again_ids)} card(s) marked 'again' (requeued): {again_ids}.")
         if new_queue:

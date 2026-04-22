@@ -18,6 +18,7 @@ from langchain.agents.structured_output import ProviderStrategy
 from pydantic import BaseModel, Field
 
 from rhizome.agent.builder import build_agent
+from rhizome.agent.middleware import AnthropicPenultimateCacheMiddleware
 from rhizome.agent.subagents.base import StructuredSubagent
 from rhizome.logs import get_logger
 
@@ -205,12 +206,18 @@ def build_scorer_subagent(**agent_kwargs) -> StructuredSubagent:
     provider = agent_kwargs.pop("provider", "anthropic")
     model_name = agent_kwargs.pop("model_name", "claude-haiku-4-5-20251001")
 
+    # Prompt caching pays off here: the scorer is invoked repeatedly with the
+    # same system prompt (the rubric) but varying per-card user messages.
+    middleware = list(agent_kwargs.pop("middleware", []) or [])
+    middleware.append(AnthropicPenultimateCacheMiddleware(ttl="5m"))
+
     model, agent, _mw = build_agent(
         tools=[],
         provider=provider,
         model_name=model_name,
         name="flashcard-scorer",
         response_format=ProviderStrategy(ScorerResponse),
+        middleware=middleware,
         **{**agent_kwargs, "temperature": 0.0},
     )
     return StructuredSubagent(

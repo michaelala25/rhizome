@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -14,7 +15,12 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Static, TextArea
 
+from rhizome.agent.subagents.flashcard_validator import build_scorer_subagent
+from rhizome.logs import get_logger
+
 from .interrupt import InterruptWidgetBase
+
+_logger = get_logger("tui.flashcard_review")
 
 # ---------------------------------------------------------------------------
 # Color constants
@@ -50,6 +56,7 @@ class ReviewCardItem(TypedDict, total=False):
     question: str
     answer: str
     id: int
+    testing_notes: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +86,6 @@ _RATINGS: list[tuple[int, str]] = [
     (4, "easy"),
 ]
 
-# Special score for auto-score mode
-AUTO_SCORE = -1
-AUTO_SCORE_LABEL = "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +358,16 @@ class FlashcardReview(InterruptWidgetBase):
         self._session_done = False
         self._session_cancelled = False
         self._collapsed = False
+
+        # Auto-scoring: the scorer subagent is owned by the widget (built at
+        # construction time, lightweight). While a card's score is in flight,
+        # its index is in ``_scoring_indices``. If scoring fails for a card,
+        # its index is added to ``_scoring_failed_indices`` — manual rating
+        # actions become permitted for that card even in auto-score mode.
+        self._scorer = build_scorer_subagent() if auto_score else None
+        self._scoring_task: asyncio.Task | None = None
+        self._scoring_indices: set[int] = set()
+        self._scoring_failed_indices: set[int] = set()
 
     def compose(self) -> ComposeResult:
         yield Button("▼", id="fr-collapse")
@@ -629,26 +643,38 @@ class FlashcardReview(InterruptWidgetBase):
                 )
 
         elif state == CardState.REVEALED:
-                text = Text()
-                for i, (num, label) in enumerate(_RATINGS):
-                    if i > 0:
-                        text.append("    ", style=_RATING_DIM)
-                    text.append(f"{num}", style=f"bold {_RATING_HIGHLIGHT}")
-                    text.append(f" - {label}", style=_RATING_DIM)
-                text.append("    ")
-                enter_label = "auto" if self._auto_score else "good"
-                text.append(f"[enter = {enter_label}]", style=_HINT)
-                self.query_one("#fr-ratings", Static).update(text)
+                ratings_widget = self.query_one("#fr-ratings", Static)
+                if self._index in self._scoring_indices:
+                    text = Text()
+                    text.append("Scoring…", style=_HINT)
+                    ratings_widget.update(text)
+                else:
+                    failed = self._index in self._scoring_failed_indices
+                    text = Text()
+                    if failed:
+                        text.append(
+                            "Auto-score failed — rate manually:  ",
+                            style=_CANCEL_RED,
+                        )
+                    for i, (num, label) in enumerate(_RATINGS):
+                        if i > 0:
+                            text.append("    ", style=_RATING_DIM)
+                        text.append(f"{num}", style=f"bold {_RATING_HIGHLIGHT}")
+                        text.append(f" - {label}", style=_RATING_DIM)
+                    text.append("    ")
+                    if self._auto_score and not failed:
+                        enter_label = "auto"
+                    else:
+                        enter_label = "good"
+                    text.append(f"[enter = {enter_label}]", style=_HINT)
+                    ratings_widget.update(text)
 
         elif state == CardState.SCORED:
             self._render_scored_label()
 
     def _render_scored_label(self) -> None:
         score = self._scores[self._index]
-        if score == AUTO_SCORE:
-            label = AUTO_SCORE_LABEL
-        else:
-            label = dict(_RATINGS).get(score, "?") if score is not None else "?"
+        label = dict(_RATINGS).get(score, "?") if score is not None else "?"
         scored_count = sum(1 for s in self._states if s == CardState.SCORED)
         text = Text()
         text.append(f"Scored: {label}", style=_SCORED_DIM)
@@ -732,8 +758,12 @@ class FlashcardReview(InterruptWidgetBase):
         if state == CardState.HIDDEN:
             self._reveal_current()
         elif state == CardState.REVEALED:
-            if self._auto_score:
-                self._rate(AUTO_SCORE)
+            if self._auto_score and self._index not in self._scoring_failed_indices:
+                # Block re-triggering scoring if one's already in flight.
+                if self._scoring_task is None:
+                    self._scoring_task = asyncio.create_task(
+                        self._start_auto_scoring(self._index)
+                    )
             else:
                 self._rate(3)  # "good"
 
@@ -747,36 +777,32 @@ class FlashcardReview(InterruptWidgetBase):
         self._refresh_view()
         self.call_after_refresh(self.scroll_visible)
 
+    def _can_manually_rate(self) -> bool:
+        """Manual rating keys fire when the card is revealed and either the
+        widget isn't in auto-score mode, or this specific card's auto-scoring
+        failed (fallback path)."""
+        if not self._cards:
+            return False
+        if self._states[self._index] != CardState.REVEALED:
+            return False
+        if self._index in self._scoring_indices:
+            return False
+        return not self._auto_score or self._index in self._scoring_failed_indices
+
     def action_rate_1(self) -> None:
-        if (
-            self._cards
-            and self._states[self._index] == CardState.REVEALED
-            and not self._auto_score
-        ):
+        if self._can_manually_rate():
             self._rate(1)
 
     def action_rate_2(self) -> None:
-        if (
-            self._cards
-            and self._states[self._index] == CardState.REVEALED
-            and not self._auto_score
-        ):
+        if self._can_manually_rate():
             self._rate(2)
 
     def action_rate_3(self) -> None:
-        if (
-            self._cards
-            and self._states[self._index] == CardState.REVEALED
-            and not self._auto_score
-        ):
+        if self._can_manually_rate():
             self._rate(3)
 
     def action_rate_4(self) -> None:
-        if (
-            self._cards
-            and self._states[self._index] == CardState.REVEALED
-            and not self._auto_score
-        ):
+        if self._can_manually_rate():
             self._rate(4)
 
     def _save_draft(self) -> None:
@@ -808,6 +834,11 @@ class FlashcardReview(InterruptWidgetBase):
             return
         self._pause_timer()
         self._session_cancelled = True
+        # Cancel any in-flight auto-scoring task immediately.
+        if self._scoring_task is not None:
+            self._scoring_task.cancel()
+            self._scoring_task = None
+        self._scoring_indices.clear()
         # Disable further answer input
         answer_input = self.query_one("#fr-answer-input", _AnswerInput)
         answer_input.display = False
@@ -846,12 +877,60 @@ class FlashcardReview(InterruptWidgetBase):
     # Internal
     # ------------------------------------------------------------------
 
+    async def _start_auto_scoring(self, index: int) -> None:
+        """Score the card at ``index`` via the scorer subagent, then dispatch
+        the result through ``_rate()`` as if the user had rated manually.
+
+        On failure, flag the card for fallback manual rating and stay put."""
+        self._scoring_indices.add(index)
+        self._refresh_view()
+        card = self._cards[index]
+        try:
+            prompt_parts = [
+                "Score the following flashcard answers:\n\n",
+                f"Flashcard {card.get('id', index)}:\n",
+                f"  Question: {card['question']}\n",
+                f"  Expected answer: {card['answer']}\n",
+                f"  User's answer: {self._user_answers[index] or '(blank)'}\n",
+                f"  Time spent: {round(self._durations[index], 1)}s\n",
+            ]
+            notes = card.get("testing_notes")
+            if notes:
+                prompt_parts.append(f"  Testing notes: {notes}\n")
+
+            _, _, _ = await self._scorer.ainvoke("".join(prompt_parts))
+
+            parsed = self._scorer.structured_response
+            if parsed is None or not parsed.results:
+                raise RuntimeError("scorer returned no structured result")
+
+            result = parsed.results[0]
+            score = int(result.score)
+            if not (1 <= score <= 4):
+                raise RuntimeError(f"scorer returned out-of-range score: {score}")
+
+            # Route back through the normal rating path. The card may have
+            # been re-queued; its index in the list is still ``index`` unless
+            # the user navigated during scoring, but we saved the original
+            # index so that's still where this score applies.
+            saved = self._index
+            self._index = index
+            self._rate(score)
+            if self._cards and saved < len(self._cards):
+                self._index = saved
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _logger.warning("Auto-scoring failed for card index %d: %s", index, exc)
+            self._scoring_failed_indices.add(index)
+        finally:
+            self._scoring_indices.discard(index)
+            self._scoring_task = None
+            self._refresh_view()
+
     def _rate(self, rating: int) -> None:
         card = self._cards[self._index]
-        if rating == AUTO_SCORE:
-            label = AUTO_SCORE_LABEL
-        else:
-            label = dict(_RATINGS).get(rating, "?")
+        label = dict(_RATINGS).get(rating, "?")
         self.post_message(self.CardRated(
             question=card["question"],
             answer=card["answer"],
@@ -925,9 +1004,7 @@ class FlashcardReview(InterruptWidgetBase):
         cards_result = []
         for i, card in enumerate(self._cards):
             score = self._scores[i]
-            if score == AUTO_SCORE:
-                score_label = AUTO_SCORE_LABEL
-            elif score is not None:
+            if score is not None:
                 score_label = dict(_RATINGS).get(score, "?")
             else:
                 score_label = None

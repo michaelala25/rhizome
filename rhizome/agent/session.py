@@ -31,7 +31,6 @@ from rhizome.agent.subagents.commit import build_commit_subagent, build_commit_s
 from rhizome.agent.subagents.flashcard_validator import (
     build_answerer_subagent,
     build_comparator_subagent,
-    build_scorer_subagent,
 )
 
 from rhizome.logs import get_logger
@@ -145,13 +144,14 @@ class AgentSession:
         # can run inline validation when validate=True.
         answerer = build_answerer_subagent(**dict(self._agent_kwargs))
         comparator = build_comparator_subagent(**dict(self._agent_kwargs))
-        scorer = build_scorer_subagent(**dict(self._agent_kwargs))
 
         # Build all tool groups (each closed over session_factory and/or chat_pane).
+        # The flashcard scorer is constructed inside FlashcardReview itself, so
+        # it doesn't need to be wired through the tool layer anymore.
         self._tools: list = [
             *build_core_tools(session_factory).values(),
             *build_app_tools(session_factory, chat_pane).values(),
-            *build_review_tools(session_factory, scorer).values(),
+            *build_review_tools(session_factory).values(),
             *build_flashcard_proposal_tools(session_factory, answerer, comparator).values(),
             *build_sql_tools(session_factory).values(),
             *build_guide_tools().values(),

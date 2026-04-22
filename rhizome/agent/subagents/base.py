@@ -101,7 +101,20 @@ class Subagent:
             graph_input.update(extra_state)
 
         _logger.debug("Invoking subagent with messages:\n\n%s", "\n\n".join(m.content for m in messages))
-        response = await self.agent.ainvoke(graph_input, config=self.config)
+
+        # The agent graph is compiled with an InMemorySaver checkpointer that
+        # requires a thread_id in ``configurable``. For stateful subagents we
+        # reuse the conversation_id; for stateless ones we generate a fresh
+        # id per invocation so the checkpointer never cross-contaminates
+        # between calls.
+        config: dict[str, Any] = dict(self.config or {})
+        configurable = dict(config.get("configurable") or {})
+        configurable.setdefault(
+            "thread_id", self._conversation_id or str(uuid.uuid4())
+        )
+        config["configurable"] = configurable
+
+        response = await self.agent.ainvoke(graph_input, config=config)
 
         ai_message = response["messages"][-1]
         ai_message = self.postinvoke_hook(ai_message)
