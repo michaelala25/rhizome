@@ -143,27 +143,29 @@ class AgentSession:
 
         # Build the flashcard validation subagents so flashcard_proposal_create
         # can run inline validation when validate=True.
-        answerer = build_answerer_subagent(**dict(self._agent_kwargs))
-        comparator = build_comparator_subagent(**dict(self._agent_kwargs))
-        scorer = build_scorer_subagent(**dict(self._agent_kwargs))
+        self._answerer_subagent = build_answerer_subagent(**dict(self._agent_kwargs))
+        self._comparator_subagent = build_comparator_subagent(**dict(self._agent_kwargs))
+        self._scorer_subagent = build_scorer_subagent(**dict(self._agent_kwargs))
 
         # Build all tool groups (each closed over session_factory and/or chat_pane).
         self._tools: list = [
             *build_core_tools(session_factory).values(),
             *build_app_tools(session_factory, chat_pane).values(),
-            *build_review_tools(session_factory, scorer).values(),
-            *build_flashcard_proposal_tools(session_factory, answerer, comparator).values(),
+            *build_review_tools(session_factory, self._scorer_subagent).values(),
+            *build_flashcard_proposal_tools(
+                session_factory, self._answerer_subagent, self._comparator_subagent
+            ).values(),
             *build_sql_tools(session_factory).values(),
             *build_guide_tools().values(),
             *build_resource_tools(session_factory, self._resource_manager).values(),
         ]
 
         # Build the commit subagent and add its tools to the root agent's tool list.
-        commit_subagent = build_commit_subagent(
+        self._commit_subagent = build_commit_subagent(
             session_factory, chat_pane, **dict(self._agent_kwargs)
         )
         self._tools.extend(
-            build_commit_subagent_tools(session_factory, chat_pane, commit_subagent)
+            build_commit_subagent_tools(session_factory, chat_pane, self._commit_subagent)
         )
 
         self._model, self._agent, middleware = build_root_agent(
@@ -361,7 +363,13 @@ class AgentSession:
                     ))
                 self._last_injected_settings = dict(user_settings)
 
-            context = AgentContext(user_settings=user_settings)
+            context = AgentContext(
+                user_settings=user_settings,
+                answerer_subagent=self._answerer_subagent,
+                comparator_subagent=self._comparator_subagent,
+                scorer_subagent=self._scorer_subagent,
+                commit_subagent=self._commit_subagent,
+            )
 
             while True:
                 interrupted = False
