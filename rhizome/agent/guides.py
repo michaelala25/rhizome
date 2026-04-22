@@ -373,15 +373,15 @@ less structured than flashcard interactions, and that's fine.
 This app is designed for **long-term retention of core understanding**, not rote memorization. Judge responses based on
 whether the user demonstrates grasp of the key concepts, not whether they recalled every detail.
 
-## Scoring (0-3)
+## Scoring (1-4)
 
 Use the same scale as flashcards:
-- **0 (again):** No answer, completely wrong, or demonstrates a fundamental misconception.
-- **1 (hard):** Shows some relevant understanding but misses core concepts or has significant errors.
-- **2 (good):** Demonstrates solid understanding of the core ideas. May omit peripheral details — that's fine.
-- **3 (easy):** Excellent, comprehensive response that shows deep understanding.
+- **1 (again):** No answer, completely wrong, or demonstrates a fundamental misconception.
+- **2 (hard):** Shows some relevant understanding but misses core concepts or has significant errors.
+- **3 (good):** Demonstrates solid understanding of the core ideas. May omit peripheral details — that's fine.
+- **4 (easy):** Excellent, comprehensive response that shows deep understanding.
 
-A response that captures the **core ideas** accurately is a 2, even if it omits supporting details. Reserve 1 for
+A response that captures the **core ideas** accurately is a 3, even if it omits supporting details. Reserve 2 for
 responses that miss something central to understanding the topic, not for missing peripheral information.
 
 ## Flashcard vs. Conversational Expectations

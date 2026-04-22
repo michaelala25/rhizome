@@ -73,10 +73,10 @@ class CardState(Enum):
 # Rating labels
 # ---------------------------------------------------------------------------
 _RATINGS: list[tuple[int, str]] = [
-    (0, "again"),
-    (1, "hard"),
-    (2, "good"),
-    (3, "easy"),
+    (1, "again"),
+    (2, "hard"),
+    (3, "good"),
+    (4, "easy"),
 ]
 
 # Special score for auto-score mode
@@ -139,10 +139,10 @@ class FlashcardReview(InterruptWidgetBase):
 
     BINDINGS = [
         Binding("enter", "reveal_or_rate", "Reveal / Rate good", show=False),
-        Binding("0", "rate_0", show=False),
         Binding("1", "rate_1", show=False),
         Binding("2", "rate_2", show=False),
         Binding("3", "rate_3", show=False),
+        Binding("4", "rate_4", show=False),
         Binding("alt+left", "prev_card", show=False),
         Binding("alt+right", "next_card", show=False),
         Binding("ctrl+c", "cancel_session", show=False),
@@ -358,14 +358,18 @@ class FlashcardReview(InterruptWidgetBase):
     def compose(self) -> ComposeResult:
         yield Button("▼", id="fr-collapse")
         yield Static("", id="fr-empty")
+
         with Vertical(id="fr-start-screen"):
             n = len(self._cards)
             yield Static(f"{n} card{'s' if n != 1 else ''} to review", id="fr-start-summary")
             yield Static("Press [bold]enter[/bold] to begin.", id="fr-start-prompt")
+
         with Vertical(id="fr-card"):
+
             with Horizontal(id="fr-question-row"):
                 yield Static("Question", id="fr-question-label")
                 yield Static("", id="fr-counter")
+
             yield Static("", id="fr-question")
             yield Static("Your answer", id="fr-answer-input-label")
             yield _AnswerInput(id="fr-answer-input")
@@ -375,6 +379,7 @@ class FlashcardReview(InterruptWidgetBase):
             yield Static("Answer", id="fr-answer-label")
             yield Static("", id="fr-answer")
             yield Static("(Answer hidden)", id="fr-answer-hidden")
+
         yield Static("", id="fr-reveal-hint")
         yield Static("", id="fr-ratings")
         yield Static("", id="fr-scored-label")
@@ -388,6 +393,7 @@ class FlashcardReview(InterruptWidgetBase):
 
     def on_focus(self) -> None:
         super().on_focus()
+        
         if (
             self._cards
             and not self._awaiting_start
@@ -494,7 +500,7 @@ class FlashcardReview(InterruptWidgetBase):
         card = self._cards[self._index]
         state = self._states[self._index]
         finished = self._session_done or self._session_cancelled
-        is_again = state == CardState.SCORED and self._scores[self._index] == 0
+        is_again = state == CardState.SCORED and self._scores[self._index] == 1
 
         # Card border title — nav hint on the right
         card_container = self.query_one("#fr-card", Vertical)
@@ -729,7 +735,7 @@ class FlashcardReview(InterruptWidgetBase):
             if self._auto_score:
                 self._rate(AUTO_SCORE)
             else:
-                self._rate(2)  # "good"
+                self._rate(3)  # "good"
 
     def _reveal_current(self) -> None:
         self._pause_timer()
@@ -740,14 +746,6 @@ class FlashcardReview(InterruptWidgetBase):
         self.focus()
         self._refresh_view()
         self.call_after_refresh(self.scroll_visible)
-
-    def action_rate_0(self) -> None:
-        if (
-            self._cards
-            and self._states[self._index] == CardState.REVEALED
-            and not self._auto_score
-        ):
-            self._rate(0)
 
     def action_rate_1(self) -> None:
         if (
@@ -772,6 +770,14 @@ class FlashcardReview(InterruptWidgetBase):
             and not self._auto_score
         ):
             self._rate(3)
+
+    def action_rate_4(self) -> None:
+        if (
+            self._cards
+            and self._states[self._index] == CardState.REVEALED
+            and not self._auto_score
+        ):
+            self._rate(4)
 
     def _save_draft(self) -> None:
         """Persist the current answer input text for the active card."""
@@ -855,7 +861,7 @@ class FlashcardReview(InterruptWidgetBase):
             card_id=card.get("id"),
         ))
 
-        if rating == 0:
+        if rating == 1:
             if self._again_behaviour == AgainBehaviour.QUEUE:
                 # Re-queue at end — duration resets for the new attempt
                 self._cards.append(self._cards.pop(self._index))

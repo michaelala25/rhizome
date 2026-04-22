@@ -294,7 +294,7 @@ class FlashcardEntry(Base):
 class ReviewInteraction(Base):
     __tablename__ = "review_interaction"
     __table_args__ = (
-        CheckConstraint("score >= 0 AND score <= 3", name="score_range"),
+        CheckConstraint("score >= 1 AND score <= 4", name="score_range"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

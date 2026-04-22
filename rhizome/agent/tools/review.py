@@ -46,11 +46,6 @@ _logger = get_logger("agent.review_tools")
 AUTO_SCORE = -1
 
 
-def _to_fsrs_rating(score: int) -> Rating:
-    """Map widget score (0=again..3=easy) to FSRS Rating (1=Again..4=Easy)."""
-    return Rating(score + 1)
-
-
 # ---------------------------------------------------------------------------
 # Pydantic schemas for review_update_session_state
 # ---------------------------------------------------------------------------
@@ -392,7 +387,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
         touched = sum(1 for c in new_coverage.values() if c > 0)
         untouched_ids = [eid for eid, c in new_coverage.items() if c == 0]
 
-        parts = [f"Recorded #{position} (score: {score}/3)."]
+        parts = [f"Recorded #{position} (score: {score}/4)."]
         parts.append(f"Coverage: {touched}/{total_entries} entries touched.")
 
         if untouched_ids:
@@ -501,7 +496,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
             if fc_id in new_queue:
                 new_queue.remove(fc_id)
 
-            if score == 0:
+            if score == 1:
                 # "again" — requeue at end
                 again_ids.append(fc_id)
             elif score == AUTO_SCORE:
@@ -527,7 +522,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                         position=interaction_count,
                         flashcard_id=fc_id,
                     )
-                    await apply_rating(session, fc_id, _to_fsrs_rating(score))
+                    await apply_rating(session, fc_id, Rating(score))
                     await session.commit()
                 for eid in entry_ids:
                     new_coverage[eid] = new_coverage.get(eid, 0) + 1
@@ -564,7 +559,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                     auto_score = scorer_result.score
                     feedback = scorer_result.feedback
 
-                    if auto_score == 0:
+                    if auto_score == 1:
                         again_ids.append(fc_id)
                     else:
                         interaction_count += 1
@@ -578,7 +573,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                                 position=interaction_count,
                                 flashcard_id=fc_id,
                             )
-                            await apply_rating(session, fc_id, _to_fsrs_rating(auto_score))
+                            await apply_rating(session, fc_id, Rating(auto_score))
                             await session.commit()
                         for eid in ac["entry_ids"]:
                             new_coverage[eid] = new_coverage.get(eid, 0) + 1
@@ -617,9 +612,9 @@ def build_review_tools(session_factory, scorer=None) -> dict:
         if auto_scored:
             parts.append(f"{len(auto_scored)} card(s) auto-scored by subagent:")
             for asc in auto_scored:
-                score_labels = {0: "again", 1: "hard", 2: "good", 3: "easy"}
+                score_labels = {1: "again", 2: "hard", 3: "good", 4: "easy"}
                 label = score_labels.get(asc['score'], str(asc['score']))
-                parts.append(f"  - Flashcard {asc['id']}: {label} ({asc['score']}/3) — {asc['feedback']}")
+                parts.append(f"  - Flashcard {asc['id']}: {label} ({asc['score']}/4) — {asc['feedback']}")
         if auto_cards and not auto_scored:
             parts.append(f"{len(auto_cards)} card(s) marked 'auto' but scorer failed — not recorded.")
         if again_ids:
@@ -667,7 +662,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
         avg_score = stats['average_score']
         summary_parts.append(f"Total interactions: {stats['total']}")
         summary_parts.append(f"Scored interactions: {stats['scored']}")
-        summary_parts.append(f"Average score: {avg_score}/3" if avg_score is not None else "Average score: N/A")
+        summary_parts.append(f"Average score: {avg_score}/4" if avg_score is not None else "Average score: N/A")
 
         if stats["per_entry"]:
             summary_parts.append("\nPer-entry breakdown:")
@@ -693,7 +688,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
         stat_lines = [
             f"Total interactions: {stats['total']}",
             f"Scored interactions: {stats['scored']}",
-            f"Average score: {avg_score}/3" if avg_score is not None else "Average score: N/A",
+            f"Average score: {avg_score}/4" if avg_score is not None else "Average score: N/A",
         ]
 
         if stats["per_entry"]:

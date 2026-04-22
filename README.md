@@ -37,7 +37,7 @@ Chat with Claude about a topic. When you've covered something worth keeping, use
 
 ### Review Mode
 
-Practice what you've learned. Choose a topic, pick a review style (flashcard, conversation, or mixed), and the agent builds a session from your existing knowledge and flashcards. Answers are scored on a 0-3 scale - either by you or automatically by a scoring subagent.
+Practice what you've learned. Choose a topic, pick a review style (flashcard, conversation, or mixed), and the agent builds a session from your existing knowledge and flashcards. Answers are scored on a 1-4 scale - either by you or automatically by a scoring subagent.
 
 <!-- TODO: review mode gif -->
 <!-- ![Review mode](assets/review.gif) -->

@@ -68,7 +68,7 @@ The core loop. The agent presents questions, evaluates responses, and records in
 
 **Conversational flow:** Follow the discussion plan → ask natural questions → evaluate understanding → record at checkpoints.
 
-**Scoring:** 0–3 scale matching the flashcard rubric (0 = again, 1 = hard, 2 = good, 3 = easy). The agent judges core understanding rather than expecting verbatim recall or completeness on peripheral details.
+**Scoring:** 1–4 scale matching the flashcard rubric (1 = again, 2 = hard, 3 = good, 4 = easy), aligned with FSRS `Rating` values. The agent judges core understanding rather than expecting verbatim recall or completeness on peripheral details.
 
 **Recording:** `review_record_interaction` records a review checkpoint with `entry_ids`, `score`, and an optional `summary`. Creates `ReviewInteraction` + `ReviewInteractionEntry` DB records and updates in-memory entry coverage tracking.
 

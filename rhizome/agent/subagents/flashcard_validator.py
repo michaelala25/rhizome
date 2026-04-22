@@ -48,7 +48,7 @@ class ComparatorResponse(BaseModel):
 
 class ScorerCardResult(BaseModel):
     flashcard_id: int = Field(description="The flashcard ID being scored")
-    score: int = Field(description="Score 0-3: 0=again, 1=hard, 2=good, 3=easy")
+    score: int = Field(description="Score 1-4: 1=again, 2=hard, 3=good, 4=easy")
     feedback: str = Field(description="Brief explanation of the score — what was right/wrong, what was missing")
 
 
@@ -129,28 +129,28 @@ You are a flashcard review scorer. You will receive flashcards that a user has a
 
 Your job is to score how well the user's answer matches the expected answer.
 
-Scoring scale (0-3):
-- 0 (again): The answer is wrong, missing, or shows no understanding. The user needs to review this card again.
-- 1 (hard): The answer shows some understanding but has significant gaps or errors. The user struggled.
-- 2 (good): The answer is correct or mostly correct. Solid recall with only minor omissions.
-- 3 (easy): The answer is excellent — correct, complete, and confident. Effortless recall.
+Scoring scale (1-4):
+- 1 (again): The answer is wrong, missing, or shows no understanding. The user needs to review this card again.
+- 2 (hard): The answer shows some understanding but has significant gaps or errors. The user struggled.
+- 3 (good): The answer is correct or mostly correct. Solid recall with only minor omissions.
+- 4 (easy): The answer is excellent — correct, complete, and confident. Effortless recall.
 
 Guidelines:
 - Focus on whether the user demonstrates understanding of the core concept, not verbatim recitation.
 - Minor wording differences, synonyms, or different phrasing of the same idea should not reduce the score.
 - If testing notes are provided, use them to guide your assessment.
 - For coding questions, consider whether the answer would work in practice — correct logic with minor \
-syntax issues is a 2-3, while incorrect logic with correct syntax is a 0-1.
-- Use the time spent as a signal for confidence: a correct answer given quickly suggests easy recall (3), \
-while a correct answer after a long pause suggests the user had to work harder (1-2). Time alone should \
-never override answer quality — a wrong answer is still 0 regardless of speed.
+syntax issues is a 3-4, while incorrect logic with correct syntax is a 1-2.
+- Use the time spent as a signal for confidence: a correct answer given quickly suggests easy recall (4), \
+while a correct answer after a long pause suggests the user had to work harder (2-3). Time alone should \
+never override answer quality — a wrong answer is still 1 regardless of speed.
 - Keep feedback brief and constructive — one sentence explaining the score.
 
 Respond ONLY with a JSON object in this exact format — no additional text:
 {
     "results": [
-        {"flashcard_id": 1, "score": 2, "feedback": "Good — identified the key concept."},
-        {"flashcard_id": 2, "score": 1, "feedback": "Hard — got the gist but missed X."}
+        {"flashcard_id": 1, "score": 3, "feedback": "Good — identified the key concept."},
+        {"flashcard_id": 2, "score": 2, "feedback": "Hard — got the gist but missed X."}
     ]
 }"""
 
