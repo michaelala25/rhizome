@@ -289,7 +289,7 @@ class AgentSession:
         topic_name: str = "",
         on_message: Callable[[str, Any], Awaitable[None]] | None = None,
         on_update: Callable[[str, Any], Awaitable[None]] | None = None,
-        on_interrupt: Callable[[Any], Awaitable[Any]] | None = None,
+        on_interrupt: Callable[[Any, AgentContext], Awaitable[Any]] | None = None,
         post_chunk_handler: Callable[[], Any] | None = None,
     ) -> None:
         """Stream agent output using callbacks, with interrupt/resume support.
@@ -302,7 +302,7 @@ class AgentSession:
         Callbacks:
             on_message(kind, payload) — called for each ``"messages"`` chunk
             on_update(kind, payload) — called for each ``"updates"`` chunk
-            on_interrupt(interrupt_value) — called when the graph interrupts;
+            on_interrupt(interrupt_value, context) — called when the graph interrupts;
                 must return the resume value to continue the graph
             post_chunk_handler() — called after every chunk (e.g. for scrolling)
         """
@@ -390,7 +390,7 @@ class AgentSession:
                             value = getattr(interrupt_value, "value", interrupt_value)
 
                             # Pass to interrupt handler
-                            resume = await on_interrupt(value)
+                            resume = await on_interrupt(value, context)
 
                             # Construct the Command break, restarting the stream with
                             # Command(resume) as the next input.
