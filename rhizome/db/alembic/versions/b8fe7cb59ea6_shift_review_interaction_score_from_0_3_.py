@@ -20,16 +20,23 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Shift existing scores +1 (0->1, 1->2, 2->3, 3->4), then narrow the
-    CHECK constraint to 1-4 to match FSRS Rating values."""
-    op.execute(sa.text("UPDATE review_interaction SET score = score + 1 WHERE score IS NOT NULL"))
+    CHECK constraint to 1-4 to match FSRS Rating values.
+
+    The CHECK constraint must be dropped before the UPDATE: SQLite enforces
+    CHECK per-row during the shift, so a row with score=3 would transiently
+    become score=4 and violate the old 0-3 constraint mid-statement."""
     with op.batch_alter_table('review_interaction', schema=None) as batch_op:
         batch_op.drop_constraint('score_range', type_='check')
+    op.execute(sa.text("UPDATE review_interaction SET score = score + 1 WHERE score IS NOT NULL"))
+    with op.batch_alter_table('review_interaction', schema=None) as batch_op:
         batch_op.create_check_constraint('score_range', 'score >= 1 AND score <= 4')
 
 
 def downgrade() -> None:
-    """Restore 0-3 CHECK constraint and shift scores -1."""
+    """Restore 0-3 CHECK constraint and shift scores -1. Same ordering as
+    upgrade: drop constraint, shift, recreate."""
     with op.batch_alter_table('review_interaction', schema=None) as batch_op:
         batch_op.drop_constraint('score_range', type_='check')
-        batch_op.create_check_constraint('score_range', 'score >= 0 AND score <= 3')
     op.execute(sa.text("UPDATE review_interaction SET score = score - 1 WHERE score IS NOT NULL"))
+    with op.batch_alter_table('review_interaction', schema=None) as batch_op:
+        batch_op.create_check_constraint('score_range', 'score >= 0 AND score <= 3')
