@@ -1,5 +1,8 @@
 """CRUD operations for flashcards."""
 
+from datetime import datetime, timezone
+
+from fsrs import Card, Rating, Scheduler, State
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -118,6 +121,99 @@ async def count_flashcards_by_topic(
         .where(Flashcard.topic_id == topic_id)
     )
     return result.scalar_one()
+
+
+def _to_fsrs_card(fc: Flashcard) -> Card:
+    return Card(
+        card_id=fc.id,
+        state=State(fc.fsrs_state),
+        step=fc.fsrs_step,
+        stability=fc.stability,
+        difficulty=fc.difficulty,
+        due=fc.due if fc.due is not None else datetime.now(timezone.utc),
+        last_review=fc.last_review,
+    )
+
+
+def _apply_fsrs_card(fc: Flashcard, card: Card) -> None:
+    fc.fsrs_state = card.state.value
+    fc.fsrs_step = card.step
+    fc.stability = card.stability
+    fc.difficulty = card.difficulty
+    fc.due = card.due
+    fc.last_review = card.last_review
+
+
+async def apply_rating(
+    session: AsyncSession,
+    flashcard_id: int,
+    rating: Rating,
+    *,
+    review_datetime: datetime | None = None,
+) -> Flashcard:
+    """Advance a flashcard's FSRS state by applying a user rating.
+
+    Activates the card if it was parked (``due IS NULL``) — rating a card
+    implies the user wants it scheduled from now on.
+    """
+    fc = await session.get(Flashcard, flashcard_id)
+    if fc is None:
+        raise ValueError(f"Flashcard {flashcard_id} not found")
+
+    review_dt = review_datetime or datetime.now(timezone.utc)
+    card = _to_fsrs_card(fc)
+    updated_card, _log = Scheduler().review_card(card, rating, review_dt)
+    _apply_fsrs_card(fc, updated_card)
+    await session.flush()
+
+    _logger.info(
+        "Flashcard rated: id=%d, rating=%s, new_state=%s, due=%s",
+        fc.id, rating.name, State(fc.fsrs_state).name, fc.due.isoformat(),
+    )
+    return fc
+
+
+async def activate_flashcard(
+    session: AsyncSession,
+    flashcard_id: int,
+    *,
+    due: datetime | None = None,
+) -> Flashcard:
+    """Schedule a parked flashcard. No-op if already scheduled."""
+    fc = await session.get(Flashcard, flashcard_id)
+    if fc is None:
+        raise ValueError(f"Flashcard {flashcard_id} not found")
+    if fc.due is None:
+        fc.due = due or datetime.now(timezone.utc)
+        await session.flush()
+        _logger.info("Flashcard activated: id=%d, due=%s", fc.id, fc.due.isoformat())
+    return fc
+
+
+async def get_due_flashcards(
+    session: AsyncSession,
+    *,
+    topic_id: int | None = None,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> list[Flashcard]:
+    """Return scheduled flashcards whose ``due`` has arrived, oldest-due first.
+
+    Parked flashcards (``due IS NULL``) are excluded.
+    """
+    cutoff = now or datetime.now(timezone.utc)
+    stmt = (
+        select(Flashcard)
+        .options(selectinload(Flashcard.flashcard_entries))
+        .where(Flashcard.due.is_not(None), Flashcard.due <= cutoff)
+        .order_by(Flashcard.due.asc())
+    )
+    if topic_id is not None:
+        stmt = stmt.where(Flashcard.topic_id == topic_id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def get_flashcard_entry_ids(

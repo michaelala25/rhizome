@@ -24,8 +24,11 @@ from .tags import (
     untag_entry,
 )
 from .flashcards import (
+    activate_flashcard,
+    apply_rating,
     count_flashcards_by_topic,
     create_flashcard,
+    get_due_flashcards,
     get_flashcard_entry_ids,
     get_flashcards_by_ids,
     list_flashcards_by_entries,
@@ -124,8 +127,11 @@ __all__ = [
     "update_session_summary",
     "get_interaction_stats",
     # flashcards
+    "activate_flashcard",
+    "apply_rating",
     "count_flashcards_by_topic",
     "create_flashcard",
+    "get_due_flashcards",
     "get_flashcard_entry_ids",
     "get_flashcards_by_ids",
     "list_flashcards_by_entries",
