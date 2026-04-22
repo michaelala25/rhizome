@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from fsrs import Rating
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
@@ -25,6 +26,7 @@ from rhizome.db.models import (
 )
 from rhizome.db.operations import (
     add_review_interaction,
+    apply_rating,
     complete_review_session,
     create_review_session,
     get_flashcard_entry_ids,
@@ -42,6 +44,11 @@ _logger = get_logger("agent.review_tools")
 
 # Match the constant in FlashcardReview to avoid cross-layer import.
 AUTO_SCORE = -1
+
+
+def _to_fsrs_rating(score: int) -> Rating:
+    """Map widget score (0=again..3=easy) to FSRS Rating (1=Again..4=Easy)."""
+    return Rating(score + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +527,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                         position=interaction_count,
                         flashcard_id=fc_id,
                     )
+                    await apply_rating(session, fc_id, _to_fsrs_rating(score))
                     await session.commit()
                 for eid in entry_ids:
                     new_coverage[eid] = new_coverage.get(eid, 0) + 1
@@ -570,6 +578,7 @@ def build_review_tools(session_factory, scorer=None) -> dict:
                                 position=interaction_count,
                                 flashcard_id=fc_id,
                             )
+                            await apply_rating(session, fc_id, _to_fsrs_rating(auto_score))
                             await session.commit()
                         for eid in ac["entry_ids"]:
                             new_coverage[eid] = new_coverage.get(eid, 0) + 1
