@@ -66,7 +66,7 @@ from .resource.view_model import ResourceViewerViewModel
 from .resource.viewer import ResourceViewer
 from .commit_proposal import CommitProposal
 from .flashcard_proposal import FlashcardProposal
-from .flashcard_review import AgainBehaviour, FlashcardReview
+from .flashcard_review import FlashcardReview
 from .choices import Choices
 from .multiple_choices import MultipleChoices
 from .navigable import WidgetDeactivated
@@ -861,19 +861,8 @@ class ChatPane(Widget, DockContainerMixin):
 
         if getattr(self.app, "debug_logging", False):
             @registry.command(name="test-flashcards", help="Open flashcard review widget with sample data")
-            @click.option("--enable-input/--no-input", default=True, help="Enable/disable user answer input")
-            @click.option("--auto-score", is_flag=True, default=False, help="Enter auto-scores instead of rating")
-            @click.option("--again-mark", is_flag=True, default=False, help="'Again' marks score instead of re-queuing")
-            @click.option("--counter-start", type=int, default=None, help="Override counter start number")
-            @click.option("--counter-total", type=int, default=None, help="Override counter total")
-            async def test_flashcards(enable_input, auto_score, again_mark, counter_start, counter_total):
-                await self._cmd_test_flashcards(
-                    user_input_enabled=enable_input,
-                    auto_score=auto_score,
-                    again_mark=again_mark,
-                    counter_start=counter_start,
-                    counter_total=counter_total,
-                )
+            async def test_flashcards():
+                await self._cmd_test_flashcards()
 
             @registry.command(name="test-flashcard-proposal", help="Open flashcard proposal widget with sample data")
             async def test_flashcard_proposal():
@@ -1510,43 +1499,73 @@ class ChatPane(Widget, DockContainerMixin):
         self._resource_viewer_dock_id = new_dock_id
         self._resource_viewer.focus()
 
-    async def _cmd_test_flashcards(
-        self,
-        *,
-        user_input_enabled: bool = True,
-        auto_score: bool = False,
-        again_mark: bool = False,
-        counter_start: int | None = None,
-        counter_total: int | None = None,
-    ) -> None:
-        """Open the flashcard review widget with sample data."""
+    async def _cmd_test_flashcards(self) -> None:
+        """Open the flashcard review widget with sample data.
+
+        Uses fake IDs, so we stub out both the session factory and the
+        module-level ``apply_rating`` import in the VM module — otherwise
+        the DB call inside ``Flashcard.set_score`` / ``Flashcard.again``
+        errors on the unknown row.
+        """
+        from datetime import datetime, timedelta
+        from types import SimpleNamespace
+
+        from rhizome.tui.widgets import flashcard_review_view_model as _vm_module
+
         sample_cards = [
             {"id": 101, "question": "What is the time complexity of binary search?", "answer": "O(log n) — each comparison halves the remaining search space."},
             {"id": 102, "question": "Explain the difference between a stack and a queue.", "answer": "A stack is LIFO (Last In, First Out): the most recently added element is removed first.\n\nA queue is FIFO (First In, First Out): the earliest added element is removed first."},
-            {"question": "What is a hash collision and how is it typically resolved?", "answer": "A hash collision occurs when two different keys produce the same hash value.\n\nCommon resolution strategies:\n• Chaining — each bucket holds a linked list of entries\n• Open addressing — probe for the next available slot (linear, quadratic, or double hashing)"},
+            {"id": 103, "question": "What is a hash collision and how is it typically resolved?", "answer": "A hash collision occurs when two different keys produce the same hash value.\n\nCommon resolution strategies:\n• Chaining — each bucket holds a linked list of entries\n• Open addressing — probe for the next available slot (linear, quadratic, or double hashing)"},
             {"id": 204, "question": "What does the CAP theorem state?", "answer": "A distributed system can provide at most two of the following three guarantees simultaneously:\n\n• Consistency — every read returns the most recent write\n• Availability — every request receives a response\n• Partition tolerance — the system operates despite network partitions"},
-            {"question": "What is the difference between concurrency and parallelism?", "answer": "Concurrency is about dealing with multiple tasks at once (structure).\nParallelism is about doing multiple tasks at once (execution).\n\nConcurrency is possible on a single core via interleaving; parallelism requires multiple cores."},
+            {"id": 205, "question": "What is the difference between concurrency and parallelism?", "answer": "Concurrency is about dealing with multiple tasks at once (structure).\nParallelism is about doing multiple tasks at once (execution).\n\nConcurrency is possible on a single core via interleaving; parallelism requires multiple cores."},
         ]
 
-        again_behaviour = AgainBehaviour.MARK if again_mark else AgainBehaviour.QUEUE
+        # --- Stubbed session factory + apply_rating ---------------------
+        class _FakeSession:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): return False
 
-        # Dev harness runs outside the agent-session interrupt flow, so there's
-        # no AgentContext to borrow a scorer from — build a one-off here when
-        # auto-score is requested.
-        scorer = None
-        if auto_score:
-            from rhizome.agent.subagents.flashcard_validator import build_scorer_subagent
-            scorer = build_scorer_subagent()
+        def _fake_session_factory(): return _FakeSession()
+
+        async def _fake_apply_rating(session, card_id, rating):
+            # Short due delay so AGAIN'd cards re-appear quickly for
+            # manual testing of the AWAITING_REVEAL flow.
+            return SimpleNamespace(due=datetime.now() + timedelta(seconds=8))
+
+        _vm_module.apply_rating = _fake_apply_rating
+
+        # --- Fake scorer ------------------------------------------------
+        # Tweak this mapping to test different auto-score scenarios.
+        # Anything omitted triggers the failure-fallback (card bounces
+        # back to REVEALED_NOT_SCORED with auto_scoring_failed=True).
+        auto_score_results = {
+            101: 3,  # good
+            102: 1,  # again — requeued
+            103: 2,  # hard
+            204: 4,  # easy
+            # 205 intentionally omitted — exercises the failure path.
+        }
+
+        class _FakeScorer:
+            def __init__(self, results_by_id: dict[int, int]):
+                self._results_by_id = results_by_id
+                self.structured_response = None
+
+            async def ainvoke(self, prompt: str):
+                # Simulate scorer latency so the throbber is visible.
+                await asyncio.sleep(1.5)
+                results = [
+                    SimpleNamespace(flashcard_id=i, score=s, feedback="")
+                    for i, s in self._results_by_id.items()
+                ]
+                self.structured_response = SimpleNamespace(results=results)
 
         area = self.query_one("#message-area")
         review = FlashcardReview(
-            sample_cards,
-            user_input_enabled=user_input_enabled,
-            auto_score=auto_score,
-            again_behaviour=again_behaviour,
-            counter_start=counter_start,
-            counter_total=counter_total,
-            scorer=scorer,
+            cards=sample_cards,
+            session_factory=_fake_session_factory,
+            auto_score_enabled=True,
+            auto_scorer=_FakeScorer(auto_score_results),
         )
         await area.mount(review)
         area.scroll_end(animate=False)

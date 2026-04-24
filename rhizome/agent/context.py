@@ -20,3 +20,8 @@ class AgentContext:
 
     commit_subagent: Any = None
     """Commit subagent — drives the commit-proposal workflow."""
+
+    session_factory: Any = None
+    """DB session factory — widgets that write to the DB (e.g. the
+    flashcard review widget invoking ``apply_rating``) pull this off the
+    context when constructed from an interrupt."""

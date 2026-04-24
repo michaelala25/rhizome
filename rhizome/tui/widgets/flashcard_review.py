@@ -1,163 +1,72 @@
-"""FlashcardReview — interrupt-based flashcard review widget for the review agent."""
+"""FlashcardReview — thin Textual view over FlashcardReviewViewModel."""
 
 from __future__ import annotations
 
-import asyncio
-import time
-from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Any, Self, TypedDict
+from typing import Any
 
-from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Button, Static, TextArea
+from textual.widgets import Button, Rule, Static, TextArea
 
-from rhizome.logs import get_logger
-
+from .flashcard_review_view_model import (
+    Flashcard,
+    FlashcardData,
+    FlashcardReviewViewModel,
+)
 from .interrupt import InterruptWidgetBase
 
-_logger = get_logger("tui.flashcard_review")
 
-# ---------------------------------------------------------------------------
-# Color constants
-# ---------------------------------------------------------------------------
-_DIM = "rgb(100,100,100)"
-_HINT = "rgb(80,80,80)"
-_RATING_DIM = "rgb(100,100,100)"
-_RATING_HIGHLIGHT = "rgb(255,220,80)"
-_SCORED_DIM = "rgb(60,60,60)"
-_USER_ANSWER = "rgb(170,175,190)"
-_DONE_GREEN = "rgb(100,200,100)"
-_CANCEL_RED = "rgb(255,80,80)"
-_ID_COLOR = "rgb(80,80,100)"
-_COUNTER_ACTUAL = "rgb(70,70,70)"
-_THROBBER_DIM = "rgb(45,48,58)"
-_THROBBER_DEFAULT = "rgb(60,65,80)"
-_THROBBER_BRIGHT = "rgb(80,85,100)"
-_TIMER_DIM = "rgb(60,60,60)"
-
-_THROBBER_FRAMES = [
-    ("•", _THROBBER_DIM),
-    ("●", _THROBBER_DIM),
-    ("●", _THROBBER_DEFAULT),
-    ("⬤", _THROBBER_BRIGHT),
-    ("●", _THROBBER_DEFAULT),
-    ("●", _THROBBER_DIM),
+# Throbber frames — pulsing dot used in both the counter (think-time) and
+# the batch-scoring indicator. Shared frame counter; cadence set per-interval.
+_THROBBER_FRAMES: list[tuple[str, str]] = [
+    ("•", "rgb(60,65,80)"),
+    ("●", "rgb(60,65,80)"),
+    ("●", "rgb(95,105,125)"),
+    ("⬤", "rgb(130,140,160)"),
+    ("●", "rgb(95,105,125)"),
+    ("●", "rgb(60,65,80)"),
 ]
 
-# ---------------------------------------------------------------------------
-# Payload type
-# ---------------------------------------------------------------------------
-class ReviewCardItem(TypedDict, total=False):
-    question: str
-    answer: str
-    id: int
-    testing_notes: str | None
+# Per-rating colors — the rating digits get a red→green gradient matching
+# the severity of the rating. Labels stay dim so the digits read first.
+_RATING_COLORS: dict[int, str] = {
+    1: "rgb(235,100,100)",  # again — red
+    2: "rgb(230,160,80)",   # hard  — orange
+    3: "rgb(200,220,100)",  # good  — yellow-green
+    4: "rgb(120,210,110)",  # easy  — green
+}
+_RATING_LABEL_DIM = "rgb(110,110,110)"
+_HINT_DIM = "rgb(80,80,80)"
+_FAIL_RED = "rgb(235,100,100)"
+_DONE_GREEN = "rgb(120,210,110)"
+_CANCEL_RED = "rgb(235,100,100)"
 
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-class AgainBehaviour(Enum):
-    QUEUE = auto()   # re-queue card at end (default)
-    MARK = auto()    # mark as "again" score, don't re-queue
-
-
-# ---------------------------------------------------------------------------
-# Per-card state
-# ---------------------------------------------------------------------------
-class CardState(Enum):
-    HIDDEN = auto()     # answer not yet revealed
-    REVEALED = auto()   # answer shown, awaiting rating
-    SCORED = auto()     # rated
-
-
-# ---------------------------------------------------------------------------
-# Rating labels
-# ---------------------------------------------------------------------------
-_RATINGS: list[tuple[int, str]] = [
-    (1, "again"),
-    (2, "hard"),
-    (3, "good"),
-    (4, "easy"),
-]
-
-
-
-# ---------------------------------------------------------------------------
-# Answer input
-# ---------------------------------------------------------------------------
 class _AnswerInput(TextArea):
-    """Single-line text area for typing a flashcard answer."""
+    """TextArea that forwards Enter up to the parent instead of inserting a newline."""
 
     class Submitted(Message):
-        def __init__(self, value: str) -> None:
-            super().__init__()
-            self.value = value
+        pass
 
     def __init__(self, **kwargs) -> None:
         super().__init__(show_line_numbers=False, **kwargs)
 
-    def _on_key(self, event) -> None:
+    def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
-            self.post_message(self.Submitted(value=self.text.strip()))
             event.stop()
             event.prevent_default()
-        elif event.key == "ctrl+j":
-            event.stop()
+            self.post_message(self.Submitted())
+            return
+        # Let alt+<whatever> bubble up to the parent so app-level bindings
+        # (alt+x reset, alt+s skip, alt+left/right nav) don't get swallowed
+        # as literal text input.
+        if event.key.startswith("alt+"):
             event.prevent_default()
-        else:
-            super()._on_key(event)
 
 
 class FlashcardReview(InterruptWidgetBase):
-    """Interactive flashcard review widget that resolves an interrupt on completion.
-
-    Configurable options:
-    - ``user_input_enabled``: show text input for each question (default True)
-    - ``counter_start`` / ``counter_total``: override displayed counter
-    - ``auto_score``: enter auto-scores instead of showing rating options
-    - ``again_behaviour``: ``AgainBehaviour.QUEUE`` (re-queue) or
-      ``AgainBehaviour.MARK`` (mark as again score, advance)
-    """
-
-    DISABLE_CHILDREN_ON_DEACTIVATE = False
-
-    @classmethod
-    def from_interrupt(cls, value: dict[str, Any], context: Any = None) -> Self:
-        """Construct from an interrupt value dict.
-
-        ``context`` is an ``AgentContext`` whose ``scorer_subagent`` is pulled
-        out and handed to the widget — the widget doesn't own the scorer, it
-        borrows one from the session so rebuilds driven by option changes
-        flow through correctly."""
-        scorer = getattr(context, "scorer_subagent", None) if context is not None else None
-        return cls(
-            cards=value["cards"],
-            user_input_enabled=value.get("user_input_enabled", True),
-            auto_score=value.get("auto_score", True),
-            again_behaviour=AgainBehaviour.MARK,
-            collapse_on_complete=False,
-            show_complete_status=value.get("show_complete_status", True),
-            counter_start=value.get("counter_start"),
-            counter_total=value.get("counter_total"),
-            scorer=scorer,
-        )
-
-    BINDINGS = [
-        Binding("enter", "reveal_or_rate", "Reveal / Rate good", show=False),
-        Binding("1", "rate_1", show=False),
-        Binding("2", "rate_2", show=False),
-        Binding("3", "rate_3", show=False),
-        Binding("4", "rate_4", show=False),
-        Binding("alt+left", "prev_card", show=False),
-        Binding("alt+right", "next_card", show=False),
-        Binding("ctrl+c", "cancel_session", show=False),
-        Binding("ctrl+k", "toggle_time", show=False, priority=True),
-    ]
 
     DEFAULT_CSS = """
     FlashcardReview {
@@ -172,882 +81,600 @@ class FlashcardReview(InterruptWidgetBase):
         height: 1;
         background: transparent;
         border: none;
-        color: $text-muted;
+        color: rgb(100,100,100);
         display: none;
     }
     FlashcardReview #fr-collapse:hover {
-        color: $text;
+        color: rgb(200,200,200);
     }
-    FlashcardReview #fr-card {
+    FlashcardReview #fr-batch-indicator {
+        dock: top;
+        height: 1;
+        text-align: right;
+        color: rgb(150,160,200);
+        padding: 0 2;
+    }
+    FlashcardReview #fr-start,
+    FlashcardReview #fr-card,
+    FlashcardReview #fr-done {
         border: solid rgb(58,65,80);
         padding: 1 2;
-        height: auto;
         margin: 0 4;
+        height: auto;
     }
-    FlashcardReview #fr-question-row {
-        height: 1;
-        margin: 0 0 0 0;
+    FlashcardReview #fr-start,
+    FlashcardReview #fr-done {
+        align: center middle;
     }
-    FlashcardReview #fr-question-label {
+    FlashcardReview .fr-label {
         text-style: bold;
         color: rgb(100,100,100);
+    }
+    FlashcardReview #fr-header {
+        height: 1;
+        margin: 0 0 1 0;
+    }
+    FlashcardReview #fr-question-label {
         width: auto;
     }
     FlashcardReview #fr-counter {
         width: 1fr;
         text-align: right;
+        color: rgb(100,100,100);
     }
     FlashcardReview #fr-question {
-        margin: 0 0 1 0;
         color: rgb(195,195,205);
-    }
-    FlashcardReview #fr-answer-input-label {
-        text-style: bold;
-        color: rgb(100,100,100);
-        margin: 0;
+        margin: 0 0 1 0;
     }
     FlashcardReview #fr-answer-input {
         height: auto;
         min-height: 1;
         max-height: 5;
-        margin: 0;
         border: solid rgb(35,38,48);
         background: transparent;
-        & .text-area--cursor-line {
-            background: transparent;
-        }
     }
     FlashcardReview #fr-answer-input:focus {
         border: solid rgb(55,60,72);
     }
-    FlashcardReview #fr-user-answer-label {
-        text-style: bold;
-        color: rgb(100,100,100);
+    FlashcardReview #fr-user-answer {
+        color: rgb(170,175,190);
         margin: 0;
     }
-    FlashcardReview #fr-user-answer {
-        margin: 0 0 1 0;
-        color: rgb(170,175,190);
-    }
-    FlashcardReview #fr-separator {
-        height: 1;
-        margin: 0 0 1 0;
+    FlashcardReview #fr-ua-rule {
         color: rgb(58,65,80);
-    }
-    FlashcardReview #fr-answer-label {
-        text-style: bold;
-        color: rgb(100,100,100);
-        margin-bottom: 0;
+        margin: 0 0 0 0;
     }
     FlashcardReview #fr-answer {
-        margin: 0;
         color: rgb(210,200,175);
     }
-    FlashcardReview #fr-answer-hidden {
-        margin: 0;
-        color: rgb(80,80,80);
-        text-style: italic;
-    }
-    FlashcardReview #fr-reveal-hint {
-        color: rgb(80,80,80);
+    FlashcardReview #fr-below {
         text-align: center;
         margin: 1 0 0 0;
     }
-    FlashcardReview #fr-ratings {
-        height: auto;
-        text-align: center;
-        margin: 1 0 0 0;
-    }
-    FlashcardReview #fr-scored-label {
-        text-align: center;
-        margin: 1 0 0 0;
-    }
-    FlashcardReview #fr-start-screen {
-        border: solid rgb(58,65,80);
-        padding: 1 2;
-        height: auto;
-        min-height: 9;
-        margin: 0 4;
-        align: center middle;
-    }
-    FlashcardReview #fr-start-summary {
-        text-align: center;
-        color: rgb(80,80,80);
-        width: 1fr;
-        margin: 0 0 1 0;
-    }
+    FlashcardReview #fr-start-summary,
     FlashcardReview #fr-start-prompt {
         text-align: center;
-        color: rgb(80,80,80);
         width: 1fr;
+        color: rgb(80,80,80);
     }
-    FlashcardReview #fr-empty {
-        color: $text-muted;
-        text-style: italic;
-        margin: 1 0 0 1;
+    FlashcardReview #fr-start-rule {
+        color: rgb(58,65,80);
     }
-    FlashcardReview #fr-status {
-        text-style: bold;
+    FlashcardReview #fr-done-status {
         text-align: center;
-        margin: 1 0 1 0;
+        width: 1fr;
     }
     """
 
-    # ------------------------------------------------------------------
-    # Messages
-    # ------------------------------------------------------------------
+    @classmethod
+    def from_interrupt(cls, value: dict[str, Any], context: Any = None) -> "FlashcardReview":
+        """Construct from an interrupt value dict and the AgentContext.
 
-    @dataclass
-    class CardRated(Message):
-        """Posted when the user rates a card."""
-        question: str
-        answer: str
-        user_answer: str
-        rating: int
-        rating_label: str
-        card_id: int | None
-
-    class SessionComplete(Message):
-        """Posted when all cards have been reviewed."""
-
-    class SessionCancelled(Message):
-        """Posted when the user cancels with ctrl+c."""
-
-    # ------------------------------------------------------------------
-    # State
-    # ------------------------------------------------------------------
+        Pulls the auto-scorer and DB session factory off the context so
+        the widget can invoke ``apply_rating`` without the tool having to
+        plumb them through the interrupt payload.
+        """
+        scorer = getattr(context, "scorer_subagent", None) if context is not None else None
+        session_factory = getattr(context, "session_factory", None) if context is not None else None
+        return cls(
+            cards=value["cards"],
+            session_factory=session_factory,
+            auto_score_enabled=value.get("auto_score_enabled", False),
+            auto_scorer=scorer,
+        )
 
     def __init__(
         self,
-        cards: list[ReviewCardItem],
-        *,
-        user_input_enabled: bool = True,
-        counter_start: int | None = None,
-        counter_total: int | None = None,
-        auto_score: bool = False,
-        again_behaviour: AgainBehaviour = AgainBehaviour.QUEUE,
-        collapse_on_complete: bool = True,
-        show_complete_status: bool = True,
-        scorer: Any = None,
+        cards: list[FlashcardData],
+        session_factory: Any,
+        auto_score_enabled: bool = False,
+        auto_scorer: Any = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
-        self._cards: list[ReviewCardItem] = list(cards)
-        self._states: list[CardState] = [CardState.HIDDEN] * len(cards)
-        self._scores: list[int | None] = [None] * len(cards)
-        self._user_answers: list[str] = [""] * len(cards)
-        self._index: int = 0
-        self._rendered_index: int = -1
-        self._total_original: int = len(cards)
+        self._vm = FlashcardReviewViewModel(
+            cards=cards,
+            session_factory=session_factory,
+            auto_score_enabled=auto_score_enabled,
+            auto_scorer=auto_scorer,
+        )
+        # Set while ``_refresh`` programmatically rewrites the TextArea's
+        # contents; the Changed handler checks this to avoid echoing the
+        # value right back into the card as a user edit.
+        self._suppress_text_change = False
 
-        # Configuration
-        self._user_input_enabled = user_input_enabled
-        self._counter_start = counter_start
-        self._counter_total = counter_total
-        self._auto_score = auto_score
-        self._again_behaviour = again_behaviour
-        self._collapse_on_complete = collapse_on_complete
-        self._show_complete_status = show_complete_status
+        # Interval handles, reconciled against VM state in _refresh_*.
+        self._timer_interval = None    # think-time timer (FRONT + timer_visible)
+        self._due_interval = None      # due countdown (AWAITING_REVEAL)
+        self._throbber_interval = None # pulsing dot (FRONT w/o timer, or batch)
 
-        # Per-card timing: accumulated seconds spent viewing before reveal
-        self._durations: list[float] = [0.0] * len(cards)
-        self._timer_start: float | None = None
-        self._throbber_frame: int = 0
-        self._throbber_interval = None
-
-        # Time display toggle
-        self._show_time = False
-
-        # Start screen — wait for user to press enter before beginning
-        self._awaiting_start = bool(cards)
-
-        # Post-session state
-        self._session_done = False
-        self._session_cancelled = False
-        self._collapsed = False
-
-        # Auto-scoring: the scorer subagent is owned by the AgentSession and
-        # passed in at construction time (via ``from_interrupt`` pulling it
-        # off AgentContext). While a card's score is in flight, its index is
-        # in ``_scoring_indices``. If scoring fails for a card, its index is
-        # added to ``_scoring_failed_indices`` — manual rating actions become
-        # permitted for that card even in auto-score mode.
-        self._scorer = scorer
-        self._scoring_task: asyncio.Task | None = None
-        self._scoring_indices: set[int] = set()
-        self._scoring_failed_indices: set[int] = set()
-        if auto_score and self._scorer is None:
-            _logger.warning(
-                "FlashcardReview constructed with auto_score=True but no "
-                "scorer provided; auto-score actions will immediately fall "
-                "back to manual rating."
-            )
+        # Shared throbber frame counter — advanced by _tick_throbber.
+        self._throbber_frame = 0
 
     def compose(self) -> ComposeResult:
         yield Button("▼", id="fr-collapse")
-        yield Static("", id="fr-empty")
+        yield Static("", id="fr-batch-indicator")
 
-        with Vertical(id="fr-start-screen"):
-            n = len(self._cards)
-            yield Static(f"{n} card{'s' if n != 1 else ''} to review", id="fr-start-summary")
-            yield Static("Press [bold]enter[/bold] to begin.", id="fr-start-prompt")
+        with Vertical(id="fr-start"):
+            yield Static("", id="fr-start-summary")
+            yield Rule(line_style="solid", id="fr-start-rule")
+            yield Static(
+                "Press [bold]enter[/bold] to begin.",
+                id="fr-start-prompt",
+            )
 
         with Vertical(id="fr-card"):
-
-            with Horizontal(id="fr-question-row"):
-                yield Static("Question", id="fr-question-label")
+            with Horizontal(id="fr-header"):
+                yield Static("", classes="fr-label", id="fr-question-label")
                 yield Static("", id="fr-counter")
-
             yield Static("", id="fr-question")
-            yield Static("Your answer", id="fr-answer-input-label")
+            yield Static("Your answer", classes="fr-label", id="fr-answer-input-label")
             yield _AnswerInput(id="fr-answer-input")
-            yield Static("Your answer", id="fr-user-answer-label")
+            yield Static("Your answer", classes="fr-label", id="fr-user-answer-label")
             yield Static("", id="fr-user-answer")
-            yield Static("", id="fr-separator")
-            yield Static("Answer", id="fr-answer-label")
+            yield Rule(line_style="solid", id="fr-ua-rule")
+            yield Static("Answer", classes="fr-label", id="fr-answer-label")
             yield Static("", id="fr-answer")
-            yield Static("(Answer hidden)", id="fr-answer-hidden")
+            yield Static("", id="fr-below")
 
-        yield Static("", id="fr-reveal-hint")
-        yield Static("", id="fr-ratings")
-        yield Static("", id="fr-scored-label")
-        yield Static("", id="fr-status")
+        with Vertical(id="fr-done"):
+            yield Static("", id="fr-done-status")
 
     def on_mount(self) -> None:
-        super().on_mount()
-        self._refresh_view()
-        if self._cards and not self._awaiting_start and self._states[self._index] == CardState.HIDDEN:
-            self._start_timer()
+        super().on_mount()  # InterruptWidgetBase → setup_navigation
 
-    def on_focus(self) -> None:
-        super().on_focus()
-        
+        self._vm.dirty.append(self._refresh)
+        self._vm.dirty.append(self._maybe_resolve)
+
+        # Border-title nav hint on the card container.
+        card_container = self.query_one("#fr-card", Vertical)
+        card_container.border_title = "alt+←/→ to navigate"
+        card_container.styles.border_title_align = "right"
+
+        self._refresh()
+
+    def action_cancel_interrupt(self) -> None:
+        """No-op. Ctrl+c is owned by the VM's ``on_key`` handler, which
+        transitions the VM to its DONE(cancelled=True) state;
+        ``_maybe_resolve`` then cancels the underlying future.
+
+        If this also called ``self._vm.cancel()``, Textual would fire
+        BOTH this binding action AND the ``on_key`` event for the same
+        keypress, and the second call would hit ``vm.finish``'s
+        ``state != DONE`` assertion.
+
+        TODO: this no-op override is a band-aid. Eventually the ctrl+c
+        binding should be removed from ``InterruptWidgetBase`` entirely
+        — each widget's cancellation UX is different enough that the
+        base shouldn't presume one. Related: the base's ``.cancel()``
+        shadows what looks like a generic method name; renaming it to
+        something more specific (``.cancel_interrupt()``, or ideally
+        folding it into ``.resolve(cancelled=True)``) would remove the
+        footgun where a subclass might unintentionally override it.
+        """
+        pass
+
+    def _maybe_resolve(self) -> None:
+        """Called on every VM ``dirty`` emit. The first time we observe
+        the VM reach its DONE state, either cancel the future (if the
+        user cancelled the session) or resolve it with the result.
+        Subsequent emits after DONE (collapse toggle, navigation while
+        expanded) are no-ops because ``_future`` is already done.
+        """
+        if self._future.done():
+            return
+        if self._vm.state != FlashcardReviewViewModel.State.DONE:
+            return
+        if self._vm.cancelled:
+            # User cancelled — propagate via the base's future.cancel().
+            self.cancel()
+        else:
+            self.resolve(self._build_result())
+
+    def _build_result(self) -> dict[str, Any]:
+        cards = []
+        for card in self._vm._cards:
+            score_val: int | None = None
+            score_label: str | None = None
+            score = card.score
+            if score in (
+                Flashcard.Score.AGAIN,
+                Flashcard.Score.HARD,
+                Flashcard.Score.GOOD,
+                Flashcard.Score.EASY,
+            ):
+                score_val = score.value
+                score_label = score.name.lower()
+            elif score == Flashcard.Score.SKIPPED:
+                score_label = "skipped"
+            elif score == Flashcard.Score.AUTO:
+                # Session ended while the card was still pending a batch
+                # (e.g. user cancelled mid-batch). No final rating.
+                score_label = "auto"
+            cards.append({
+                "id": card.id,
+                "question": card.question,
+                "answer": card.answer,
+                "user_answer": card.user_answer or "",
+                "score": score_val,
+                "score_label": score_label,
+                "duration": round(card.elapsed_time, 1),
+            })
+        return {
+            "completed": not self._vm.cancelled,
+            "cards": cards,
+        }
+
+    def on_focus(self, event: events.Focus) -> None:
+        """When the widget gains focus from outside (e.g. navigation via
+        ctrl+up/down), route focus into the answer input if the current
+        card is in FRONT. Without this, the focus-shift logic inside
+        ``_refresh_current_card`` never runs for externally-triggered
+        focus changes (no VM dirty emit is fired)."""
+        card = self._vm.current_card
+        if card is None:
+            return
         if (
-            self._cards
-            and not self._awaiting_start
-            and not self._session_done
-            and not self._session_cancelled
-            and self._user_input_enabled
-            and self._states[self._index] == CardState.HIDDEN
+            card.state == Flashcard.State.FRONT
+            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
-    # ------------------------------------------------------------------
-    # Action gating
-    # ------------------------------------------------------------------
+    async def on_key(self, event: events.Key) -> None:
+        await self._vm.on_key(event)
 
-    def check_action(self, action: str, parameters: tuple) -> bool:
-        # Start screen — only allow enter to begin
-        if self._awaiting_start:
-            return action == "reveal_or_rate"
-        # After session end, only allow navigation
-        if self._session_done or self._session_cancelled:
-            return action in ("prev_card", "next_card", "toggle_time")
-        return True
+    async def on__answer_input_submitted(
+        self, event: _AnswerInput.Submitted
+    ) -> None:
+        # Route the enter keypress the TextArea swallowed up to the VM.
+        await self._vm.on_key(events.Key("enter", "\r"))
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "fr-answer-input":
+            return
+        if self._suppress_text_change:
+            return
+        card = self._vm.current_card
+        if card is None or card.state != Flashcard.State.FRONT:
+            return
+        card.set_user_answer(event.text_area.text.strip())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "fr-collapse":
+            event.stop()
+            self._vm.toggle_collapsed()
+            self.focus()
 
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
 
-    def _refresh_view(self) -> None:
-        empty = not self._cards
-        done = self._session_done
-        cancelled = self._session_cancelled
-        finished = done or cancelled
+    def _refresh(self) -> None:
+        match self._vm.state:
+            case FlashcardReviewViewModel.State.START:
+                self._refresh_start()
+            case FlashcardReviewViewModel.State.REVIEWING:
+                self._refresh_reviewing()
+            case FlashcardReviewViewModel.State.DONE:
+                self._refresh_done()
 
-        # Start screen
-        self.query_one("#fr-start-screen", Vertical).display = self._awaiting_start
-        if self._awaiting_start:
-            self.query_one("#fr-empty", Static).display = False
-            self.query_one("#fr-card", Vertical).display = False
-            self.query_one("#fr-reveal-hint", Static).display = False
-            self.query_one("#fr-ratings", Static).display = False
-            self.query_one("#fr-scored-label", Static).display = False
-            self.query_one("#fr-status", Static).display = False
-            return
+    def _refresh_start(self) -> None:
+        self.query_one("#fr-start", Vertical).display = True
+        self.query_one("#fr-card", Vertical).display = False
+        self.query_one("#fr-done", Vertical).display = False
+        self.query_one("#fr-batch-indicator", Static).display = False
+        self.query_one("#fr-collapse", Button).display = False
 
-        self.query_one("#fr-empty", Static).display = empty
-        self.query_one("#fr-card", Vertical).display = (
-            not empty and (not finished or not self._collapsed)
+        n = len(self._vm._cards)
+        self.query_one("#fr-start-summary", Static).update(
+            f"{n} card{'s' if n != 1 else ''} to review"
         )
 
-        if empty:
-            self.query_one("#fr-empty", Static).update("(No flashcards loaded)")
-            self.query_one("#fr-reveal-hint", Static).display = False
-            self.query_one("#fr-ratings", Static).display = False
-            self.query_one("#fr-scored-label", Static).display = False
-            self.query_one("#fr-status", Static).display = False
-            return
+        self._reconcile_timer_interval()
+        self._reconcile_due_interval()
+        self._reconcile_throbber_interval()
 
-        # Status message
-        status = self.query_one("#fr-status", Static)
-        if done and self._show_complete_status:
-            scored_count = sum(1 for s in self._states if s == CardState.SCORED)
-            status.update(
-                f"Session complete — {scored_count} card{'s' if scored_count != 1 else ''} reviewed"
-            )
-            status.styles.color = _DONE_GREEN
-            status.display = True
-        elif cancelled:
-            status.update("Session cancelled")
-            status.styles.color = _CANCEL_RED
-            status.display = True
-        else:
-            status.display = False
+    def _refresh_reviewing(self) -> None:
+        self.query_one("#fr-start", Vertical).display = False
+        self.query_one("#fr-card", Vertical).display = True
+        self.query_one("#fr-done", Vertical).display = False
+        self.query_one("#fr-collapse", Button).display = False
 
-        if finished and self._collapsed:
-            # Collapsed mode — hide card and below-card elements
-            self.query_one("#fr-reveal-hint", Static).display = False
-            self.query_one("#fr-ratings", Static).display = False
-            self.query_one("#fr-scored-label", Static).display = False
-            return
+        indicator = self.query_one("#fr-batch-indicator", Static)
+        indicator.display = self._vm.autoscore_in_progress
+        if self._vm.autoscore_in_progress:
+            indicator.update(self._batch_indicator_text())
 
-        if finished:
-            # Expanded finished — show cards for navigation but no interactive elements
-            self._render_card()
-            self.query_one("#fr-reveal-hint", Static).display = False
-            self.query_one("#fr-ratings", Static).display = False
-            # Show scored label for the current card if scored
-            if self._states[self._index] == CardState.SCORED:
-                self.query_one("#fr-scored-label", Static).display = True
-                self._render_scored_label()
-            else:
-                self.query_one("#fr-scored-label", Static).display = False
-            return
+        self._refresh_current_card()
 
-        # Active session
-        state = self._states[self._index]
-        self.query_one("#fr-reveal-hint", Static).display = state == CardState.HIDDEN
-        self.query_one("#fr-ratings", Static).display = state == CardState.REVEALED
-        self.query_one("#fr-scored-label", Static).display = state == CardState.SCORED
+    def _refresh_done(self) -> None:
+        self.query_one("#fr-start", Vertical).display = False
+        self.query_one("#fr-done", Vertical).display = True
+        self.query_one("#fr-batch-indicator", Static).display = False
 
-        self._render_card()
-        self._render_below_card()
-
-    def _render_card(self) -> None:
-        card = self._cards[self._index]
-        state = self._states[self._index]
-        finished = self._session_done or self._session_cancelled
-        is_again = state == CardState.SCORED and self._scores[self._index] == 1
-
-        # Card border title — nav hint on the right
-        card_container = self.query_one("#fr-card", Vertical)
-        card_container.border_title = "alt+←/→ to navigate"
-        card_container.styles.border_title_align = "right"
-
-        # Question label — include ID if present
-        card_id = card.get("id")
-        question_label = self.query_one("#fr-question-label", Static)
-        if card_id is not None:
-            label_text = Text()
-            label_text.append("Question", style="bold")
-            label_text.append(f" (id: {card_id})", style=_ID_COLOR)
-            question_label.update(label_text)
-        else:
-            question_label.update("Question")
-
-        # Counter inside card (right-aligned)
-        self._render_counter()
-
-        self.query_one("#fr-question", Static).update(card["question"])
-
-        # Answer input — visible only when hidden and input enabled and session active
-        answer_input = self.query_one("#fr-answer-input", _AnswerInput)
-        input_label = self.query_one("#fr-answer-input-label", Static)
-        show_input = (
-            state == CardState.HIDDEN
-            and self._user_input_enabled
-            and not finished
-        )
-        input_label.display = show_input
-        answer_input.display = show_input
-
-        if show_input:
-            if self._rendered_index != self._index:
-                answer_input.clear()
-                draft = self._user_answers[self._index]
-                if draft:
-                    answer_input.insert(draft)
-                answer_input.focus()
-        elif answer_input.has_focus:
-            self.focus()
-
-        self._rendered_index = self._index
-
-        # User's submitted answer — visible after reveal (only if input was enabled)
-        user_answer_label = self.query_one("#fr-user-answer-label", Static)
-        user_answer_display = self.query_one("#fr-user-answer", Static)
-        show_user_answer = (
-            state in (CardState.REVEALED, CardState.SCORED)
-            and not is_again
-            and self._user_input_enabled
-            and bool(self._user_answers[self._index])
-        )
-        user_answer_label.display = show_user_answer
-        user_answer_display.display = show_user_answer
-        if show_user_answer:
-            user_answer_display.update(self._user_answers[self._index])
-
-        # Separator and correct answer
-        card_width = card_container.size.width
-        sep_width = max(card_width - 6, 20)
-        self.query_one("#fr-separator", Static).update("─" * sep_width)
-
-        show_answer = state in (CardState.REVEALED, CardState.SCORED) and not is_again
-        show_answer_hidden = is_again
-        self.query_one("#fr-answer-label", Static).display = show_answer
-        self.query_one("#fr-answer", Static).display = show_answer
-        self.query_one("#fr-answer-hidden", Static).display = show_answer_hidden
-        self.query_one("#fr-separator", Static).display = show_answer or show_answer_hidden
-
-        if show_answer:
-            self.query_one("#fr-answer", Static).update(card["answer"])
-
-    def _render_counter(self) -> None:
-        counter_widget = self.query_one("#fr-counter", Static)
-
-        text = Text()
-
-        # Throbber or timer prefix
-        if self._timer_start is not None:
-            if self._show_time:
-                elapsed = self._durations[self._index] + (
-                    time.monotonic() - self._timer_start
-                )
-                text.append(f"{elapsed:05.2f}s", style=_TIMER_DIM)
-                text.append(" — ", style=_TIMER_DIM)
-            else:
-                char, color = _THROBBER_FRAMES[self._throbber_frame]
-                text.append(f"{char} ", style=color)
-        elif self._show_time and self._cards and self._durations[self._index] > 0:
-            text.append(
-                f"{self._durations[self._index]:05.2f}s", style=_TIMER_DIM
-            )
-            text.append(" — ", style=_TIMER_DIM)
-
-        # Counter — use overrides if provided
-        has_override = self._counter_start is not None and self._counter_total is not None
-        if has_override:
-            display_index = self._counter_start + self._index
-            display_total = self._counter_total
-        else:
-            display_index = self._index + 1
-            display_total = len(self._cards)
-
-        text.append(f"{display_index}/{display_total}", style=_DIM)
-
-        if has_override:
-            actual = f" ({self._index + 1}/{len(self._cards)})"
-            text.append(actual, style=_COUNTER_ACTUAL)
-
-        counter_widget.update(text)
-
-    def _render_below_card(self) -> None:
-        state = self._states[self._index]
-
-        if state == CardState.HIDDEN:
-            if self._user_input_enabled:
-                self.query_one("#fr-reveal-hint", Static).update(
-                    "Type your answer and press [bold]enter[/bold] to reveal, "
-                    "or press [bold]enter[/bold] to reveal directly"
-                )
-            else:
-                self.query_one("#fr-reveal-hint", Static).update(
-                    "Press [bold]enter[/bold] to reveal"
-                )
-
-        elif state == CardState.REVEALED:
-                ratings_widget = self.query_one("#fr-ratings", Static)
-                if self._index in self._scoring_indices:
-                    text = Text()
-                    text.append("Scoring…", style=_HINT)
-                    ratings_widget.update(text)
-                else:
-                    failed = self._index in self._scoring_failed_indices
-                    text = Text()
-                    if failed:
-                        text.append(
-                            "Auto-score failed — rate manually:  ",
-                            style=_CANCEL_RED,
-                        )
-                    for i, (num, label) in enumerate(_RATINGS):
-                        if i > 0:
-                            text.append("    ", style=_RATING_DIM)
-                        text.append(f"{num}", style=f"bold {_RATING_HIGHLIGHT}")
-                        text.append(f" - {label}", style=_RATING_DIM)
-                    text.append("    ")
-                    if self._auto_score and not failed:
-                        enter_label = "auto"
-                    else:
-                        enter_label = "good"
-                    text.append(f"[enter = {enter_label}]", style=_HINT)
-                    ratings_widget.update(text)
-
-        elif state == CardState.SCORED:
-            self._render_scored_label()
-
-    def _render_scored_label(self) -> None:
-        score = self._scores[self._index]
-        label = dict(_RATINGS).get(score, "?") if score is not None else "?"
-        scored_count = sum(1 for s in self._states if s == CardState.SCORED)
-        text = Text()
-        text.append(f"Scored: {label}", style=_SCORED_DIM)
-        text.append(f"  ({scored_count}/{len(self._cards)} complete)", style=_HINT)
-        self.query_one("#fr-scored-label", Static).update(text)
-
-    # ------------------------------------------------------------------
-    # Collapse / expand (post-session only)
-    # ------------------------------------------------------------------
-
-    def _set_collapsed(self, collapsed: bool) -> None:
-        self._collapsed = collapsed
         btn = self.query_one("#fr-collapse", Button)
-        btn.label = "▶" if collapsed else "▼"
-        self._refresh_view()
+        btn.display = True
+        btn.label = "▶" if self._vm.collapsed else "▼"
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "fr-collapse":
-            event.stop()
-            self._set_collapsed(not self._collapsed)
+        status = self.query_one("#fr-done-status", Static)
+        if self._vm.cancelled:
+            status.update(f"[{_CANCEL_RED}]Session cancelled[/]")
+        else:
+            text = "Session complete"
+            # Show count only in the collapsed summary view.
+            if self._vm.collapsed:
+                reviewed = sum(
+                    1 for c in self._vm._cards
+                    if c.scored and c.score != Flashcard.Score.SKIPPED
+                )
+                text = (
+                    f"Session complete — {reviewed} "
+                    f"card{'s' if reviewed != 1 else ''} reviewed"
+                )
+            status.update(f"[{_DONE_GREEN}]{text}[/]")
 
-    # ------------------------------------------------------------------
-    # Timer
-    # ------------------------------------------------------------------
+        # When expanded, keep the card visible so the user can browse
+        # through their scored cards with alt+←/→.
+        card_visible = not self._vm.collapsed
+        self.query_one("#fr-card", Vertical).display = card_visible
+        if card_visible:
+            self._refresh_current_card()
+        else:
+            # Card hidden — nothing to tick.
+            self._reconcile_timer_interval()
+            self._reconcile_due_interval()
+            self._reconcile_throbber_interval()
 
-    @property
-    def _tick_rate(self) -> float:
-        """Interval rate: faster when showing live time, slower for throbber."""
-        return 0.05 if self._show_time else 0.7
+    def _refresh_current_card(self) -> None:
+        card = self._vm.current_card
+        if card is None:
+            return
 
-    def _start_timer(self) -> None:
-        """Start timing the current card and begin the throbber."""
-        self._timer_start = time.monotonic()
-        self._throbber_frame = 0
-        if self._throbber_interval is not None:
-            self._throbber_interval.stop()
-        self._throbber_interval = self.set_interval(
-            self._tick_rate, self._tick_throbber
+        self.query_one("#fr-question-label", Static).update(
+            f"Question  [dim](id {card.id})[/dim]"
         )
-        self._render_throbber()
+        self.query_one("#fr-counter", Static).update(self._counter_text(card))
+        # Question body hidden when face-down (AWAITING_REVEAL); only the
+        # header + countdown remain visible.
+        question_visible = card.state != Flashcard.State.AWAITING_REVEAL
+        question_widget = self.query_one("#fr-question", Static)
+        question_widget.display = question_visible
+        if question_visible:
+            question_widget.update(card.question)
 
-    def _pause_timer(self) -> None:
-        """Pause timing — accumulate elapsed time for the current card."""
-        if self._timer_start is not None:
-            self._durations[self._index] += time.monotonic() - self._timer_start
-            self._timer_start = None
-        if self._throbber_interval is not None:
+        # Answer input — visible only in FRONT during an active session.
+        # Hiding it in DONE (e.g. post-cancellation) prevents the input
+        # from remaining focusable after the session has ended. Syncs its
+        # buffer to the card's stored draft, suppressing the echo back
+        # through on_text_area_changed.
+        input_visible = (
+            card.state == Flashcard.State.FRONT
+            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        )
+        self.query_one("#fr-answer-input-label", Static).display = input_visible
+        answer_input = self.query_one("#fr-answer-input", _AnswerInput)
+        answer_input.display = input_visible
+        if input_visible:
+            draft = card.user_answer or ""
+            if answer_input.text != draft:
+                self._suppress_text_change = True
+                try:
+                    answer_input.load_text(draft)
+                finally:
+                    self._suppress_text_change = False
+
+        # Route focus based on state: input when FRONT (so typing works),
+        # self otherwise (so enter/1-4/nav keys reach vm.on_key). Only move
+        # focus if we already own it somewhere — don't steal from the chat
+        # input or anywhere else outside this widget.
+        app_focused = self.app.focused
+        we_own_focus = app_focused is self or app_focused is answer_input
+        if we_own_focus:
+            if input_visible and app_focused is not answer_input and not self._vm.cancelled:
+                answer_input.focus()
+            elif not input_visible and app_focused is answer_input:
+                self.focus()
+
+        # User's submitted answer — shown once the card is revealed.
+        revealed_states = {
+            Flashcard.State.REVEALED_NOT_SCORED,
+            Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+            Flashcard.State.SCORED,
+        }
+        show_user_answer = card.state in revealed_states and bool(card.user_answer)
+        self.query_one("#fr-user-answer-label", Static).display = show_user_answer
+        user_answer_widget = self.query_one("#fr-user-answer", Static)
+        user_answer_widget.display = show_user_answer
+        if show_user_answer:
+            user_answer_widget.update(card.user_answer or "")
+
+        # Revealed answer.
+        show_answer = card.state in revealed_states
+        self.query_one("#fr-answer-label", Static).display = show_answer
+        answer_widget = self.query_one("#fr-answer", Static)
+        answer_widget.display = show_answer
+        if show_answer:
+            answer_widget.update(card.answer)
+
+        # Separator between user-answer and revealed answer — only when both visible.
+        self.query_one("#fr-ua-rule", Rule).display = show_user_answer and show_answer
+
+        # Below-card status text.
+        below = self.query_one("#fr-below", Static)
+        match card.state:
+            case Flashcard.State.FRONT:
+                below.update(
+                    "Type your answer and press [bold]enter[/bold] to reveal"
+                )
+            case Flashcard.State.REVEALED_NOT_SCORED:
+                below.update(self._rating_row_text(card))
+            case Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
+                below.update(
+                    f"[{_RATING_LABEL_DIM}]Queued for auto-scoring  —  "
+                    f"press 1-4 to override[/]"
+                )
+            case Flashcard.State.SCORED:
+                label = card.score.name.lower() if card.score else "?"
+                below.update(f"[{_RATING_LABEL_DIM}]Scored: {label}[/]")
+            case Flashcard.State.AWAITING_REVEAL:
+                below.update(self._awaiting_reveal_text(card))
+
+        self._reconcile_timer_interval()
+        self._reconcile_due_interval()
+        self._reconcile_throbber_interval()
+
+    # ------------------------------------------------------------------
+    # Text builders
+    # ------------------------------------------------------------------
+
+    def _counter_text(self, card: Flashcard) -> str:
+        position = f"{self._vm._current_card_index + 1}/{len(self._vm._cards)}"
+        suffix = self._remaining_suffix()
+        if card.state != Flashcard.State.FRONT:
+            return f"{position}{suffix}"
+        if card.timer_visible:
+            return f"{card.elapsed_time:.1f}s  ·  {position}{suffix}"
+        # Throbber in place of the timer.
+        char, color = _THROBBER_FRAMES[self._throbber_frame]
+        return f"[{color}]{char}[/]  ·  {position}{suffix}"
+
+    def _remaining_suffix(self) -> str:
+        total = self._vm.num_remaining
+        if total == 0:
+            return ""
+        position = self._vm.remaining_position
+        inner = f"{position}/{total}" if position is not None else f"-/{total}"
+        return f"  [dim]({inner} remaining)[/dim]"
+
+    def _batch_indicator_text(self) -> str:
+        char, color = _THROBBER_FRAMES[self._throbber_frame]
+        return f"[{color}]{char}[/] Auto-scoring…"
+
+    def _rating_row_text(self, card: Flashcard) -> str:
+        prefix = (
+            f"[{_FAIL_RED}]Auto-score failed — rate manually:[/]  "
+            if card.auto_scoring_failed else ""
+        )
+        enter_label = (
+            "auto"
+            if self._vm._auto_score_enabled and not card.auto_scoring_failed
+            else "good"
+        )
+        pairs = [(1, "again"), (2, "hard"), (3, "good"), (4, "easy")]
+        segments = [
+            f"[bold {_RATING_COLORS[num]}]{num}[/] "
+            f"[{_RATING_LABEL_DIM}]{label}[/]"
+            for num, label in pairs
+        ]
+        row = "    ".join(segments)
+        return f"{prefix}{row}    [{_HINT_DIM}]\\[enter = {enter_label}][/]"
+
+    def _awaiting_reveal_text(self, card: Flashcard) -> str:
+        due_in = card.due_in or 0.0
+        return f"Due in {due_in:.0f}s — press [bold]enter[/bold] to reveal"
+
+    # ------------------------------------------------------------------
+    # Interval reconciliation + tick callbacks
+    # ------------------------------------------------------------------
+
+    def _reconcile_timer_interval(self) -> None:
+        """Start or stop the live-timer ticker so it runs exactly when
+        there's a live elapsed value to display."""
+        card = self._vm.current_card
+        live_timer_visible = (
+            card is not None
+            and card.state == Flashcard.State.FRONT
+            and card.timer_visible
+            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        )
+        currently_running = self._timer_interval is not None
+        if live_timer_visible and not currently_running:
+            self._timer_interval = self.set_interval(0.1, self._tick_timer)
+        elif currently_running and not live_timer_visible:
+            self._timer_interval.stop()
+            self._timer_interval = None
+
+    def _tick_timer(self) -> None:
+        card = self._vm.current_card
+        if card is None:
+            return
+        self.query_one("#fr-counter", Static).update(self._counter_text(card))
+
+    def _reconcile_due_interval(self) -> None:
+        """Start or stop the due-countdown ticker so it runs exactly when
+        the current card is AWAITING_REVEAL."""
+        card = self._vm.current_card
+        countdown_visible = (
+            card is not None
+            and card.state == Flashcard.State.AWAITING_REVEAL
+            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        )
+        currently_running = self._due_interval is not None
+        if countdown_visible and not currently_running:
+            self._due_interval = self.set_interval(1.0, self._tick_due)
+        elif currently_running and not countdown_visible:
+            self._due_interval.stop()
+            self._due_interval = None
+
+    def _tick_due(self) -> None:
+        card = self._vm.current_card
+        if card is None or card.state != Flashcard.State.AWAITING_REVEAL:
+            return
+        self.query_one("#fr-below", Static).update(self._awaiting_reveal_text(card))
+
+    def _reconcile_throbber_interval(self) -> None:
+        """Start or stop the shared throbber ticker. Runs when either the
+        think-time throbber (FRONT card without timer visible) or the
+        batch-scoring indicator needs to animate."""
+        card = self._vm.current_card
+        in_review = self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        think_throbber = (
+            in_review
+            and card is not None
+            and card.state == Flashcard.State.FRONT
+            and not card.timer_visible
+        )
+        batch_throbber = in_review and self._vm.autoscore_in_progress
+        throbber_visible = think_throbber or batch_throbber
+        currently_running = self._throbber_interval is not None
+        if throbber_visible and not currently_running:
+            self._throbber_interval = self.set_interval(0.15, self._tick_throbber)
+        elif currently_running and not throbber_visible:
             self._throbber_interval.stop()
             self._throbber_interval = None
-        self._render_throbber()
 
     def _tick_throbber(self) -> None:
-        """Advance the throbber animation by one frame."""
-        if self._timer_start is None:
-            return
         self._throbber_frame = (self._throbber_frame + 1) % len(_THROBBER_FRAMES)
-        self._render_throbber()
-
-    def _render_throbber(self) -> None:
-        """Re-render the counter (which includes the throbber/timer prefix)."""
-        self._render_counter()
-
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
-
-    def action_reveal_or_rate(self) -> None:
-        if not self._cards:
-            return
-
-        if self._awaiting_start:
-            self._awaiting_start = False
-            self._refresh_view()
-            if self._states[self._index] == CardState.HIDDEN:
-                self._start_timer()
-            if self._user_input_enabled:
-                self.query_one("#fr-answer-input", _AnswerInput).focus()
-            return
-
-        state = self._states[self._index]
-        if state == CardState.HIDDEN:
-            self._reveal_current()
-        elif state == CardState.REVEALED:
-            if (
-                self._auto_score
-                and self._scorer is not None
-                and self._index not in self._scoring_failed_indices
-            ):
-                # Block re-triggering scoring if one's already in flight.
-                if self._scoring_task is None:
-                    self._scoring_task = asyncio.create_task(
-                        self._start_auto_scoring(self._index)
-                    )
-            elif self._auto_score and self._scorer is None:
-                # No scorer available — surface manual fallback immediately.
-                self._scoring_failed_indices.add(self._index)
-                self._refresh_view()
-            else:
-                self._rate(3)  # "good"
-
-    def _reveal_current(self) -> None:
-        self._pause_timer()
-        if self._user_input_enabled:
-            answer_input = self.query_one("#fr-answer-input", _AnswerInput)
-            self._user_answers[self._index] = answer_input.text.strip()
-        self._states[self._index] = CardState.REVEALED
-        self.focus()
-        self._refresh_view()
-        self.call_after_refresh(self.scroll_visible)
-
-    def _can_manually_rate(self) -> bool:
-        """Manual rating keys fire when the card is revealed and either the
-        widget isn't in auto-score mode, or this specific card's auto-scoring
-        failed (fallback path)."""
-        if not self._cards:
-            return False
-        if self._states[self._index] != CardState.REVEALED:
-            return False
-        if self._index in self._scoring_indices:
-            return False
-        return not self._auto_score or self._index in self._scoring_failed_indices
-
-    def action_rate_1(self) -> None:
-        if self._can_manually_rate():
-            self._rate(1)
-
-    def action_rate_2(self) -> None:
-        if self._can_manually_rate():
-            self._rate(2)
-
-    def action_rate_3(self) -> None:
-        if self._can_manually_rate():
-            self._rate(3)
-
-    def action_rate_4(self) -> None:
-        if self._can_manually_rate():
-            self._rate(4)
-
-    def _save_draft(self) -> None:
-        """Persist the current answer input text for the active card."""
-        if self._user_input_enabled and self._states[self._index] == CardState.HIDDEN:
-            answer_input = self.query_one("#fr-answer-input", _AnswerInput)
-            self._user_answers[self._index] = answer_input.text.strip()
-
-    def action_prev_card(self) -> None:
-        if self._cards and self._index > 0:
-            self._save_draft()
-            self._pause_timer()
-            self._index -= 1
-            if self._states[self._index] == CardState.HIDDEN:
-                self._start_timer()
-            self._refresh_view()
-
-    def action_next_card(self) -> None:
-        if self._cards and self._index < len(self._cards) - 1:
-            self._save_draft()
-            self._pause_timer()
-            self._index += 1
-            if self._states[self._index] == CardState.HIDDEN:
-                self._start_timer()
-            self._refresh_view()
-
-    def action_cancel_session(self) -> None:
-        if self._session_done or self._session_cancelled:
-            return
-        self._pause_timer()
-        self._session_cancelled = True
-        # Cancel any in-flight auto-scoring task immediately.
-        if self._scoring_task is not None:
-            self._scoring_task.cancel()
-            self._scoring_task = None
-        self._scoring_indices.clear()
-        # Disable further answer input
-        answer_input = self.query_one("#fr-answer-input", _AnswerInput)
-        answer_input.display = False
-        self.focus()
-        self.post_message(self.SessionCancelled())
-        self._finish_session(completed=False)
-
-    def action_toggle_time(self) -> None:
-        """Toggle between throbber animation and numeric time display."""
-        self._show_time = not self._show_time
-        # Restart the interval at the appropriate tick rate if timer is running
-        if self._timer_start is not None and self._throbber_interval is not None:
-            self._throbber_interval.stop()
-            self._throbber_interval = self.set_interval(
-                self._tick_rate, self._tick_throbber
-            )
-        self._render_throbber()
-
-    # ------------------------------------------------------------------
-    # Child events
-    # ------------------------------------------------------------------
-
-    def on__answer_input_changed(self, event: TextArea.Changed) -> None:
-        self.scroll_visible()
-
-    def on__answer_input_submitted(self, event: _AnswerInput.Submitted) -> None:
+        card = self._vm.current_card
+        # Counter-position throbber.
         if (
-            self._cards
-            and not self._session_done
-            and not self._session_cancelled
-            and self._states[self._index] == CardState.HIDDEN
+            card is not None
+            and card.state == Flashcard.State.FRONT
+            and not card.timer_visible
         ):
-            self._reveal_current()
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    async def _start_auto_scoring(self, index: int) -> None:
-        """Score the card at ``index`` via the scorer subagent, then dispatch
-        the result through ``_rate()`` as if the user had rated manually.
-
-        On failure, flag the card for fallback manual rating and stay put."""
-        self._scoring_indices.add(index)
-        self._refresh_view()
-        card = self._cards[index]
-        try:
-            prompt_parts = [
-                "Score the following flashcard answers:\n\n",
-                f"Flashcard {card.get('id', index)}:\n",
-                f"  Question: {card['question']}\n",
-                f"  Expected answer: {card['answer']}\n",
-                f"  User's answer: {self._user_answers[index] or '(blank)'}\n",
-                f"  Time spent: {round(self._durations[index], 1)}s\n",
-            ]
-            notes = card.get("testing_notes")
-            if notes:
-                prompt_parts.append(f"  Testing notes: {notes}\n")
-
-            _, _, _ = await self._scorer.ainvoke("".join(prompt_parts))
-
-            parsed = self._scorer.structured_response
-            if parsed is None or not parsed.results:
-                raise RuntimeError("scorer returned no structured result")
-
-            result = parsed.results[0]
-            score = int(result.score)
-            if not (1 <= score <= 4):
-                raise RuntimeError(f"scorer returned out-of-range score: {score}")
-
-            # Route back through the normal rating path. The card may have
-            # been re-queued; its index in the list is still ``index`` unless
-            # the user navigated during scoring, but we saved the original
-            # index so that's still where this score applies.
-            saved = self._index
-            self._index = index
-            self._rate(score)
-            if self._cards and saved < len(self._cards):
-                self._index = saved
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            _logger.warning("Auto-scoring failed for card index %d: %s", index, exc)
-            self._scoring_failed_indices.add(index)
-        finally:
-            self._scoring_indices.discard(index)
-            self._scoring_task = None
-            self._refresh_view()
-
-    def _rate(self, rating: int) -> None:
-        card = self._cards[self._index]
-        label = dict(_RATINGS).get(rating, "?")
-        self.post_message(self.CardRated(
-            question=card["question"],
-            answer=card["answer"],
-            user_answer=self._user_answers[self._index],
-            rating=rating,
-            rating_label=label,
-            card_id=card.get("id"),
-        ))
-
-        if rating == 1:
-            if self._again_behaviour == AgainBehaviour.QUEUE:
-                # Re-queue at end — duration resets for the new attempt
-                self._cards.append(self._cards.pop(self._index))
-                self._states.append(CardState.HIDDEN)
-                self._states.pop(self._index)
-                self._scores.append(None)
-                self._scores.pop(self._index)
-                self._user_answers.append("")
-                self._user_answers.pop(self._index)
-                self._durations.append(0.0)
-                self._durations.pop(self._index)
-                if self._index >= len(self._cards):
-                    self._index = 0
-            else:
-                # MARK mode — score as "again" and advance
-                self._states[self._index] = CardState.SCORED
-                self._scores[self._index] = 0
-                self._advance_to_next_unscored()
-        else:
-            self._states[self._index] = CardState.SCORED
-            self._scores[self._index] = rating
-            self._advance_to_next_unscored()
-
-        # Check completion
-        if all(s == CardState.SCORED for s in self._states):
-            self._pause_timer()
-            self._session_done = True
-            self.post_message(self.SessionComplete())
-            self._finish_session(completed=True)
-            return
-
-        # Start timer for the new current card if it's unanswered
-        if self._states[self._index] == CardState.HIDDEN:
-            self._start_timer()
-
-        self._refresh_view()
-
-    def _advance_to_next_unscored(self) -> None:
-        n = len(self._cards)
-        for offset in range(1, n + 1):
-            candidate = (self._index + offset) % n
-            if self._states[candidate] != CardState.SCORED:
-                self._index = candidate
-                return
-
-    def _finish_session(self, *, completed: bool) -> None:
-        """Resolve the interrupt and transition to post-session state."""
-        result = self._build_result(completed=completed)
-        self.resolve(result)
-
-        # Re-enable focus for post-session navigation
-        self.can_focus = True
-
-        if self._collapse_on_complete:
-            self.query_one("#fr-collapse", Button).display = True
-            self._set_collapsed(True)
-        else:
-            self._refresh_view()
-
-    def _build_result(self, *, completed: bool) -> dict[str, Any]:
-        cards_result = []
-        for i, card in enumerate(self._cards):
-            score = self._scores[i]
-            if score is not None:
-                score_label = dict(_RATINGS).get(score, "?")
-            else:
-                score_label = None
-            cards_result.append({
-                "id": card.get("id"),
-                "question": card["question"],
-                "answer": card["answer"],
-                "user_answer": self._user_answers[i],
-                "score": score,
-                "score_label": score_label,
-                "duration": round(self._durations[i], 1),
-            })
-        return {
-            "completed": completed,
-            "cards": cards_result,
-        }
-
-    # ------------------------------------------------------------------
-    # Resize
-    # ------------------------------------------------------------------
-
-    def on_resize(self) -> None:
-        if self._cards:
-            self._refresh_view()
+            self.query_one("#fr-counter", Static).update(self._counter_text(card))
+        # Batch-indicator throbber.
+        if self._vm.autoscore_in_progress:
+            self.query_one("#fr-batch-indicator", Static).update(
+                self._batch_indicator_text()
+            )

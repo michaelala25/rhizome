@@ -122,6 +122,7 @@ class AgentSession:
             thread_id: str | None = None,
             debug: bool = False,
         ):
+        self._session_factory = session_factory
         self._resource_manager = resource_manager
         self._provider = provider
         self._model_name = model_name
@@ -372,6 +373,7 @@ class AgentSession:
                 comparator_subagent=self._comparator_subagent,
                 scorer_subagent=self._scorer_subagent,
                 commit_subagent=self._commit_subagent,
+                session_factory=self._session_factory,
             )
 
             while True:
