@@ -10,12 +10,12 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Rule, Static, TextArea
 
-from .flashcard_review_view_model import (
+from .view_model import (
     Flashcard,
     FlashcardData,
     FlashcardReviewViewModel,
 )
-from .interrupt import InterruptWidgetBase
+from ..interrupt import InterruptWidgetBase
 
 
 # Throbber frames — pulsing dot used in both the counter (think-time) and

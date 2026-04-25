@@ -66,7 +66,7 @@ from .resource.view_model import ResourceViewerViewModel
 from .resource.viewer import ResourceViewer
 from .commit_proposal import CommitProposal
 from .flashcard_proposal import FlashcardProposal
-from .flashcard_review import FlashcardReview
+from .flashcard_review.view import FlashcardReview
 from .choices import Choices
 from .multiple_choices import MultipleChoices
 from .navigable import WidgetDeactivated
@@ -1510,7 +1510,7 @@ class ChatPane(Widget, DockContainerMixin):
         from datetime import datetime, timedelta
         from types import SimpleNamespace
 
-        from rhizome.tui.widgets import flashcard_review_view_model as _vm_module
+        from rhizome.tui.widgets.flashcard_review import view_model as _vm_module
 
         sample_cards = [
             {"id": 101, "question": "What is the time complexity of binary search?", "answer": "O(log n) — each comparison halves the remaining search space."},

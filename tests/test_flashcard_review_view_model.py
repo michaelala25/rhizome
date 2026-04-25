@@ -1,4 +1,4 @@
-"""Tests for rhizome.tui.widgets.flashcard_review_view_model.
+"""Tests for rhizome.tui.widgets.flashcard_review.view_model.
 
 Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewViewModel`` classes. The
 real ``apply_rating`` DB call is stubbed out via a fixture so tests stay
@@ -17,8 +17,8 @@ from types import SimpleNamespace
 import pytest
 from fsrs import Rating
 
-from rhizome.tui.widgets import flashcard_review_view_model as vm
-from rhizome.tui.widgets.flashcard_review_view_model import (
+from rhizome.tui.widgets.flashcard_review import view_model as vm
+from rhizome.tui.widgets.flashcard_review.view_model import (
     Flashcard,
     FlashcardReviewViewModel,
     Timer,

@@ -7,7 +7,7 @@ from .flashcard_proposal import FlashcardProposal
 from .entry_list import EntryList
 from .explorer_viewer import ExplorerViewer
 from .flashcard_list import FlashcardList
-from .flashcard_review import FlashcardReview
+from .flashcard_review.view import FlashcardReview
 from .interrupt import InterruptWidgetBase
 from .navigable import NavigableWidgetMixin, WidgetDeactivated
 from .choices import Choices

@@ -17,7 +17,7 @@ from rhizome.tui.types import Mode, Role
 
 from .commit_proposal import CommitProposal
 from .flashcard_proposal import FlashcardProposal
-from .flashcard_review import FlashcardReview
+from .flashcard_review.view import FlashcardReview
 from .interrupt import InterruptWidgetBase
 from .choices import Choices
 from .multiple_choices import MultipleChoices

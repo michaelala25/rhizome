@@ -1,18 +1,18 @@
 import asyncio
+import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, TypedDict, NotRequired
-from enum import auto, Enum
-from textual import events
+from enum import Enum, auto
+from typing import Any, NotRequired, TypedDict
+
 from fsrs import Rating
+from textual import events
 
 from rhizome.db.operations.flashcards import apply_rating
 from rhizome.logs import get_logger
 
-
-import time
-
 _logger = get_logger("tui.flashcard_review_vm")
+
 
 class Timer:
     """A simple start/pause/stop stopwatch.
