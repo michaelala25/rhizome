@@ -11,7 +11,7 @@ teardown.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -53,7 +53,7 @@ def patch_apply_rating(monkeypatch):
 
     async def fake_apply_rating(session, card_id, rating):
         calls.append((card_id, rating))
-        return SimpleNamespace(due=datetime.now() + timedelta(minutes=1))
+        return SimpleNamespace(due=datetime.now(UTC) + timedelta(minutes=1))
 
     monkeypatch.setattr(vm, "apply_rating", fake_apply_rating)
     return calls
@@ -832,3 +832,194 @@ class TestRegressions:
         review.current_card.reveal_front()
         assert review.current_card.state == Flashcard.State.FRONT
         assert review.current_card._timer.running
+
+    async def test_score_again_card_via_reveal_front_drains_next_remaining(self, review):
+        """Regression: ``score_current_card`` only discarded from
+        ``_remaining``, not from ``_next_remaining``. AGAIN'ing card 1,
+        then immediately surfacing it via ``reveal_front`` and rating it
+        normally, left a ghost id in ``_next``. After the round-swap the
+        ghost landed in ``_remaining`` and the session never finished."""
+        review.begin()
+        # AGAIN card 1 → list [2, 3, 1], _next = {1}, card 1 AWAITING
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AGAIN)
+        assert 1 in review._next_remaining_before_batched_autoscore
+
+        # Navigate to card 1 and surface it manually (impatient user)
+        review.next_card()  # → card 3
+        review.next_card()  # → card 1
+        assert review.current_card.id == 1
+        review.current_card.reveal_front()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.GOOD)
+
+        # The fix: card 1's id is removed from _next on score
+        assert 1 not in review._next_remaining_before_batched_autoscore
+
+        # Score the rest — session should reach DONE
+        while review.current_card.id != 2:
+            review.next_card()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.GOOD)
+
+        while review.current_card.id != 3:
+            review.next_card()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.GOOD)
+
+        assert review.state == FlashcardReviewViewModel.State.DONE
+
+    async def test_again_then_auto_others_drains_with_no_ghost(self, review):
+        """Same ghost-id bug as above, but exercised through the auto-score
+        path. AGAIN card 1, score it manually before its due-timer; AUTO
+        card 2; GOOD card 3. Without the fix, the post-batch ``_check``
+        finds ``_remaining = {1}`` after swap (ghost) and never finishes."""
+        review._auto_scorer = _FakeScorer({2: 3})
+        review.begin()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AGAIN)
+
+        # Surface and score card 1 manually
+        review.next_card()
+        review.next_card()
+        assert review.current_card.id == 1
+        review.current_card.reveal_front()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.GOOD)
+
+        # Score card 2 AUTO
+        while review.current_card.id != 2:
+            review.next_card()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AUTO)
+
+        # Score card 3 GOOD → drains _remaining → batch fires for card 2
+        while review.current_card.id != 3:
+            review.next_card()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.GOOD)
+
+        assert review._autoscore_task is not None
+        await review._autoscore_task
+        assert review.state == FlashcardReviewViewModel.State.DONE
+
+    async def test_alt_s_skip_drains_remaining_triggers_batch(self, review):
+        """Regression: alt+s skip didn't call ``_check_remaining_cards``.
+        If skipping drained ``_remaining`` while a PENDING_AUTO card was
+        deferred, the batch never fired and the session sat inert until
+        the user manually overrode the deferred card."""
+        review._auto_scorer = _FakeScorer({1: 3})
+        review.begin()
+        # Defer card 1 to AUTO
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AUTO)
+        # Cursor on card 2 (FRONT)
+        assert review.current_card.id == 2
+
+        # alt+s skip card 2
+        key = SimpleNamespace(key="alt+s")
+        await review._on_key_reviewing(key)
+        assert review._cards[1].score == Flashcard.Score.SKIPPED
+
+        # Navigate to card 3 and alt+s skip
+        while review.current_card.id != 3:
+            review.next_card()
+        await review._on_key_reviewing(key)
+        assert review._cards[2].score == Flashcard.Score.SKIPPED
+
+        # The fix: alt+s now calls _check_remaining_cards, which finds
+        # _remaining drained with PENDING_AUTO present → spawns the batch.
+        assert review._autoscore_task is not None
+        await review._autoscore_task
+        assert review.state == FlashcardReviewViewModel.State.DONE
+
+    async def test_all_again_swaps_queues_cleanly(self, review):
+        """Invariant: AGAIN'ing every card in the round must drain
+        ``_remaining`` and (after the round-swap triggered by
+        ``_check_remaining_cards``) leave ``_next_remaining`` empty and
+        ``_remaining`` holding all the cards. No ghost ids, no stalled
+        session in REVIEWING."""
+        review.begin()
+        for _ in range(3):
+            review.current_card.reveal_back()
+            await review.score_current_card(Flashcard.Score.AGAIN)
+        assert review._remaining_before_batched_autoscore == {1, 2, 3}
+        assert review._next_remaining_before_batched_autoscore == set()
+        assert review.state == FlashcardReviewViewModel.State.REVIEWING
+
+    async def test_drain_to_auto_during_in_flight_batch_spawns_second_batch(self, review):
+        """Regression-as-invariant: scoring AUTO on the only remaining
+        card while an earlier batch is still in flight must result in a
+        second batch being dispatched once the first completes — not a
+        stalled session. Relies on ``_handle_batched_auto_score`` calling
+        ``_check_remaining_cards`` in its tail, which recursively spawns
+        the next batch when there's still pending-AUTO work."""
+
+        class _MultiBatchScorer:
+            def __init__(self):
+                self.structured_response = None
+                self.invocations = 0
+                self.first_batch_release = asyncio.Event()
+
+            async def ainvoke(self, prompt):
+                self.invocations += 1
+                if self.invocations == 1:
+                    await self.first_batch_release.wait()
+                    results = {2: 3}  # card 2 → GOOD
+                else:
+                    results = {1: 3}  # card 1 → GOOD
+                self.structured_response = SimpleNamespace(
+                    results=[
+                        SimpleNamespace(flashcard_id=fc_id, score=s, feedback="")
+                        for fc_id, s in results.items()
+                    ]
+                )
+
+        scorer = _MultiBatchScorer()
+        review._auto_scorer = scorer
+        review.begin()
+
+        # AGAIN card 1 → list [2, 3, 1], _next = {1}, cursor on card 2
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AGAIN)
+
+        # AUTO card 2 → PENDING_AUTO, cursor on card 3
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AUTO)
+
+        # GOOD card 3 → drains _remaining → swap _next → _remaining = {1};
+        # pending = [card 2] → spawn first batch. Cursor lands on card 1
+        # (AWAITING_REVEAL, the only thing in _next at goto-time).
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.GOOD)
+
+        # Yield so the batch task actually enters ainvoke
+        await asyncio.sleep(0)
+        assert scorer.invocations == 1
+        assert review.autoscore_in_progress
+
+        # Surface card 1 manually and AUTO it while the first batch is stalled
+        assert review.current_card.id == 1
+        review.current_card.reveal_front()
+        review.current_card.reveal_back()
+        await review.score_current_card(Flashcard.Score.AUTO)
+        # Card 1 PENDING_AUTO; _remaining = {}, _next = {}; first batch
+        # still in flight (autoscore_in_progress guards against re-spawn).
+        assert review.autoscore_in_progress
+        first_task = review._autoscore_task
+
+        # Release the first batch. Its tail _check_remaining_cards finds
+        # _remaining drained, no in-flight batch (just cleared), and
+        # pending = [card 1] → spawns the second batch. The second batch's
+        # ainvoke has no awaits to stall on, so it may fully complete
+        # during the `await first_task` below — that's fine, the invariant
+        # is that the second invocation happened at all.
+        scorer.first_batch_release.set()
+        await first_task
+
+        # Drain any still-pending second-batch work
+        if review._autoscore_task is not None and not review._autoscore_task.done():
+            await review._autoscore_task
+
+        assert scorer.invocations == 2
+        assert review.state == FlashcardReviewViewModel.State.DONE

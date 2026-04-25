@@ -1,7 +1,7 @@
 import asyncio
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum, auto
 from typing import Any, NotRequired, TypedDict
 
@@ -333,7 +333,7 @@ class Flashcard:
 
         async with self._session_factory() as session:
             updated_fc = await apply_rating(session, self.id, Rating.Again)
-            due = (updated_fc.due - datetime.now()).total_seconds()
+            due = (updated_fc.due - datetime.now(UTC)).total_seconds()
 
         self._due_timer = Timer()
         self._due = due
@@ -499,6 +499,7 @@ class FlashcardReviewViewModel:
                 self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                 self._remaining_before_batched_autoscore.add(self.current_card.id)
                 self._emit(self.dirty)
+                self._check_remaining_cards()
 
         elif event.key == "alt+s":
             _logger.info(
@@ -527,6 +528,7 @@ class FlashcardReviewViewModel:
                     self._remaining_before_batched_autoscore.add(self.current_card.id)
                     self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                     self._emit(self.dirty)
+                    self._check_remaining_cards()
 
                 # If the card wasn't already skipped, we skip it by setting score to SKIPPED and transitioning state,
                 # removing from remaining queue if necessary. Skipping is only possible for cards that _aren't_ scored.
@@ -543,6 +545,7 @@ class FlashcardReviewViewModel:
                     self._remaining_before_batched_autoscore.discard(self.current_card.id)
                     self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                     self._emit(self.dirty)
+                    self._check_remaining_cards()
 
 
         elif event.key in ["1", "2", "3", "4"]:
@@ -740,8 +743,12 @@ class FlashcardReviewViewModel:
 
         # If the card was rated EASY/GOOD/HARD, we just need to update its state to SCORED.
         # AUTO is handled the same as EASY/GOOD/HARD, until we need to perform a batched autoscore.
-
+        #
+        # Discard from BOTH queues — a card transitioning to SCORED must not leave a ghost id
+        # in _next_remaining (e.g. a previously-AGAIN'd card that the user revealed and scored
+        # before its due timer fired). The AGAIN branch below re-adds to _next afterwards.
         self._remaining_before_batched_autoscore.discard(self.current_card.id)
+        self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
 
         if score in [
             Flashcard.Score.EASY,
