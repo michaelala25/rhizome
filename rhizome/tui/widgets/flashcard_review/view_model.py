@@ -1,3 +1,273 @@
+"""View-model for the FlashcardReview widget.
+
+This module owns two interacting state machines: ``Flashcard`` (per-card lifecycle) and
+``FlashcardReviewViewModel`` (session-level orchestration over a list of cards). The view
+(``FlashcardReview``) subscribes to a single ``dirty`` observer list on the VM and re-renders
+on every emit; it never mutates VM state directly.
+
+============================================================================================
+Flashcard state machine
+============================================================================================
+
+States:
+    FRONT
+        Initial state. The question is shown; the user is thinking. The think-time ``Timer``
+        is the only timer that runs in this state, and it runs ONLY in this state.
+    REVEALED_NOT_SCORED
+        The back of the card has been revealed; the user has not yet rated it.
+    REVEALED_PENDING_AUTO_SCORE
+        The user deferred this card to the auto-scorer (Score.AUTO).
+    SCORED
+        Terminal scored state. Score is one of EASY/GOOD/HARD/SKIPPED. (AGAIN never lands
+        here; an AGAIN'd card transitions to AWAITING_REVEAL instead.)
+    AWAITING_REVEAL
+        The card was AGAIN'd. ``apply_rating(Rating.Again)`` was called and committed; the
+        card is now scheduled and waiting for its due delta to elapse before being shown
+        again. A ``_wait_until_due`` task is in flight; ``_due_timer`` ticks the countdown.
+
+Score values:
+    AGAIN / HARD / GOOD / EASY      mirror ``fsrs.Rating`` (values 1-4).
+    AUTO                            sentinel: card is deferred to the batch scorer.
+    SKIPPED                         sentinel: card was passed over without rating.
+
+Transitions (all enforced by asserts on the source state):
+
+    FRONT
+        -> REVEALED_NOT_SCORED [via reveal_back()]
+            - The user issued the reveal action to flip the card and see the answer.
+            - Pauses the think-time timer.
+
+        -> SCORED(SKIPPED) [via skip()]
+            - The user issued the skip action without first revealing the card.
+            - Stops the think-time timer.
+
+
+    REVEALED_NOT_SCORED
+        -> SCORED(EASY/GOOD/HARD) [via set_score(EASY|GOOD|HARD)]
+            - The user issued a manual-rate action for HARD/GOOD/EASY. Also reached from
+              ``score_current_card``'s manual-rating path.
+            - Calls ``apply_rating(Rating(score.value))`` and commits the session, so the FSRS
+              scheduling state is persisted before the transition completes.
+
+        -> REVEALED_PENDING_AUTO_SCORE [via set_score_auto(); requires !auto_scoring_failed]
+            - The user issued the default-rate action on a revealed card while auto-scoring
+              is enabled, deferring the rating to the batch scorer (the view's
+              enter-on-revealed default).
+            - Stops the think-time timer. Card waits in this state until the round-drain
+              triggers ``_check_remaining_cards`` to dispatch the batch.
+
+        -> AWAITING_REVEAL [via again()]
+            - The user issued the AGAIN-rate action on the revealed card.
+            - Calls ``apply_rating(Rating.Again)`` and commits, then schedules a
+              ``_wait_until_due`` task whose sleep delta is computed from the FSRS-returned
+              ``due``. ``_due_timer`` is started for the countdown display. Internally calls
+              ``reset()`` first, so ``_score`` is None inside AWAITING_REVEAL.
+
+        -> SCORED(SKIPPED) [via skip()]
+            - The user issued the skip action after revealing.
+            - Stops the think-time timer.
+
+
+    REVEALED_PENDING_AUTO_SCORE
+        -> SCORED(EASY/GOOD/HARD) [via set_score(EASY|GOOD|HARD)]
+            - Either the users manually scored the card, or the auto-scorer returned 2/3/4.
+            - Same DB side effects as the REVEALED_NOT_SCORED variant: ``apply_rating`` +
+              commit.
+
+        -> AWAITING_REVEAL [via again()]
+            - Either the user manually AGAIN'd the card, or the auto scorer returned 1.
+            - Blocked by the FlashcardReviewViewModel while an auto-score task is in-flight.
+            - Same DB side effects as the REVEALED_NOT_SCORED variant: ``apply_rating(Again)``
+              + commit + ``_wait_until_due`` task.
+
+        -> REVEALED_NOT_SCORED [via _revert_auto_score_failure()]
+            - The batch scorer dropped this card, returned a non-integer / out-of-range
+              score, or the whole batch raised.
+            - Latches ``auto_scoring_failed=True``, which forbids future ``set_score_auto()``
+              calls on this card until ``reset()`` is invoked.
+
+
+    AWAITING_REVEAL
+        -> FRONT [via reveal_front()]
+            - The user issued the reveal action to surface the card manually (impatient
+              pre-empt of the due timer).
+            - Cancels the in-flight ``_wait_until_due`` task and stops ``_due_timer``. Then
+              starts the think-time timer (which is the only timer running in FRONT).
+
+        -> FRONT [via _wait_until_due firing once due elapses]
+            - The async sleep elapsed naturally. ``_wait_until_due`` calls ``reveal_front()``
+              and then fires the VM-wired ``_on_due_reveal`` callback so the VM can emit
+              ``dirty`` (this transition otherwise bypasses every public VM method).
+
+        -> SCORED(SKIPPED) [via skip()]
+            - The view-model's ``finish()`` reaches every AWAITING_REVEAL card and skips it
+              when the session ends (cancel or natural finish), since these cards will not be
+              coming back around. The user-initiated skip action does NOT reach this branch:
+              ``_on_key_reviewing`` returns early on AWAITING_REVEAL for skip purposes.
+            - Cancels the in-flight ``_wait_until_due`` task and stops ``_due_timer``.
+
+
+    {any state}
+        -> FRONT [via reset()]
+            - Triggered by the user-initiated reset action on the current card, by the
+              unskip action on a SCORED(SKIPPED) card, and internally by ``again()``
+              immediately before transitioning to AWAITING_REVEAL.
+            - Clears ``_score``, ``_user_answer``, and ``auto_scoring_failed``; resets the
+              think-time timer; cancels any in-flight ``_wait_until_due`` task.
+
+Per-card contracts:
+    - The think-time ``Timer`` is started/paused only in FRONT. ``pause()`` and ``unpause()``
+      both assert state == FRONT.
+    - ``set_user_answer()`` asserts state == FRONT.
+    - ``apply_rating`` is called (and the session committed) from exactly two paths inside the
+      ``Flashcard``: ``set_score(EASY/GOOD/HARD)`` and ``again()``. SKIPPED and AUTO do NOT
+      hit the DB; AUTO defers to the batch (which calls ``set_score`` per card), and SKIPPED
+      is a session-local outcome only.
+    - ``auto_scoring_failed`` latches when a card's auto-score result is dropped, malformed,
+      out of range, or the whole batch raised. While latched, ``set_score_auto`` is forbidden
+      (asserts) and the view's default-rate-on-revealed path falls back to a manual GOOD rating.
+      ``reset()`` clears the latch.
+
+============================================================================================
+FlashcardReviewViewModel state machine
+============================================================================================
+
+States:
+    START      Pre-session. ``current_card`` is None. The user must issue the begin action
+               to enter REVIEWING.
+    REVIEWING  Active session. The user is rating cards.
+    DONE       Terminal. The session is over (either ``cancel()`` or ``finish()`` got us here).
+               ``cancelled`` distinguishes the two; ``collapsed`` defaults to True.
+
+Transitions:
+
+    START
+        -> REVIEWING [via begin()]
+            - The user issued the begin action from the start screen.
+            - Unpauses the first card's think-time timer if it is in FRONT.
+
+
+    REVIEWING
+        -> DONE [via finish()]
+            - Reached when ``_check_remaining_cards`` observes the finish-now invariant
+              (``_remaining`` empty AND ``_next_remaining`` empty AND no PENDING_AUTO cards),
+              or as the tail of ``cancel()``.
+            - Pauses the current card's think-time timer if it is still running; cancels any
+              in-flight autoscore task; converts every AWAITING_REVEAL card to
+              SCORED(SKIPPED); sets ``_collapsed = True``.
+
+        -> DONE [via cancel()]
+            - The user issued the cancel action.
+            - Sets ``_cancelled = True``, then delegates to ``finish()``.
+
+
+    DONE
+        -> DONE [via toggle_collapsed()]
+            - The user issued the toggle-collapsed action from the done screen.
+            - View-only state change: flips the ``_collapsed`` flag so the view collapses or
+              re-expands the card detail panel. Does not affect the session outcome.
+
+VM contracts:
+    - ``begin()`` asserts state == START. ``cancel()`` and ``finish()`` assert state != DONE.
+      ``next_card``/``prev_card``/``score_current_card`` assert state != START. The
+      ``score_current_card`` body further asserts state == REVIEWING.
+    - ``toggle_collapsed()`` asserts state == DONE.
+    - The view subscribes a single ``_refresh`` listener and a single ``_maybe_resolve``
+      listener to the ``dirty`` observer list. The VM emits ``dirty`` exactly once per public
+      transition method.
+
+============================================================================================
+Round queues and the central invariants
+============================================================================================
+
+Two sets of card ids drive round progression:
+
+    _remaining_before_batched_autoscore
+        Cards still needing attention in the CURRENT round. Drained as the user scores them.
+    _next_remaining_before_batched_autoscore
+        Cards AGAIN'd during the current round. Will be swapped into _remaining once the
+        current round drains AND any pending-AUTO batch has run.
+
+The two load-bearing invariants:
+
+    1. The auto-scoring batch fires precisely when ``_remaining`` drains AND there are cards
+       in REVEALED_PENDING_AUTO_SCORE.
+    2. The session transitions to DONE precisely when ``_remaining`` drains AND
+       ``_next_remaining`` is empty AND no card is in REVEALED_PENDING_AUTO_SCORE.
+
+Both invariants are enforced inside ``_check_remaining_cards()``. As a corollary, every site
+that mutates ``_remaining`` or ``_next_remaining`` must call ``_check_remaining_cards()``
+afterwards, or the session can stall in REVIEWING forever. The current sites that mutate
+these sets are:
+
+    - ``score_current_card``   (every score path; calls _check at the tail)
+    - key event for ``reset``  (in ``_on_key_reviewing``; calls _check at the tail)
+    - key event for ``skip``   (in ``_on_key_reviewing``; calls _check at the tail)
+    - key event for ``unskip`` (in ``_on_key_reviewing``; calls _check at the tail)
+    - ``_handle_batched_auto_score`` (post-batch requeue/failure handling; calls _check at
+      the tail, which can recursively dispatch a follow-up batch if the user deferred more
+      cards while the previous batch was in flight)
+
+A second corollary: scoring a card to EITHER state (SCORED or REVEALED_PENDING_AUTO_SCORE)
+must remove its id from BOTH queues. ``score_current_card`` discards from both at the top of
+the method; the AGAIN branch then re-adds to ``_next_remaining`` at the bottom. Without this,
+a previously-AGAIN'd card that the user reveals and rates before its due timer fires would
+leave a ghost id in ``_next_remaining`` that survives the round-swap and blocks finish.
+
+============================================================================================
+Auto-scoring batch lifecycle
+============================================================================================
+
+    1. ``_check_remaining_cards`` observes ``_remaining`` empty and at least one card in state
+       REVEALED_PENDING_AUTO_SCORE. It swaps ``_next_remaining`` into ``_remaining`` (so the
+       AGAIN'd cards from this round become the next round's queue), then spawns a single
+       ``_handle_batched_auto_score`` task.
+
+    2. ``autoscore_in_progress`` (``task is not None and not task.done()``) guards against:
+       a. ``_check_remaining_cards`` re-entrance spawning a duplicate task.
+        - In other words, we will NEVER risk spawning a duplicate task until the first one
+          finishes.
+       b. The user manually rating a REVEALED_PENDING_AUTO_SCORE card mid-batch (the
+          would-be-overridden card is included in the in-flight batch).
+       c. The user resetting a REVEALED_PENDING_AUTO_SCORE card mid-batch.
+
+    3. ``_auto_score`` builds a single prompt covering all pending cards and invokes the
+       scorer subagent once. Results are looked up by stable card id. For each card:
+       - Score 2/3/4 -> ``card.set_score(...)`` (transitions to SCORED, applies rating).
+       - Score 1     -> ``card.set_score(AGAIN)`` -> routes through ``again()`` (transitions
+                        to AWAITING_REVEAL, applies Rating.Again).
+       - Missing/malformed/out-of-range -> ``card._revert_auto_score_failure()`` (back to
+                        REVEALED_NOT_SCORED with ``auto_scoring_failed`` latched).
+       - Whole-batch raise -> every card still in REVEALED_PENDING_AUTO_SCORE is reverted via
+                              the same path.
+
+    4. ``_handle_batched_auto_score`` post-loop: AGAIN cards are moved to the back of
+       ``_cards`` and added to ``_remaining`` (NOT ``_next_remaining`` — they are part of the
+       round we just swapped in); failed cards stay in place but are added back to
+       ``_remaining`` so the user can rate them manually. ``_autoscore_task`` is cleared,
+       ``dirty`` is emitted, ``_check_remaining_cards`` runs again (this is what makes the
+       follow-up batch possible if the user deferred more cards mid-batch), and the
+       finish-now condition is re-checked at the tail.
+
+============================================================================================
+Cursor management
+============================================================================================
+
+    - ``_current_card_index`` is an index into ``_cards``. ``_cards`` is mutated in place by
+      AGAIN's remove+append (so the AGAIN'd card always lands at the end of the display
+      order). The cursor's *index* is preserved across this; this means after an AGAIN of a
+      middle/first card, the cursor implicitly shifts to a new card (the one that slid into
+      the vacated position), and after an AGAIN of the last card, the cursor stays on the
+      AGAIN'd card.
+    - ``_goto_next_unscored_card`` is the only place that walks the cursor between rounds.
+      It prefers ``_remaining`` and falls back to ``_next_remaining`` so the cursor doesn't
+      stall on a SCORED card when the only unscored cards are AGAIN'd and waiting.
+    - The think-time timer is paused when leaving FRONT and unpaused when entering FRONT.
+      ``_pause_current_if_front`` / ``_unpause_current_if_front`` are the FRONT-state guards;
+      they make navigation onto a SCORED, REVEALED_*, or AWAITING_REVEAL card a no-op for the
+      timer (the card's own state machine asserts FRONT inside ``pause`` / ``unpause``).
+"""
+
 import asyncio
 import time
 from collections.abc import Callable
