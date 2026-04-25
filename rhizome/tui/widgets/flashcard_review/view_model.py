@@ -269,6 +269,7 @@ class Flashcard:
         ]:
             async with self._session_factory() as session:
                 await apply_rating(session, self.id, Rating(score.value))
+                await session.commit()
 
         self.state = Flashcard.State.SCORED
 
@@ -333,7 +334,9 @@ class Flashcard:
 
         async with self._session_factory() as session:
             updated_fc = await apply_rating(session, self.id, Rating.Again)
-            due = (updated_fc.due - datetime.now(UTC)).total_seconds()
+            await session.commit()
+
+        due = (updated_fc.due - datetime.now(UTC)).total_seconds()
 
         self._due_timer = Timer()
         self._due = due
