@@ -857,6 +857,15 @@ class FlashcardReviewViewModel:
                         # to rate manually. Default to GOOD.
                         await self.score_current_card(Flashcard.Score.GOOD)
 
+                elif self.current_card.state in [
+                    Flashcard.State.SCORED,
+                    Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+                ]:
+                    # Card is already done (or queued for auto-score) — enter
+                    # advances to the next card still needing attention.
+                    self._goto_next_unscored_card()
+                    self._emit(self.dirty)
+
             
     async def _on_key_done(self, event: events.Key) -> None:
         # DONE
