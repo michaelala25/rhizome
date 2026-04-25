@@ -602,8 +602,13 @@ class FlashcardReview(InterruptWidgetBase):
         if show_user_answer:
             user_answer_widget.update(card.user_answer or "")
 
-        # Revealed answer.
-        show_answer = card.state in revealed_states
+        # Revealed answer. Skipped cards stay hidden so a user can't
+        # skip-then-reset to peek at the answer.
+        is_skipped = (
+            card.state == Flashcard.State.SCORED
+            and card.score == Flashcard.Score.SKIPPED
+        )
+        show_answer = card.state in revealed_states and not is_skipped
         self.query_one("#fr-answer-label", Static).display = show_answer
         answer_widget = self.query_one("#fr-answer", Static)
         answer_widget.display = show_answer
