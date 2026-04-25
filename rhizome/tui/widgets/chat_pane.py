@@ -1524,6 +1524,7 @@ class ChatPane(Widget, DockContainerMixin):
         class _FakeSession:
             async def __aenter__(self): return self
             async def __aexit__(self, *_): return False
+            async def commit(self, *_): return
 
         def _fake_session_factory(): return _FakeSession()
 

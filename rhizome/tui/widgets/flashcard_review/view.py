@@ -43,6 +43,91 @@ _FAIL_RED = "rgb(235,100,100)"
 _DONE_GREEN = "rgb(120,210,110)"
 _CANCEL_RED = "rgb(235,100,100)"
 
+# Dot-strip colors. Cursor uses a different glyph (◉) so it reads even when the
+# card under it is also colored (e.g. blue while pending auto-score).
+_DOT_UNSCORED = "rgb(220,220,220)"
+_DOT_DONE = "rgb(85,85,85)"
+_DOT_PENDING = "rgb(120,160,230)"
+_DOT_FAILED = "rgb(235,100,100)"
+_DOT_CHEVRON = "rgb(110,110,110)"
+_DOT_GLYPH = "•"
+_DOT_CURSOR_GLYPH = "◉"
+
+
+class _DotStrip(Static):
+    """Bottom-of-widget progress strip — one dot per card.
+
+    Color encodes per-card status (unscored / done / pending auto-score /
+    auto-score failed). The card under the cursor gets a different glyph
+    so it stays visible regardless of color.
+
+    When the card list is wider than the available content width, the
+    strip scrolls to keep the cursor visible and shows ``<`` / ``>``
+    chevrons on the truncated side(s).
+    """
+
+    def __init__(self, max_dots=10, **kwargs) -> None:
+        super().__init__("", **kwargs)
+        self._cards: list[Flashcard] = []
+        self._cursor: int = 0
+        self._scroll: int = 0
+        self._max_dots = max_dots
+
+    def update_state(self, cards: list[Flashcard], cursor: int) -> None:
+        self._cards = cards
+        self._cursor = cursor
+        self._redraw()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._redraw()
+
+    def _redraw(self) -> None:
+        n = len(self._cards)
+        if n == 0:
+            self.update("")
+            return
+
+        # Each dot is glyph + space (2 chars). Reserve 2 chars on each
+        # side for chevrons even when not shown, so dots don't shift
+        # horizontally as scroll state changes.
+        width = self.size.width or 0
+        if width <= 0:
+            # Pre-mount / pre-layout — fall back to the cap; resize will refit.
+            width_cap = self._max_dots
+        else:
+            width_cap = max(1, (width - 4) // 2)
+        visible = min(n, self._max_dots, width_cap)
+
+        # Reconcile scroll so the cursor stays in the window.
+        if self._cursor < self._scroll:
+            self._scroll = self._cursor
+        elif self._cursor >= self._scroll + visible:
+            self._scroll = self._cursor - visible + 1
+        self._scroll = max(0, min(self._scroll, n - visible))
+
+        start = self._scroll
+        end = start + visible
+        left = f"[{_DOT_CHEVRON}]<[/]" if start > 0 else " "
+        right = f"[{_DOT_CHEVRON}]>[/]" if end < n else " "
+        dots = " ".join(
+            self._dot(self._cards[i], i == self._cursor)
+            for i in range(start, end)
+        )
+        self.update(f"{left} {dots} {right}")
+
+    @staticmethod
+    def _dot(card: Flashcard, is_cursor: bool) -> str:
+        glyph = _DOT_CURSOR_GLYPH if is_cursor else _DOT_GLYPH
+        if card.auto_scoring_failed and card.state != Flashcard.State.SCORED:
+            color = _DOT_FAILED
+        elif card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
+            color = _DOT_PENDING
+        elif card.state == Flashcard.State.SCORED:
+            color = _DOT_DONE
+        else:
+            color = _DOT_UNSCORED
+        return f"[{color}]{glyph}[/]"
+
 
 class _AnswerInput(TextArea):
     """TextArea that forwards Enter up to the parent instead of inserting a newline."""
@@ -151,6 +236,11 @@ class FlashcardReview(InterruptWidgetBase):
         text-align: center;
         margin: 1 0 0 0;
     }
+    FlashcardReview #fr-dots {
+        text-align: center;
+        margin: 1 0 0 0;
+        height: 1;
+    }
     FlashcardReview #fr-start-summary,
     FlashcardReview #fr-start-prompt {
         text-align: center;
@@ -236,6 +326,7 @@ class FlashcardReview(InterruptWidgetBase):
             yield Static("Answer", classes="fr-label", id="fr-answer-label")
             yield Static("", id="fr-answer")
             yield Static("", id="fr-below")
+            yield _DotStrip(id="fr-dots")
 
         with Vertical(id="fr-done"):
             yield Static("", id="fr-done-status")
@@ -541,6 +632,10 @@ class FlashcardReview(InterruptWidgetBase):
                 below.update(f"[{_RATING_LABEL_DIM}]Scored: {label}[/]")
             case Flashcard.State.AWAITING_REVEAL:
                 below.update(self._awaiting_reveal_text(card))
+
+        self.query_one("#fr-dots", _DotStrip).update_state(
+            self._vm._cards, self._vm._current_card_index
+        )
 
         self._reconcile_timer_interval()
         self._reconcile_due_interval()
