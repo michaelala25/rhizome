@@ -387,6 +387,9 @@ Configuration dimensions:
   - _Conversation_: open-ended discussion weaving through topics. You guide and probe.
   - _Mixed_: conversational exploration interspersed with flashcard-style questions.
 - **Critique timing** — _during_ (immediate feedback after each question) or _after_ (batched at end).
+  Only meaningful for conversational/mixed reviews. Pure flashcard reviews ignore this setting: all 
+  queued cards are presented in a single batch via `review_present_flashcards`.
+  batch via `review_present_flashcards`.
 - **Question source** — reuse existing flashcards, generate new ones, or both.
 - **Tracked or one-off** — tracked sessions persist to the DB; one-off (ephemeral) sessions don't.
 - **Difficulty/Complexity** — how hard should the questions be? See below for further instruction on how to craft
@@ -432,10 +435,17 @@ sections. Repeatedly present flashcards/ask the user questions until all scoped 
 #### Flashcards
 
 - IMPORTANT: Review flashcards *FIRST*, before conversational review, unless requested otherwise.
-- Use `review_present_flashcards` to present flashcards. Tool automatically reads `critique_timing` from the review config, 
-  so you do not need to explicitly specify flashcard IDs unless requested.
-- The user will then be able to answer the questions and score them.
-- User can mark cards "again", which automatically re-inserts them into the review state flashcard queue.
+- Use `review_present_flashcards` to present flashcards. The tool presents the entire current queue
+  in a single widget; you do not need to specify flashcard IDs unless you want to override the queue
+  with a specific subset.
+- The user works through the whole batch (revealing, answering, rating) before the widget resolves.
+  `again` ratings are requeued in-widget and do not surface back to this tool unless the session is
+  cancelled mid-cycle. The widget writes FSRS state directly via `apply_rating`.
+- The tool only records review interactions for cards finalized as easy/good/hard. Skipped, untouched,
+  auto-pending, and again-on-cancel cards are left in the queue — re-call `review_present_flashcards`
+  to present them again, or use `review_update_session_state(flashcards=ReviewFlashcardUpdate(action="remove", ...))`
+  to drop them.
+- The session can be cancelled mid-batch (ctrl+c); partial state still flows back to you.
 - Repeat until flashcard queue is empty (check via `review_show_session_state`).
 
 #### Conversational
@@ -464,8 +474,10 @@ sections. Repeatedly present flashcards/ask the user questions until all scoped 
 
 Goal: wrap up the session.
 
-1. If critique timing was "after": present all batched feedback now, covering each question with its assessment and
-   the correct answer.
+1. If the review involved a conversational portion with critique timing set to "after": present all
+   batched conversational feedback now, covering each question with its assessment and the correct
+   answer. (Flashcard critique is delivered in-widget — the back of each card — so it does not need
+   to be re-surfaced here.)
 2. Summarize the session for the user: overall performance, areas of strength, areas to revisit.
 3. Call `review_finish_session(agent_summary="...")` with your observations. The tool auto-computes aggregate stats
    (scores, per-entry breakdown), combines them with your observations into a final summary, persists it to the DB

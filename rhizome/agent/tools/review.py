@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fsrs import Rating
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
@@ -26,7 +25,6 @@ from rhizome.db.models import (
 )
 from rhizome.db.operations import (
     add_review_interaction,
-    apply_rating,
     complete_review_session,
     create_review_session,
     get_flashcard_entry_ids,
@@ -410,15 +408,28 @@ def build_review_tools(session_factory) -> dict:
     @tool_visibility(ToolVisibility.LOW)
     @tool("review_present_flashcards", description=(
         "Present flashcards to the user via the FlashcardReview widget. "
-        "By default pops from the queue: one card for critique-during, all "
-        "cards for critique-after. Pass flashcard_ids to override. "
-        "Self-scored and again cards are handled automatically; "
-        "'auto' cards are scored by an internal subagent."
+        "All queued flashcards are shown together; the user works through "
+        "the whole batch before the widget resolves. Pass flashcard_ids to "
+        "override the queue with an explicit subset.\n\n"
+        "The widget handles rating (manual 1-4, in-widget AGAIN requeue, "
+        "and optional auto-scoring) and writes FSRS state directly. This "
+        "tool only records review interactions for cards the user finalized "
+        "with a hard/good/easy rating, and reconciles the queue with the "
+        "outcome of every presented card:\n"
+        "- easy/good/hard -> interaction recorded, removed from queue.\n"
+        "- again          -> no interaction (FSRS already updated by widget); "
+        "left in queue so the agent can re-present later if desired.\n"
+        "- skipped        -> left in queue; agent decides whether to drop.\n"
+        "- auto-pending   -> session ended mid-auto-score batch; left in queue.\n"
+        "- untouched      -> session cancelled before the card was rated; "
+        "left in queue.\n\n"
+        "If the session was cancelled, partial results are still returned."
     ))
     async def review_present_flashcards_tool(
         runtime: ToolRuntime,
         flashcard_ids: list[int] | None = None,
     ) -> Command:
+        
         review_state: ReviewState = runtime.state["review"]
         queue = list(review_state["flashcard_queue"])
 
@@ -433,13 +444,7 @@ def build_review_tools(session_factory) -> dict:
                         tool_call_id=runtime.tool_call_id,
                     )],
                 })
-            # Pop one card for critique-during, all cards for critique-after
-            config = review_state.get("config")
-            critique_timing = config["critique_timing"] if config else "after"
-            if critique_timing == "during":
-                ids_to_present = [queue[0]]
-            else:
-                ids_to_present = list(queue)
+            ids_to_present = list(queue)
 
         # Fetch flashcard data from DB
         async with session_factory() as session:
@@ -466,14 +471,10 @@ def build_review_tools(session_factory) -> dict:
             for fc in flashcards
         ]
 
-        # Call interrupt to present the widget
-        is_single = len(card_data) == 1
         result = interrupt({
             "type": "flashcard_review",
             "cards": card_data,
-            "auto_score": True,
-            "user_input_enabled": True,
-            "show_complete_status": not is_single,
+            "auto_score_enabled": True,
         })
 
         # Process results
@@ -483,9 +484,16 @@ def build_review_tools(session_factory) -> dict:
         interaction_count = review_state["interaction_count"]
         session_id = review_state["session_id"]
 
+        scored_ids: list[int] = []
         again_ids: list[int] = []
-        scored_count = 0
+        skipped_ids: list[int] = []
+        auto_pending_ids: list[int] = []
+        untouched_ids: list[int] = []
         user_answers: dict[int, str] = {}
+
+        def _drop_from_queue(fc_id: int) -> None:
+            if fc_id in new_queue:
+                new_queue.remove(fc_id)
 
         for card_result in result["cards"]:
             fc_id = card_result["id"]
@@ -493,21 +501,16 @@ def build_review_tools(session_factory) -> dict:
             if fc is None:
                 continue
 
-            entry_ids = [fe.entry_id for fe in fc.flashcard_entries]
-            score = card_result["score"]
+            label = card_result.get("score_label")
+            score = card_result.get("score")
             user_answer = card_result.get("user_answer", "")
-            user_answers[fc_id] = user_answer
+            if user_answer:
+                user_answers[fc_id] = user_answer
 
-            # Remove from queue regardless of score
-            if fc_id in new_queue:
-                new_queue.remove(fc_id)
-
-            if score == 1:
-                # "again" — requeue at end
-                again_ids.append(fc_id)
-            elif score is not None:
-                # Scored (manual or auto, both come through as 1-4 now) —
-                # record interaction immediately.
+            if label in ("easy", "good", "hard"):
+                # Widget already called apply_rating; we just record the
+                # ReviewInteraction and bump coverage.
+                entry_ids = [fe.entry_id for fe in fc.flashcard_entries]
                 interaction_count += 1
                 async with session_factory() as session:
                     await add_review_interaction(
@@ -518,41 +521,65 @@ def build_review_tools(session_factory) -> dict:
                         position=interaction_count,
                         flashcard_id=fc_id,
                     )
-                    await apply_rating(session, fc_id, Rating(score))
                     await session.commit()
                 for eid in entry_ids:
                     new_coverage[eid] = new_coverage.get(eid, 0) + 1
-                scored_count += 1
-
-        # Requeue "again" cards at end
-        new_queue.extend(again_ids)
+                scored_ids.append(fc_id)
+                _drop_from_queue(fc_id)
+            elif label == "again":
+                # Widget already wrote FSRS state via apply_rating(Again) and
+                # cycled the card in-session. Reaching the tool with an
+                # AGAIN label means the in-widget requeue was interrupted —
+                # leave the card in the queue, no interaction recorded.
+                again_ids.append(fc_id)
+            elif label == "skipped":
+                skipped_ids.append(fc_id)
+            elif label == "auto":
+                # Cancelled mid-auto-score batch — no rating finalized.
+                auto_pending_ids.append(fc_id)
+            else:
+                # label is None — card never reached a terminal score
+                # (cancelled while still on FRONT or REVEALED_NOT_SCORED).
+                untouched_ids.append(fc_id)
 
         new_state["flashcard_queue"] = new_queue
         new_state["entry_coverage"] = new_coverage
         new_state["interaction_count"] = interaction_count
 
         # Build summary message
-        parts = []
+        parts: list[str] = []
         completed = result.get("completed", False)
-        if completed:
-            parts.append("Flashcard session complete.")
-        else:
-            parts.append("Flashcard session cancelled.")
+        parts.append(
+            "Flashcard session complete." if completed else "Flashcard session cancelled."
+        )
+
+        if scored_ids:
+            parts.append(f"{len(scored_ids)} card(s) scored and recorded: {scored_ids}.")
+        if again_ids:
+            parts.append(
+                f"{len(again_ids)} card(s) ended on AGAIN (left in queue, FSRS updated): {again_ids}."
+            )
+        if skipped_ids:
+            parts.append(f"{len(skipped_ids)} card(s) skipped (left in queue): {skipped_ids}.")
+        if auto_pending_ids:
+            parts.append(
+                f"{len(auto_pending_ids)} card(s) pending auto-score at cancel "
+                f"(left in queue): {auto_pending_ids}."
+            )
+        if untouched_ids:
+            parts.append(f"{len(untouched_ids)} card(s) untouched (left in queue): {untouched_ids}.")
 
         if user_answers:
             parts.append("\nUser answers:")
             for fc_id, answer in user_answers.items():
                 fc = flashcard_map.get(fc_id)
                 q = fc.question_text if fc else "?"
-                parts.append(f"  - Flashcard {fc_id} (Q: {q}): {answer or '(blank)'}")
-        if scored_count:
-            parts.append(f"{scored_count} card(s) scored and recorded.")
-        if again_ids:
-            parts.append(f"{len(again_ids)} card(s) marked 'again' (requeued): {again_ids}.")
+                parts.append(f"  - Flashcard {fc_id} (Q: {q}): {answer}")
+
         if new_queue:
             parts.append(f"Flashcard queue: {len(new_queue)} remaining.")
         else:
-            parts.append("Flashcard queue empty.")
+            parts.append("Flashcard queue fully drained.")
 
         msg = " ".join(parts)
         return Command(update={

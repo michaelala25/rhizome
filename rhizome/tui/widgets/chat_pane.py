@@ -1507,7 +1507,7 @@ class ChatPane(Widget, DockContainerMixin):
         the DB call inside ``Flashcard.set_score`` / ``Flashcard.again``
         errors on the unknown row.
         """
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, UTC
         from types import SimpleNamespace
 
         from rhizome.tui.widgets.flashcard_review import view_model as _vm_module
@@ -1530,7 +1530,7 @@ class ChatPane(Widget, DockContainerMixin):
         async def _fake_apply_rating(session, card_id, rating):
             # Short due delay so AGAIN'd cards re-appear quickly for
             # manual testing of the AWAITING_REVEAL flow.
-            return SimpleNamespace(due=datetime.now() + timedelta(seconds=8))
+            return SimpleNamespace(due=datetime.now(UTC) + timedelta(seconds=8))
 
         _vm_module.apply_rating = _fake_apply_rating
 

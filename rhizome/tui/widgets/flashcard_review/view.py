@@ -276,27 +276,28 @@ class FlashcardReview(InterruptWidgetBase):
 
     def _maybe_resolve(self) -> None:
         """Called on every VM ``dirty`` emit. The first time we observe
-        the VM reach its DONE state, either cancel the future (if the
-        user cancelled the session) or resolve it with the result.
-        Subsequent emits after DONE (collapse toggle, navigation while
-        expanded) are no-ops because ``_future`` is already done.
+        the VM reach its DONE state, resolve the future with the result.
+        
+        Cancel and complete both resolve — ``_build_result`` sets
+        ``completed`` accordingly so the tool can distinguish them and
+        handle partial state. Subsequent emits after DONE (collapse
+        toggle, navigation while expanded) are no-ops because
+        ``_future`` is already done.
         """
         if self._future.done():
             return
         if self._vm.state != FlashcardReviewViewModel.State.DONE:
             return
-        if self._vm.cancelled:
-            # User cancelled — propagate via the base's future.cancel().
-            self.cancel()
-        else:
-            self.resolve(self._build_result())
+        self.resolve(self._build_result())
 
     def _build_result(self) -> dict[str, Any]:
         cards = []
+        
         for card in self._vm._cards:
             score_val: int | None = None
             score_label: str | None = None
             score = card.score
+
             if score in (
                 Flashcard.Score.AGAIN,
                 Flashcard.Score.HARD,
@@ -311,6 +312,7 @@ class FlashcardReview(InterruptWidgetBase):
                 # Session ended while the card was still pending a batch
                 # (e.g. user cancelled mid-batch). No final rating.
                 score_label = "auto"
+
             cards.append({
                 "id": card.id,
                 "question": card.question,
@@ -320,6 +322,7 @@ class FlashcardReview(InterruptWidgetBase):
                 "score_label": score_label,
                 "duration": round(card.elapsed_time, 1),
             })
+
         return {
             "completed": not self._vm.cancelled,
             "cards": cards,
