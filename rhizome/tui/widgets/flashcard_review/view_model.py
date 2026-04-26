@@ -21,9 +21,10 @@ States:
         Terminal scored state. Score is one of EASY/GOOD/HARD/SKIPPED. (AGAIN never lands
         here; an AGAIN'd card transitions to AWAITING_REVEAL instead.)
     AWAITING_REVEAL
-        The card was AGAIN'd. ``apply_rating(Rating.Again)`` was called and committed; the
-        card is now scheduled and waiting for its due delta to elapse before being shown
-        again. A ``_wait_until_due`` task is in flight; ``_due_timer`` ticks the countdown.
+        The card was AGAIN'd. Rating.Again has been applied to ``_current_fsrs_card`` via
+        the VM's scheduler; the card is now scheduled and waiting for its due delta to
+        elapse before being shown again. A ``_wait_until_due`` task is in flight;
+        ``_due_timer`` ticks the countdown.
 
 Score values:
     AGAIN / HARD / GOOD / EASY      mirror ``fsrs.Rating`` (values 1-4).
@@ -46,8 +47,8 @@ Transitions (all enforced by asserts on the source state):
         -> SCORED(EASY/GOOD/HARD) [via set_score(EASY|GOOD|HARD)]
             - The user issued a manual-rate action for HARD/GOOD/EASY. Also reached from
               ``score_current_card``'s manual-rating path.
-            - Calls ``apply_rating(Rating(score.value))`` and commits the session, so the FSRS
-              scheduling state is persisted before the transition completes.
+            - Advances ``_current_fsrs_card`` by running ``Rating(score.value)`` through the
+              VM-owned scheduler. No DB write — see "FSRS state ownership" up top.
 
         -> REVEALED_PENDING_AUTO_SCORE [via set_score_auto(); requires !auto_scoring_failed]
             - The user issued the default-rate action on a revealed card while auto-scoring
@@ -58,10 +59,12 @@ Transitions (all enforced by asserts on the source state):
 
         -> AWAITING_REVEAL [via again()]
             - The user issued the AGAIN-rate action on the revealed card.
-            - Calls ``apply_rating(Rating.Again)`` and commits, then schedules a
-              ``_wait_until_due`` task whose sleep delta is computed from the FSRS-returned
-              ``due``. ``_due_timer`` is started for the countdown display. Internally calls
-              ``reset()`` first, so ``_score`` is None inside AWAITING_REVEAL.
+            - Advances ``_current_fsrs_card`` via the scheduler (Rating.Again), then
+              schedules a ``_wait_until_due`` task whose sleep delta is computed from the
+              card's new ``due``. ``_due_timer`` is started for the countdown display.
+              Internally calls ``_reset_session_metadata()`` first (NOT ``reset()`` —
+              rolling FSRS state back here would discard the Again that's about to be
+              applied), so ``_score`` is None inside AWAITING_REVEAL.
 
         -> SCORED(SKIPPED) [via skip()]
             - The user issued the skip action after revealing.
@@ -71,14 +74,14 @@ Transitions (all enforced by asserts on the source state):
     REVEALED_PENDING_AUTO_SCORE
         -> SCORED(EASY/GOOD/HARD) [via set_score(EASY|GOOD|HARD)]
             - Either the users manually scored the card, or the auto-scorer returned 2/3/4.
-            - Same DB side effects as the REVEALED_NOT_SCORED variant: ``apply_rating`` +
-              commit.
+            - Same effect as the REVEALED_NOT_SCORED variant: scheduler advances
+              ``_current_fsrs_card``.
 
         -> AWAITING_REVEAL [via again()]
             - Either the user manually AGAIN'd the card, or the auto scorer returned 1.
             - Blocked by the FlashcardReviewViewModel while an auto-score task is in-flight.
-            - Same DB side effects as the REVEALED_NOT_SCORED variant: ``apply_rating(Again)``
-              + commit + ``_wait_until_due`` task.
+            - Same effect as the REVEALED_NOT_SCORED variant: scheduler applies Rating.Again
+              to ``_current_fsrs_card``, plus the ``_wait_until_due`` task.
 
         -> REVEALED_NOT_SCORED [via _revert_auto_score_failure()]
             - The batch scorer dropped this card, returned a non-integer / out-of-range
@@ -109,24 +112,55 @@ Transitions (all enforced by asserts on the source state):
 
     {any state}
         -> FRONT [via reset()]
-            - Triggered by the user-initiated reset action on the current card, by the
-              unskip action on a SCORED(SKIPPED) card, and internally by ``again()``
-              immediately before transitioning to AWAITING_REVEAL.
+            - Triggered by the user-initiated reset action on the current card and by the
+              unskip action on a SCORED(SKIPPED) card. (``again()`` does NOT call this; it
+              uses ``_reset_session_metadata()`` directly so the about-to-be-applied
+              Rating.Again isn't immediately rolled back.)
             - Clears ``_score``, ``_user_answer``, and ``auto_scoring_failed``; resets the
-              think-time timer; cancels any in-flight ``_wait_until_due`` task.
+              think-time timer; cancels any in-flight ``_wait_until_due`` task; AND
+              restores ``_current_fsrs_card`` to a copy of ``_initial_fsrs_card`` (this is
+              the only operation that does so). Because no DB write has happened, this
+              restoration is fully consistent.
+
+              Remark: Resetting a card _after_ a DB commit is entirely valid, since each card
+              maintains it's initial FSRS state, distinct from the DB. Future DB commits will
+              simply overwrite the previous FSRS state with the newly reset state.
 
 Per-card contracts:
     - The think-time ``Timer`` is started/paused only in FRONT. ``pause()`` and ``unpause()``
       both assert state == FRONT.
     - ``set_user_answer()`` asserts state == FRONT.
-    - ``apply_rating`` is called (and the session committed) from exactly two paths inside the
-      ``Flashcard``: ``set_score(EASY/GOOD/HARD)`` and ``again()``. SKIPPED and AUTO do NOT
-      hit the DB; AUTO defers to the batch (which calls ``set_score`` per card), and SKIPPED
-      is a session-local outcome only.
+    - The scheduler is invoked from exactly two paths inside the ``Flashcard``:
+      ``set_score(EASY/GOOD/HARD)`` and ``again()``. SKIPPED and AUTO do not advance FSRS
+      state; AUTO defers to the batch (which routes each card through ``set_score`` once
+      the scorer returns), and SKIPPED is a session-local outcome only.
     - ``auto_scoring_failed`` latches when a card's auto-score result is dropped, malformed,
       out of range, or the whole batch raised. While latched, ``set_score_auto`` is forbidden
       (asserts) and the view's default-rate-on-revealed path falls back to a manual GOOD rating.
       ``reset()`` clears the latch.
+
+============================================================================================
+FSRS state ownership
+============================================================================================
+
+The VM owns a single ``fsrs.Scheduler`` and is the only object that runs ratings through it.
+Each ``Flashcard`` carries two in-memory ``fsrs.Card`` snapshots:
+
+    _initial_fsrs_card
+        Immutable snapshot of the card's FSRS state at session start. ``reset()`` rolls
+        ``_current_fsrs_card`` back to a copy of this.
+    _current_fsrs_card
+        Mutated by ``set_score`` / ``again`` (each rating advances the in-memory card via
+        the VM-owned scheduler). Never persisted automatically.
+
+No DB I/O happens during the session. The VM exposes a single public ``commit()`` coroutine
+that writes each card's ``_current_fsrs_card`` back to the DB; it is never called internally
+and is reserved for the widget's caller (the ``review_present_flashcards`` tool) to invoke
+when the session ends against a non-ephemeral DB ``ReviewSession``. ``commit()`` is
+idempotent: calling it twice writes the same state twice.
+
+The session factory passed to the VM is held only for ``commit()``. The Flashcards do not
+hold or use it.
 
 ============================================================================================
 FlashcardReviewViewModel state machine
@@ -233,9 +267,10 @@ Auto-scoring batch lifecycle
 
     3. ``_auto_score`` builds a single prompt covering all pending cards and invokes the
        scorer subagent once. Results are looked up by stable card id. For each card:
-       - Score 2/3/4 -> ``card.set_score(...)`` (transitions to SCORED, applies rating).
+       - Score 2/3/4 -> ``card.set_score(...)`` (transitions to SCORED, advances FSRS state
+                        via the scheduler).
        - Score 1     -> ``card.set_score(AGAIN)`` -> routes through ``again()`` (transitions
-                        to AWAITING_REVEAL, applies Rating.Again).
+                        to AWAITING_REVEAL, advances FSRS state via Rating.Again).
        - Missing/malformed/out-of-range -> ``card._revert_auto_score_failure()`` (back to
                         REVEALED_NOT_SCORED with ``auto_scoring_failed`` latched).
        - Whole-batch raise -> every card still in REVEALED_PENDING_AUTO_SCORE is reverted via
@@ -269,16 +304,17 @@ Cursor management
 """
 
 import asyncio
+import copy
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum, auto
 from typing import Any, NotRequired, TypedDict
 
-from fsrs import Rating
+from fsrs import Card, Rating, Scheduler
 from textual import events
 
-from rhizome.db.operations.flashcards import apply_rating
+from rhizome.db.operations.flashcards import commit_fsrs_card
 from rhizome.logs import get_logger
 
 _logger = get_logger("tui.flashcard_review_vm")
@@ -356,11 +392,16 @@ class Timer:
 
         return self._accumulated + (time.perf_counter() - self._start_time)
 
-# Simple dataclass constructed in the interrupt payload in the tool call
+# Simple dataclass constructed in the interrupt payload in the tool call.
+# ``fsrs_card`` is the in-memory FSRS scheduling state for this card at the
+# start of the session — built from the DB row by ``to_fsrs_card`` (or
+# constructed directly for tests / sample data). The Flashcard takes a
+# private copy so the caller's object isn't mutated.
 class FlashcardData(TypedDict):
     question: str
     answer: str
     id: int
+    fsrs_card: Card
     testing_notes: NotRequired[str]
 
 class Flashcard:
@@ -385,13 +426,22 @@ class Flashcard:
     def __init__(
         self,
         flashcard_data: FlashcardData,
-        session_factory: Any
+        scheduler: Scheduler,
     ):
         self.question = flashcard_data["question"]
         self.answer = flashcard_data["answer"]
         self.id = flashcard_data["id"]
         self.testing_notes = flashcard_data.get("testing_notes", None)
-        self._session_factory = session_factory
+        self._scheduler = scheduler
+
+        # FSRS scheduling state — managed entirely in memory. ``_initial`` is
+        # the snapshot at session start (used by ``reset()`` to fully roll
+        # the card back); ``_current`` is mutated by every rating. Neither
+        # is ever written to the DB during the session — the VM's
+        # ``commit()`` is the only sanctioned write site, and it's called
+        # by the widget's owner, not internally.
+        self._initial_fsrs_card = copy.copy(flashcard_data["fsrs_card"])
+        self._current_fsrs_card = copy.copy(self._initial_fsrs_card)
 
         # Timer for while the card is visible
         self._timer = Timer()
@@ -447,6 +497,17 @@ class Flashcard:
     @property
     def auto_scoring_failed(self) -> bool:
         return self._auto_scoring_failed
+
+    @property
+    def fsrs_card(self) -> Card:
+        """The card's current in-memory FSRS scheduling state.
+
+        Mutated by ``set_score`` / ``again`` (which run the rating through
+        the VM-owned scheduler), and rolled back to the initial snapshot
+        by ``reset()``. Never persisted unless the VM's caller invokes
+        ``commit()`` on the view-model.
+        """
+        return self._current_fsrs_card
     
     def set_user_answer(self, answer: str):
         assert self.state == Flashcard.State.FRONT
@@ -467,13 +528,18 @@ class Flashcard:
     def toggle_timer_visible(self):
         self._timer_visible = not self._timer_visible
 
-    def reset(self):
+    def _reset_session_metadata(self):
+        """Clear per-attempt session metadata WITHOUT touching FSRS state.
+
+        Used by both the public ``reset()`` and by ``again()`` (which
+        funnels into AWAITING_REVEAL — rolling the FSRS state back there
+        would discard the Rating.Again that's about to be applied).
+        """
         self._timer.reset()
         self._score = None
-        # Reset is a fresh start — the user explicitly opted to retry this
-        # card, so they get a clean crack at auto-scoring too, and the
-        # previously-typed draft answer is cleared so the input shows empty
-        # when the card comes back around.
+        # The user gets a clean crack at auto-scoring on the next attempt,
+        # and the previously-typed draft answer is cleared so the input
+        # shows empty when the card comes back around.
         self._auto_scoring_failed = False
         self._user_answer = None
 
@@ -481,6 +547,18 @@ class Flashcard:
             self._awaiting_reveal_task.cancel()
             self._awaiting_reveal_task = None
 
+    def reset(self):
+        """Fully reset the card: clear session metadata AND restore FSRS
+        state to the session's initial snapshot.
+
+        Called when the user explicitly opts to retry the card from
+        scratch (alt+x, or unskip via alt+s on a SKIPPED card). Because
+        FSRS state hasn't been committed mid-session, restoring
+        ``_current_fsrs_card`` to ``_initial_fsrs_card`` is fully
+        consistent — the next rating starts from a true initial state.
+        """
+        self._reset_session_metadata()
+        self._current_fsrs_card = copy.copy(self._initial_fsrs_card)
         self.state = Flashcard.State.FRONT
 
     def reveal_back(self):
@@ -507,20 +585,24 @@ class Flashcard:
         self.state = Flashcard.State.FRONT
         self.unpause()
 
-    async def set_score(self, score: Score):
-        """Score the card with the given score, transitioning state accordingly."""
+    def set_score(self, score: Score):
+        """Score the card with the given score, transitioning state accordingly.
+
+        Synchronous — FSRS state is mutated in memory via the VM-owned
+        scheduler. No DB I/O happens here.
+        """
 
         # First, delegate to other methods whenever possible
         if score == Flashcard.Score.SKIPPED:
             self.skip()
             return
         elif score == Flashcard.Score.AGAIN:
-            await self.again()
+            self.again()
             return
         elif score == Flashcard.Score.AUTO:
             self.set_score_auto()
             return
-        
+
         # Can only set the score to EASY/GOOD/HARD if we're in one of the following two states
         assert self.state in [
             # This state reflects the user manually scoring the card
@@ -528,7 +610,7 @@ class Flashcard:
             # This state reflects the auto-scorer scoring the card, or the user manually scoring a card that was pending auto-score
             Flashcard.State.REVEALED_PENDING_AUTO_SCORE
         ]
-        
+
         self._score = score
         self._timer.stop()
 
@@ -537,9 +619,11 @@ class Flashcard:
             Flashcard.Score.GOOD,
             Flashcard.Score.HARD,
         ]:
-            async with self._session_factory() as session:
-                await apply_rating(session, self.id, Rating(score.value))
-                await session.commit()
+            self._current_fsrs_card, _log = self._scheduler.review_card(
+                self._current_fsrs_card,
+                Rating(score.value),
+                datetime.now(UTC),
+            )
 
         self.state = Flashcard.State.SCORED
 
@@ -593,20 +677,23 @@ class Flashcard:
 
         self.state = Flashcard.State.SCORED
 
-    async def again(self):
+    def again(self):
         assert self.state in [
             Flashcard.State.REVEALED_NOT_SCORED,
             Flashcard.State.REVEALED_PENDING_AUTO_SCORE
         ]
 
-        self.reset()
+        # Clear per-attempt metadata, but DON'T roll FSRS state back —
+        # we're about to apply Rating.Again on top of the current state.
+        self._reset_session_metadata()
         self.state = Flashcard.State.AWAITING_REVEAL
 
-        async with self._session_factory() as session:
-            updated_fc = await apply_rating(session, self.id, Rating.Again)
-            await session.commit()
+        review_dt = datetime.now(UTC)
+        self._current_fsrs_card, _log = self._scheduler.review_card(
+            self._current_fsrs_card, Rating.Again, review_dt,
+        )
 
-        due = (updated_fc.due - datetime.now(UTC)).total_seconds()
+        due = (self._current_fsrs_card.due - review_dt).total_seconds()
 
         self._due_timer = Timer()
         self._due = due
@@ -644,11 +731,17 @@ class FlashcardReviewViewModel:
         cards: list[FlashcardData],
         session_factory: Any,
         auto_score_enabled: bool = False,
-        auto_scorer: Any = None
+        auto_scorer: Any = None,
+        scheduler: Scheduler | None = None,
     ):
         super().__init__()
+        # ``session_factory`` is held only for the public ``commit()`` API,
+        # which is never called internally — no DB I/O happens during the
+        # session itself. FSRS state lives entirely in memory on each
+        # Flashcard, mutated through ``self._scheduler``.
         self._session_factory = session_factory
-        self._cards = [Flashcard(card, session_factory) for card in cards]
+        self._scheduler = scheduler if scheduler is not None else Scheduler()
+        self._cards = [Flashcard(card, self._scheduler) for card in cards]
         self._current_card_index = 0
 
         self._auto_score_enabled = auto_score_enabled
@@ -678,7 +771,7 @@ class FlashcardReviewViewModel:
             listener()
 
     
-    async def on_key(self, event: events.Key) -> None:
+    def on_key(self, event: events.Key) -> None:
         # Valid actions per state:
         #
         # START
@@ -704,14 +797,14 @@ class FlashcardReviewViewModel:
         _logger.info("on_key: state=%s key=%r", self.state.name, event.key)
         match self.state:
             case FlashcardReviewViewModel.State.START:
-                await self._on_key_start(event)
+                self._on_key_start(event)
             case FlashcardReviewViewModel.State.REVIEWING:
-                await self._on_key_reviewing(event)
+                self._on_key_reviewing(event)
             case FlashcardReviewViewModel.State.DONE:
-                await self._on_key_done(event)
+                self._on_key_done(event)
 
 
-    async def _on_key_start(self, event: events.Key) -> None:
+    def _on_key_start(self, event: events.Key) -> None:
         # START
         #   - enter -> begin
         #   - ctrl+c -> cancel
@@ -724,7 +817,7 @@ class FlashcardReviewViewModel:
             self.cancel()
             #event.stop()
 
-    async def _on_key_reviewing(self, event: events.Key) -> None:
+    def _on_key_reviewing(self, event: events.Key) -> None:
         # REVIEWING
         #   - enter     -> reveal or rate
         #   - 1/2/3/4   -> rate 1/2/3/4
@@ -832,7 +925,7 @@ class FlashcardReviewViewModel:
                     "3": Flashcard.Score.GOOD,
                     "4": Flashcard.Score.EASY,
                 }
-                await self.score_current_card(score_mapping[event.key])
+                self.score_current_card(score_mapping[event.key])
 
         elif event.key == "enter":
             if self.current_card:
@@ -850,12 +943,12 @@ class FlashcardReviewViewModel:
                         self._auto_score_enabled
                         and not self.current_card.auto_scoring_failed
                     ):
-                        await self.score_current_card(Flashcard.Score.AUTO)
+                        self.score_current_card(Flashcard.Score.AUTO)
                     else:
                         # Either auto-scoring is disabled, or this card has
                         # already burned its auto-score attempt — user needs
                         # to rate manually. Default to GOOD.
-                        await self.score_current_card(Flashcard.Score.GOOD)
+                        self.score_current_card(Flashcard.Score.GOOD)
 
                 elif self.current_card.state in [
                     Flashcard.State.SCORED,
@@ -867,7 +960,7 @@ class FlashcardReviewViewModel:
                     self._emit(self.dirty)
 
             
-    async def _on_key_done(self, event: events.Key) -> None:
+    def _on_key_done(self, event: events.Key) -> None:
         # DONE
         #   - enter     -> collapse/expanded
         #   - alt+left (expanded) -> prev card
@@ -977,6 +1070,27 @@ class FlashcardReviewViewModel:
         self._collapsed = not self._collapsed
         self._emit(self.dirty)
 
+    async def commit(self) -> None:
+        """Persist every card's current FSRS scheduling state to the DB.
+
+        Idempotent — calling this repeatedly writes the same state each
+        time (assuming no further ratings happen in between). Never
+        called internally; reserved for the widget's caller (typically
+        the ``review_present_flashcards`` tool) to invoke when a session
+        completes against a non-ephemeral review session.
+
+        Cards that haven't been rated this session (SKIPPED cards left
+        in FRONT, untouched cards from a cancelled session) still get
+        their FSRS state written — but since ``_current_fsrs_card`` was
+        never advanced for those, the write is a no-op equivalent.
+        """
+        async with self._session_factory() as session:
+            for card in self._cards:
+                await commit_fsrs_card(
+                    session, card.id, card._current_fsrs_card,
+                )
+            await session.commit()
+
     def next_card(self):
         """Navigate to the next card, wrapping around if necessary. Does not change card state (other than pausing/unpausing the think-time timer)."""
         assert self.state != FlashcardReviewViewModel.State.START
@@ -1000,7 +1114,7 @@ class FlashcardReviewViewModel:
         self._unpause_current_if_front()
         self._emit(self.dirty)
 
-    async def score_current_card(self, score: Flashcard.Score):
+    def score_current_card(self, score: Flashcard.Score):
         """Score the current card with the given score, transitioning card state accordingly."""
         assert self.state == FlashcardReviewViewModel.State.REVIEWING
         
@@ -1037,9 +1151,9 @@ class FlashcardReviewViewModel:
             Flashcard.Score.GOOD,
             Flashcard.Score.HARD,
         ]:
-            await self.current_card.set_score(score)
+            self.current_card.set_score(score)
             self._goto_next_unscored_card()
-        
+
         elif score == Flashcard.Score.AUTO:
             # Routed separately to utilize specialized non-async method
             self.current_card.set_score_auto()
@@ -1067,7 +1181,7 @@ class FlashcardReviewViewModel:
 
             # Set the card internally to the "again" state — this also
             # resets its main timer (AWAITING_REVEAL isn't timed).
-            await current_card.again()
+            current_card.again()
 
             # Land on the next unscored card. If the implicit shift above
             # already placed us on an unscored card, _goto will stay put
@@ -1254,7 +1368,8 @@ class FlashcardReviewViewModel:
 
         For each card, applies the rating returned by the scorer via
         ``Flashcard.set_score`` — which routes AGAIN through ``again()`` and
-        EASY/GOOD/HARD through ``apply_rating``.
+        EASY/GOOD/HARD through the VM-owned scheduler. All FSRS mutations are
+        in memory.
 
         Returns a tuple ``(again_cards, failed_cards)``:
 
@@ -1330,7 +1445,7 @@ class FlashcardReviewViewModel:
                 continue
 
             score = score_map[rating]
-            await card.set_score(score)
+            card.set_score(score)
             if score == Flashcard.Score.AGAIN:
                 again_cards.append(card)
 

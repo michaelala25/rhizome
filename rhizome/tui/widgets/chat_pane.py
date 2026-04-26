@@ -1502,38 +1502,40 @@ class ChatPane(Widget, DockContainerMixin):
     async def _cmd_test_flashcards(self) -> None:
         """Open the flashcard review widget with sample data.
 
-        Uses fake IDs, so we stub out both the session factory and the
-        module-level ``apply_rating`` import in the VM module — otherwise
-        the DB call inside ``Flashcard.set_score`` / ``Flashcard.again``
-        errors on the unknown row.
+        Uses fake IDs. FSRS state mutates entirely in memory now, so no
+        DB stubbing is needed for the rating path. The session factory
+        is still passed because the VM holds it for the optional
+        ``commit()`` API — never called by the widget itself, and the
+        debug command never invokes it either.
         """
-        from datetime import datetime, timedelta, UTC
         from types import SimpleNamespace
 
-        from rhizome.tui.widgets.flashcard_review import view_model as _vm_module
+        from fsrs import Card
+
+        def _starter_card(card_id: int) -> Card:
+            # Default Card() lands in State.Learning, step 0, due=now —
+            # exactly what we want for manual exercise of the FSRS step
+            # ladder.
+            c = Card()
+            c.card_id = card_id
+            return c
 
         sample_cards = [
-            {"id": 101, "question": "What is the time complexity of binary search?", "answer": "O(log n) — each comparison halves the remaining search space."},
-            {"id": 102, "question": "Explain the difference between a stack and a queue.", "answer": "A stack is LIFO (Last In, First Out): the most recently added element is removed first.\n\nA queue is FIFO (First In, First Out): the earliest added element is removed first."},
-            {"id": 103, "question": "What is a hash collision and how is it typically resolved?", "answer": "A hash collision occurs when two different keys produce the same hash value.\n\nCommon resolution strategies:\n• Chaining — each bucket holds a linked list of entries\n• Open addressing — probe for the next available slot (linear, quadratic, or double hashing)"},
-            {"id": 204, "question": "What does the CAP theorem state?", "answer": "A distributed system can provide at most two of the following three guarantees simultaneously:\n\n• Consistency — every read returns the most recent write\n• Availability — every request receives a response\n• Partition tolerance — the system operates despite network partitions"},
-            {"id": 205, "question": "What is the difference between concurrency and parallelism?", "answer": "Concurrency is about dealing with multiple tasks at once (structure).\nParallelism is about doing multiple tasks at once (execution).\n\nConcurrency is possible on a single core via interleaving; parallelism requires multiple cores."},
+            {"id": 101, "question": "What is the time complexity of binary search?", "answer": "O(log n) — each comparison halves the remaining search space.", "fsrs_card": _starter_card(101)},
+            {"id": 102, "question": "Explain the difference between a stack and a queue.", "answer": "A stack is LIFO (Last In, First Out): the most recently added element is removed first.\n\nA queue is FIFO (First In, First Out): the earliest added element is removed first.", "fsrs_card": _starter_card(102)},
+            {"id": 103, "question": "What is a hash collision and how is it typically resolved?", "answer": "A hash collision occurs when two different keys produce the same hash value.\n\nCommon resolution strategies:\n• Chaining — each bucket holds a linked list of entries\n• Open addressing — probe for the next available slot (linear, quadratic, or double hashing)", "fsrs_card": _starter_card(103)},
+            {"id": 204, "question": "What does the CAP theorem state?", "answer": "A distributed system can provide at most two of the following three guarantees simultaneously:\n\n• Consistency — every read returns the most recent write\n• Availability — every request receives a response\n• Partition tolerance — the system operates despite network partitions", "fsrs_card": _starter_card(204)},
+            {"id": 205, "question": "What is the difference between concurrency and parallelism?", "answer": "Concurrency is about dealing with multiple tasks at once (structure).\nParallelism is about doing multiple tasks at once (execution).\n\nConcurrency is possible on a single core via interleaving; parallelism requires multiple cores.", "fsrs_card": _starter_card(205)},
         ]
 
-        # --- Stubbed session factory + apply_rating ---------------------
+        # Inert session factory — VM holds it only for the optional
+        # commit() API, which the test command never calls.
         class _FakeSession:
             async def __aenter__(self): return self
             async def __aexit__(self, *_): return False
             async def commit(self, *_): return
 
         def _fake_session_factory(): return _FakeSession()
-
-        async def _fake_apply_rating(session, card_id, rating):
-            # Short due delay so AGAIN'd cards re-appear quickly for
-            # manual testing of the AWAITING_REVEAL flow.
-            return SimpleNamespace(due=datetime.now(UTC) + timedelta(seconds=8))
-
-        _vm_module.apply_rating = _fake_apply_rating
 
         # --- Fake scorer ------------------------------------------------
         # Tweak this mapping to test different auto-score scenarios.

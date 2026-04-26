@@ -260,9 +260,10 @@ class FlashcardReview(InterruptWidgetBase):
     def from_interrupt(cls, value: dict[str, Any], context: Any = None) -> "FlashcardReview":
         """Construct from an interrupt value dict and the AgentContext.
 
-        Pulls the auto-scorer and DB session factory off the context so
-        the widget can invoke ``apply_rating`` without the tool having to
-        plumb them through the interrupt payload.
+        Pulls the auto-scorer and DB session factory off the context.
+        FSRS state mutates entirely in-memory during the session; the
+        session factory is held only so the VM's optional ``commit()``
+        API can be called by a consumer of the resolved payload.
         """
         scorer = getattr(context, "scorer_subagent", None) if context is not None else None
         session_factory = getattr(context, "session_factory", None) if context is not None else None
@@ -412,6 +413,12 @@ class FlashcardReview(InterruptWidgetBase):
                 "score": score_val,
                 "score_label": score_label,
                 "duration": round(card.elapsed_time, 1),
+                # Final in-memory FSRS state for this card. The widget
+                # never persists this itself — the consumer (typically
+                # the review_present_flashcards tool) decides whether to
+                # commit it to the DB based on the session's ephemeral
+                # flag.
+                "fsrs_card": card.fsrs_card,
             })
 
         return {
@@ -434,14 +441,14 @@ class FlashcardReview(InterruptWidgetBase):
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
-    async def on_key(self, event: events.Key) -> None:
-        await self._vm.on_key(event)
+    def on_key(self, event: events.Key) -> None:
+        self._vm.on_key(event)
 
-    async def on__answer_input_submitted(
+    def on__answer_input_submitted(
         self, event: _AnswerInput.Submitted
     ) -> None:
         # Route the enter keypress the TextArea swallowed up to the VM.
-        await self._vm.on_key(events.Key("enter", "\r"))
+        self._vm.on_key(events.Key("enter", "\r"))
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "fr-answer-input":

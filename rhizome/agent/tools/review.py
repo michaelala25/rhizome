@@ -25,12 +25,14 @@ from rhizome.db.models import (
 )
 from rhizome.db.operations import (
     add_review_interaction,
+    commit_fsrs_card,
     complete_review_session,
     create_review_session,
     get_flashcard_entry_ids,
     get_flashcards_by_ids,
     get_interaction_stats,
     get_sessions_by_topics,
+    to_fsrs_card,
     update_session_ephemeral,
     update_session_instructions,
     update_session_plan,
@@ -412,12 +414,12 @@ def build_review_tools(session_factory) -> dict:
         "the whole batch before the widget resolves. Pass flashcard_ids to "
         "override the queue with an explicit subset.\n\n"
         "The widget handles rating (manual 1-4, in-widget AGAIN requeue, "
-        "and optional auto-scoring) and writes FSRS state directly. This "
-        "tool only records review interactions for cards the user finalized "
-        "with a hard/good/easy rating, and reconciles the queue with the "
-        "outcome of every presented card:\n"
+        "and optional auto-scoring) entirely in memory. On resolve, this "
+        "tool commits each card's final FSRS state to the DB and records "
+        "review interactions — both gated on the session not being "
+        "ephemeral. Queue reconciliation per outcome:\n"
         "- easy/good/hard -> interaction recorded, removed from queue.\n"
-        "- again          -> no interaction (FSRS already updated by widget); "
+        "- again          -> no interaction (FSRS state committed); "
         "left in queue so the agent can re-present later if desired.\n"
         "- skipped        -> left in queue; agent decides whether to drop.\n"
         "- auto-pending   -> session ended mid-auto-score batch; left in queue.\n"
@@ -460,13 +462,18 @@ def build_review_tools(session_factory) -> dict:
 
         flashcard_map = {fc.id: fc for fc in flashcards}
 
-        # Build card data for the widget
+        # Build card data for the widget. ``fsrs_card`` carries the
+        # session-start FSRS state into the widget, which then mutates a
+        # private copy in memory. The widget never persists those
+        # mutations itself — see the result-handling block below for the
+        # commit-on-non-ephemeral path.
         card_data = [
             {
                 "id": fc.id,
                 "question": fc.question_text,
                 "answer": fc.answer_text,
                 "testing_notes": fc.testing_notes,
+                "fsrs_card": to_fsrs_card(fc),
             }
             for fc in flashcards
         ]
@@ -495,6 +502,12 @@ def build_review_tools(session_factory) -> dict:
             if fc_id in new_queue:
                 new_queue.remove(fc_id)
 
+        # Ephemeral sessions are not persisted — skip FSRS writes and
+        # interaction records. ``config`` may be None if the user never
+        # called review_update_session_state.
+        config = review_state.get("config") or {}
+        ephemeral = bool(config.get("ephemeral", False))
+
         for card_result in result["cards"]:
             fc_id = card_result["id"]
             fc = flashcard_map.get(fc_id)
@@ -507,30 +520,42 @@ def build_review_tools(session_factory) -> dict:
             if user_answer:
                 user_answers[fc_id] = user_answer
 
+            # FSRS state lives in the widget's in-memory snapshot and
+            # arrives back here as ``fsrs_card``. The widget never wrote
+            # it to the DB; we do that here, but only for non-ephemeral
+            # sessions. Cards with no rating change (untouched, skipped
+            # from FRONT) carry their initial state, so committing is a
+            # no-op equivalent.
+            fsrs_card = card_result.get("fsrs_card")
+            if not ephemeral and fsrs_card is not None:
+                async with session_factory() as session:
+                    await commit_fsrs_card(session, fc_id, fsrs_card)
+                    await session.commit()
+
             if label in ("easy", "good", "hard"):
-                # Widget already called apply_rating; we just record the
-                # ReviewInteraction and bump coverage.
                 entry_ids = [fe.entry_id for fe in fc.flashcard_entries]
                 interaction_count += 1
-                async with session_factory() as session:
-                    await add_review_interaction(
-                        session,
-                        session_id=session_id,
-                        entry_ids=entry_ids,
-                        score=score,
-                        position=interaction_count,
-                        flashcard_id=fc_id,
-                    )
-                    await session.commit()
+                if not ephemeral:
+                    async with session_factory() as session:
+                        await add_review_interaction(
+                            session,
+                            session_id=session_id,
+                            entry_ids=entry_ids,
+                            score=score,
+                            position=interaction_count,
+                            flashcard_id=fc_id,
+                        )
+                        await session.commit()
                 for eid in entry_ids:
                     new_coverage[eid] = new_coverage.get(eid, 0) + 1
                 scored_ids.append(fc_id)
                 _drop_from_queue(fc_id)
             elif label == "again":
-                # Widget already wrote FSRS state via apply_rating(Again) and
-                # cycled the card in-session. Reaching the tool with an
-                # AGAIN label means the in-widget requeue was interrupted —
-                # leave the card in the queue, no interaction recorded.
+                # Widget cycled the card in-session and applied
+                # Rating.Again to the in-memory FSRS state (now committed
+                # above for non-ephemeral). Reaching the tool with an
+                # AGAIN label means the in-widget requeue was interrupted
+                # — leave the card in the queue, no interaction recorded.
                 again_ids.append(fc_id)
             elif label == "skipped":
                 skipped_ids.append(fc_id)

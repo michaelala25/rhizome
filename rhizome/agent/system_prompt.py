@@ -440,7 +440,8 @@ sections. Repeatedly present flashcards/ask the user questions until all scoped 
   with a specific subset.
 - The user works through the whole batch (revealing, answering, rating) before the widget resolves.
   `again` ratings are requeued in-widget and do not surface back to this tool unless the session is
-  cancelled mid-cycle. The widget writes FSRS state directly via `apply_rating`.
+  cancelled mid-cycle. The widget mutates FSRS state in memory; the tool commits it to the DB on
+  resolve (gated on the session not being ephemeral).
 - The tool only records review interactions for cards finalized as easy/good/hard. Skipped, untouched,
   auto-pending, and again-on-cancel cards are left in the queue — re-call `review_present_flashcards`
   to present them again, or use `review_update_session_state(flashcards=ReviewFlashcardUpdate(action="remove", ...))`

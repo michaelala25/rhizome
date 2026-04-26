@@ -123,7 +123,12 @@ async def count_flashcards_by_topic(
     return result.scalar_one()
 
 
-def _to_fsrs_card(fc: Flashcard) -> Card:
+def to_fsrs_card(fc: Flashcard) -> Card:
+    """Build an in-memory ``fsrs.Card`` from a Flashcard ORM row.
+
+    Defaults ``due`` to "now" for parked cards (``due IS NULL``); the
+    caller can decide whether that defaulting is appropriate.
+    """
     return Card(
         card_id=fc.id,
         state=State(fc.fsrs_state),
@@ -135,13 +140,35 @@ def _to_fsrs_card(fc: Flashcard) -> Card:
     )
 
 
-def _apply_fsrs_card(fc: Flashcard, card: Card) -> None:
+def apply_fsrs_card(fc: Flashcard, card: Card) -> None:
+    """Write an in-memory ``fsrs.Card``'s scheduling fields onto a Flashcard
+    ORM row. Caller is responsible for flush/commit."""
     fc.fsrs_state = card.state.value
     fc.fsrs_step = card.step
     fc.stability = card.stability
     fc.difficulty = card.difficulty
     fc.due = card.due
     fc.last_review = card.last_review
+
+
+async def commit_fsrs_card(
+    session: AsyncSession,
+    flashcard_id: int,
+    card: Card,
+) -> Flashcard:
+    """Persist an in-memory ``fsrs.Card``'s scheduling fields to the DB.
+
+    Idempotent — calling repeatedly with the same Card writes the same
+    state. Used by callers that own the FSRS Card in memory (e.g. the
+    flashcard review widget) and want to flush their final state to the
+    DB at end of session.
+    """
+    fc = await session.get(Flashcard, flashcard_id)
+    if fc is None:
+        raise ValueError(f"Flashcard {flashcard_id} not found")
+    apply_fsrs_card(fc, card)
+    await session.flush()
+    return fc
 
 
 async def apply_rating(
@@ -161,9 +188,9 @@ async def apply_rating(
         raise ValueError(f"Flashcard {flashcard_id} not found")
 
     review_dt = review_datetime or datetime.now(timezone.utc)
-    card = _to_fsrs_card(fc)
+    card = to_fsrs_card(fc)
     updated_card, _log = Scheduler().review_card(card, rating, review_dt)
-    _apply_fsrs_card(fc, updated_card)
+    apply_fsrs_card(fc, updated_card)
     await session.flush()
 
     _logger.info(

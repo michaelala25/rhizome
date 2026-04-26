@@ -25,7 +25,9 @@ from .tags import (
 )
 from .flashcards import (
     activate_flashcard,
+    apply_fsrs_card,
     apply_rating,
+    commit_fsrs_card,
     count_flashcards_by_topic,
     create_flashcard,
     get_due_flashcards,
@@ -33,6 +35,7 @@ from .flashcards import (
     get_flashcards_by_ids,
     list_flashcards_by_entries,
     list_flashcards_by_topic,
+    to_fsrs_card,
 )
 from .reviews import (
     add_review_interaction,
@@ -128,7 +131,9 @@ __all__ = [
     "get_interaction_stats",
     # flashcards
     "activate_flashcard",
+    "apply_fsrs_card",
     "apply_rating",
+    "commit_fsrs_card",
     "count_flashcards_by_topic",
     "create_flashcard",
     "get_due_flashcards",
@@ -136,6 +141,7 @@ __all__ = [
     "get_flashcards_by_ids",
     "list_flashcards_by_entries",
     "list_flashcards_by_topic",
+    "to_fsrs_card",
     # resolve
     "AmbiguousResource",
     "AmbiguousTopic",

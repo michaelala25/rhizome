@@ -1,23 +1,25 @@
 """Tests for rhizome.tui.widgets.flashcard_review.view_model.
 
-Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewViewModel`` classes. The
-real ``apply_rating`` DB call is stubbed out via a fixture so tests stay
-synchronous and fast. The ``_wait_until_due`` tasks spawned by
-``Flashcard.again()`` sleep for a simulated 1-minute due time, so they
-never fire during a test — the fixture cancels any lingering tasks at
-teardown.
+Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewViewModel`` classes.
+FSRS state lives entirely in memory now — no DB stubbing is required for the
+rating path. The shared ``recording_scheduler`` fixture wraps a real
+``fsrs.Scheduler`` so tests can assert rating mappings while still exercising
+the actual scheduler's state transitions.
+
+The ``_wait_until_due`` tasks spawned by ``Flashcard.again()`` sleep for the
+FSRS-computed delay (60s on a fresh Learning card with default config), so
+they never fire during a test — the ``review`` fixture cancels any lingering
+tasks at teardown.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from fsrs import Rating
+from fsrs import Card, Rating, Scheduler
 
-from rhizome.tui.widgets.flashcard_review import view_model as vm
 from rhizome.tui.widgets.flashcard_review.view_model import (
     Flashcard,
     FlashcardReviewViewModel,
@@ -40,52 +42,68 @@ class _FakeSession:
     async def commit(self):
         return None
 
+    async def get(self, *_, **__):
+        # Only ever reached if a test invokes vm.commit() — which the
+        # default tests don't. Returns None so commit_fsrs_card raises a
+        # clear error rather than silently corrupting state.
+        return None
+
 
 def _fake_session_factory():
     return _FakeSession()
 
 
-@pytest.fixture(autouse=True)
-def patch_apply_rating(monkeypatch):
-    """Stub apply_rating so tests don't need a real DB.
+class _RecordingScheduler:
+    """Wraps a real ``fsrs.Scheduler`` and records every rating call.
 
-    Records every (card_id, rating) pair the code calls with, and returns a
-    fake flashcard whose ``due`` is 1 minute in the future (long enough that
-    the _wait_until_due task never fires during a test)."""
-    calls: list[tuple[int, Rating]] = []
+    Used in tests that want to assert "GOOD was applied to card 42" without
+    coupling to internal Scheduler state. Forwards to the real scheduler so
+    ``due`` values reflect actual FSRS scheduling (which the AGAIN /
+    AWAITING_REVEAL flow depends on).
+    """
 
-    async def fake_apply_rating(session, card_id, rating):
-        calls.append((card_id, rating))
-        return SimpleNamespace(due=datetime.now(UTC) + timedelta(minutes=1))
+    def __init__(self):
+        self._real = Scheduler()
+        self.calls: list[tuple[int, Rating]] = []
 
-    monkeypatch.setattr(vm, "apply_rating", fake_apply_rating)
-    return calls
+    def review_card(self, card, rating, review_dt):
+        self.calls.append((card.card_id, rating))
+        return self._real.review_card(card, rating, review_dt)
+
+
+@pytest.fixture
+def recording_scheduler() -> _RecordingScheduler:
+    return _RecordingScheduler()
+
+
+def _starter_data(card_id: int, *, q: str = "", a: str = "") -> dict:
+    """Build a FlashcardData dict with a fresh Learning-state FSRS card."""
+    return {
+        "id": card_id,
+        "question": q or f"q{card_id}",
+        "answer": a or f"a{card_id}",
+        "fsrs_card": Card(card_id=card_id),
+    }
 
 
 @pytest.fixture
 def card_data() -> list[dict]:
-    return [
-        {"id": 1, "question": "q1", "answer": "a1"},
-        {"id": 2, "question": "q2", "answer": "a2"},
-        {"id": 3, "question": "q3", "answer": "a3"},
-    ]
+    return [_starter_data(1), _starter_data(2), _starter_data(3)]
 
 
 @pytest.fixture
-def card() -> Flashcard:
-    return Flashcard(
-        {"id": 42, "question": "q", "answer": "a"},
-        _fake_session_factory,
-    )
+def card(recording_scheduler) -> Flashcard:
+    return Flashcard(_starter_data(42, q="q", a="a"), recording_scheduler)
 
 
 @pytest.fixture
-async def review(card_data):
+async def review(card_data, recording_scheduler):
     r = FlashcardReviewViewModel(
         cards=card_data,
         session_factory=_fake_session_factory,
         auto_score_enabled=True,
         auto_scorer=None,
+        scheduler=recording_scheduler,
     )
     yield r
     # Teardown: cancel any lingering async tasks so they don't leak
@@ -266,9 +284,11 @@ class TestFlashcardReveal:
         assert not card._timer.running
 
     async def test_reveal_front_from_awaiting_reveal(self, card):
+        # async so ``again()``'s create_task has a running loop, even
+        # though there's nothing to await directly.
         card.unpause()
         card.reveal_back()
-        await card.again()
+        card.again()
         assert card.state == Flashcard.State.AWAITING_REVEAL
         card.reveal_front()
         assert card.state == Flashcard.State.FRONT
@@ -278,34 +298,34 @@ class TestFlashcardReveal:
 
 
 class TestFlashcardScoring:
-    async def test_set_score_good_applies_rating(self, card, patch_apply_rating):
+    def test_set_score_good_applies_rating(self, card, recording_scheduler):
         card.unpause()
         card.reveal_back()
-        await card.set_score(Flashcard.Score.GOOD)
+        card.set_score(Flashcard.Score.GOOD)
         assert card.state == Flashcard.State.SCORED
         assert card.score == Flashcard.Score.GOOD
-        assert patch_apply_rating == [(42, Rating.Good)]
+        assert recording_scheduler.calls == [(42, Rating.Good)]
 
-    async def test_set_score_hard_maps_to_rating_hard(self, card, patch_apply_rating):
+    def test_set_score_hard_maps_to_rating_hard(self, card, recording_scheduler):
         card.unpause()
         card.reveal_back()
-        await card.set_score(Flashcard.Score.HARD)
-        assert patch_apply_rating == [(42, Rating.Hard)]
+        card.set_score(Flashcard.Score.HARD)
+        assert recording_scheduler.calls == [(42, Rating.Hard)]
 
-    async def test_set_score_easy_maps_to_rating_easy(self, card, patch_apply_rating):
+    def test_set_score_easy_maps_to_rating_easy(self, card, recording_scheduler):
         card.unpause()
         card.reveal_back()
-        await card.set_score(Flashcard.Score.EASY)
-        assert patch_apply_rating == [(42, Rating.Easy)]
+        card.set_score(Flashcard.Score.EASY)
+        assert recording_scheduler.calls == [(42, Rating.Easy)]
 
-    async def test_set_score_from_pending_auto_also_works(self, card):
+    def test_set_score_from_pending_auto_also_works(self, card):
         """The batch scorer calls set_score on a PENDING_AUTO card — the
         assertion must accept that state."""
         card.unpause()
         card.reveal_back()
         card.set_score_auto()
         assert card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE
-        await card.set_score(Flashcard.Score.GOOD)
+        card.set_score(Flashcard.Score.GOOD)
         assert card.state == Flashcard.State.SCORED
         assert card.score == Flashcard.Score.GOOD
 
@@ -320,27 +340,27 @@ class TestFlashcardScoring:
     async def test_set_score_delegates_again(self, card):
         card.unpause()
         card.reveal_back()
-        await card.set_score(Flashcard.Score.AGAIN)
+        card.set_score(Flashcard.Score.AGAIN)
         assert card.state == Flashcard.State.AWAITING_REVEAL
         card._awaiting_reveal_task.cancel()
 
-    async def test_set_score_delegates_skipped(self, card):
+    def test_set_score_delegates_skipped(self, card):
         card.unpause()
         card.reveal_back()
-        await card.set_score(Flashcard.Score.SKIPPED)
+        card.set_score(Flashcard.Score.SKIPPED)
         assert card.state == Flashcard.State.SCORED
         assert card.score == Flashcard.Score.SKIPPED
 
 
 class TestFlashcardAgainAndSkip:
-    async def test_again_spawns_awaiting_reveal(self, card, patch_apply_rating):
+    async def test_again_spawns_awaiting_reveal(self, card, recording_scheduler):
         card.unpause()
         card.reveal_back()
-        await card.again()
+        card.again()
         assert card.state == Flashcard.State.AWAITING_REVEAL
         assert card._awaiting_reveal_task is not None
         assert card._due_timer is not None and card._due_timer.running
-        assert patch_apply_rating == [(42, Rating.Again)]
+        assert recording_scheduler.calls == [(42, Rating.Again)]
         card._awaiting_reveal_task.cancel()
 
     async def test_again_from_pending_auto(self, card):
@@ -349,7 +369,7 @@ class TestFlashcardAgainAndSkip:
         card.unpause()
         card.reveal_back()
         card.set_score_auto()
-        await card.again()
+        card.again()
         assert card.state == Flashcard.State.AWAITING_REVEAL
         card._awaiting_reveal_task.cancel()
 
@@ -363,7 +383,7 @@ class TestFlashcardAgainAndSkip:
     async def test_skip_from_awaiting_reveal_cancels_task(self, card):
         card.unpause()
         card.reveal_back()
-        await card.again()
+        card.again()
         task = card._awaiting_reveal_task
         card.skip()
         assert card.state == Flashcard.State.SCORED
@@ -451,16 +471,10 @@ class TestReviewLifecycle:
         # The first card's timer is no longer running after finish
         assert not review._cards[0]._timer.running
 
-    def test_finish_skips_awaiting_reveal_cards(self, review, patch_apply_rating):
-        # Cancel out the real AGAIN path by hand-constructing: rate card 1 AGAIN
-        review.begin()
-        review.current_card.reveal_back()
-        # We'll manually drive again so we don't need to run the full score_current_card
-
     async def test_finish_skips_any_awaiting_reveal_cards(self, review):
         review.begin()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         # Card 1 is now in AWAITING_REVEAL
         assert review._cards[-1].id == 1
         assert review._cards[-1].state == Flashcard.State.AWAITING_REVEAL
@@ -517,7 +531,7 @@ class TestReviewScoring:
     async def test_score_good_advances_and_updates_remaining(self, review):
         review.begin()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
         assert 1 not in review._remaining_before_batched_autoscore
         assert review.current_card.id == 2
         assert review._cards[0].state == Flashcard.State.SCORED
@@ -526,7 +540,7 @@ class TestReviewScoring:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.GOOD)
+            review.score_current_card(Flashcard.Score.GOOD)
         assert review.state == FlashcardReviewViewModel.State.DONE
         assert not review.cancelled
 
@@ -535,7 +549,7 @@ class TestReviewScoring:
         review.next_card()  # → card 2
         assert review.current_card.id == 2
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         # List reordered: [1, 3, 2] (2 moved to end)
         assert [c.id for c in review._cards] == [1, 3, 2]
         # Cursor still at index 1 → card 3 (shifted into place)
@@ -548,7 +562,7 @@ class TestReviewScoring:
         review.begin()
         assert review.current_card.id == 1
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         # List: [2, 3, 1]; cursor at index 0 → card 2
         assert [c.id for c in review._cards] == [2, 3, 1]
         assert review.current_card.id == 2
@@ -559,7 +573,7 @@ class TestReviewScoring:
         review.next_card()
         assert review.current_card.id == 3
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         # List: [1, 2, 3] (3 removed from end, appended back — unchanged)
         # Cursor was at 2 (the AGAIN'd card), which is in next_remaining (not
         # remaining), so _goto walks forward. Wraps to 0 → card 1.
@@ -570,7 +584,7 @@ class TestReviewScoring:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AGAIN)
+            review.score_current_card(Flashcard.Score.AGAIN)
         # All three AGAIN'd → drained remaining → swap next_remaining → remaining
         assert review._remaining_before_batched_autoscore == {1, 2, 3}
         assert review._next_remaining_before_batched_autoscore == set()
@@ -590,15 +604,15 @@ class TestReviewScoring:
         review.begin()
         # Rate card 1 AGAIN → list [2, 3, 1], cursor on card 2
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         assert review.current_card.id == 2
         # Rate card 2 GOOD, cursor advances to card 3
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
         assert review.current_card.id == 3
         # Rate card 3 GOOD → remaining drains, round swaps to {1}
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
         assert review._remaining_before_batched_autoscore == {1}
         # Navigate to card 1 (at the end of the list, in AWAITING_REVEAL)
         while review.current_card.id != 1:
@@ -607,7 +621,7 @@ class TestReviewScoring:
         # Simulate user pressing enter to reveal_front, then reveal_back, then rate
         review.current_card.reveal_front()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
         assert review.state == FlashcardReviewViewModel.State.DONE
 
 
@@ -622,7 +636,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         assert review._autoscore_task is not None
         await review._autoscore_task
         for c in review._cards:
@@ -636,7 +650,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         await review._autoscore_task
         # Card 2 moved to end, added to (new) remaining
         assert [c.id for c in review._cards] == [1, 3, 2]
@@ -652,12 +666,12 @@ class TestReviewBatchAutoScore:
         review.begin()
         # Defer card 1
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AUTO)
+        review.score_current_card(Flashcard.Score.AUTO)
         # Cursor now at card 2 (FRONT). Back up to card 1 and override.
         review.prev_card()
         assert review.current_card.id == 1
         assert review.current_card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
         assert review._cards[0].state == Flashcard.State.SCORED
         assert review._cards[0].score == Flashcard.Score.GOOD
 
@@ -688,7 +702,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         assert review.autoscore_in_progress
         # Yield so the batch task actually enters ainvoke
         await asyncio.sleep(0)
@@ -717,7 +731,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         await review._autoscore_task
         assert review._remaining_before_batched_autoscore == {1, 2, 3}
         for c in review._cards:
@@ -735,7 +749,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         await review._autoscore_task
 
         card1, card2, card3 = review._cards[0], review._cards[1], review._cards[2]
@@ -760,7 +774,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         await review._autoscore_task
 
         card2 = review._cards[1]
@@ -776,7 +790,7 @@ class TestReviewBatchAutoScore:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AUTO)
+            review.score_current_card(Flashcard.Score.AUTO)
         await review._autoscore_task
 
         # Card 1 is now the failed one — navigate to it.
@@ -788,7 +802,7 @@ class TestReviewBatchAutoScore:
         # Simulate the user pressing enter (via the key handler). Must rate
         # GOOD, not re-defer to AUTO (which would assert).
         key = SimpleNamespace(key="enter")
-        await review._on_key_reviewing(key)
+        review._on_key_reviewing(key)
 
         assert review.current_card.state == Flashcard.State.SCORED
         assert review.current_card.score == Flashcard.Score.GOOD
@@ -810,7 +824,7 @@ class TestRegressions:
         review._auto_scorer = _FakeScorer({1: 3})
         review.begin()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AUTO)
+        review.score_current_card(Flashcard.Score.AUTO)
         # Cursor on card 2 (FRONT, timer running). Navigate to/past the
         # PENDING_AUTO card 1. Must not raise.
         review.prev_card()  # to card 1 (PENDING_AUTO)
@@ -826,7 +840,7 @@ class TestRegressions:
         # Rate card 1 AGAIN so it ends up in AWAITING_REVEAL at the end of
         # the list. After the requeue the cursor lands on card 2.
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         # prev_card from index 0 wraps to index 2 → card 1 (AWAITING_REVEAL)
         review.prev_card()
         assert review.current_card.id == 1
@@ -845,7 +859,7 @@ class TestRegressions:
         review.begin()
         # AGAIN card 1 → list [2, 3, 1], _next = {1}, card 1 AWAITING
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
         assert 1 in review._next_remaining_before_batched_autoscore
 
         # Navigate to card 1 and surface it manually (impatient user)
@@ -854,7 +868,7 @@ class TestRegressions:
         assert review.current_card.id == 1
         review.current_card.reveal_front()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
 
         # The fix: card 1's id is removed from _next on score
         assert 1 not in review._next_remaining_before_batched_autoscore
@@ -863,12 +877,12 @@ class TestRegressions:
         while review.current_card.id != 2:
             review.next_card()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
 
         while review.current_card.id != 3:
             review.next_card()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
 
         assert review.state == FlashcardReviewViewModel.State.DONE
 
@@ -880,7 +894,7 @@ class TestRegressions:
         review._auto_scorer = _FakeScorer({2: 3})
         review.begin()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
 
         # Surface and score card 1 manually
         review.next_card()
@@ -888,19 +902,19 @@ class TestRegressions:
         assert review.current_card.id == 1
         review.current_card.reveal_front()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
 
         # Score card 2 AUTO
         while review.current_card.id != 2:
             review.next_card()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AUTO)
+        review.score_current_card(Flashcard.Score.AUTO)
 
         # Score card 3 GOOD → drains _remaining → batch fires for card 2
         while review.current_card.id != 3:
             review.next_card()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
 
         assert review._autoscore_task is not None
         await review._autoscore_task
@@ -915,19 +929,19 @@ class TestRegressions:
         review.begin()
         # Defer card 1 to AUTO
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AUTO)
+        review.score_current_card(Flashcard.Score.AUTO)
         # Cursor on card 2 (FRONT)
         assert review.current_card.id == 2
 
         # alt+s skip card 2
         key = SimpleNamespace(key="alt+s")
-        await review._on_key_reviewing(key)
+        review._on_key_reviewing(key)
         assert review._cards[1].score == Flashcard.Score.SKIPPED
 
         # Navigate to card 3 and alt+s skip
         while review.current_card.id != 3:
             review.next_card()
-        await review._on_key_reviewing(key)
+        review._on_key_reviewing(key)
         assert review._cards[2].score == Flashcard.Score.SKIPPED
 
         # The fix: alt+s now calls _check_remaining_cards, which finds
@@ -945,7 +959,7 @@ class TestRegressions:
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
-            await review.score_current_card(Flashcard.Score.AGAIN)
+            review.score_current_card(Flashcard.Score.AGAIN)
         assert review._remaining_before_batched_autoscore == {1, 2, 3}
         assert review._next_remaining_before_batched_autoscore == set()
         assert review.state == FlashcardReviewViewModel.State.REVIEWING
@@ -984,17 +998,17 @@ class TestRegressions:
 
         # AGAIN card 1 → list [2, 3, 1], _next = {1}, cursor on card 2
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AGAIN)
+        review.score_current_card(Flashcard.Score.AGAIN)
 
         # AUTO card 2 → PENDING_AUTO, cursor on card 3
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AUTO)
+        review.score_current_card(Flashcard.Score.AUTO)
 
         # GOOD card 3 → drains _remaining → swap _next → _remaining = {1};
         # pending = [card 2] → spawn first batch. Cursor lands on card 1
         # (AWAITING_REVEAL, the only thing in _next at goto-time).
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.GOOD)
+        review.score_current_card(Flashcard.Score.GOOD)
 
         # Yield so the batch task actually enters ainvoke
         await asyncio.sleep(0)
@@ -1005,7 +1019,7 @@ class TestRegressions:
         assert review.current_card.id == 1
         review.current_card.reveal_front()
         review.current_card.reveal_back()
-        await review.score_current_card(Flashcard.Score.AUTO)
+        review.score_current_card(Flashcard.Score.AUTO)
         # Card 1 PENDING_AUTO; _remaining = {}, _next = {}; first batch
         # still in flight (autoscore_in_progress guards against re-spawn).
         assert review.autoscore_in_progress
