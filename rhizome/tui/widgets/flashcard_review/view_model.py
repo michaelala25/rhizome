@@ -513,6 +513,24 @@ class Flashcard:
         """
         return self._current_fsrs_card
     
+    def rating_previews(self) -> dict[Rating, float]:
+        """Preview the seconds-until-due for each rating, against the card's
+        *current* FSRS state, without mutating it.
+
+        ``Scheduler.review_card`` is non-mutating, so we call it once per
+        rating and diff each resulting ``due`` against ``now``. Picks up
+        Learning vs Review state automatically — Hard on a fresh Learning
+        card returns ~6min, Hard on a Review card returns days.
+        """
+        now = datetime.now(UTC)
+        previews: dict[Rating, float] = {}
+        for rating in (Rating.Again, Rating.Hard, Rating.Good, Rating.Easy):
+            preview, _ = self._scheduler.review_card(
+                self._current_fsrs_card, rating, now,
+            )
+            previews[rating] = (preview.due - now).total_seconds()
+        return previews
+
     def set_user_answer(self, answer: str):
         assert self.state == Flashcard.State.FRONT
         self._user_answer = answer

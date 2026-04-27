@@ -10,6 +10,8 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Rule, Static, TextArea
 
+from fsrs import Rating
+
 from .view_model import (
     Flashcard,
     FlashcardData,
@@ -52,6 +54,31 @@ _DOT_FAILED = "rgb(235,100,100)"
 _DOT_CHEVRON = "rgb(110,110,110)"
 _DOT_GLYPH = "•"
 _DOT_CURSOR_GLYPH = "◉"
+
+
+def _format_due(seconds: float) -> str:
+    """Anki-style compact interval label for a rating preview.
+
+    Picks the largest unit that yields a value >= 1 (rounded), so 9000s
+    renders as ``2h`` rather than ``150m``. Sub-minute durations (the
+    Learning step ladder) all show as ``<1m`` — finer granularity isn't
+    useful when the card is going to be requeued in-widget anyway.
+    """
+    if seconds < 60:
+        return "<1m"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{round(minutes)}m"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{round(hours)}h"
+    days = hours / 24
+    if days < 30:
+        return f"{round(days)}d"
+    months = days / 30
+    if months < 12:
+        return f"{round(months)}mo"
+    return f"{round(days / 365)}y"
 
 
 class _DotStrip(Static):
@@ -690,11 +717,18 @@ class FlashcardReview(InterruptWidgetBase):
             if self._vm._auto_score_enabled and not card.auto_scoring_failed
             else "good"
         )
-        pairs = [(1, "again"), (2, "hard"), (3, "good"), (4, "easy")]
+        previews = card.rating_previews()
+        pairs = [
+            (1, "again", Rating.Again),
+            (2, "hard", Rating.Hard),
+            (3, "good", Rating.Good),
+            (4, "easy", Rating.Easy),
+        ]
         segments = [
             f"[bold {_RATING_COLORS[num]}]{num}[/] "
-            f"[{_RATING_LABEL_DIM}]{label}[/]"
-            for num, label in pairs
+            f"[{_RATING_LABEL_DIM}]{label}[/] "
+            f"[{_HINT_DIM}]({_format_due(previews[rating])})[/]"
+            for num, label, rating in pairs
         ]
         row = "    ".join(segments)
         return f"{prefix}{row}    [{_HINT_DIM}]\\[enter = {enter_label}][/]"
