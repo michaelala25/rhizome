@@ -65,6 +65,11 @@ def _format_due(seconds: float) -> str:
     renders as ``2h`` rather than ``150m``. Sub-minute durations (the
     Learning step ladder) all show as ``<1m`` — finer granularity isn't
     useful when the card is going to be requeued in-widget anyway.
+
+    Day-or-larger intervals are prefixed with ``~`` because FSRS applies
+    a small randomized fuzz factor to those values (the actual due date
+    when the user picks the rating may differ from the preview by a
+    handful of percent). Sub-day intervals aren't fuzzed.
     """
     if seconds < 60:
         return "<1m"
@@ -76,11 +81,11 @@ def _format_due(seconds: float) -> str:
         return f"{round(hours)}h"
     days = hours / 24
     if days < 30:
-        return f"{round(days)}d"
+        return f"~{round(days)}d"
     months = days / 30
     if months < 12:
-        return f"{round(months)}mo"
-    return f"{round(days / 365)}y"
+        return f"~{round(months)}mo"
+    return f"~{round(days / 365)}y"
 
 
 class _DotStrip(Static):
@@ -554,12 +559,15 @@ class FlashcardReview(InterruptWidgetBase):
     def _help_text(self) -> str:
         # Only the non-obvious bindings — the on-screen rating row, dot
         # strip, and per-card prompts already cover begin/reveal/score/nav.
+        current_default = "auto" if self._vm.auto_score_enabled else "good"
+        auto_label = f"enter default = {current_default}"
         rows = [
             (Action.TOGGLE_HELP, "hide help"),
             (Action.CANCEL, "cancel session"),
             (Action.TOGGLE_TIMER, "toggle timer"),
             (Action.RESET_CARD, "reset current card"),
             (Action.TOGGLE_SKIP, "skip / unskip card"),
+            (Action.TOGGLE_AUTO_SCORE, auto_label),
         ]
         return "    ".join(
             f"[bold]{KEYBINDINGS[action]}[/]  {label}"
@@ -774,7 +782,7 @@ class FlashcardReview(InterruptWidgetBase):
         )
         enter_label = (
             "auto"
-            if self._vm._auto_score_enabled and not card.auto_scoring_failed
+            if self._vm.auto_score_enabled and not card.auto_scoring_failed
             else "good"
         )
         previews = card.rating_previews()

@@ -431,6 +431,7 @@ class Action(Enum):
 
     # Cross-state UI toggle
     TOGGLE_HELP = auto()       # alt+h
+    TOGGLE_AUTO_SCORE = auto() # alt+a
 
 
 KEYBINDINGS: dict[Action, str] = {
@@ -451,6 +452,7 @@ KEYBINDINGS: dict[Action, str] = {
     Action.TOGGLE_SKIP: "alt+s",
     Action.TOGGLE_COLLAPSED: "enter",
     Action.TOGGLE_HELP: "alt+h",
+    Action.TOGGLE_AUTO_SCORE: "alt+a",
 }
 
 
@@ -544,6 +546,13 @@ class Flashcard:
         # (which otherwise bypasses all VM methods).
         self._on_due_reveal: Callable[[], None] | None = None
 
+        # Cached per-rating "seconds-until-due" preview, computed once at
+        # the FRONT -> REVEALED_NOT_SCORED transition. Cached because
+        # Scheduler.review_card is non-deterministic (fuzzing), so we
+        # don't want the displayed intervals to fluctuate every render.
+        # Cleared whenever the FSRS state changes (reset / requeue).
+        self._cached_rating_previews: dict[Rating, float] | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -584,14 +593,20 @@ class Flashcard:
         return self._current_fsrs_card
     
     def rating_previews(self) -> dict[Rating, float]:
-        """Preview the seconds-until-due for each rating, against the card's
-        *current* FSRS state, without mutating it.
+        """Cached per-rating "seconds-until-due" preview against the
+        card's current FSRS state.
 
-        ``Scheduler.review_card`` is non-mutating, so we call it once per
-        rating and diff each resulting ``due`` against ``now``. Picks up
-        Learning vs Review state automatically — Hard on a fresh Learning
-        card returns ~6min, Hard on a Review card returns days.
+        Populated by ``_compute_rating_previews`` at the FRONT ->
+        REVEALED_NOT_SCORED transition (when the rating row first
+        becomes visible). Cached because ``Scheduler.review_card`` is
+        non-deterministic (fuzzing) — without caching, the displayed
+        intervals would jitter on every render.
         """
+        if self._cached_rating_previews is None:
+            self._cached_rating_previews = self._compute_rating_previews()
+        return self._cached_rating_previews
+
+    def _compute_rating_previews(self) -> dict[Rating, float]:
         now = datetime.now(UTC)
         previews: dict[Rating, float] = {}
         for rating in (Rating.Again, Rating.Hard, Rating.Good, Rating.Easy):
@@ -634,6 +649,10 @@ class Flashcard:
         # shows empty when the card comes back around.
         self._auto_scoring_failed = False
         self._user_answer = None
+        # Per-rating preview cache is per-attempt — drop it so the next
+        # reveal_back recomputes against whatever FSRS state is current
+        # by then.
+        self._cached_rating_previews = None
 
         if self._awaiting_reveal_task is not None:
             self._awaiting_reveal_task.cancel()
@@ -658,6 +677,9 @@ class Flashcard:
         # Stop timing "think time" — user has committed to revealing.
         self.pause()
         self.state = Flashcard.State.REVEALED_NOT_SCORED
+        # Lock in the per-rating previews now that the rating row is
+        # about to become visible. See _cached_rating_previews.
+        self._cached_rating_previews = self._compute_rating_previews()
 
     def reveal_front(self):
         assert self.state == Flashcard.State.AWAITING_REVEAL
@@ -913,6 +935,11 @@ class FlashcardReviewViewModel:
             self.toggle_help_visible()
             return
 
+        # Cross-state: enter-default toggle (auto vs good).
+        if event.key == KEYBINDINGS[Action.TOGGLE_AUTO_SCORE]:
+            self.toggle_auto_score_enabled()
+            return
+
         match self.state:
             case FlashcardReviewViewModel.State.START:
                 self._on_key_start(event)
@@ -1123,6 +1150,20 @@ class FlashcardReviewViewModel:
 
     def toggle_help_visible(self) -> None:
         self.help_visible = not self._help_visible
+
+    @property
+    def auto_score_enabled(self) -> bool:
+        return self._auto_score_enabled
+
+    @auto_score_enabled.setter
+    def auto_score_enabled(self, value: bool) -> None:
+        if self._auto_score_enabled == value:
+            return
+        self._auto_score_enabled = value
+        self._emit(self.dirty)
+
+    def toggle_auto_score_enabled(self) -> None:
+        self.auto_score_enabled = not self._auto_score_enabled
 
 
     @property

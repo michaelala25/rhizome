@@ -70,6 +70,11 @@ class _RecordingScheduler:
     AWAITING_REVEAL flow depends on).
     """
 
+    # The four ratings, in the order Flashcard._compute_rating_previews
+    # iterates them — used to detect & strip preview batches from the
+    # recorded call log.
+    _PREVIEW_BATCH = (Rating.Again, Rating.Hard, Rating.Good, Rating.Easy)
+
     def __init__(self):
         self._real = Scheduler()
         self.calls: list[tuple[int, Rating]] = []
@@ -77,6 +82,24 @@ class _RecordingScheduler:
     def review_card(self, card, rating, review_dt):
         self.calls.append((card.card_id, rating))
         return self._real.review_card(card, rating, review_dt)
+
+    @property
+    def scoring_calls(self) -> list[tuple[int, Rating]]:
+        """``self.calls`` minus the preview batches that ``reveal_back``
+        emits. A preview batch is 4 sequential calls with the same
+        card_id and ratings ``(Again, Hard, Good, Easy)`` in order.
+        """
+        result = list(self.calls)
+        i = 0
+        while i <= len(result) - 4:
+            window = result[i:i + 4]
+            card_ids = {c for c, _ in window}
+            ratings = tuple(r for _, r in window)
+            if len(card_ids) == 1 and ratings == self._PREVIEW_BATCH:
+                del result[i:i + 4]
+            else:
+                i += 1
+        return result
 
 
 @pytest.fixture
@@ -341,19 +364,19 @@ class TestFlashcardScoring:
         card.set_score(Flashcard.Score.GOOD)
         assert card.state == Flashcard.State.SCORED
         assert card.score == Flashcard.Score.GOOD
-        assert recording_scheduler.calls == [(42, Rating.Good)]
+        assert recording_scheduler.scoring_calls == [(42, Rating.Good)]
 
     def test_set_score_hard_maps_to_rating_hard(self, card, recording_scheduler):
         card.unpause()
         card.reveal_back()
         card.set_score(Flashcard.Score.HARD)
-        assert recording_scheduler.calls == [(42, Rating.Hard)]
+        assert recording_scheduler.scoring_calls == [(42, Rating.Hard)]
 
     def test_set_score_easy_maps_to_rating_easy(self, card, recording_scheduler):
         card.unpause()
         card.reveal_back()
         card.set_score(Flashcard.Score.EASY)
-        assert recording_scheduler.calls == [(42, Rating.Easy)]
+        assert recording_scheduler.scoring_calls == [(42, Rating.Easy)]
 
     def test_set_score_from_pending_auto_also_works(self, card):
         """The batch scorer calls set_score on a PENDING_AUTO card — the
@@ -397,7 +420,7 @@ class TestFlashcardAgainAndSkip:
         assert card.state == Flashcard.State.AWAITING_REVEAL
         assert card._awaiting_reveal_task is not None
         assert card._due_timer is not None and card._due_timer.running
-        assert recording_scheduler.calls == [(42, Rating.Again)]
+        assert recording_scheduler.scoring_calls == [(42, Rating.Again)]
         card._awaiting_reveal_task.cancel()
 
     async def test_again_from_pending_auto(self, card):
