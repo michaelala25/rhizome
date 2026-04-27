@@ -164,6 +164,7 @@ async def review(card_data, recording_scheduler):
         auto_score_enabled=True,
         auto_scorer=None,
         scheduler=recording_scheduler,
+        _auto_accept_auto_scores=True,
     )
     yield r
     # Teardown: cancel any lingering async tasks so they don't leak
@@ -806,6 +807,7 @@ class TestLearningLadder:
             auto_score_enabled=True,
             auto_scorer=_FakeScorer({1: 3, 2: 3, 3: 3}),
             scheduler=recording_scheduler,
+            _auto_accept_auto_scores=True,
         )
         try:
             review.begin()

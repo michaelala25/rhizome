@@ -496,6 +496,13 @@ class Flashcard:
         FRONT = auto()
         REVEALED_NOT_SCORED = auto()
         REVEALED_PENDING_AUTO_SCORE = auto()
+        # The auto-scorer has produced a rating, but the user still has
+        # to approve it (or discard it and rate manually). Reached only
+        # in REQUIRE_APPROVAL auto-score mode. The proposed rating
+        # lives in ``_pending_score`` — FSRS state is intentionally
+        # unchanged while we wait for approval, so ``discard_pending_score``
+        # is just a field-clearing operation with no rollback.
+        SCORED_PENDING_APPROVAL = auto()
         SCORED = auto()
         AWAITING_REVEAL = auto()
 
@@ -549,6 +556,23 @@ class Flashcard:
         # ``set_score_auto`` will assert and the FlashcardReview enter-path
         # falls back to a manual GOOD rating. Cleared by ``reset()``.
         self._auto_scoring_failed: bool = False
+        # Set to True when the user discards a SCORED_PENDING_APPROVAL
+        # auto-score. Has the same suppressing effect on subsequent
+        # auto-score attempts within the same attempt as
+        # ``_auto_scoring_failed`` (the enter-path falls back to a manual
+        # rating), but kept as a separate flag so the view can distinguish
+        # "scorer broke" from "user rejected" in its on-screen message.
+        # Cleared by ``reset()`` and by ``_reset_session_metadata()``.
+        self._auto_score_discarded: bool = False
+
+        # The proposed rating from the auto-scorer that the user has not
+        # yet approved or discarded. Set by ``set_pending_score`` while
+        # in REQUIRE_APPROVAL mode; consumed by ``approve_pending_score``
+        # (which then runs the rating through the normal scoring path);
+        # cleared by ``discard_pending_score``. The FSRS state is NOT
+        # advanced while the rating sits here — discard is just clearing
+        # the field, no rollback needed.
+        self._pending_score: Flashcard.Score | None = None
 
         # Fired from ``_wait_until_due`` after the card auto-reveals from
         # AWAITING_REVEAL back to FRONT. The VM wires this up to its
@@ -570,7 +594,14 @@ class Flashcard:
     @property
     def score(self) -> Score | None:
         return self._score
-    
+
+    @property
+    def pending_score(self) -> Score | None:
+        """The auto-scorer's proposed rating, while the card sits in
+        SCORED_PENDING_APPROVAL. ``None`` in any other state."""
+        return self._pending_score
+
+
     @property
     def scored(self) -> bool:
         return self._score != None
@@ -658,6 +689,7 @@ class Flashcard:
         # and the previously-typed draft answer is cleared so the input
         # shows empty when the card comes back around.
         self._auto_scoring_failed = False
+        self._auto_score_discarded = False
         self._user_answer = None
         # Per-rating preview cache is per-attempt — drop it so the next
         # reveal_back recomputes against whatever FSRS state is current
@@ -680,6 +712,9 @@ class Flashcard:
         """
         self._reset_session_metadata()
         self._current_fsrs_card = copy.copy(self._initial_fsrs_card)
+        # If the card was sitting in SCORED_PENDING_APPROVAL, drop the
+        # staged rating along with everything else.
+        self._pending_score = None
         self.state = Flashcard.State.FRONT
 
     def reveal_back(self):
@@ -735,12 +770,15 @@ class Flashcard:
             self.set_score_auto()
             return
 
-        # Can only set the score to EASY/GOOD/HARD if we're in one of the following two states
+        # Can only set the score to EASY/GOOD/HARD if we're in one of these states
         assert self.state in [
-            # This state reflects the user manually scoring the card
+            # User manually scoring the card.
             Flashcard.State.REVEALED_NOT_SCORED,
-            # This state reflects the auto-scorer scoring the card, or the user manually scoring a card that was pending auto-score
-            Flashcard.State.REVEALED_PENDING_AUTO_SCORE
+            # Auto-scorer scoring the card, or user manually scoring a
+            # card that was pending auto-score.
+            Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+            # User approving a pending auto-score (via approve_pending_score).
+            Flashcard.State.SCORED_PENDING_APPROVAL,
         ]
 
         self._apply_rating(Rating(score.value), score)
@@ -750,11 +788,11 @@ class Flashcard:
         or AWAITING_REVEAL based on the resulting FSRS state.
 
         - ``State.Review`` → terminal SCORED. Stops the think-time timer and stamps ``_score = score``.
-        - ``State.Learning`` / ``State.Relearning`` → AWAITING_REVEAL. Clears per-attempt session metadata 
+        - ``State.Learning`` / ``State.Relearning`` → AWAITING_REVEAL. Clears per-attempt session metadata
           (the next reveal is a fresh attempt: blank user_answer, fresh auto-score eligibility), spawns
           ``_wait_until_due`` from the FSRS-computed ``due`` delta.
 
-        ``_score`` is None inside AWAITING_REVEAL because the requeue is a not-yet-finalized attempt — the 
+        ``_score`` is None inside AWAITING_REVEAL because the requeue is a not-yet-finalized attempt — the
           user will rate again when it comes back around.
         """
         review_dt = datetime.now(UTC)
@@ -806,6 +844,56 @@ class Flashcard:
         assert self.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE
         self._score = None
         self._auto_scoring_failed = True
+        self.state = Flashcard.State.REVEALED_NOT_SCORED
+
+    def set_pending_score(self, score: Score):
+        """Stage a rating from the auto-scorer for user approval.
+
+        Used by the batch auto-scorer when the VM is in REQUIRE_APPROVAL
+        mode. Records the proposed rating in ``_pending_score`` and
+        transitions to SCORED_PENDING_APPROVAL. FSRS state is
+        intentionally untouched — the rating is only applied if the
+        user approves, so ``discard_pending_score`` is a pure
+        field-clearing operation.
+
+        All four FSRS ratings (AGAIN/HARD/GOOD/EASY) are valid — the
+        user gets the same approval gate over the model's call regardless
+        of which way it went. SKIPPED is a user-only action and not a
+        valid auto-score outcome.
+        """
+        assert self.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE
+        assert score in (
+            Flashcard.Score.AGAIN,
+            Flashcard.Score.HARD,
+            Flashcard.Score.GOOD,
+            Flashcard.Score.EASY,
+        )
+
+        self._pending_score = score
+        self.state = Flashcard.State.SCORED_PENDING_APPROVAL
+
+    def approve_pending_score(self):
+        """Apply the staged rating through the normal scoring path.
+
+        Routes through ``set_score`` so the rating gets the same
+        treatment a manual rating would: scheduler advance, post-rating
+        State.Review → SCORED, State.Learning/Relearning →
+        AWAITING_REVEAL.
+        """
+        assert self.state == Flashcard.State.SCORED_PENDING_APPROVAL
+        assert self._pending_score is not None
+        score = self._pending_score
+        self._pending_score = None
+        self.set_score(score)
+
+    def discard_pending_score(self):
+        """Reject the staged rating. No FSRS rollback needed since
+        nothing was applied. Latches ``_auto_score_discarded`` so the
+        enter-default suppresses auto-scoring on the remainder of this
+        attempt (mirrors ``_auto_scoring_failed``)."""
+        assert self.state == Flashcard.State.SCORED_PENDING_APPROVAL
+        self._pending_score = None
+        self._auto_score_discarded = True
         self.state = Flashcard.State.REVEALED_NOT_SCORED
 
     def skip(self):
@@ -876,6 +964,7 @@ class FlashcardReviewViewModel:
         auto_score_enabled: bool = False,
         auto_scorer: Any = None,
         scheduler: Scheduler | None = None,
+        _auto_accept_auto_scores: bool = False,
     ):
         super().__init__()
         # ``session_factory`` is held only for the public ``commit()`` API,
@@ -889,6 +978,7 @@ class FlashcardReviewViewModel:
 
         self._auto_score_enabled = auto_score_enabled
         self._auto_scorer = auto_scorer
+        self._auto_accept_auto_scores = _auto_accept_auto_scores
 
         # Internal state
         self.state = FlashcardReviewViewModel.State.START
@@ -1517,7 +1607,7 @@ class FlashcardReviewViewModel:
 
     async def _handle_batched_auto_score(self, pending_auto_score: list[Flashcard]) -> None:
         try:
-            requeued, failed = await self._auto_score(pending_auto_score)
+            requeued, failed, pending_approval = await self._auto_score(pending_auto_score)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1525,17 +1615,18 @@ class FlashcardReviewViewModel:
             # Whole-batch failure: revert every card that's still sitting in
             # REVEALED_PENDING_AUTO_SCORE (i.e. the scorer didn't get to
             # produce a rating for it before blowing up). Anything that
-            # already made it through ``set_score`` is already committed.
+            # already made it through ``set_score`` / ``set_pending_score``
+            # is already committed.
             requeued = []
             failed = []
+            pending_approval = []
             for card in pending_auto_score:
                 if card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
                     card._revert_auto_score_failure()
                     failed.append(card)
 
-        # Re-queue each requeued card (FSRS state Learning/Relearning) at
-        # the back of ``_cards`` while keeping ``_current_card_index``
-        # pointing at the same underlying card.
+        # Requeued cards (auto-accept mode, post-rating FSRS state in
+        # Learning/Relearning) get moved to the back of _cards.
         for card in requeued:
             pos = self._cards.index(card)
             self._cards.pop(pos)
@@ -1549,9 +1640,13 @@ class FlashcardReviewViewModel:
             # round we just opened.
             self._remaining_before_batched_autoscore.add(card.id)
 
-        # Failed cards stay in place but go back into the remaining set so
-        # the user can pick them up and rate them manually.
+        # Failed and pending-approval cards stay in place positionally.
+        # Failed cards need manual rating; pending-approval cards need
+        # user approval or discard. Either way, the round can't complete
+        # until the user attends to them, so they belong in _remaining.
         for card in failed:
+            self._remaining_before_batched_autoscore.add(card.id)
+        for card in pending_approval:
             self._remaining_before_batched_autoscore.add(card.id)
 
         # The cursor may be sitting on a card that's now SCORED; advance it
@@ -1573,27 +1668,33 @@ class FlashcardReviewViewModel:
 
     async def _auto_score(
         self, pending_auto_score: list[Flashcard]
-    ) -> tuple[list[Flashcard], list[Flashcard]]:
+    ) -> tuple[list[Flashcard], list[Flashcard], list[Flashcard]]:
         """Batch-score every pending-auto card via the scorer subagent.
 
-        For each card, applies the rating returned by the scorer subagent via
-        ``Flashcard.set_score``, and lands the card either in SCORED or AWAITING_REVEAL,
-        depending on the FSRS state. No DB commits made.
+        For each card, stages the rating returned by the scorer for user
+        approval via ``set_pending_score`` (currently always
+        REQUIRE_APPROVAL behavior — the AutoScoreMode toggle that picks
+        AUTO_ACCEPT vs REQUIRE_APPROVAL comes in a follow-up step).
+        Every successful rating, including AGAIN, lands in
+        SCORED_PENDING_APPROVAL — the user has the same say over a
+        "model wants to see this again" call as a "model thinks you got
+        it" call. No FSRS state advances and no DB commits.
 
-        Returns a tuple ``(requeued_cards, failed_cards)``:
+        Returns a tuple ``(failed_cards, pending_approval_cards)``:
 
-        - ``requeued_cards``: cards whose post-rating FSRS state is Learning or Relearning.
-          Caller must requeue them at the back of the display order. Always includes 
-          AGAIN-rated cards (Again never lands in Review), and may include HARD/GOOD on a 
-          card still inside the Learning ladder.
+        - ``failed_cards``: cards the scorer couldn't score (dropped from
+          the response, non-integer, or out-of-range). Reverted via
+          ``Flashcard._revert_auto_score_failure`` — now
+          ``REVEALED_NOT_SCORED`` with ``auto_scoring_failed == True``
+          and need to go back into ``_remaining`` for manual rating.
 
-        - ``failed_cards``: cards the scorer couldn't score (dropped from the response, non-
-          integer, or out-of-range). These have been reverted via ``Flashcard._revert_auto_score_failure`` 
-          — they're now ``REVEALED_NOT_SCORED`` with ``auto_scoring_failed == True`` and 
-          need to go back into ``_remaining`` for manual rating.
+        - ``pending_approval_cards``: successfully-rated cards now
+          sitting in SCORED_PENDING_APPROVAL. Caller adds these to
+          ``_remaining`` so the round stays open until the user
+          approves or discards each one.
 
-        Uses the stable flashcard id as ``flashcard_id`` in the prompt so results map back 
-        unambiguously, regardless of return order.
+        Uses the stable flashcard id as ``flashcard_id`` in the prompt
+        so results map back unambiguously, regardless of return order.
         """
         if self._auto_scorer is None:
             raise RuntimeError("auto-score invoked without a configured scorer subagent")
@@ -1634,6 +1735,7 @@ class FlashcardReviewViewModel:
 
         requeued_cards: list[Flashcard] = []
         failed_cards: list[Flashcard] = []
+        pending_approval_cards: list[Flashcard] = []
 
         def _fail(card: Flashcard, reason: str) -> None:
             _logger.warning("%s for flashcard id=%d", reason, card.id)
@@ -1655,11 +1757,12 @@ class FlashcardReviewViewModel:
                 _fail(card, f"Scorer returned out-of-range score {rating!r}")
                 continue
 
-            score = score_map[rating]
-            card.set_score(score)
+            if self._auto_accept_auto_scores:
+                card.set_score(score_map[rating])
+                if card.fsrs_card.state in (State.Learning, State.Relearning):
+                    requeued_cards.append(card)
+            else:
+                card.set_pending_score(score_map[rating])
+                pending_approval_cards.append(card)
 
-            # Branch on the resulting FSRS state
-            if card.fsrs_card.state in (State.Learning, State.Relearning):
-                requeued_cards.append(card)
-
-        return requeued_cards, failed_cards
+        return requeued_cards, failed_cards, pending_approval_cards
