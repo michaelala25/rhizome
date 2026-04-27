@@ -18,13 +18,17 @@ States:
     REVEALED_PENDING_AUTO_SCORE
         The user deferred this card to the auto-scorer (Score.AUTO).
     SCORED
-        Terminal scored state. Score is one of EASY/GOOD/HARD/SKIPPED. (AGAIN never lands
-        here; an AGAIN'd card transitions to AWAITING_REVEAL instead.)
+        Terminal scored state. Score is one of EASY/GOOD/HARD/SKIPPED. Reached when a
+        rating advances ``_current_fsrs_card`` to ``State.Review`` (the card has graduated
+        from the (re)learning step ladder), or directly via ``skip()``. AGAIN never lands
+        here in practice — Rating.Again always produces Learning or Relearning.
     AWAITING_REVEAL
-        The card was AGAIN'd. Rating.Again has been applied to ``_current_fsrs_card`` via
-        the VM's scheduler; the card is now scheduled and waiting for its due delta to
-        elapse before being shown again. A ``_wait_until_due`` task is in flight;
-        ``_due_timer`` ticks the countdown.
+        A rating has been applied and ``_current_fsrs_card`` is in ``State.Learning`` or
+        ``State.Relearning`` — the card needs to come back this session before the user
+        is done with it. The card is scheduled and waiting for its due delta to elapse
+        before being shown again. A ``_wait_until_due`` task is in flight; ``_due_timer``
+        ticks the countdown. Reached on AGAIN (always — Again never graduates) and on
+        HARD/GOOD/EASY when the rating doesn't advance the card out of the step ladder.
 
 Score values:
     AGAIN / HARD / GOOD / EASY      mirror ``fsrs.Rating`` (values 1-4).
@@ -44,11 +48,17 @@ Transitions (all enforced by asserts on the source state):
 
 
     REVEALED_NOT_SCORED
-        -> SCORED(EASY/GOOD/HARD) [via set_score(EASY|GOOD|HARD)]
-            - The user issued a manual-rate action for HARD/GOOD/EASY. Also reached from
-              ``score_current_card``'s manual-rating path.
-            - Advances ``_current_fsrs_card`` by running ``Rating(score.value)`` through the
-              VM-owned scheduler. No DB write — see "FSRS state ownership" up top.
+        -> SCORED [via set_score(HARD|GOOD|EASY); assuming next FSRS state is Review]
+            - The user rated the card HARD/GOOD/EASY, and the FSRS scheduler determines the next 
+              state of the card. If the new state is Learning or Relearning, then the card ends
+              up in the AWAITING_REVEAL state, as it needs to be reviewed again before the session
+              wraps up. Otherwise, if it enters the Review stage, it's transitioned to SCORED as a
+              pseudo-terminal state.
+        
+        -> AWAITING_REVEAL [via set_score(AGAIN|HARD|GOOD); assuming next FSRS state is (Re)Learning]
+            - Same as above, user has rated the card AGAIN/HARD/GOOD, and the FSRS scheduler determines
+              that the next card state is either Learning or Relearning, in which case we need to
+              requeue the card.
 
         -> REVEALED_PENDING_AUTO_SCORE [via set_score_auto(); requires !auto_scoring_failed]
             - The user issued the default-rate action on a revealed card while auto-scoring
@@ -57,31 +67,21 @@ Transitions (all enforced by asserts on the source state):
             - Stops the think-time timer. Card waits in this state until the round-drain
               triggers ``_check_remaining_cards`` to dispatch the batch.
 
-        -> AWAITING_REVEAL [via again()]
-            - The user issued the AGAIN-rate action on the revealed card.
-            - Advances ``_current_fsrs_card`` via the scheduler (Rating.Again), then
-              schedules a ``_wait_until_due`` task whose sleep delta is computed from the
-              card's new ``due``. ``_due_timer`` is started for the countdown display.
-              Internally calls ``_reset_session_metadata()`` first (NOT ``reset()`` —
-              rolling FSRS state back here would discard the Again that's about to be
-              applied), so ``_score`` is None inside AWAITING_REVEAL.
-
         -> SCORED(SKIPPED) [via skip()]
             - The user issued the skip action after revealing.
             - Stops the think-time timer.
 
 
     REVEALED_PENDING_AUTO_SCORE
-        -> SCORED(EASY/GOOD/HARD) [via set_score(EASY|GOOD|HARD)]
-            - Either the users manually scored the card, or the auto-scorer returned 2/3/4.
-            - Same effect as the REVEALED_NOT_SCORED variant: scheduler advances
-              ``_current_fsrs_card``.
-
-        -> AWAITING_REVEAL [via again()]
-            - Either the user manually AGAIN'd the card, or the auto scorer returned 1.
-            - Blocked by the FlashcardReviewViewModel while an auto-score task is in-flight.
-            - Same effect as the REVEALED_NOT_SCORED variant: scheduler applies Rating.Again
-              to ``_current_fsrs_card``, plus the ``_wait_until_due`` task.
+        -> SCORED or AWAITING_REVEAL [via set_score(EASY|GOOD|HARD|AGAIN)]
+            - Either the user manually scored the card, or the batch auto-scorer returned a
+              rating in {1,2,3,4}.
+            - Manual override of a PENDING_AUTO card is blocked by
+              ``FlashcardReviewViewModel`` while the auto-score task is in flight (the
+              user's score would be immediately overridden once the batch returns).
+            - Same routing as the REVEALED_NOT_SCORED variant: scheduler advances
+              ``_current_fsrs_card``, then SCORED if Review or AWAITING_REVEAL if
+              Learning/Relearning.
 
         -> REVEALED_NOT_SCORED [via _revert_auto_score_failure()]
             - The batch scorer dropped this card, returned a non-integer / out-of-range
@@ -113,9 +113,10 @@ Transitions (all enforced by asserts on the source state):
     {any state}
         -> FRONT [via reset()]
             - Triggered by the user-initiated reset action on the current card and by the
-              unskip action on a SCORED(SKIPPED) card. (``again()`` does NOT call this; it
-              uses ``_reset_session_metadata()`` directly so the about-to-be-applied
-              Rating.Again isn't immediately rolled back.)
+              unskip action on a SCORED(SKIPPED) card. (``_apply_rating`` does NOT call
+              this; it uses ``_reset_session_metadata()`` directly when routing to
+              AWAITING_REVEAL, so the rating it just applied isn't immediately rolled
+              back.)
             - Clears ``_score``, ``_user_answer``, and ``auto_scoring_failed``; resets the
               think-time timer; cancels any in-flight ``_wait_until_due`` task; AND
               restores ``_current_fsrs_card`` to a copy of ``_initial_fsrs_card`` (this is
@@ -244,9 +245,10 @@ these sets are:
 
 A second corollary: scoring a card to EITHER state (SCORED or REVEALED_PENDING_AUTO_SCORE)
 must remove its id from BOTH queues. ``score_current_card`` discards from both at the top of
-the method; the AGAIN branch then re-adds to ``_next_remaining`` at the bottom. Without this,
-a previously-AGAIN'd card that the user reveals and rates before its due timer fires would
-leave a ghost id in ``_next_remaining`` that survives the round-swap and blocks finish.
+the method; the requeue branch (post-rating FSRS state ∈ {Learning, Relearning}) then re-adds
+to ``_next_remaining`` at the bottom. Without this, a previously-requeued card that the user
+reveals and rates before its due timer fires would leave a ghost id in ``_next_remaining``
+that survives the round-swap and blocks finish.
 
 ============================================================================================
 Auto-scoring batch lifecycle
@@ -254,7 +256,8 @@ Auto-scoring batch lifecycle
 
     1. ``_check_remaining_cards`` observes ``_remaining`` empty and at least one card in state
        REVEALED_PENDING_AUTO_SCORE. It swaps ``_next_remaining`` into ``_remaining`` (so the
-       AGAIN'd cards from this round become the next round's queue), then spawns a single
+       requeued cards from this round — those whose post-rating FSRS state was Learning or
+       Relearning — become the next round's queue), then spawns a single
        ``_handle_batched_auto_score`` task.
 
     2. ``autoscore_in_progress`` (``task is not None and not task.done()``) guards against:
@@ -267,16 +270,16 @@ Auto-scoring batch lifecycle
 
     3. ``_auto_score`` builds a single prompt covering all pending cards and invokes the
        scorer subagent once. Results are looked up by stable card id. For each card:
-       - Score 2/3/4 -> ``card.set_score(...)`` (transitions to SCORED, advances FSRS state
-                        via the scheduler).
-       - Score 1     -> ``card.set_score(AGAIN)`` -> routes through ``again()`` (transitions
-                        to AWAITING_REVEAL, advances FSRS state via Rating.Again).
+       - Score 1/2/3/4 -> ``card.set_score(...)``: scheduler advances FSRS state, then the
+                          card lands in SCORED if the new state is Review, or
+                          AWAITING_REVEAL if Learning/Relearning. Cards landing in
+                          AWAITING_REVEAL are accumulated into ``requeued_cards``.
        - Missing/malformed/out-of-range -> ``card._revert_auto_score_failure()`` (back to
-                        REVEALED_NOT_SCORED with ``auto_scoring_failed`` latched).
+                          REVEALED_NOT_SCORED with ``auto_scoring_failed`` latched).
        - Whole-batch raise -> every card still in REVEALED_PENDING_AUTO_SCORE is reverted via
                               the same path.
 
-    4. ``_handle_batched_auto_score`` post-loop: AGAIN cards are moved to the back of
+    4. ``_handle_batched_auto_score`` post-loop: requeued cards are moved to the back of
        ``_cards`` and added to ``_remaining`` (NOT ``_next_remaining`` — they are part of the
        round we just swapped in); failed cards stay in place but are added back to
        ``_remaining`` so the user can rate them manually. ``_autoscore_task`` is cleared,
@@ -289,14 +292,15 @@ Cursor management
 ============================================================================================
 
     - ``_current_card_index`` is an index into ``_cards``. ``_cards`` is mutated in place by
-      AGAIN's remove+append (so the AGAIN'd card always lands at the end of the display
-      order). The cursor's *index* is preserved across this; this means after an AGAIN of a
+      a requeue's remove+append (so a requeued card always lands at the end of the display
+      order — applies to AGAIN and to HARD/GOOD on a card still inside the Learning ladder).
+      The cursor's *index* is preserved across this; this means after a requeue of a
       middle/first card, the cursor implicitly shifts to a new card (the one that slid into
-      the vacated position), and after an AGAIN of the last card, the cursor stays on the
-      AGAIN'd card.
+      the vacated position), and after a requeue of the last card, the cursor stays on the
+      just-requeued card.
     - ``_goto_next_unscored_card`` is the only place that walks the cursor between rounds.
       It prefers ``_remaining`` and falls back to ``_next_remaining`` so the cursor doesn't
-      stall on a SCORED card when the only unscored cards are AGAIN'd and waiting.
+      stall on a SCORED card when the only unscored cards are requeued and waiting.
     - The think-time timer is paused when leaving FRONT and unpaused when entering FRONT.
       ``_pause_current_if_front`` / ``_unpause_current_if_front`` are the FRONT-state guards;
       they make navigation onto a SCORED, REVEALED_*, or AWAITING_REVEAL card a no-op for the
@@ -311,7 +315,7 @@ from datetime import UTC, datetime
 from enum import Enum, auto
 from typing import Any, NotRequired, TypedDict
 
-from fsrs import Card, Rating, Scheduler
+from fsrs import Card, Rating, Scheduler, State
 from textual import events
 
 from rhizome.db.operations.flashcards import commit_fsrs_card
@@ -588,9 +592,17 @@ class Flashcard:
     def set_score(self, score: Score):
         """Score the card with the given score, transitioning state accordingly.
 
-        Synchronous — FSRS state is mutated in memory via the VM-owned
-        scheduler. No DB I/O happens here.
+        Synchronous — FSRS state is mutated in memory. No DB I/O happens here.
+
+        For EASY/GOOD/HARD/AGAIN, the resulting state depends on the post-rating FSRS state: ``State.Review``
+        lands in SCORED; ``State.Learning`` / ``State.Relearning`` land in AWAITING_REVEAL with a 
+        ``_wait_until_due`` task scheduled from the new ``due``.
         """
+
+        # Always stop the timer upon receiving any score. Every score either transitions the card to SCORED,
+        # PENDING_AUTO_SCORE, or AWAITING_REVEAL. In the first two cases, the "time spent thinking before answering"
+        # is fixed at the point of scoring - in the last case, the timer needs to be reset regardless.
+        self._timer.stop()
 
         # First, delegate to other methods whenever possible
         if score == Flashcard.Score.SKIPPED:
@@ -611,21 +623,44 @@ class Flashcard:
             Flashcard.State.REVEALED_PENDING_AUTO_SCORE
         ]
 
-        self._score = score
-        self._timer.stop()
+        self._apply_rating(Rating(score.value), score)
 
-        if score in [
-            Flashcard.Score.EASY,
-            Flashcard.Score.GOOD,
-            Flashcard.Score.HARD,
-        ]:
-            self._current_fsrs_card, _log = self._scheduler.review_card(
-                self._current_fsrs_card,
-                Rating(score.value),
-                datetime.now(UTC),
-            )
+    def _apply_rating(self, rating: Rating, score: Score) -> None:
+        """Run the rating through the scheduler and route to either SCORED
+        or AWAITING_REVEAL based on the resulting FSRS state.
 
-        self.state = Flashcard.State.SCORED
+        - ``State.Review`` → terminal SCORED. Stops the think-time timer and stamps ``_score = score``.
+        - ``State.Learning`` / ``State.Relearning`` → AWAITING_REVEAL. Clears per-attempt session metadata 
+          (the next reveal is a fresh attempt: blank user_answer, fresh auto-score eligibility), spawns
+          ``_wait_until_due`` from the FSRS-computed ``due`` delta.
+
+        ``_score`` is None inside AWAITING_REVEAL because the requeue is a not-yet-finalized attempt — the 
+          user will rate again when it comes back around.
+        """
+        review_dt = datetime.now(UTC)
+        self._current_fsrs_card, _log = self._scheduler.review_card(
+            self._current_fsrs_card, rating, review_dt,
+        )
+
+        if self._current_fsrs_card.state == State.Review:
+            # Graduated — terminal scored state.
+            self._score = score
+            self.state = Flashcard.State.SCORED
+            return
+
+        # Still inside the (re)learning step ladder — requeue the card
+        # via the due timer. ``_reset_session_metadata`` clears _score
+        # (consistent with AWAITING_REVEAL), drops the user_answer draft,
+        # clears the auto_scoring_failed latch, and resets the think-time
+        # timer for the next FRONT cycle. It does NOT touch FSRS state.
+        self._reset_session_metadata()
+        self.state = Flashcard.State.AWAITING_REVEAL
+
+        due = (self._current_fsrs_card.due - review_dt).total_seconds()
+        self._due_timer = Timer()
+        self._due = due
+        self._due_timer.start()
+        self._awaiting_reveal_task = asyncio.create_task(self._wait_until_due(due))
 
     def set_score_auto(self):
         """Non-async version of set_score for the AUTO case."""
@@ -678,28 +713,16 @@ class Flashcard:
         self.state = Flashcard.State.SCORED
 
     def again(self):
+        """Apply Rating.Again. In practice the resulting FSRS state is
+        always Learning or Relearning, so this lands in AWAITING_REVEAL —
+        but the routing decision is made inside ``_apply_rating`` based
+        on the actual FSRS outcome, not the rating button.
+        """
         assert self.state in [
             Flashcard.State.REVEALED_NOT_SCORED,
             Flashcard.State.REVEALED_PENDING_AUTO_SCORE
         ]
-
-        # Clear per-attempt metadata, but DON'T roll FSRS state back —
-        # we're about to apply Rating.Again on top of the current state.
-        self._reset_session_metadata()
-        self.state = Flashcard.State.AWAITING_REVEAL
-
-        review_dt = datetime.now(UTC)
-        self._current_fsrs_card, _log = self._scheduler.review_card(
-            self._current_fsrs_card, Rating.Again, review_dt,
-        )
-
-        due = (self._current_fsrs_card.due - review_dt).total_seconds()
-
-        self._due_timer = Timer()
-        self._due = due
-
-        self._due_timer.start()
-        self._awaiting_reveal_task = asyncio.create_task(self._wait_until_due(due))
+        self._apply_rating(Rating.Again, Flashcard.Score.AGAIN)
 
     @property
     def due_in(self) -> float | None:
@@ -1137,51 +1160,49 @@ class FlashcardReviewViewModel:
             if self.autoscore_in_progress:
                 return
 
-        # If the card was rated EASY/GOOD/HARD, we just need to update its state to SCORED.
-        # AUTO is handled the same as EASY/GOOD/HARD, until we need to perform a batched autoscore.
-        #
         # Discard from BOTH queues — a card transitioning to SCORED must not leave a ghost id
         # in _next_remaining (e.g. a previously-AGAIN'd card that the user revealed and scored
-        # before its due timer fired). The AGAIN branch below re-adds to _next afterwards.
+        # before its due timer fired). The requeue branch below re-adds to _next afterwards
+        # for cards that end up in Learning / Relearning.
         self._remaining_before_batched_autoscore.discard(self.current_card.id)
         self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
 
-        if score in [
-            Flashcard.Score.EASY,
-            Flashcard.Score.GOOD,
-            Flashcard.Score.HARD,
-        ]:
-            self.current_card.set_score(score)
-            self._goto_next_unscored_card()
-
-        elif score == Flashcard.Score.AUTO:
-            # Routed separately to utilize specialized non-async method
+        # AUTO and SKIPPED don't run the rating through the scheduler, so
+        # there's no FSRS state to branch on — they're terminal-for-now
+        # transitions handled directly.
+        if score == Flashcard.Score.AUTO:
             self.current_card.set_score_auto()
             self._goto_next_unscored_card()
 
         elif score == Flashcard.Score.SKIPPED:
-            # Similar: routed separately to utilize specialized non-async method
             self.current_card.skip()
             self._goto_next_unscored_card()
 
-        # If the card was scored AGAIN, we need to requeue it by moving it to the end of the list and resetting its state.
-        #   - Additionally, we need to add it to the next round of "remaining_before_batched_autoscore", which gets swapped
-        #     in once the first round is entirely drained of remaining cards.
-        elif score == Flashcard.Score.AGAIN:
-            # Emplace this card at the back of the _cards list. Note that
-            # this implicitly moves the cursor: for middle/first positions
-            # it shifts a new card into _current_card_index; for the last
-            # position it leaves the cursor on the just-AGAIN'd card.
+        # EASY/GOOD/HARD/AGAIN: apply the rating, then branch on the
+        # post-rating FSRS state.
+        #   - State.Review
+        #       - graduated; card lands in SCORED; already removed from both queues above.
+        #   - State.Learning/Relearning
+        #       - still in the (re)learning step ladder card lands in AWAITING_REVEAL and
+        #         must come back this session. Requeue to the back of _cards and add to
+        #        _next_remaining (swapped in once the current round drains).
+        elif score in [
+            Flashcard.Score.EASY,
+            Flashcard.Score.GOOD,
+            Flashcard.Score.HARD,
+            Flashcard.Score.AGAIN,
+        ]:
             current_card = self.current_card
-            self._cards.remove(current_card)
-            self._cards.append(current_card)
+            current_card.set_score(score)
 
-            # And, add to next round of remaining:
-            self._next_remaining_before_batched_autoscore.add(current_card.id)
-
-            # Set the card internally to the "again" state — this also
-            # resets its main timer (AWAITING_REVEAL isn't timed).
-            current_card.again()
+            if current_card.fsrs_card.state in (State.Learning, State.Relearning):
+                # Emplace this card at the back of the _cards list. Note that
+                # this implicitly moves the cursor: for middle/first positions
+                # it shifts a new card into _current_card_index; for the last
+                # position it leaves the cursor on the just-requeued card.
+                self._cards.remove(current_card)
+                self._cards.append(current_card)
+                self._next_remaining_before_batched_autoscore.add(current_card.id)
 
             # Land on the next unscored card. If the implicit shift above
             # already placed us on an unscored card, _goto will stay put
@@ -1304,7 +1325,7 @@ class FlashcardReviewViewModel:
 
     async def _handle_batched_auto_score(self, pending_auto_score: list[Flashcard]) -> None:
         try:
-            again, failed = await self._auto_score(pending_auto_score)
+            requeued, failed = await self._auto_score(pending_auto_score)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1313,23 +1334,27 @@ class FlashcardReviewViewModel:
             # REVEALED_PENDING_AUTO_SCORE (i.e. the scorer didn't get to
             # produce a rating for it before blowing up). Anything that
             # already made it through ``set_score`` is already committed.
-            again = []
+            requeued = []
             failed = []
             for card in pending_auto_score:
                 if card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
                     card._revert_auto_score_failure()
                     failed.append(card)
 
-        # Re-queue each AGAIN card at the back of ``_cards`` while keeping
-        # ``_current_card_index`` pointing at the same underlying card.
-        for card in again:
+        # Re-queue each requeued card (FSRS state Learning/Relearning) at
+        # the back of ``_cards`` while keeping ``_current_card_index``
+        # pointing at the same underlying card.
+        for card in requeued:
             pos = self._cards.index(card)
             self._cards.pop(pos)
             if pos < self._current_card_index:
                 self._current_card_index -= 1
             self._cards.append(card)
-            # The card is already in AWAITING_REVEAL (from Flashcard.again()
-            # via set_score). Just add it to this round's remaining bucket.
+            # The card is already in AWAITING_REVEAL (set inside
+            # Flashcard._apply_rating). Add it to THIS round's remaining
+            # bucket — we already swapped _next into _remaining when the
+            # scoring job was dispatched, so the requeued card is part of the
+            # round we just opened.
             self._remaining_before_batched_autoscore.add(card.id)
 
         # Failed cards stay in place but go back into the remaining set so
@@ -1366,23 +1391,24 @@ class FlashcardReviewViewModel:
     ) -> tuple[list[Flashcard], list[Flashcard]]:
         """Batch-score every pending-auto card via the scorer subagent.
 
-        For each card, applies the rating returned by the scorer via
-        ``Flashcard.set_score`` — which routes AGAIN through ``again()`` and
-        EASY/GOOD/HARD through the VM-owned scheduler. All FSRS mutations are
-        in memory.
+        For each card, applies the rating returned by the scorer subagent via
+        ``Flashcard.set_score``, and lands the card either in SCORED or AWAITING_REVEAL,
+        depending on the FSRS state. No DB commits made.
 
-        Returns a tuple ``(again_cards, failed_cards)``:
+        Returns a tuple ``(requeued_cards, failed_cards)``:
 
-        - ``again_cards``: cards the scorer rated AGAIN. Caller must
-          requeue them at the back of the display order.
-        - ``failed_cards``: cards the scorer couldn't score (dropped from
-          the response, non-integer, or out-of-range). These have been
-          reverted via ``Flashcard._revert_auto_score_failure`` — they're
-          now ``REVEALED_NOT_SCORED`` with ``auto_scoring_failed == True``
-          and need to go back into ``_remaining`` for manual rating.
+        - ``requeued_cards``: cards whose post-rating FSRS state is Learning or Relearning.
+          Caller must requeue them at the back of the display order. Always includes 
+          AGAIN-rated cards (Again never lands in Review), and may include HARD/GOOD on a 
+          card still inside the Learning ladder.
 
-        Uses the stable flashcard id as ``flashcard_id`` in the prompt so
-        results map back unambiguously, regardless of return order.
+        - ``failed_cards``: cards the scorer couldn't score (dropped from the response, non-
+          integer, or out-of-range). These have been reverted via ``Flashcard._revert_auto_score_failure`` 
+          — they're now ``REVEALED_NOT_SCORED`` with ``auto_scoring_failed == True`` and 
+          need to go back into ``_remaining`` for manual rating.
+
+        Uses the stable flashcard id as ``flashcard_id`` in the prompt so results map back 
+        unambiguously, regardless of return order.
         """
         if self._auto_scorer is None:
             raise RuntimeError("auto-score invoked without a configured scorer subagent")
@@ -1421,7 +1447,7 @@ class FlashcardReviewViewModel:
             4: Flashcard.Score.EASY,
         }
 
-        again_cards: list[Flashcard] = []
+        requeued_cards: list[Flashcard] = []
         failed_cards: list[Flashcard] = []
 
         def _fail(card: Flashcard, reason: str) -> None:
@@ -1446,7 +1472,9 @@ class FlashcardReviewViewModel:
 
             score = score_map[rating]
             card.set_score(score)
-            if score == Flashcard.Score.AGAIN:
-                again_cards.append(card)
 
-        return again_cards, failed_cards
+            # Branch on the resulting FSRS state
+            if card.fsrs_card.state in (State.Learning, State.Relearning):
+                requeued_cards.append(card)
+
+        return requeued_cards, failed_cards

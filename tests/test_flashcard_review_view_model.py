@@ -6,19 +6,27 @@ rating path. The shared ``recording_scheduler`` fixture wraps a real
 ``fsrs.Scheduler`` so tests can assert rating mappings while still exercising
 the actual scheduler's state transitions.
 
-The ``_wait_until_due`` tasks spawned by ``Flashcard.again()`` sleep for the
-FSRS-computed delay (60s on a fresh Learning card with default config), so
-they never fire during a test — the ``review`` fixture cancels any lingering
-tasks at teardown.
+The default ``_starter_data`` cards start in ``State.Review`` (already
+graduated from the Learning ladder) — that way HARD/GOOD/EASY cleanly land
+in SCORED and only AGAIN goes to Relearning → AWAITING_REVEAL, matching the
+behavior the bulk of these tests were originally written against.
+``TestLearningLadder`` covers the new "stay in Learning/Relearning →
+AWAITING_REVEAL" behavior using ``_learning_starter_data``.
+
+The ``_wait_until_due`` tasks spawned by the AWAITING_REVEAL transitions
+sleep for the FSRS-computed delay (60s+ with default config), so they never
+fire during a test — the ``review`` fixture cancels any lingering tasks at
+teardown.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from fsrs import Card, Rating, Scheduler
+from fsrs import Card, Rating, Scheduler, State
 
 from rhizome.tui.widgets.flashcard_review.view_model import (
     Flashcard,
@@ -77,11 +85,40 @@ def recording_scheduler() -> _RecordingScheduler:
 
 
 def _starter_data(card_id: int, *, q: str = "", a: str = "") -> dict:
-    """Build a FlashcardData dict with a fresh Learning-state FSRS card."""
+    """Build a FlashcardData dict with a graduated (Review-state) FSRS card.
+
+    HARD/GOOD/EASY on a Review-state card stays in Review (→ SCORED);
+    AGAIN drops to Relearning (→ AWAITING_REVEAL). This matches the
+    behavioral expectations of the bulk of the test suite. Use
+    ``_learning_starter_data`` for tests that exercise the
+    Learning-ladder requeue path.
+    """
     return {
         "id": card_id,
         "question": q or f"q{card_id}",
         "answer": a or f"a{card_id}",
+        "fsrs_card": Card(
+            card_id=card_id,
+            state=State.Review,
+            step=None,
+            stability=10.0,
+            difficulty=5.0,
+            due=datetime.now(UTC),
+        ),
+    }
+
+
+def _learning_starter_data(card_id: int) -> dict:
+    """Build a FlashcardData dict with a fresh Learning-state FSRS card.
+
+    Used by tests that intentionally exercise the Learning-ladder
+    requeue behavior (HARD/GOOD on a Learning-step card stays in
+    Learning, lands in AWAITING_REVEAL).
+    """
+    return {
+        "id": card_id,
+        "question": f"q{card_id}",
+        "answer": f"a{card_id}",
         "fsrs_card": Card(card_id=card_id),
     }
 
@@ -623,6 +660,165 @@ class TestReviewScoring:
         review.current_card.reveal_back()
         review.score_current_card(Flashcard.Score.GOOD)
         assert review.state == FlashcardReviewViewModel.State.DONE
+
+
+# ---------------------------------------------------------------------------
+# Learning / Relearning ladder behavior
+# ---------------------------------------------------------------------------
+#
+# The branching invariant under test: after a rating is applied, the card lands
+# in SCORED iff the post-rating FSRS state is Review; otherwise (Learning or
+# Relearning) it lands in AWAITING_REVEAL and the VM requeues it just like an
+# AGAIN. AGAIN is the degenerate case (Again never produces Review); HARD/GOOD
+# on a card still inside the Learning step ladder is the new case.
+
+
+class TestLearningLadder:
+    async def test_good_on_learning_card_lands_in_awaiting_reveal(
+        self, recording_scheduler
+    ):
+        """A fresh Learning-state card rated GOOD stays in Learning per
+        FSRS, so the card lands in AWAITING_REVEAL (not SCORED) and the
+        VM requeues it."""
+        card = Flashcard(_learning_starter_data(7), recording_scheduler)
+        card.unpause()
+        card.reveal_back()
+        card.set_score(Flashcard.Score.GOOD)
+        assert card.fsrs_card.state == State.Learning
+        assert card.state == Flashcard.State.AWAITING_REVEAL
+        assert card.score is None  # cleared on the AWAITING_REVEAL branch
+        assert card._awaiting_reveal_task is not None
+        card._awaiting_reveal_task.cancel()
+
+    async def test_hard_on_learning_card_lands_in_awaiting_reveal(
+        self, recording_scheduler
+    ):
+        card = Flashcard(_learning_starter_data(7), recording_scheduler)
+        card.unpause()
+        card.reveal_back()
+        card.set_score(Flashcard.Score.HARD)
+        assert card.fsrs_card.state == State.Learning
+        assert card.state == Flashcard.State.AWAITING_REVEAL
+        card._awaiting_reveal_task.cancel()
+
+    def test_easy_on_learning_card_graduates_to_scored(
+        self, recording_scheduler
+    ):
+        """EASY on a fresh Learning card graduates straight to Review →
+        the card lands in SCORED."""
+        card = Flashcard(_learning_starter_data(7), recording_scheduler)
+        card.unpause()
+        card.reveal_back()
+        card.set_score(Flashcard.Score.EASY)
+        assert card.fsrs_card.state == State.Review
+        assert card.state == Flashcard.State.SCORED
+        assert card.score == Flashcard.Score.EASY
+
+    async def test_good_then_due_then_good_walks_the_ladder_to_graduation(
+        self, recording_scheduler
+    ):
+        """GOOD on Learning step 0 → step 1 (still Learning, requeued).
+        After the due timer fires (simulated via reveal_front), another
+        GOOD graduates the card."""
+        card = Flashcard(_learning_starter_data(7), recording_scheduler)
+        card.unpause()
+        card.reveal_back()
+        card.set_score(Flashcard.Score.GOOD)
+        assert card.fsrs_card.state == State.Learning
+        assert card.fsrs_card.step == 1
+        assert card.state == Flashcard.State.AWAITING_REVEAL
+
+        # Simulate the due timer firing (the user could also pre-empt
+        # via reveal_front — same end state).
+        card._awaiting_reveal_task.cancel()
+        card.reveal_front()
+        assert card.state == Flashcard.State.FRONT
+
+        # Round 2: GOOD on Learning step 1 → graduates to Review.
+        card.reveal_back()
+        card.set_score(Flashcard.Score.GOOD)
+        assert card.fsrs_card.state == State.Review
+        assert card.state == Flashcard.State.SCORED
+
+    async def test_vm_requeues_learning_card_to_next_remaining(self, recording_scheduler):
+        """At the VM level, a Learning-state card scored GOOD must be
+        treated identically to an AGAIN: emplaced at the back of
+        ``_cards`` and added to ``_next_remaining``."""
+        cards = [_learning_starter_data(1), _learning_starter_data(2), _learning_starter_data(3)]
+        review = FlashcardReviewViewModel(
+            cards=cards,
+            session_factory=_fake_session_factory,
+            auto_score_enabled=False,
+            auto_scorer=None,
+            scheduler=recording_scheduler,
+        )
+        try:
+            review.begin()
+            review.current_card.reveal_back()
+            review.score_current_card(Flashcard.Score.GOOD)
+
+            # Card 1 is now in Learning step 1 → AWAITING_REVEAL, moved
+            # to the back of _cards, added to _next_remaining.
+            assert [c.id for c in review._cards] == [2, 3, 1]
+            assert review._cards[2].state == Flashcard.State.AWAITING_REVEAL
+            assert 1 in review._next_remaining_before_batched_autoscore
+            assert 1 not in review._remaining_before_batched_autoscore
+            # Cursor implicitly shifts onto card 2 (slid into index 0).
+            assert review.current_card.id == 2
+        finally:
+            for c in review._cards:
+                if c._awaiting_reveal_task and not c._awaiting_reveal_task.done():
+                    c._awaiting_reveal_task.cancel()
+
+    async def test_batch_auto_score_requeues_learning_outcomes(self, recording_scheduler):
+        """The batch auto-scorer's ``requeued_cards`` partition must
+        include any card whose post-rating FSRS state is Learning or
+        Relearning — not just AGAIN-rated cards."""
+        # Three Learning-state cards. Scorer rates them all GOOD, which
+        # keeps them in Learning → all three should be requeued.
+        cards = [_learning_starter_data(1), _learning_starter_data(2), _learning_starter_data(3)]
+        review = FlashcardReviewViewModel(
+            cards=cards,
+            session_factory=_fake_session_factory,
+            auto_score_enabled=True,
+            auto_scorer=_FakeScorer({1: 3, 2: 3, 3: 3}),
+            scheduler=recording_scheduler,
+        )
+        try:
+            review.begin()
+            for _ in range(3):
+                review.current_card.reveal_back()
+                review.score_current_card(Flashcard.Score.AUTO)
+            await review._autoscore_task
+
+            # All three rated GOOD by the batch but stayed in Learning,
+            # so all three are requeued: AWAITING_REVEAL, in _remaining
+            # (current round, post-swap).
+            for c in review._cards:
+                assert c.state == Flashcard.State.AWAITING_REVEAL
+                assert c.fsrs_card.state == State.Learning
+            assert review._remaining_before_batched_autoscore == {1, 2, 3}
+            assert review.state == FlashcardReviewViewModel.State.REVIEWING
+        finally:
+            for c in review._cards:
+                if c._awaiting_reveal_task and not c._awaiting_reveal_task.done():
+                    c._awaiting_reveal_task.cancel()
+            if review._autoscore_task and not review._autoscore_task.done():
+                review._autoscore_task.cancel()
+
+    async def test_again_on_review_card_drops_to_relearning_then_requeues(
+        self, recording_scheduler
+    ):
+        """AGAIN on a graduated (Review) card pushes it to Relearning,
+        which is the other case for the AWAITING_REVEAL branch
+        (alongside Learning). The VM should requeue identically."""
+        card = Flashcard(_starter_data(7), recording_scheduler)  # Review-state
+        card.unpause()
+        card.reveal_back()
+        card.set_score(Flashcard.Score.AGAIN)
+        assert card.fsrs_card.state == State.Relearning
+        assert card.state == Flashcard.State.AWAITING_REVEAL
+        card._awaiting_reveal_task.cancel()
 
 
 # ---------------------------------------------------------------------------
