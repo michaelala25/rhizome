@@ -895,7 +895,7 @@ class TestReviewBatchAutoScore:
         assert review._cards[0].score == Flashcard.Score.GOOD
 
     async def test_batch_double_spawn_is_prevented(self, review):
-        """If the user drains the round during the batch, _check_remaining_cards
+        """If the user drains the round during the batch, _check_ready_to_autoscore
         must NOT spawn a second batch concurrently."""
         # Scorer that stalls until we release it
         release = asyncio.Event()
@@ -926,9 +926,9 @@ class TestReviewBatchAutoScore:
         # Yield so the batch task actually enters ainvoke
         await asyncio.sleep(0)
         assert scorer.invocations == 1
-        # Manually poke _check_remaining_cards — the guard must prevent a
-        # second task from spawning while the first is in flight
-        review._check_remaining_cards()
+        # Manually poke _check_ready_to_autoscore — the guard must prevent
+        # a second task from spawning while the first is in flight
+        review._check_ready_to_autoscore()
         await asyncio.sleep(0)
         assert scorer.invocations == 1  # still only one batch spawned
         release.set()
@@ -1140,10 +1140,10 @@ class TestRegressions:
         assert review.state == FlashcardReviewViewModel.State.DONE
 
     async def test_alt_s_skip_drains_remaining_triggers_batch(self, review):
-        """Regression: alt+s skip didn't call ``_check_remaining_cards``.
-        If skipping drained ``_remaining`` while a PENDING_AUTO card was
-        deferred, the batch never fired and the session sat inert until
-        the user manually overrode the deferred card."""
+        """Regression: alt+s skip didn't call the post-mutation queue
+        checks. If skipping drained ``_remaining`` while a PENDING_AUTO
+        card was deferred, the batch never fired and the session sat
+        inert until the user manually overrode the deferred card."""
         review._auto_scorer = _FakeScorer({1: 3})
         review.begin()
         # Defer card 1 to AUTO
@@ -1163,7 +1163,7 @@ class TestRegressions:
         review._on_key_reviewing(key)
         assert review._cards[2].score == Flashcard.Score.SKIPPED
 
-        # The fix: alt+s now calls _check_remaining_cards, which finds
+        # The fix: alt+s now calls _check_ready_to_autoscore, which finds
         # _remaining drained with PENDING_AUTO present → spawns the batch.
         assert review._autoscore_task is not None
         await review._autoscore_task
@@ -1172,9 +1172,9 @@ class TestRegressions:
     async def test_all_again_swaps_queues_cleanly(self, review):
         """Invariant: AGAIN'ing every card in the round must drain
         ``_remaining`` and (after the round-swap triggered by
-        ``_check_remaining_cards``) leave ``_next_remaining`` empty and
-        ``_remaining`` holding all the cards. No ghost ids, no stalled
-        session in REVIEWING."""
+        ``_check_ready_to_autoscore``) leave ``_next_remaining`` empty
+        and ``_remaining`` holding all the cards. No ghost ids, no
+        stalled session in REVIEWING."""
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -1188,8 +1188,8 @@ class TestRegressions:
         card while an earlier batch is still in flight must result in a
         second batch being dispatched once the first completes — not a
         stalled session. Relies on ``_handle_batched_auto_score`` calling
-        ``_check_remaining_cards`` in its tail, which recursively spawns
-        the next batch when there's still pending-AUTO work."""
+        ``_check_ready_to_autoscore`` in its tail, which recursively
+        spawns the next batch when there's still pending-AUTO work."""
 
         class _MultiBatchScorer:
             def __init__(self):
@@ -1244,7 +1244,7 @@ class TestRegressions:
         assert review.autoscore_in_progress
         first_task = review._autoscore_task
 
-        # Release the first batch. Its tail _check_remaining_cards finds
+        # Release the first batch. Its tail _check_ready_to_autoscore finds
         # _remaining drained, no in-flight batch (just cleared), and
         # pending = [card 1] → spawns the second batch. The second batch's
         # ainvoke has no awaits to stall on, so it may fully complete

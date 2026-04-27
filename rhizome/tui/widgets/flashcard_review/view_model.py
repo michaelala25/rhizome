@@ -65,7 +65,7 @@ Transitions (all enforced by asserts on the source state):
               is enabled, deferring the rating to the batch scorer (the view's
               enter-on-revealed default).
             - Stops the think-time timer. Card waits in this state until the round-drain
-              triggers ``_check_remaining_cards`` to dispatch the batch.
+              triggers ``_check_ready_to_autoscore`` to dispatch the batch.
 
         -> SCORED(SKIPPED) [via skip()]
             - The user issued the skip action after revealing.
@@ -184,12 +184,13 @@ Transitions:
 
     REVIEWING
         -> DONE [via finish()]
-            - Reached when ``_check_remaining_cards`` observes the finish-now invariant
-              (``_remaining`` empty AND ``_next_remaining`` empty AND no PENDING_AUTO cards),
-              or as the tail of ``cancel()``.
+            - Reached when ``_check_done`` observes the finish-now invariant (every card is in
+              state SCORED with score in {HARD, GOOD, EASY, SKIPPED}), or as the tail of
+              ``cancel()``.
             - Pauses the current card's think-time timer if it is still running; cancels any
               in-flight autoscore task; converts every AWAITING_REVEAL card to
-              SCORED(SKIPPED); sets ``_collapsed = True``.
+              SCORED(SKIPPED) (only relevant on the cancel path — the natural-finish path,
+              by construction, has no AWAITING_REVEAL cards); sets ``_collapsed = True``.
 
         -> DONE [via cancel()]
             - The user issued the cancel action.
@@ -223,25 +224,33 @@ Two sets of card ids drive round progression:
         Cards AGAIN'd during the current round. Will be swapped into _remaining once the
         current round drains AND any pending-AUTO batch has run.
 
-The two load-bearing invariants:
+The two load-bearing invariants, each enforced by its own check:
 
-    1. The auto-scoring batch fires precisely when ``_remaining`` drains AND there are cards
-       in REVEALED_PENDING_AUTO_SCORE.
-    2. The session transitions to DONE precisely when ``_remaining`` drains AND
-       ``_next_remaining`` is empty AND no card is in REVEALED_PENDING_AUTO_SCORE.
+    1. ``_check_ready_to_autoscore``: the auto-scoring batch fires precisely when
+       ``_remaining`` drains AND there are cards in REVEALED_PENDING_AUTO_SCORE. On
+       drain, ``_next_remaining`` is swapped into ``_remaining`` (opening the next round)
+       before the batch is dispatched.
+    2. ``_check_done``: the session transitions to DONE precisely when every card is in
+       state SCORED with score in {HARD, GOOD, EASY, SKIPPED}. The remaining sets aren't
+       consulted — they govern auto-score batch timing only. By construction, any pending
+       AUTO card fails this check (state == REVEALED_PENDING_AUTO_SCORE), so we don't need
+       a separate ``autoscore_in_progress`` guard.
 
-Both invariants are enforced inside ``_check_remaining_cards()``. As a corollary, every site
-that mutates ``_remaining`` or ``_next_remaining`` must call ``_check_remaining_cards()``
-afterwards, or the session can stall in REVIEWING forever. The current sites that mutate
-these sets are:
+As a corollary, every site that mutates ``_remaining`` / ``_next_remaining`` or transitions
+a card's score state must call BOTH checks afterwards, or the session can stall in REVIEWING
+forever. The current sites are:
 
-    - ``score_current_card``   (every score path; calls _check at the tail)
-    - key event for ``reset``  (in ``_on_key_reviewing``; calls _check at the tail)
-    - key event for ``skip``   (in ``_on_key_reviewing``; calls _check at the tail)
-    - key event for ``unskip`` (in ``_on_key_reviewing``; calls _check at the tail)
-    - ``_handle_batched_auto_score`` (post-batch requeue/failure handling; calls _check at
+    - ``score_current_card``   (every score path; calls both at the tail)
+    - key event for ``reset``  (in ``_on_key_reviewing``; calls both at the tail)
+    - key event for ``skip``   (in ``_on_key_reviewing``; calls both at the tail)
+    - key event for ``unskip`` (in ``_on_key_reviewing``; calls both at the tail)
+    - ``_handle_batched_auto_score`` (post-batch requeue/failure handling; calls both at
       the tail, which can recursively dispatch a follow-up batch if the user deferred more
       cards while the previous batch was in flight)
+
+Order matters: ``_check_ready_to_autoscore`` runs before ``_check_done``. If a batch was
+just dispatched, the cards it operates on aren't terminal yet, so ``_check_done`` correctly
+stays its hand.
 
 A second corollary: scoring a card to EITHER state (SCORED or REVEALED_PENDING_AUTO_SCORE)
 must remove its id from BOTH queues. ``score_current_card`` discards from both at the top of
@@ -254,14 +263,14 @@ that survives the round-swap and blocks finish.
 Auto-scoring batch lifecycle
 ============================================================================================
 
-    1. ``_check_remaining_cards`` observes ``_remaining`` empty and at least one card in state
-       REVEALED_PENDING_AUTO_SCORE. It swaps ``_next_remaining`` into ``_remaining`` (so the
-       requeued cards from this round — those whose post-rating FSRS state was Learning or
-       Relearning — become the next round's queue), then spawns a single
+    1. ``_check_ready_to_autoscore`` observes ``_remaining`` empty and at least one card in
+       state REVEALED_PENDING_AUTO_SCORE. It swaps ``_next_remaining`` into ``_remaining``
+       (so the requeued cards from this round — those whose post-rating FSRS state was
+       Learning or Relearning — become the next round's queue), then spawns a single
        ``_handle_batched_auto_score`` task.
 
     2. ``autoscore_in_progress`` (``task is not None and not task.done()``) guards against:
-       a. ``_check_remaining_cards`` re-entrance spawning a duplicate task.
+       a. ``_check_ready_to_autoscore`` re-entrance spawning a duplicate task.
         - In other words, we will NEVER risk spawning a duplicate task until the first one
           finishes.
        b. The user manually rating a REVEALED_PENDING_AUTO_SCORE card mid-batch (the
@@ -283,9 +292,10 @@ Auto-scoring batch lifecycle
        ``_cards`` and added to ``_remaining`` (NOT ``_next_remaining`` — they are part of the
        round we just swapped in); failed cards stay in place but are added back to
        ``_remaining`` so the user can rate them manually. ``_autoscore_task`` is cleared,
-       ``dirty`` is emitted, ``_check_remaining_cards`` runs again (this is what makes the
-       follow-up batch possible if the user deferred more cards mid-batch), and the
-       finish-now condition is re-checked at the tail.
+       ``dirty`` is emitted, then ``_check_ready_to_autoscore`` and ``_check_done`` run in
+       that order — the former picking up any cards the user deferred mid-batch (which can
+       recursively dispatch a follow-up batch), the latter closing the session if every
+       card is now terminally scored.
 
 ============================================================================================
 Cursor management
@@ -1010,7 +1020,8 @@ class FlashcardReviewViewModel:
                 self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                 self._remaining_before_batched_autoscore.add(self.current_card.id)
                 self._emit(self.dirty)
-                self._check_remaining_cards()
+                self._check_ready_to_autoscore()
+                self._check_done()
 
         elif event.key == KEYBINDINGS[Action.TOGGLE_SKIP]:
             _logger.info(
@@ -1039,7 +1050,8 @@ class FlashcardReviewViewModel:
                     self._remaining_before_batched_autoscore.add(self.current_card.id)
                     self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                     self._emit(self.dirty)
-                    self._check_remaining_cards()
+                    self._check_ready_to_autoscore()
+                    self._check_done()
 
                 # If the card wasn't already skipped, we skip it by setting score to SKIPPED and transitioning state,
                 # removing from remaining queue if necessary. Skipping is only possible for cards that _aren't_ scored.
@@ -1056,7 +1068,8 @@ class FlashcardReviewViewModel:
                     self._remaining_before_batched_autoscore.discard(self.current_card.id)
                     self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                     self._emit(self.dirty)
-                    self._check_remaining_cards()
+                    self._check_ready_to_autoscore()
+                    self._check_done()
 
 
         elif event.key in (score_keys := _score_key_map()):
@@ -1360,8 +1373,12 @@ class FlashcardReviewViewModel:
 
         self._emit(self.dirty)
 
-        # Check if we need to transition to DONE state after scoring this card, or if we need to trigger a batched auto-score
-        self._check_remaining_cards()
+        # Check if we need to trigger a batched auto-score, or transition
+        # to DONE after scoring this card. Order matters: if a batch is
+        # dispatched, _check_done correctly stays its hand because the
+        # pending cards aren't terminally scored yet.
+        self._check_ready_to_autoscore()
+        self._check_done()
 
 
     # ------------------------------------------------------------------
@@ -1442,34 +1459,60 @@ class FlashcardReviewViewModel:
         # make sure timer state is consistent.
         self._unpause_current_if_front()
 
-    def _check_remaining_cards(self):
+    def _check_ready_to_autoscore(self):
+        """If the current round has drained and there are cards waiting on
+        auto-scoring, swap in the next round and dispatch a batch.
 
-        # Check if we've drained the remaining cards
-        if not self._remaining_before_batched_autoscore:
+        Round rollover is intentionally bundled here: by the time
+        ``_remaining`` drains, every card the user has ratings-of-record
+        for in this round either landed in SCORED (terminal) or in
+        REVEALED_PENDING_AUTO_SCORE (waiting for the batch). The
+        ``_next_remaining`` carry-over is the right input for the next
+        round.
+        """
+        if self._remaining_before_batched_autoscore:
+            return
 
-            # Guard against re-entry while a batch is already running. The
-            # running batch's completion handler will call back into this
-            # method once it's done.
-            if self.autoscore_in_progress:
-                return
+        # Guard against re-entry while a batch is already running. The
+        # running batch's completion handler will call back into this
+        # method once it's done.
+        if self.autoscore_in_progress:
+            return
 
-            # Now that we've scored all the _first_ round of cards, we swap in the _next_ round of remaining cards,
-            # and repeat the process for the new round of cards (the user can mark these as "again" still).
-            self._remaining_before_batched_autoscore = self._next_remaining_before_batched_autoscore
-            self._next_remaining_before_batched_autoscore = set()
+        # Round rollover: AGAIN'd / requeued cards from this round
+        # become the next round's queue.
+        self._remaining_before_batched_autoscore = self._next_remaining_before_batched_autoscore
+        self._next_remaining_before_batched_autoscore = set()
 
-            # Check if we need to autoscore any cards
-            pending_auto_score = [c for c in self._cards if c.score == Flashcard.Score.AUTO]
+        pending_auto_score = [c for c in self._cards if c.score == Flashcard.Score.AUTO]
+        if not pending_auto_score:
+            return
 
-            # If nothing to autoscore, check if we're done.
-            if not pending_auto_score:
-                if not self._remaining_before_batched_autoscore:
-                    self.finish()
-                return
+        self._autoscore_task = asyncio.create_task(self._handle_batched_auto_score(pending_auto_score))
+        self._emit(self.dirty)
 
-            # Otherwise, spawn a task to handle the batched auto-score
-            self._autoscore_task = asyncio.create_task(self._handle_batched_auto_score(pending_auto_score))
-            self._emit(self.dirty)
+    def _check_done(self):
+        """If every card is terminally scored (HARD/GOOD/EASY/SKIPPED in
+        the SCORED state), transition to DONE.
+
+        Pending AUTO cards (state == REVEALED_PENDING_AUTO_SCORE) and
+        AWAITING_REVEAL cards both fail this check on their state alone,
+        so no separate ``autoscore_in_progress`` guard is needed — by
+        the time the last batch completes and its requeued/failed cards
+        are placed, this check runs and either fires or doesn't on its
+        own merits.
+        """
+        terminal_scores = {
+            Flashcard.Score.HARD,
+            Flashcard.Score.GOOD,
+            Flashcard.Score.EASY,
+            Flashcard.Score.SKIPPED,
+        }
+        if all(
+            c.state == Flashcard.State.SCORED and c.score in terminal_scores
+            for c in self._cards
+        ):
+            self.finish()
 
 
     async def _handle_batched_auto_score(self, pending_auto_score: list[Flashcard]) -> None:
@@ -1521,18 +1564,11 @@ class FlashcardReviewViewModel:
 
         self._emit(self.dirty)
 
-        # Pick up anything the user drained while the batch was running, and
-        # either close the session or spin up the next batch if needed.
-        self._check_remaining_cards()
-
-        # If we're still sitting on an empty round after the re-check, the
-        # session is complete.
-        if (
-            self.state == FlashcardReviewViewModel.State.REVIEWING
-            and not self._remaining_before_batched_autoscore
-            and not any(c.score == Flashcard.Score.AUTO for c in self._cards)
-        ):
-            self.finish()
+        # Pick up anything the user drained while the batch was running
+        # (may dispatch a follow-up batch), then close the session if
+        # every card is now terminally scored.
+        self._check_ready_to_autoscore()
+        self._check_done()
 
 
     async def _auto_score(
