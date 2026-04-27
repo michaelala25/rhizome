@@ -396,6 +396,76 @@ class Timer:
 
         return self._accumulated + (time.perf_counter() - self._start_time)
 
+class Action(Enum):
+    """Semantic keyboard actions handled by the view-model.
+
+    Multiple actions can map to the same key (e.g. all four ``enter``
+    flavors in REVIEWING — REVEAL_BACK / REVEAL_FRONT / SCORE_DEFAULT /
+    ADVANCE_NEXT — share ``"enter"``); the dispatcher disambiguates by
+    state. Keeping them as separate Action members lets a help dropdown
+    show contextual labels per state.
+    """
+    # START
+    BEGIN = auto()             # enter
+
+    # Cross-state navigation / lifecycle
+    CANCEL = auto()            # ctrl+c (START + REVIEWING)
+    PREV_CARD = auto()         # alt+left  (REVIEWING + DONE)
+    NEXT_CARD = auto()         # alt+right (REVIEWING + DONE)
+
+    # REVIEWING
+    REVEAL_BACK = auto()       # enter on FRONT
+    REVEAL_FRONT = auto()      # enter on AWAITING_REVEAL
+    SCORE_DEFAULT = auto()     # enter on REVEALED_NOT_SCORED
+    ADVANCE_NEXT = auto()      # enter on SCORED / PENDING_AUTO_SCORE
+    SCORE_AGAIN = auto()       # 1
+    SCORE_HARD = auto()        # 2
+    SCORE_GOOD = auto()        # 3
+    SCORE_EASY = auto()        # 4
+    TOGGLE_TIMER = auto()      # ctrl+k
+    RESET_CARD = auto()        # alt+x
+    TOGGLE_SKIP = auto()       # alt+s
+
+    # DONE
+    TOGGLE_COLLAPSED = auto()  # enter
+
+    # Cross-state UI toggle
+    TOGGLE_HELP = auto()       # alt+h
+
+
+KEYBINDINGS: dict[Action, str] = {
+    Action.BEGIN: "enter",
+    Action.CANCEL: "ctrl+c",
+    Action.PREV_CARD: "alt+left",
+    Action.NEXT_CARD: "alt+right",
+    Action.REVEAL_BACK: "enter",
+    Action.REVEAL_FRONT: "enter",
+    Action.SCORE_DEFAULT: "enter",
+    Action.ADVANCE_NEXT: "enter",
+    Action.SCORE_AGAIN: "1",
+    Action.SCORE_HARD: "2",
+    Action.SCORE_GOOD: "3",
+    Action.SCORE_EASY: "4",
+    Action.TOGGLE_TIMER: "ctrl+k",
+    Action.RESET_CARD: "alt+x",
+    Action.TOGGLE_SKIP: "alt+s",
+    Action.TOGGLE_COLLAPSED: "enter",
+    Action.TOGGLE_HELP: "alt+h",
+}
+
+
+# Map of digit-key → score for the REVIEWING digit dispatch. Defined as
+# a module-level closure that resolves Flashcard.Score lazily, since
+# Flashcard is declared below.
+def _score_key_map() -> dict[str, "Flashcard.Score"]:
+    return {
+        KEYBINDINGS[Action.SCORE_AGAIN]: Flashcard.Score.AGAIN,
+        KEYBINDINGS[Action.SCORE_HARD]: Flashcard.Score.HARD,
+        KEYBINDINGS[Action.SCORE_GOOD]: Flashcard.Score.GOOD,
+        KEYBINDINGS[Action.SCORE_EASY]: Flashcard.Score.EASY,
+    }
+
+
 # Simple dataclass constructed in the interrupt payload in the tool call.
 # ``fsrs_card`` is the in-memory FSRS scheduling state for this card at the
 # start of the session — built from the DB row by ``to_fsrs_card`` (or
@@ -792,6 +862,7 @@ class FlashcardReviewViewModel:
         self.state = FlashcardReviewViewModel.State.START
         self._cancelled = False
         self._collapsed = False
+        self._help_visible = False
         self._autoscore_task: asyncio.Task | None = None
 
         self._remaining_before_batched_autoscore = set(card.id for card in self._cards)
@@ -836,6 +907,12 @@ class FlashcardReviewViewModel:
         #   - alt+right (expanded) -> next card
 
         _logger.info("on_key: state=%s key=%r", self.state.name, event.key)
+
+        # Cross-state: help toggle works in any state.
+        if event.key == KEYBINDINGS[Action.TOGGLE_HELP]:
+            self.toggle_help_visible()
+            return
+
         match self.state:
             case FlashcardReviewViewModel.State.START:
                 self._on_key_start(event)
@@ -852,9 +929,9 @@ class FlashcardReviewViewModel:
         assert self.state == FlashcardReviewViewModel.State.START
 
         # Remark: do we want to be .stop()ing here?
-        if event.key == "enter":
+        if event.key == KEYBINDINGS[Action.BEGIN]:
             self.begin()
-        elif event.key == "ctrl+c":
+        elif event.key == KEYBINDINGS[Action.CANCEL]:
             self.cancel()
             #event.stop()
 
@@ -871,22 +948,22 @@ class FlashcardReviewViewModel:
         #   - alt+s     -> toggle skipped
         assert self.state == FlashcardReviewViewModel.State.REVIEWING
 
-        if event.key == "alt+left":
+        if event.key == KEYBINDINGS[Action.PREV_CARD]:
             self.prev_card()
 
-        elif event.key == "alt+right":
+        elif event.key == KEYBINDINGS[Action.NEXT_CARD]:
             self.next_card()
 
-        elif event.key == "ctrl+c":
+        elif event.key == KEYBINDINGS[Action.CANCEL]:
             self.cancel()
             #event.stop()
 
-        elif event.key == "ctrl+k":
+        elif event.key == KEYBINDINGS[Action.TOGGLE_TIMER]:
             if self.current_card:
                 self.current_card.toggle_timer_visible()
                 self._emit(self.dirty)
 
-        elif event.key == "alt+x":
+        elif event.key == KEYBINDINGS[Action.RESET_CARD]:
             _logger.info(
                 "alt+x: current_card=%s card_state=%s autoscore_in_progress=%s",
                 self.current_card.id if self.current_card else None,
@@ -908,7 +985,7 @@ class FlashcardReviewViewModel:
                 self._emit(self.dirty)
                 self._check_remaining_cards()
 
-        elif event.key == "alt+s":
+        elif event.key == KEYBINDINGS[Action.TOGGLE_SKIP]:
             _logger.info(
                 "alt+s: current_card=%s card_state=%s scored=%s score=%s",
                 self.current_card.id if self.current_card else None,
@@ -955,20 +1032,18 @@ class FlashcardReviewViewModel:
                     self._check_remaining_cards()
 
 
-        elif event.key in ["1", "2", "3", "4"]:
+        elif event.key in (score_keys := _score_key_map()):
             if self.current_card and self.current_card.state in [
                 Flashcard.State.REVEALED_NOT_SCORED,
                 Flashcard.State.REVEALED_PENDING_AUTO_SCORE
             ]:
-                score_mapping = {
-                    "1": Flashcard.Score.AGAIN,
-                    "2": Flashcard.Score.HARD,
-                    "3": Flashcard.Score.GOOD,
-                    "4": Flashcard.Score.EASY,
-                }
-                self.score_current_card(score_mapping[event.key])
+                self.score_current_card(score_keys[event.key])
 
-        elif event.key == "enter":
+        # All four "enter" flavors in REVIEWING share the same key — keyed
+        # off SCORE_DEFAULT here for the lookup; siblings REVEAL_BACK,
+        # REVEAL_FRONT, ADVANCE_NEXT all map to the same key. The branch
+        # below disambiguates by card state.
+        elif event.key == KEYBINDINGS[Action.SCORE_DEFAULT]:
             if self.current_card:
                 if self.current_card.state == Flashcard.State.FRONT:
                     self.current_card.reveal_back()
@@ -1008,13 +1083,13 @@ class FlashcardReviewViewModel:
         #   - alt+right (expanded) -> next card
         assert self.state == FlashcardReviewViewModel.State.DONE
 
-        if event.key == "alt+left":
+        if event.key == KEYBINDINGS[Action.PREV_CARD]:
             self.prev_card()
 
-        elif event.key == "alt+right":
+        elif event.key == KEYBINDINGS[Action.NEXT_CARD]:
             self.next_card()
 
-        elif event.key == "enter":
+        elif event.key == KEYBINDINGS[Action.TOGGLE_COLLAPSED]:
             self.toggle_collapsed()
 
     # ------------------------------------------------------------------
@@ -1034,7 +1109,22 @@ class FlashcardReviewViewModel:
     @property
     def collapsed(self) -> bool:
         return self._collapsed
-    
+
+    @property
+    def help_visible(self) -> bool:
+        return self._help_visible
+
+    @help_visible.setter
+    def help_visible(self, value: bool) -> None:
+        if self._help_visible == value:
+            return
+        self._help_visible = value
+        self._emit(self.dirty)
+
+    def toggle_help_visible(self) -> None:
+        self.help_visible = not self._help_visible
+
+
     @property
     def autoscore_in_progress(self) -> bool:
         return self._autoscore_task is not None and not self._autoscore_task.done()

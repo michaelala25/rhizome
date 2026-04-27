@@ -13,9 +13,11 @@ from textual.widgets import Button, Rule, Static, TextArea
 from fsrs import Rating
 
 from .view_model import (
+    Action,
     Flashcard,
     FlashcardData,
     FlashcardReviewViewModel,
+    KEYBINDINGS,
 )
 from ..interrupt import InterruptWidgetBase
 
@@ -172,8 +174,8 @@ class _AnswerInput(TextArea):
             self.post_message(self.Submitted())
             return
         # Let alt+<whatever> bubble up to the parent so app-level bindings
-        # (alt+x reset, alt+s skip, alt+left/right nav) don't get swallowed
-        # as literal text input.
+        # (alt+x reset, alt+s skip, alt+h help, alt+left/right nav) don't
+        # get swallowed as literal text input.
         if event.key.startswith("alt+"):
             event.prevent_default()
 
@@ -263,10 +265,21 @@ class FlashcardReview(InterruptWidgetBase):
         text-align: center;
         margin: 1 0 0 0;
     }
+    FlashcardReview #fr-bottom-row {
+        height: 1;
+        margin: 1 0 0 0;
+    }
+    FlashcardReview #fr-bottom-row > Static,
+    FlashcardReview #fr-bottom-row > _DotStrip {
+        width: 1fr;
+        height: 1;
+    }
     FlashcardReview #fr-dots {
         text-align: center;
-        margin: 1 0 0 0;
-        height: 1;
+    }
+    FlashcardReview #fr-help-hint {
+        text-align: left;
+        color: rgb(80,80,80);
     }
     FlashcardReview #fr-start-summary,
     FlashcardReview #fr-start-prompt {
@@ -280,6 +293,12 @@ class FlashcardReview(InterruptWidgetBase):
     FlashcardReview #fr-done-status {
         text-align: center;
         width: 1fr;
+    }
+    FlashcardReview #fr-help {
+        text-align: center;
+        margin: 1 0 0 0;
+        color: rgb(80,80,80);
+        height: auto;
     }
     """
 
@@ -354,10 +373,15 @@ class FlashcardReview(InterruptWidgetBase):
             yield Static("Answer", classes="fr-label", id="fr-answer-label")
             yield Static("", id="fr-answer")
             yield Static("", id="fr-below")
-            yield _DotStrip(id="fr-dots")
+            with Horizontal(id="fr-bottom-row"):
+                yield Static("", id="fr-help-hint")
+                yield _DotStrip(id="fr-dots")
+                yield Static("", id="fr-bottom-spacer")
 
         with Vertical(id="fr-done"):
             yield Static("", id="fr-done-status")
+
+        yield Static("", id="fr-help")
 
     def on_mount(self) -> None:
         super().on_mount()  # InterruptWidgetBase → setup_navigation
@@ -505,6 +529,42 @@ class FlashcardReview(InterruptWidgetBase):
                 self._refresh_reviewing()
             case FlashcardReviewViewModel.State.DONE:
                 self._refresh_done()
+        self._refresh_help()
+
+    def _refresh_help(self) -> None:
+        # Two slots:
+        #   - #fr-help-hint sits inside the card (bottom-left), shown only
+        #     when help is collapsed — a permanent reminder that alt+h
+        #     opens the full list.
+        #   - #fr-help sits outside the card and renders the full list
+        #     when expanded.
+        # Always-displayed (just blanked when expanded) so its 1fr column
+        # stays in the layout — otherwise the dot strip would shift left.
+        hint = self.query_one("#fr-help-hint", Static)
+        if self._vm.help_visible:
+            hint.update("")
+        else:
+            hint.update(f"[bold]{KEYBINDINGS[Action.TOGGLE_HELP]}[/]  show help")
+
+        full = self.query_one("#fr-help", Static)
+        full.display = self._vm.help_visible
+        if self._vm.help_visible:
+            full.update(self._help_text())
+
+    def _help_text(self) -> str:
+        # Only the non-obvious bindings — the on-screen rating row, dot
+        # strip, and per-card prompts already cover begin/reveal/score/nav.
+        rows = [
+            (Action.TOGGLE_HELP, "hide help"),
+            (Action.CANCEL, "cancel session"),
+            (Action.TOGGLE_TIMER, "toggle timer"),
+            (Action.RESET_CARD, "reset current card"),
+            (Action.TOGGLE_SKIP, "skip / unskip card"),
+        ]
+        return "    ".join(
+            f"[bold]{KEYBINDINGS[action]}[/]  {label}"
+            for action, label in rows
+        )
 
     def _refresh_start(self) -> None:
         self.query_one("#fr-start", Vertical).display = True
