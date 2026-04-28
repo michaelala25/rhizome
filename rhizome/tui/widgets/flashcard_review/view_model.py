@@ -166,6 +166,7 @@ Cursor management
 
 import asyncio
 from collections.abc import Callable
+from contextlib import contextmanager
 from enum import Enum, auto
 from typing import Any
 
@@ -319,6 +320,12 @@ class FlashcardReviewViewModel:
         self._autoscore_task: asyncio.Task | None = None
         self._latest_message: str | None = None
 
+        # Batching machinery for ``_emit_once`` — tracks nested depth so inner
+        # exits don't fire prematurely, and remembers whether anything tried to
+        # emit while suppressed so the outermost exit only fires when needed.
+        self._emit_depth: int = 0
+        self._emit_pending: bool = False
+
         self._remaining_before_batched_autoscore = set(card.id for card in self._cards)
         self._next_remaining_before_batched_autoscore = set()
 
@@ -337,8 +344,31 @@ class FlashcardReviewViewModel:
     # ========================================================================================================================
 
     def _emit(self, listeners: list[Callable[[], None]]) -> None:
+        if self._emit_depth > 0:
+            self._emit_pending = True
+            return
         for listener in listeners:
             listener()
+
+    @contextmanager
+    def _emit_once(self, listeners: list[Callable[[], None]]):
+        """Suppress synchronous ``_emit(listeners)`` calls within the block; on
+        exit of the outermost ``_emit_once`` for the call stack, fire one emit
+        iff anything tried to emit while suppressed.
+
+        Composes with nested ``_emit_once`` blocks via depth-counting — only the
+        outermost exit emits. Async-spawned emits (e.g. from ``_handle_batched_auto_score``
+        or due-timer callbacks) run after the block exits and are unaffected.
+        """
+        self._emit_depth += 1
+        try:
+            yield
+        finally:
+            self._emit_depth -= 1
+            if self._emit_depth == 0 and self._emit_pending:
+                self._emit_pending = False
+                for listener in listeners:
+                    listener()
 
     
     def on_key(self, event: events.Key) -> None:
@@ -613,9 +643,10 @@ class FlashcardReviewViewModel:
 
         self._latest_message = f"Approved {len(pending_approval)} auto-scored card(s)"
         self._goto_next_unscored_card()
-        self._emit(self.dirty)
-        self._check_ready_to_autoscore()
-        self._check_done()
+        with self._emit_once(self.dirty):
+            self._emit(self.dirty)
+            self._check_ready_to_autoscore()
+            self._check_done()
 
 
     @property
@@ -806,13 +837,15 @@ class FlashcardReviewViewModel:
             # card, _goto will stay put and just start that card's timer.
             self._goto_next_unscored_card()
 
-        self._emit(self.dirty)
-
-        # Check if we need to trigger a batched auto-score, or transition to DONE after scoring this card.
-        # Order matters: if a batch is dispatched, _check_done correctly stays its hand because the pending
+        # Batch the closing emit + checks: _check_ready_to_autoscore and _check_done can each
+        # trigger their own emits (transition into a batch dispatch, or call finish()), and we
+        # want the view to see this whole user action as a single repaint. Order still matters:
+        # if a batch is dispatched, _check_done correctly stays its hand because the pending
         # cards aren't terminally scored yet.
-        self._check_ready_to_autoscore()
-        self._check_done()
+        with self._emit_once(self.dirty):
+            self._emit(self.dirty)
+            self._check_ready_to_autoscore()
+            self._check_done()
 
 
     def reset_current_card(self):
@@ -834,9 +867,10 @@ class FlashcardReviewViewModel:
         self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
 
         self._latest_message = "Reset card"
-        self._emit(self.dirty)
-        self._check_ready_to_autoscore()
-        self._check_done()
+        with self._emit_once(self.dirty):
+            self._emit(self.dirty)
+            self._check_ready_to_autoscore()
+            self._check_done()
 
 
     def toggle_skip_current_card(self):
@@ -895,9 +929,10 @@ class FlashcardReviewViewModel:
         self._latest_message = (
             "Skipped card" if self.current_card.score == Flashcard.Score.SKIPPED else "Unskipped card"
         )
-        self._emit(self.dirty)
-        self._check_ready_to_autoscore()
-        self._check_done()
+        with self._emit_once(self.dirty):
+            self._emit(self.dirty)
+            self._check_ready_to_autoscore()
+            self._check_done()
 
 
 
@@ -1112,12 +1147,13 @@ class FlashcardReviewViewModel:
         self._latest_message = f"Auto-scorer finished — {scored_n} scored" + (
             f", {len(failed)} failed" if failed else ""
         )
-        self._emit(self.dirty)
-
         # Pick up anything the user drained while the batch was running (may dispatch a follow-up batch),
-        # then close the session if every card is now terminally scored.
-        self._check_ready_to_autoscore()
-        self._check_done()
+        # then close the session if every card is now terminally scored. Batch the emits so the view
+        # sees a single repaint covering the batch result + any cascading state changes.
+        with self._emit_once(self.dirty):
+            self._emit(self.dirty)
+            self._check_ready_to_autoscore()
+            self._check_done()
 
 
     async def _auto_score(
