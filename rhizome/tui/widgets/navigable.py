@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from textual.message import Message
+from textual.widget import Widget
 
 
 class WidgetDeactivated(Message):
@@ -22,7 +23,7 @@ class WidgetDeactivated(Message):
 _NAV_HINT = "ctrl+\u2191/\u2193 to navigate"
 
 
-class NavigableWidgetMixin:
+class NavigableWidgetMixin(Widget):
     """Mixin providing focus-border, navigation hint, and deactivation lifecycle.
 
     Border styles for the ``.navigable`` CSS class are defined in the App-level
