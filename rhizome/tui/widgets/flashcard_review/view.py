@@ -146,8 +146,23 @@ class _DotStrip(Static):
 
         start = self._scroll
         end = start + visible
-        left = f"[{_DOT_CHEVRON}]<[/]" if start > 0 else " "
-        right = f"[{_DOT_CHEVRON}]>[/]" if end < n else " "
+
+        def _chevron_color(off_screen: list[Flashcard]) -> str:
+            # Highlight the chevron in the approval color when there's a pending-approval
+            # card off-screen on that side, so the user knows to scroll for it.
+            for c in off_screen:
+                if c.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+                    return _DOT_PENDING_APPROVAL
+            return _DOT_CHEVRON
+
+        left = (
+            f"[{_chevron_color(self._cards[:start])}]<[/]"
+            if start > 0 else " "
+        )
+        right = (
+            f"[{_chevron_color(self._cards[end:])}]>[/]"
+            if end < n else " "
+        )
         dots = " ".join(
             self._dot(self._cards[i], i == self._cursor)
             for i in range(start, end)
