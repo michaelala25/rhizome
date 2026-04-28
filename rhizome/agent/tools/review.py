@@ -425,6 +425,10 @@ def build_review_tools(session_factory) -> dict:
         "- auto-pending   -> session ended mid-auto-score batch; left in queue.\n"
         "- untouched      -> session cancelled before the card was rated; "
         "left in queue.\n\n"
+        "Cards the user flagged (alt+m in the widget) are surfaced under a "
+        "separate 'flagged' slot regardless of outcome — these are cards the "
+        "user wants you to take another look at, potentially to request "
+        "edits or revisit later.\n\n"
         "If the session was cancelled, partial results are still returned."
     ))
     async def review_present_flashcards_tool(
@@ -496,6 +500,10 @@ def build_review_tools(session_factory) -> dict:
         skipped_ids: list[int] = []
         auto_pending_ids: list[int] = []
         untouched_ids: list[int] = []
+        # Flag is orthogonal to the score outcome — a flagged card may also
+        # appear in any of the buckets above. Collected separately so the
+        # agent sees it as a distinct call to action.
+        flagged_ids: list[int] = []
         user_answers: dict[int, str] = {}
 
         def _drop_from_queue(fc_id: int) -> None:
@@ -519,6 +527,8 @@ def build_review_tools(session_factory) -> dict:
             user_answer = card_result.get("user_answer", "")
             if user_answer:
                 user_answers[fc_id] = user_answer
+            if card_result.get("flagged"):
+                flagged_ids.append(fc_id)
 
             # FSRS state lives in the widget's in-memory snapshot and
             # arrives back here as ``fsrs_card``. The widget never wrote
@@ -593,6 +603,12 @@ def build_review_tools(session_factory) -> dict:
             )
         if untouched_ids:
             parts.append(f"{len(untouched_ids)} card(s) untouched (left in queue): {untouched_ids}.")
+
+        if flagged_ids:
+            parts.append(
+                f"\nUser flagged the following card(s), potentially to request "
+                f"changes or take another look: {flagged_ids}."
+            )
 
         if user_answers:
             parts.append("\nUser answers:")
