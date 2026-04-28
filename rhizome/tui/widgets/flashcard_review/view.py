@@ -61,6 +61,9 @@ _DOT_FAILED = "rgb(235,100,100)"
 _DOT_CHEVRON = "rgb(110,110,110)"
 _DOT_GLYPH = "•"
 _DOT_CURSOR_GLYPH = "◉"
+# Vertically-centered asterisk (U+2217 ASTERISK OPERATOR) — used for flagged
+# cards in the dot strip. Cursor still takes precedence.
+_DOT_FLAGGED_GLYPH = "∗"
 
 
 def _format_due(seconds: float) -> str:
@@ -171,7 +174,12 @@ class _DotStrip(Static):
 
     @staticmethod
     def _dot(card: Flashcard, is_cursor: bool) -> str:
-        glyph = _DOT_CURSOR_GLYPH if is_cursor else _DOT_GLYPH
+        if is_cursor:
+            glyph = _DOT_CURSOR_GLYPH
+        elif card.flagged:
+            glyph = _DOT_FLAGGED_GLYPH
+        else:
+            glyph = _DOT_GLYPH
         if card.auto_scoring_failed and card.state != Flashcard.State.SCORED:
             color = _DOT_FAILED
         elif card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
