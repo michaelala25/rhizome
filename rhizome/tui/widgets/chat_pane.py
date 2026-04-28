@@ -98,7 +98,7 @@ class ChatPane(Widget, DockContainerMixin):
         Binding("ctrl+l", "refocus_input", "Refocus input", show=False, priority=True),
         Binding("ctrl+t", "toggle_last_agent_message", "Toggle agent msg", show=False, priority=True),
         Binding("ctrl+o", "toggle_last_tool_call", "Toggle tool call", show=False, priority=True),
-        Binding("shift+tab", "cycle_mode", "Cycle mode", show=False, priority=True),
+        Binding("shift+tab", "cycle_mode", "Cycle mode", show=False),
         Binding("ctrl+b", "cycle_verbosity", "Cycle verbosity", show=False, priority=True),
         Binding("ctrl+up", "focus_prev_widget", "Prev widget", show=False, priority=True),
         Binding("ctrl+down", "focus_next_widget", "Next widget", show=False, priority=True),

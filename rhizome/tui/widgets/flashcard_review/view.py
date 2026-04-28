@@ -47,11 +47,16 @@ _FAIL_RED = "rgb(235,100,100)"
 _DONE_GREEN = "rgb(120,210,110)"
 _CANCEL_RED = "rgb(235,100,100)"
 
+# Yellowish-orange used to call attention to "user action awaited on an auto-score":
+# the dot for any SCORED_PENDING_APPROVAL card, and the [enter] approve hint.
+_APPROVAL_YELLOW = "rgb(235,180,90)"
+
 # Dot-strip colors. Cursor uses a different glyph (◉) so it reads even when the
 # card under it is also colored (e.g. blue while pending auto-score).
 _DOT_UNSCORED = "rgb(220,220,220)"
 _DOT_DONE = "rgb(85,85,85)"
 _DOT_PENDING = "rgb(120,160,230)"
+_DOT_PENDING_APPROVAL = _APPROVAL_YELLOW
 _DOT_FAILED = "rgb(235,100,100)"
 _DOT_CHEVRON = "rgb(110,110,110)"
 _DOT_GLYPH = "•"
@@ -156,6 +161,10 @@ class _DotStrip(Static):
             color = _DOT_FAILED
         elif card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
             color = _DOT_PENDING
+        elif card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+            # Distinct from the in-flight blue: this card is waiting on the user, not on
+            # the scorer.
+            color = _DOT_PENDING_APPROVAL
         elif card.state == Flashcard.State.SCORED:
             color = _DOT_DONE
         else:
@@ -286,6 +295,11 @@ class FlashcardReview(InterruptWidgetBase):
         text-align: left;
         color: rgb(80,80,80);
     }
+    FlashcardReview #fr-auto-approve-hint {
+        height: 1;
+        text-align: left;
+        margin: 0;
+    }
     FlashcardReview #fr-start-summary,
     FlashcardReview #fr-start-prompt {
         text-align: center;
@@ -382,6 +396,7 @@ class FlashcardReview(InterruptWidgetBase):
                 yield Static("", id="fr-help-hint")
                 yield _DotStrip(id="fr-dots")
                 yield Static("", id="fr-bottom-spacer")
+            yield Static("", id="fr-auto-approve-hint")
 
         with Vertical(id="fr-done"):
             yield Static("", id="fr-done-status")
@@ -535,6 +550,26 @@ class FlashcardReview(InterruptWidgetBase):
             case FlashcardReviewViewModel.State.DONE:
                 self._refresh_done()
         self._refresh_help()
+        self._refresh_auto_approve_hint()
+
+    def _refresh_auto_approve_hint(self) -> None:
+        """Status indicator under the bottom row: shows whether auto-scored ratings will
+        be auto-applied (yellow) or staged for approval (dim), and the keybinding to
+        toggle it. Visible only during REVIEWING — the toggle isn't wired in other
+        states."""
+        hint = self.query_one("#fr-auto-approve-hint", Static)
+        if self._vm.state != FlashcardReviewViewModel.State.REVIEWING:
+            hint.display = False
+            return
+        hint.display = True
+        if self._vm.auto_approve_auto_score:
+            status = f"[bold {_APPROVAL_YELLOW}]auto-approve enabled[/]"
+        else:
+            status = f"[{_HINT_DIM}]auto-approve disabled[/]"
+        binding = KEYBINDINGS[Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE]
+        hint.update(
+            f"{status}  [{_HINT_DIM}]({binding} to toggle)[/]"
+        )
 
     def _refresh_help(self) -> None:
         # Two slots:
@@ -642,6 +677,15 @@ class FlashcardReview(InterruptWidgetBase):
             self._reconcile_throbber_interval()
 
     def _refresh_current_card(self) -> None:
+        """Dispatcher: shared header + dots + intervals around a per-state body renderer.
+
+        Each ``_refresh_current_card_<state>`` method owns the visibility and content of the
+        card body (question / answer-input / user-answer / answer / rule / below-text) for
+        its state — the helpers below (``_show_question`` / ``_hide_question`` /
+        ``_sync_answer_input_visibility`` / ``_show_revealed_panel`` /
+        ``_hide_revealed_panel``) hide the per-widget plumbing so each state method reads as
+        a flat declaration of "what's visible right now".
+        """
         card = self._vm.current_card
         if card is None:
             return
@@ -650,95 +694,20 @@ class FlashcardReview(InterruptWidgetBase):
             f"Question  [dim](id {card.id})[/dim]"
         )
         self.query_one("#fr-counter", Static).update(self._counter_text(card))
-        # Question body hidden when face-down (AWAITING_REVEAL); only the
-        # header + countdown remain visible.
-        question_visible = card.state != Flashcard.State.AWAITING_REVEAL
-        question_widget = self.query_one("#fr-question", Static)
-        question_widget.display = question_visible
-        if question_visible:
-            question_widget.update(card.question)
 
-        # Answer input — visible only in FRONT during an active session.
-        # Hiding it in DONE (e.g. post-cancellation) prevents the input
-        # from remaining focusable after the session has ended. Syncs its
-        # buffer to the card's stored draft, suppressing the echo back
-        # through on_text_area_changed.
-        input_visible = (
-            card.state == Flashcard.State.FRONT
-            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
-        )
-        self.query_one("#fr-answer-input-label", Static).display = input_visible
-        answer_input = self.query_one("#fr-answer-input", _AnswerInput)
-        answer_input.display = input_visible
-        if input_visible:
-            draft = card.user_answer or ""
-            if answer_input.text != draft:
-                self._suppress_text_change = True
-                try:
-                    answer_input.load_text(draft)
-                finally:
-                    self._suppress_text_change = False
-
-        # Route focus based on state: input when FRONT (so typing works),
-        # self otherwise (so enter/1-4/nav keys reach vm.on_key). Only move
-        # focus if we already own it somewhere — don't steal from the chat
-        # input or anywhere else outside this widget.
-        app_focused = self.app.focused
-        we_own_focus = app_focused is self or app_focused is answer_input
-        if we_own_focus:
-            if input_visible and app_focused is not answer_input and not self._vm.cancelled:
-                answer_input.focus()
-            elif not input_visible and app_focused is answer_input:
-                self.focus()
-
-        # User's submitted answer — shown once the card is revealed.
-        revealed_states = {
-            Flashcard.State.REVEALED_NOT_SCORED,
-            Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
-            Flashcard.State.SCORED,
-        }
-        show_user_answer = card.state in revealed_states and bool(card.user_answer)
-        self.query_one("#fr-user-answer-label", Static).display = show_user_answer
-        user_answer_widget = self.query_one("#fr-user-answer", Static)
-        user_answer_widget.display = show_user_answer
-        if show_user_answer:
-            user_answer_widget.update(card.user_answer or "")
-
-        # Revealed answer. Skipped cards stay hidden so a user can't
-        # skip-then-reset to peek at the answer.
-        is_skipped = (
-            card.state == Flashcard.State.SCORED
-            and card.score == Flashcard.Score.SKIPPED
-        )
-        show_answer = card.state in revealed_states and not is_skipped
-        self.query_one("#fr-answer-label", Static).display = show_answer
-        answer_widget = self.query_one("#fr-answer", Static)
-        answer_widget.display = show_answer
-        if show_answer:
-            answer_widget.update(card.answer)
-
-        # Separator between user-answer and revealed answer — only when both visible.
-        self.query_one("#fr-ua-rule", Rule).display = show_user_answer and show_answer
-
-        # Below-card status text.
-        below = self.query_one("#fr-below", Static)
         match card.state:
             case Flashcard.State.FRONT:
-                below.update(
-                    "Type your answer and press [bold]enter[/bold] to reveal"
-                )
+                self._refresh_current_card_front(card)
             case Flashcard.State.REVEALED_NOT_SCORED:
-                below.update(self._rating_row_text(card))
+                self._refresh_current_card_revealed_not_scored(card)
             case Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
-                below.update(
-                    f"[{_RATING_LABEL_DIM}]Queued for auto-scoring  —  "
-                    f"press 1-4 to override[/]"
-                )
+                self._refresh_current_card_revealed_pending_auto_score(card)
+            case Flashcard.State.SCORED_PENDING_APPROVAL:
+                self._refresh_current_card_scored_pending_approval(card)
             case Flashcard.State.SCORED:
-                label = card.score.name.lower() if card.score else "?"
-                below.update(f"[{_RATING_LABEL_DIM}]Scored: {label}[/]")
+                self._refresh_current_card_scored(card)
             case Flashcard.State.AWAITING_REVEAL:
-                below.update(self._awaiting_reveal_text(card))
+                self._refresh_current_card_awaiting_reveal(card)
 
         self.query_one("#fr-dots", _DotStrip).update_state(
             self._vm._cards, self._vm._current_card_index
@@ -747,6 +716,138 @@ class FlashcardReview(InterruptWidgetBase):
         self._reconcile_timer_interval()
         self._reconcile_due_interval()
         self._reconcile_throbber_interval()
+
+    # ------------------------------------------------------------------
+    # Per-state body renderers
+    # ------------------------------------------------------------------
+
+    def _refresh_current_card_front(self, card: Flashcard) -> None:
+        self._show_question(card)
+        self._sync_answer_input_visibility(input_visible=True, card=card)
+        self._hide_revealed_panel()
+        self.query_one("#fr-below", Static).update(
+            "Type your answer and press [bold]enter[/bold] to reveal"
+        )
+
+    def _refresh_current_card_revealed_not_scored(self, card: Flashcard) -> None:
+        self._show_question(card)
+        self._sync_answer_input_visibility(input_visible=False, card=card)
+        self._show_revealed_panel(card, show_answer=True)
+        self.query_one("#fr-below", Static).update(self._rating_row_text(card))
+
+    def _refresh_current_card_revealed_pending_auto_score(self, card: Flashcard) -> None:
+        self._show_question(card)
+        self._sync_answer_input_visibility(input_visible=False, card=card)
+        self._show_revealed_panel(card, show_answer=True)
+        self.query_one("#fr-below", Static).update(
+            f"[{_RATING_LABEL_DIM}]Queued for auto-scoring  —  "
+            f"press 1-4 to override[/]"
+        )
+
+    def _refresh_current_card_scored_pending_approval(self, card: Flashcard) -> None:
+        self._show_question(card)
+        self._sync_answer_input_visibility(input_visible=False, card=card)
+        self._show_revealed_panel(card, show_answer=True)
+        self.query_one("#fr-below", Static).update(self._pending_approval_text(card))
+
+    def _refresh_current_card_scored(self, card: Flashcard) -> None:
+        self._show_question(card)
+        self._sync_answer_input_visibility(input_visible=False, card=card)
+        # Skipped cards: hide the answer so the user can't skip-then-reset to peek.
+        is_skipped = card.score == Flashcard.Score.SKIPPED
+        self._show_revealed_panel(card, show_answer=not is_skipped)
+        label = card.score.name.lower() if card.score else "?"
+        self.query_one("#fr-below", Static).update(
+            f"[{_RATING_LABEL_DIM}]Scored: {label}[/]"
+        )
+
+    def _refresh_current_card_awaiting_reveal(self, card: Flashcard) -> None:
+        # Face-down: hide question entirely; only the header + countdown remain.
+        self._hide_question()
+        self._sync_answer_input_visibility(input_visible=False, card=card)
+        self._hide_revealed_panel()
+        self.query_one("#fr-below", Static).update(self._awaiting_reveal_text(card))
+
+    # ------------------------------------------------------------------
+    # Per-piece show/hide helpers (used by the state renderers above)
+    # ------------------------------------------------------------------
+
+    def _show_question(self, card: Flashcard) -> None:
+        w = self.query_one("#fr-question", Static)
+        w.display = True
+        w.update(card.question)
+
+    def _hide_question(self) -> None:
+        self.query_one("#fr-question", Static).display = False
+
+    def _sync_answer_input_visibility(
+        self, *, input_visible: bool, card: Flashcard
+    ) -> None:
+        """Show/hide the answer input + label, sync its buffer to the card's stored draft,
+        and route focus appropriately.
+
+        The input is only ever visible during REVIEWING — hiding it in DONE (e.g. after
+        cancellation) prevents the input from remaining focusable past session end. The
+        draft sync suppresses the echo back through ``on_text_area_changed``.
+
+        Focus management: route focus to the input when it's visible (so typing lands
+        there), to ``self`` otherwise (so enter/1-4/nav keys reach ``vm.on_key``). Only
+        move focus if we already own it somewhere — don't steal from the chat input or
+        anywhere else outside this widget.
+        """
+        in_review = self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        show = input_visible and in_review
+
+        self.query_one("#fr-answer-input-label", Static).display = show
+        answer_input = self.query_one("#fr-answer-input", _AnswerInput)
+        answer_input.display = show
+        if show:
+            draft = card.user_answer or ""
+            if answer_input.text != draft:
+                self._suppress_text_change = True
+                try:
+                    answer_input.load_text(draft)
+                finally:
+                    self._suppress_text_change = False
+
+        app_focused = self.app.focused
+        we_own_focus = app_focused is self or app_focused is answer_input
+        if not we_own_focus:
+            return
+        if show and app_focused is not answer_input and not self._vm.cancelled:
+            answer_input.focus()
+        elif not show and app_focused is answer_input:
+            self.focus()
+
+    def _show_revealed_panel(self, card: Flashcard, *, show_answer: bool) -> None:
+        """Show the user's submitted answer (if non-empty) and optionally the revealed
+        answer. The separator rule appears only when both panels are visible.
+
+        ``show_answer=False`` is the SKIPPED case (and any future state where the user
+        shouldn't see the answer): the user-answer panel still renders if there's a draft
+        to show, but the revealed-answer panel and rule stay hidden.
+        """
+        show_user_answer = bool(card.user_answer)
+        self.query_one("#fr-user-answer-label", Static).display = show_user_answer
+        user_widget = self.query_one("#fr-user-answer", Static)
+        user_widget.display = show_user_answer
+        if show_user_answer:
+            user_widget.update(card.user_answer or "")
+
+        self.query_one("#fr-answer-label", Static).display = show_answer
+        answer_widget = self.query_one("#fr-answer", Static)
+        answer_widget.display = show_answer
+        if show_answer:
+            answer_widget.update(card.answer)
+
+        self.query_one("#fr-ua-rule", Rule).display = show_user_answer and show_answer
+
+    def _hide_revealed_panel(self) -> None:
+        self.query_one("#fr-user-answer-label", Static).display = False
+        self.query_one("#fr-user-answer", Static).display = False
+        self.query_one("#fr-answer-label", Static).display = False
+        self.query_one("#fr-answer", Static).display = False
+        self.query_one("#fr-ua-rule", Rule).display = False
 
     # ------------------------------------------------------------------
     # Text builders
@@ -776,15 +877,23 @@ class FlashcardReview(InterruptWidgetBase):
         return f"[{color}]{char}[/] Auto-scoring…"
 
     def _rating_row_text(self, card: Flashcard) -> str:
-        prefix = (
-            f"[{_FAIL_RED}]Auto-score failed — rate manually:[/]  "
-            if card.auto_scoring_failed else ""
+        # Two ways the auto-score path can be suppressed for this attempt: the scorer
+        # failed on it (auto_scoring_failed), or the user rejected the staged proposal
+        # via 'd' (auto_score_discarded). Both fall back to enter = good and surface a
+        # contextual "rate manually" prefix; failed wins if both are somehow set since
+        # it's the more system-level signal.
+        if card.auto_scoring_failed:
+            prefix = f"[{_FAIL_RED}]Auto-score failed — rate manually:[/]  "
+        elif card.auto_score_discarded:
+            prefix = f"[{_APPROVAL_YELLOW}]Auto-score rejected — rate manually:[/]  "
+        else:
+            prefix = ""
+        auto_default_active = (
+            self._vm.auto_score_enabled
+            and not card.auto_scoring_failed
+            and not card.auto_score_discarded
         )
-        enter_label = (
-            "auto"
-            if self._vm.auto_score_enabled and not card.auto_scoring_failed
-            else "good"
-        )
+        enter_label = "auto" if auto_default_active else "good"
         previews = card.rating_previews()
         pairs = [
             (1, "again", Rating.Again),
@@ -800,6 +909,54 @@ class FlashcardReview(InterruptWidgetBase):
         ]
         row = "    ".join(segments)
         return f"{prefix}{row}    [{_HINT_DIM}]\\[enter = {enter_label}][/]"
+
+    def _pending_approval_text(self, card: Flashcard) -> str:
+        """Two-line below text for SCORED_PENDING_APPROVAL: the same four-rating row as
+        the manual rating row, but with the auto-scorer's proposed rating wrapped in
+        brackets to highlight it; below that, an action hint listing approve / reject /
+        manually-score keys.
+
+        The cached rating previews populated at the FRONT -> REVEALED_NOT_SCORED reveal
+        are still valid here (FSRS state is intentionally not advanced while the rating
+        sits awaiting approval).
+        """
+        previews = card.rating_previews()
+        pending = card.pending_score
+        pairs = [
+            (Flashcard.Score.AGAIN, 1, "again", Rating.Again),
+            (Flashcard.Score.HARD,  2, "hard",  Rating.Hard),
+            (Flashcard.Score.GOOD,  3, "good",  Rating.Good),
+            (Flashcard.Score.EASY,  4, "easy",  Rating.Easy),
+        ]
+        segments = []
+        for score, num, label, rating in pairs:
+            interval = f"[{_HINT_DIM}]({_format_due(previews[rating])})[/]"
+            digit = f"[bold {_RATING_COLORS[num]}]{num}[/]"
+            if score == pending:
+                # Selected: brackets + label promoted to the approval yellow, digit stays
+                # in its rating color so the rating-color vocabulary still reads, plus a
+                # leading chevron in the same yellow as a directional anchor.
+                bright_label = f"[bold {_APPROVAL_YELLOW}]{label}[/]"
+                bracket_open = f"[bold {_APPROVAL_YELLOW}]\\[[/]"
+                bracket_close = f"[bold {_APPROVAL_YELLOW}]][/]"
+                chevron = f"[bold {_APPROVAL_YELLOW}]▸[/]"
+                segments.append(
+                    f"{chevron} {bracket_open} {digit} {bright_label} {interval} {bracket_close}"
+                )
+            else:
+                dim_label = f"[{_RATING_LABEL_DIM}]{label}[/]"
+                segments.append(f"{digit} {dim_label} {interval}")
+        row = "    ".join(segments)
+        # Brighter base than the usual hint dim (matches the rating-label tone), with the
+        # primary action — \[enter] to approve — highlighted in the approval yellow so the
+        # eye lands there first. Blank line above the hint visually separates the action
+        # row from the rating row.
+        hint = (
+            f"[bold {_APPROVAL_YELLOW}]\\[enter] to approve auto-score[/]"
+            f"  [{_RATING_LABEL_DIM}]·  \\[d] to reject  ·  "
+            f"\\[1-4] to manually score[/]"
+        )
+        return f"{row}\n\n{hint}"
 
     def _awaiting_reveal_text(self, card: Flashcard) -> str:
         due_in = card.due_in or 0.0

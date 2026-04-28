@@ -213,6 +213,7 @@ class Action(Enum):
     # Cross-state UI toggle
     TOGGLE_HELP = auto()       # alt+h
     TOGGLE_AUTO_SCORE = auto() # alt+a
+    TOGGLE_AUTO_APPROVE_AUTO_SCORE = auto()  # shift+tab
 
 
 KEYBINDINGS: dict[Action, str] = {
@@ -236,6 +237,7 @@ KEYBINDINGS: dict[Action, str] = {
     Action.TOGGLE_COLLAPSED: "enter",
     Action.TOGGLE_HELP: "alt+h",
     Action.TOGGLE_AUTO_SCORE: "alt+a",
+    Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE: "shift+tab",
 }
 
 
@@ -263,7 +265,7 @@ class FlashcardReviewViewModel:
         auto_score_enabled: bool = False,
         auto_scorer: Any = None,
         scheduler: Scheduler | None = None,
-        _auto_accept_auto_scores: bool = False,
+        auto_approve_auto_score: bool = False,
     ):
         super().__init__()
         # ``session_factory`` is held only for the public ``commit()`` API, which is never called
@@ -276,7 +278,12 @@ class FlashcardReviewViewModel:
 
         self._auto_score_enabled = auto_score_enabled
         self._auto_scorer = auto_scorer
-        self._auto_accept_auto_scores = _auto_accept_auto_scores
+        # When True the batch auto-scorer applies its rating immediately (AUTO_ACCEPT
+        # mode). When False each rating lands in SCORED_PENDING_APPROVAL awaiting the
+        # user's approve/reject decision (REQUIRE_APPROVAL mode). Toggleable mid-session
+        # via shift+tab; only affects cards the scorer hasn't yet processed (in-flight
+        # batches are unaffected).
+        self._auto_approve_auto_score = auto_approve_auto_score
 
         # Internal state
         self.state = FlashcardReviewViewModel.State.START
@@ -351,6 +358,10 @@ class FlashcardReviewViewModel:
             if self.current_card:
                 self.current_card.toggle_timer_visible()
                 self._emit(self.dirty)
+
+        elif event.key == KEYBINDINGS[Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE]:
+            self.toggle_auto_approve_auto_score()
+            event.stop()
 
         elif event.key == KEYBINDINGS[Action.RESET_CARD]:
             _logger.info(
@@ -557,6 +568,23 @@ class FlashcardReviewViewModel:
 
     def toggle_auto_score_enabled(self) -> None:
         self.auto_score_enabled = not self._auto_score_enabled
+
+    @property
+    def auto_approve_auto_score(self) -> bool:
+        """Auto-score acceptance mode. True = AUTO_ACCEPT (apply scorer's rating
+        immediately). False = REQUIRE_APPROVAL (stage in SCORED_PENDING_APPROVAL until the
+        user approves or rejects)."""
+        return self._auto_approve_auto_score
+
+    @auto_approve_auto_score.setter
+    def auto_approve_auto_score(self, value: bool) -> None:
+        if self._auto_approve_auto_score == value:
+            return
+        self._auto_approve_auto_score = value
+        self._emit(self.dirty)
+
+    def toggle_auto_approve_auto_score(self) -> None:
+        self.auto_approve_auto_score = not self._auto_approve_auto_score
 
 
     @property
@@ -1016,7 +1044,7 @@ class FlashcardReviewViewModel:
                 _fail(card, f"Scorer returned out-of-range score {rating!r}")
                 continue
 
-            if self._auto_accept_auto_scores:
+            if self._auto_approve_auto_score:
                 card.set_score(score_map[rating])
                 if card.fsrs_card.state in (State.Learning, State.Relearning):
                     requeued_cards.append(card)
