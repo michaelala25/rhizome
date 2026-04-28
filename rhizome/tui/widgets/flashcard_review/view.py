@@ -474,7 +474,10 @@ class FlashcardReview(InterruptWidgetBase):
             return
         if self._vm.state != FlashcardReviewViewModel.State.DONE:
             return
-        self.resolve(self._build_result())
+        
+        # Resolve, maintaining navigability (so the user can still look at the cards
+        # post resolve, just not change them).
+        self.resolve(self._build_result(), deactivate_navigation=False)
 
     def _build_result(self) -> dict[str, Any]:
         cards = []
