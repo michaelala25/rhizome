@@ -215,6 +215,9 @@ class Action(Enum):
     TOGGLE_AUTO_SCORE = auto() # alt+a
     TOGGLE_AUTO_APPROVE_AUTO_SCORE = auto()  # shift+tab
 
+    # Bulk action
+    ACCEPT_ALL_AUTO_SCORES = auto()  # ctrl+enter (alias: ctrl+j)
+
 
 KEYBINDINGS: dict[Action, str] = {
     Action.BEGIN: "enter",
@@ -238,7 +241,24 @@ KEYBINDINGS: dict[Action, str] = {
     Action.TOGGLE_HELP: "alt+h",
     Action.TOGGLE_AUTO_SCORE: "alt+a",
     Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE: "shift+tab",
+    Action.ACCEPT_ALL_AUTO_SCORES: "ctrl+enter",
 }
+
+
+# Textual reports certain Ctrl+<letter> keypresses as their underlying control-character
+# names — most notably ``ctrl+enter`` arrives as ``ctrl+j``. Keep KEYBINDINGS using the
+# user-friendly form (so the UI displays "ctrl+enter") and resolve aliases here when
+# matching against ``event.key``.
+_KEY_ALIASES: dict[str, str] = {
+    "ctrl+j": "ctrl+enter",
+}
+
+
+def _matches_binding(event_key: str, binding: str) -> bool:
+    """True iff ``event_key`` matches ``binding`` directly or via a known control-char
+    alias (see ``_KEY_ALIASES``). Use in place of a raw ``==`` whenever the binding
+    string might use a display-friendly form like ``ctrl+enter``."""
+    return event_key == binding or _KEY_ALIASES.get(event_key) == binding
 
 
 # Map of digit-key → score for the REVIEWING digit dispatch.
@@ -361,6 +381,10 @@ class FlashcardReviewViewModel:
 
         elif event.key == KEYBINDINGS[Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE]:
             self.toggle_auto_approve_auto_score()
+            event.stop()
+
+        elif _matches_binding(event.key, KEYBINDINGS[Action.ACCEPT_ALL_AUTO_SCORES]):
+            self.accept_all_auto_scores()
             event.stop()
 
         elif event.key == KEYBINDINGS[Action.RESET_CARD]:
@@ -589,6 +613,34 @@ class FlashcardReviewViewModel:
     def toggle_auto_approve_auto_score(self) -> None:
         self.auto_approve_auto_score = not self._auto_approve_auto_score
 
+    def accept_all_auto_scores(self) -> None:
+        """Approve every card currently in SCORED_PENDING_APPROVAL with its staged
+        rating. No-op if there are no such cards.
+        """
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+
+        pending_approval = [
+            c for c in self._cards
+            if c.state == Flashcard.State.SCORED_PENDING_APPROVAL
+        ]
+        if not pending_approval:
+            return
+
+        for card in pending_approval:
+            self._remaining_before_batched_autoscore.discard(card.id)
+            self._next_remaining_before_batched_autoscore.discard(card.id)
+            card.approve_pending_score()
+
+            # Requeue if needed
+            if card.fsrs_card.state in (State.Learning, State.Relearning):
+                self._emplace_back_fixing_current(card)
+                self._remaining_before_batched_autoscore.add(card.id)
+
+        self._goto_next_unscored_card()
+        self._emit(self.dirty)
+        self._check_ready_to_autoscore()
+        self._check_done()
+
 
     @property
     def autoscore_in_progress(self) -> bool:
@@ -810,6 +862,13 @@ class FlashcardReviewViewModel:
         if self.current_card and self.current_card.state == Flashcard.State.FRONT:
             self.current_card.unpause()
 
+    def _emplace_back_fixing_current(self, card):
+        pos = self._cards.index(card)
+        self._cards.pop(pos)
+        if pos < self._current_card_index:
+            self._current_card_index -= 1
+        self._cards.append(card)
+
     def _goto_next_unscored_card(self):
         """Land the cursor on the next card still needing attention.
 
@@ -928,14 +987,7 @@ class FlashcardReviewViewModel:
         # Requeued cards (auto-accept mode, post-rating FSRS state in Learning/Relearning) get moved to
         # the back of _cards.
         for card in requeued:
-            pos = self._cards.index(card)
-            self._cards.pop(pos)
-            if pos < self._current_card_index:
-                self._current_card_index -= 1
-            self._cards.append(card)
-            # The card is already in AWAITING_REVEAL (set inside Flashcard._apply_rating). Add it to THIS
-            # round's remaining bucket — we already swapped _next into _remaining when the scoring job was
-            # dispatched, so the requeued card is part of the round we just opened.
+            self._emplace_back_fixing_current(card)
             self._remaining_before_batched_autoscore.add(card.id)
 
         # Failed and pending-approval cards stay in place positionally. Failed cards need manual rating;

@@ -38,7 +38,7 @@ class InterruptWidgetBase(NavigableWidgetMixin, Widget, can_focus=True):
         if self._future.done():
             return
         self._future.set_result(result)
-        self.deactivate_navigation()
+        # self.deactivate_navigation()
 
     async def wait_for_selection(self) -> Any:
         """Block until the user resolves the interrupt. Returns the result value."""

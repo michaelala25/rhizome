@@ -947,13 +947,16 @@ class FlashcardReview(InterruptWidgetBase):
                 dim_label = f"[{_RATING_LABEL_DIM}]{label}[/]"
                 segments.append(f"{digit} {dim_label} {interval}")
         row = "    ".join(segments)
-        # Brighter base than the usual hint dim (matches the rating-label tone), with the
-        # primary action — \[enter] to approve — highlighted in the approval yellow so the
-        # eye lands there first. Blank line above the hint visually separates the action
-        # row from the rating row.
+
+        # Bold yellow for [approve]
+        approve_binding     = KEYBINDINGS[Action.APPROVE_AUTO_SCORE]
+        approve_all_binding = KEYBINDINGS[Action.ACCEPT_ALL_AUTO_SCORES]
+        reject_binding      = KEYBINDINGS[Action.REJECT_AUTO_SCORE]
+
         hint = (
-            f"[bold {_APPROVAL_YELLOW}]\\[enter] to approve auto-score[/]"
-            f"  [{_RATING_LABEL_DIM}]·  \\[d] to reject  ·  "
+            f"[bold {_APPROVAL_YELLOW}]\\[{approve_binding}] to approve[/]  ·  "
+            f"[{_APPROVAL_YELLOW}]\\[{approve_all_binding}][/] [{_RATING_LABEL_DIM}]approve all  ·  "
+            f"\\[{reject_binding}] to reject  ·  "
             f"\\[1-4] to manually score[/]"
         )
         return f"{row}\n\n{hint}"
