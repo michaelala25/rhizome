@@ -378,7 +378,10 @@ class FlashcardReviewViewModel:
                     return
 
                 _logger.info("alt+x: resetting card %s", self.current_card.id)
+
                 self.current_card.reset()
+                self.current_card.unpause() # Restart the timer
+
                 # If the card was previously scored, we need to add it back to the remaining queue. If it was already in the remaining queue, no-op.
                 self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
                 self._remaining_before_batched_autoscore.add(self.current_card.id)
