@@ -403,9 +403,11 @@ class FlashcardReview(InterruptWidgetBase):
             )
 
         with Vertical(id="fr-card"):
+            
             with Horizontal(id="fr-header"):
                 yield Static("", classes="fr-label", id="fr-question-label")
                 yield Static("", id="fr-counter")
+
             yield Static("", id="fr-question")
             yield Static("Your answer", classes="fr-label", id="fr-answer-input-label")
             yield _AnswerInput(id="fr-answer-input")
@@ -894,7 +896,7 @@ class FlashcardReview(InterruptWidgetBase):
         suffix = self._remaining_suffix()
         if card.state != Flashcard.State.FRONT:
             return f"{position}{suffix}"
-        if card.timer_visible:
+        if self._vm.timers_visible:
             return f"{card.elapsed_time:.1f}s  ·  {position}{suffix}"
         # Throbber in place of the timer.
         char, color = _THROBBER_FRAMES[self._throbber_frame]
@@ -1012,7 +1014,7 @@ class FlashcardReview(InterruptWidgetBase):
         live_timer_visible = (
             card is not None
             and card.state == Flashcard.State.FRONT
-            and card.timer_visible
+            and self._vm.timers_visible
             and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
         )
         currently_running = self._timer_interval is not None
@@ -1060,7 +1062,7 @@ class FlashcardReview(InterruptWidgetBase):
             in_review
             and card is not None
             and card.state == Flashcard.State.FRONT
-            and not card.timer_visible
+            and not self._vm.timers_visible
         )
         batch_throbber = in_review and self._vm.autoscore_in_progress
         throbber_visible = think_throbber or batch_throbber
@@ -1078,7 +1080,7 @@ class FlashcardReview(InterruptWidgetBase):
         if (
             card is not None
             and card.state == Flashcard.State.FRONT
-            and not card.timer_visible
+            and not self._vm.timers_visible
         ):
             self.query_one("#fr-counter", Static).update(self._counter_text(card))
         # Batch-indicator throbber.

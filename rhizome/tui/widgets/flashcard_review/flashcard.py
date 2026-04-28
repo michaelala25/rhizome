@@ -278,7 +278,6 @@ class Flashcard:
 
         # State variables
         self._score: Flashcard.Score | None = None
-        self._timer_visible: bool = False # By default not visible
         self._user_answer: str | None = None
         self._awaiting_reveal_task: asyncio.Task | None = None
         # Set to True if the auto-scorer has previously failed on this card (either returned an invalid
@@ -337,10 +336,6 @@ class Flashcard:
     @property
     def elapsed_time(self) -> float:
         return self._timer.elapsed()
-
-    @property
-    def timer_visible(self) -> bool:
-        return self._timer_visible
 
     @property
     def user_answer(self) -> str | None:
@@ -407,9 +402,6 @@ class Flashcard:
         """Pause the think-time timer. Only valid in FRONT. Idempotent."""
         assert self.state == Flashcard.State.FRONT
         self._timer.pause()
-
-    def toggle_timer_visible(self):
-        self._timer_visible = not self._timer_visible
 
     def _reset_session_metadata(self):
         """Clear per-attempt session metadata WITHOUT touching FSRS state.

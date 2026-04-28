@@ -312,6 +312,7 @@ class FlashcardReviewViewModel:
         self._cancelled = False
         self._collapsed = False
         self._help_visible = False
+        self._timers_visible = False
         self._autoscore_task: asyncio.Task | None = None
 
         self._remaining_before_batched_autoscore = set(card.id for card in self._cards)
@@ -325,6 +326,11 @@ class FlashcardReviewViewModel:
         # dirty emit.
         for card in self._cards:
             card._on_due_reveal = lambda: self._emit(self.dirty)
+
+
+    # ========================================================================================================================
+    # Event Handlers
+    # ========================================================================================================================
 
     def _emit(self, listeners: list[Callable[[], None]]) -> None:
         for listener in listeners:
@@ -377,9 +383,7 @@ class FlashcardReviewViewModel:
             event.stop()
 
         elif event.key == KEYBINDINGS[Action.TOGGLE_TIMER]:
-            if self.current_card:
-                self.current_card.toggle_timer_visible()
-                self._emit(self.dirty)
+            self.toggle_timers_visible()
 
         elif event.key == KEYBINDINGS[Action.TOGGLE_FLAG]:
             self.toggle_flag_current_card()
@@ -393,90 +397,10 @@ class FlashcardReviewViewModel:
             event.stop()
 
         elif event.key == KEYBINDINGS[Action.RESET_CARD]:
-            _logger.info(
-                "alt+x: current_card=%s card_state=%s autoscore_in_progress=%s",
-                self.current_card.id if self.current_card else None,
-                self.current_card.state.name if self.current_card else None,
-                self.autoscore_in_progress,
-            )
-            if self.current_card:
-
-                # Check if an autoscore is in progress which includes this card. If so, we should disallow resetting.
-                if self.autoscore_in_progress and self.current_card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
-                    _logger.info("alt+x: blocked by in-flight autoscore")
-                    return
-
-                _logger.info("alt+x: resetting card %s", self.current_card.id)
-
-                self.current_card.reset()
-                self.current_card.unpause() # Restart the timer
-
-                # If the card was previously scored, we need to add it back to the remaining queue. If it was already in the remaining queue, no-op.
-                self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
-                self._remaining_before_batched_autoscore.add(self.current_card.id)
-                self._emit(self.dirty)
-                self._check_ready_to_autoscore()
-                self._check_done()
+            self.reset_current_card()
 
         elif event.key == KEYBINDINGS[Action.TOGGLE_SKIP]:
-            _logger.info(
-                "alt+s: current_card=%s card_state=%s scored=%s score=%s",
-                self.current_card.id if self.current_card else None,
-                self.current_card.state.name if self.current_card else None,
-                self.current_card.scored if self.current_card else None,
-                self.current_card.score.name if self.current_card and self.current_card.score else None,
-            )
-            if self.current_card:
-                # First, we check if the card is in the AWAITING_REVEAL state. If so, we ignore it. Skipping cards that are
-                # awaiting revealed is done purely out of convenience, as "resetting" a card which was previously awaiting reveal,
-                # but was then skipped, is a bit tricky to get right.
-                if self.current_card.state == Flashcard.State.AWAITING_REVEAL:
-                    return
-                
-                # Next, we check if the card was already scored as SKIPPED. If so, we "unskip" it by resetting the card state, 
-                # and adding it back to the remaining queue if necessary.
-                #
-                # Remark: we _don't_ need to guard against an in-flight autoscore task in this case because if the card was skipped,
-                # then it DEFINITELY didn't end up in the autoscore batch.
-                if self.current_card.scored and self.current_card.score == Flashcard.Score.SKIPPED:
-                    self.current_card.reset()
-
-                    # Re-add to remaining if not already there - remove from next round remaining just in case
-                    self._remaining_before_batched_autoscore.add(self.current_card.id)
-                    self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
-                    self._emit(self.dirty)
-                    self._check_ready_to_autoscore()
-                    self._check_done()
-
-                # If the card wasn't already skipped, we skip it by setting score to SKIPPED and transitioning state,
-                # removing from remaining queue if necessary. Skipping is only possible for cards that _aren't_ scored.
-                #
-                # Remark: here, we _also_ don't need to guard against in-flight autoscore tasks, since a card in either of these
-                # states is also DEFINITELY not in the autoscore batch.
-                elif self.current_card.state in [
-                    Flashcard.State.FRONT,
-                    Flashcard.State.REVEALED_NOT_SCORED
-                ]:
-                    self.current_card.skip()
-
-                    # Remove from both current and next round of remaining
-                    self._remaining_before_batched_autoscore.discard(self.current_card.id)
-                    self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
-                    self._emit(self.dirty)
-                    self._check_ready_to_autoscore()
-                    self._check_done()
-
-                # SCORED_PENDING_APPROVAL: discard the staged auto-score (lands in REVEALED_NOT_SCORED) and
-                # then skip from there. Same queue treatment as the FRONT / REVEALED_NOT_SCORED branch above.
-                elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
-                    self.current_card.discard_pending_score()
-                    self.current_card.skip()
-
-                    self._remaining_before_batched_autoscore.discard(self.current_card.id)
-                    self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
-                    self._emit(self.dirty)
-                    self._check_ready_to_autoscore()
-                    self._check_done()
+            self.toggle_skip_current_card()
 
 
         elif event.key in (score_keys := _score_key_map()):
@@ -500,50 +424,49 @@ class FlashcardReviewViewModel:
         # lookup; siblings REVEAL_BACK, REVEAL_FRONT, ADVANCE_NEXT all map to the same key. The branch
         # below disambiguates by card state.
         elif event.key == KEYBINDINGS[Action.SCORE_DEFAULT]:
-            if self.current_card:
-                if self.current_card.state == Flashcard.State.FRONT:
-                    self.current_card.reveal_back()
-                    self._emit(self.dirty)
-                elif self.current_card.state == Flashcard.State.AWAITING_REVEAL:
-                    self.current_card.reveal_front()
-                    self._emit(self.dirty)
+            if not self.current_card:
+                return
+            
+            if self.current_card.state == Flashcard.State.FRONT:
+                self.current_card.reveal_back()
+                self._emit(self.dirty)
 
-                elif self.current_card.state == Flashcard.State.REVEALED_NOT_SCORED:
-                    # Default enter-on-revealed action depends on config and on whether this card has
-                    # already failed auto-scoring.
-                    if (
-                        self._auto_score_enabled
-                        and not self.current_card.auto_scoring_failed
-                        and not self.current_card.auto_score_discarded
-                    ):
-                        self.score_current_card(Flashcard.Score.AUTO)
-                    else:
-                        # Either auto-scoring is disabled, or this card has already burned its auto-score
-                        # attempt — user needs to rate manually. Default to GOOD.
-                        self.score_current_card(Flashcard.Score.GOOD)
+            elif self.current_card.state == Flashcard.State.AWAITING_REVEAL:
+                self.current_card.reveal_front()
+                self._emit(self.dirty)
 
-                elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
-                    # Approve the staged auto-score — apply it via the normal scoring path. The pending
-                    # score is the rating the auto-scorer proposed.
-                    pending = self.current_card.pending_score
-                    assert pending is not None
-                    self.score_current_card(pending)
+            elif self.current_card.state == Flashcard.State.REVEALED_NOT_SCORED:
+                # Default enter-on-revealed action depends on config and on whether this card has
+                # already failed auto-scoring.
+                if (
+                    self._auto_score_enabled
+                    and not self.current_card.auto_scoring_failed
+                    and not self.current_card.auto_score_discarded
+                ):
+                    self.score_current_card(Flashcard.Score.AUTO)
+                else:
+                    # Either auto-scoring is disabled, or this card has already burned its auto-score
+                    # attempt — user needs to rate manually. Default to GOOD.
+                    self.score_current_card(Flashcard.Score.GOOD)
 
-                elif self.current_card.state in [
-                    Flashcard.State.SCORED,
-                    Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
-                ]:
-                    # Card is already done (or queued for auto-score) — enter advances to the next card
-                    # still needing attention.
-                    self._goto_next_unscored_card()
-                    self._emit(self.dirty)
+            elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+                # Approve the staged auto-score — apply it via the normal scoring path. The pending
+                # score is the rating the auto-scorer proposed.
+                pending = self.current_card.pending_score
+                assert pending is not None
+                self.score_current_card(pending)
+
+            elif self.current_card.state in [
+                Flashcard.State.SCORED,
+                Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+            ]:
+                # Card is already done (or queued for auto-score) — enter advances to the next card
+                # still needing attention.
+                self._goto_next_unscored_card()
+                self._emit(self.dirty)
 
             
     def _on_key_done(self, event: events.Key) -> None:
-        # DONE
-        #   - enter     -> collapse/expanded
-        #   - alt+left (expanded) -> prev card
-        #   - alt+right (expanded) -> next card
         assert self.state == FlashcardReviewViewModel.State.DONE
 
         if event.key == KEYBINDINGS[Action.PREV_CARD]:
@@ -555,9 +478,10 @@ class FlashcardReviewViewModel:
         elif event.key == KEYBINDINGS[Action.TOGGLE_COLLAPSED]:
             self.toggle_collapsed()
 
-    # ------------------------------------------------------------------
+
+    # ========================================================================================================================
     # Public API
-    # ------------------------------------------------------------------
+    # ========================================================================================================================
 
     @property
     def current_card(self) -> Flashcard | None:
@@ -568,10 +492,19 @@ class FlashcardReviewViewModel:
     @property
     def cancelled(self) -> bool:
         return self._cancelled
-    
+
+
     @property
     def collapsed(self) -> bool:
         return self._collapsed
+    
+    @collapsed.setter
+    def collapsed(self, value: bool) -> None:
+        if self._collapsed == value:
+            return
+        self._collapsed = value
+        self._emit(self.dirty)
+
 
     @property
     def help_visible(self) -> bool:
@@ -584,8 +517,18 @@ class FlashcardReviewViewModel:
         self._help_visible = value
         self._emit(self.dirty)
 
-    def toggle_help_visible(self) -> None:
-        self.help_visible = not self._help_visible
+
+    @property
+    def timers_visible(self) -> bool:
+        return self._timers_visible
+    
+    @timers_visible.setter
+    def timers_visible(self, value: bool) -> None:
+        if self._timers_visible == value:
+            return
+        self._timers_visible = value
+        self._emit(self.dirty)
+
 
     @property
     def auto_score_enabled(self) -> bool:
@@ -598,14 +541,9 @@ class FlashcardReviewViewModel:
         self._auto_score_enabled = value
         self._emit(self.dirty)
 
-    def toggle_auto_score_enabled(self) -> None:
-        self.auto_score_enabled = not self._auto_score_enabled
 
     @property
     def auto_approve_auto_score(self) -> bool:
-        """Auto-score acceptance mode. True = AUTO_ACCEPT (apply scorer's rating
-        immediately). False = REQUIRE_APPROVAL (stage in SCORED_PENDING_APPROVAL until the
-        user approves or rejects)."""
         return self._auto_approve_auto_score
 
     @auto_approve_auto_score.setter
@@ -615,7 +553,23 @@ class FlashcardReviewViewModel:
         self._auto_approve_auto_score = value
         self._emit(self.dirty)
 
+
+    def toggle_collapsed(self):
+        assert self.state == FlashcardReviewViewModel.State.DONE
+        self.collapsed = not self.collapsed
+
+    def toggle_help_visible(self) -> None:
+        self.help_visible = not self._help_visible
+
+    def toggle_timers_visible(self) -> None:
+        self.timers_visible = not self.timers_visible
+
+    def toggle_auto_score_enabled(self) -> None:
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        self.auto_score_enabled = not self._auto_score_enabled
+
     def toggle_auto_approve_auto_score(self) -> None:
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
         self.auto_approve_auto_score = not self._auto_approve_auto_score
 
     def toggle_flag_current_card(self) -> None:
@@ -628,6 +582,7 @@ class FlashcardReviewViewModel:
             return
         self.current_card.toggle_flagged()
         self._emit(self.dirty)
+
 
     def accept_all_auto_scores(self) -> None:
         """Approve every card currently in SCORED_PENDING_APPROVAL with its staged
@@ -688,6 +643,7 @@ class FlashcardReviewViewModel:
                     return pos
         return None
 
+
     def begin(self):
         """Transition state from START to REVIEWING."""
         assert self.state == FlashcardReviewViewModel.State.START
@@ -698,11 +654,13 @@ class FlashcardReviewViewModel:
 
         self._emit(self.dirty)
 
+
     def cancel(self):
         """Transition to the cancelled DONE state."""
         assert self.state != FlashcardReviewViewModel.State.DONE
         self._cancelled = True
         self.finish()
+
 
     def finish(self):
         """Transition to the DONE state."""
@@ -730,29 +688,6 @@ class FlashcardReviewViewModel:
 
         self._emit(self.dirty)
 
-    def toggle_collapsed(self):
-        assert self.state == FlashcardReviewViewModel.State.DONE
-        self._collapsed = not self._collapsed
-        self._emit(self.dirty)
-
-    async def commit(self) -> None:
-        """Persist every card's current FSRS scheduling state to the DB.
-
-        Idempotent — calling this repeatedly writes the same state each time (assuming no further ratings
-        happen in between). Never called internally; reserved for the widget's caller (typically the
-        ``review_present_flashcards`` tool) to invoke when a session completes against a non-ephemeral
-        review session.
-
-        Cards that haven't been rated this session (SKIPPED cards left in FRONT, untouched cards from a
-        cancelled session) still get their FSRS state written — but since ``_current_fsrs_card`` was never
-        advanced for those, the write is a no-op equivalent.
-        """
-        async with self._session_factory() as session:
-            for card in self._cards:
-                await commit_fsrs_card(
-                    session, card.id, card._current_fsrs_card,
-                )
-            await session.commit()
 
     def next_card(self):
         """Navigate to the next card, wrapping around if necessary. Does not change card state (other than pausing/unpausing the think-time timer)."""
@@ -776,6 +711,7 @@ class FlashcardReviewViewModel:
         self._step_card(-1)
         self._unpause_current_if_front()
         self._emit(self.dirty)
+
 
     def score_current_card(self, score: Flashcard.Score):
         """Score the current card with the given score, transitioning card state accordingly."""
@@ -858,9 +794,91 @@ class FlashcardReviewViewModel:
         self._check_done()
 
 
-    # ------------------------------------------------------------------
+    def reset_current_card(self):
+        """Reset the current card, transitioning card and VM state accordingly."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+
+        if not self.current_card:
+            return
+
+        # Check if an autoscore is in progress which includes this card. If so, we should disallow resetting.
+        if self.autoscore_in_progress and self.current_card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
+            return
+
+        self.current_card.reset()
+        self.current_card.unpause() # Restart the timer
+
+        # If the card was previously scored, we need to add it back to the remaining queue. If it was already in the remaining queue, no-op.
+        self._remaining_before_batched_autoscore.add(self.current_card.id)
+        self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
+
+        self._emit(self.dirty)
+        self._check_ready_to_autoscore()
+        self._check_done()
+
+
+    def toggle_skip_current_card(self):
+        """Skip/unskip the current card, transitioning card and VM state accordingly."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+
+        if not self.current_card:
+            return
+        
+        # First, we check if the card is in the AWAITING_REVEAL state. If so, we ignore it. Skipping cards that are
+        # awaiting revealed is done purely out of convenience, as "resetting" a card which was previously awaiting reveal,
+        # but was then skipped, is a bit tricky to get right.
+        if self.current_card.state == Flashcard.State.AWAITING_REVEAL:
+            return
+        
+        # Next, we check if the card was already scored as SKIPPED. If so, we "unskip" it by resetting the card state, 
+        # and adding it back to the remaining queue if necessary.
+        #
+        # Remark: we _don't_ need to guard against an in-flight autoscore task in this case because if the card was skipped,
+        # then it DEFINITELY didn't end up in the autoscore batch.
+        if self.current_card.scored and self.current_card.score == Flashcard.Score.SKIPPED:
+            self.current_card.reset()
+            self.current_card.unpause() # Restart the timer
+
+            # Re-add to remaining if not already there - remove from next round remaining just in case
+            self._remaining_before_batched_autoscore.add(self.current_card.id)
+            self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
+
+        # If the card wasn't already skipped, we skip it by setting score to SKIPPED and transitioning state,
+        # removing from remaining queue if necessary. Skipping is only possible for cards that _aren't_ scored.
+        #
+        # Remark: here, we _also_ don't need to guard against in-flight autoscore tasks, since a card in either of these
+        # states is also DEFINITELY not in the autoscore batch.
+        elif self.current_card.state in [
+            Flashcard.State.FRONT,
+            Flashcard.State.REVEALED_NOT_SCORED
+        ]:
+            self.current_card.skip()
+
+            # Remove from both current and next round of remaining
+            self._remaining_before_batched_autoscore.discard(self.current_card.id)
+            self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
+
+        # SCORED_PENDING_APPROVAL: discard the staged auto-score (lands in REVEALED_NOT_SCORED) and
+        # then skip from there. Same queue treatment as the FRONT / REVEALED_NOT_SCORED branch above.
+        elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+            self.current_card.discard_pending_score()
+            self.current_card.skip()
+
+            self._remaining_before_batched_autoscore.discard(self.current_card.id)
+            self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
+
+        else:
+            return # Nothing to do
+        
+        self._emit(self.dirty)
+        self._check_ready_to_autoscore()
+        self._check_done()
+
+
+
+    # ========================================================================================================================
     # Private Helpers
-    # ------------------------------------------------------------------
+    # ========================================================================================================================
 
     def _step_card(self, step: int):
         self._current_card_index += step
@@ -1127,3 +1145,23 @@ class FlashcardReviewViewModel:
                 pending_approval_cards.append(card)
 
         return requeued_cards, failed_cards, pending_approval_cards
+
+
+    async def commit(self) -> None:
+        """Persist every card's current FSRS scheduling state to the DB.
+
+        Idempotent — calling this repeatedly writes the same state each time (assuming no further ratings
+        happen in between). Never called internally; reserved for the widget's caller (typically the
+        ``review_present_flashcards`` tool) to invoke when a session completes against a non-ephemeral
+        review session.
+
+        Cards that haven't been rated this session (SKIPPED cards left in FRONT, untouched cards from a
+        cancelled session) still get their FSRS state written — but since ``_current_fsrs_card`` was never
+        advanced for those, the write is a no-op equivalent.
+        """
+        async with self._session_factory() as session:
+            for card in self._cards:
+                await commit_fsrs_card(
+                    session, card.id, card._current_fsrs_card,
+                )
+            await session.commit()
