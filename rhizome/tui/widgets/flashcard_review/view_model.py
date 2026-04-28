@@ -132,9 +132,10 @@ Auto-scoring batch lifecycle
        - Whole-batch raise -> every card still in REVEALED_PENDING_AUTO_SCORE is reverted via
                               the same path.
 
-    4. ``_handle_batched_auto_score`` post-loop: requeued cards are moved to the back of
-       ``_cards`` and added to ``_remaining`` (NOT ``_next_remaining`` — they are part of the
-       round we just swapped in); failed cards stay in place but are added back to
+    4. ``_handle_batched_auto_score`` post-loop: requeued cards are re-inserted in
+       due-time order via ``_emplace_in_due_order_fixing_current`` and added to ``_remaining``
+       (NOT ``_next_remaining`` — they are part of the round we just swapped in); failed
+       cards stay in place but are added back to
        ``_remaining`` so the user can rate them manually. ``_autoscore_task`` is cleared,
        ``dirty`` is emitted, then ``_check_ready_to_autoscore`` and ``_check_done`` run in
        that order — the former picking up any cards the user deferred mid-batch (which can
@@ -146,12 +147,14 @@ Cursor management
 ============================================================================================
 
     - ``_current_card_index`` is an index into ``_cards``. ``_cards`` is mutated in place by
-      a requeue's remove+append (so a requeued card always lands at the end of the display
-      order — applies to AGAIN and to HARD/GOOD on a card still inside the Learning ladder).
-      The cursor's *index* is preserved across this; this means after a requeue of a
-      middle/first card, the cursor implicitly shifts to a new card (the one that slid into
-      the vacated position), and after a requeue of the last card, the cursor stays on the
-      just-requeued card.
+      a requeue's remove+insert (the requeued card lands in due-time order among the
+      AWAITING_REVEAL cards from the cursor forward — applies to AGAIN and to HARD/GOOD on
+      a card still inside the Learning ladder). See ``_emplace_in_due_order_fixing_current``
+      for the cards-behind-cursor exception. The cursor is fixed up so it points at the
+      same logical "next card" it would under a plain remove+append: a requeue of a
+      middle/first card implicitly shifts a new card into the cursor position; a requeue
+      of the last card keeps the cursor on the just-requeued card iff no later-due
+      AWAITING_REVEAL sibling was found ahead of it.
     - ``_goto_next_unscored_card`` is the only place that walks the cursor between rounds.
       It prefers ``_remaining`` and falls back to ``_next_remaining`` so the cursor doesn't
       stall on a SCORED card when the only unscored cards are requeued and waiting.
@@ -605,7 +608,7 @@ class FlashcardReviewViewModel:
 
             # Requeue if needed
             if card.fsrs_card.state in (State.Learning, State.Relearning):
-                self._emplace_back_fixing_current(card)
+                self._emplace_in_due_order_fixing_current(card)
                 self._remaining_before_batched_autoscore.add(card.id)
 
         self._latest_message = f"Approved {len(pending_approval)} auto-scored card(s)"
@@ -774,8 +777,9 @@ class FlashcardReviewViewModel:
         #       - graduated; card lands in SCORED; already removed from both queues above.
         #   - State.Learning/Relearning
         #       - still in the (re)learning step ladder card lands in AWAITING_REVEAL and
-        #         must come back this session. Requeue to the back of _cards and add to
-        #        _next_remaining (swapped in once the current round drains).
+        #         must come back this session. Requeue in due-time order (see
+        #         _emplace_in_due_order_fixing_current) and add to _next_remaining
+        #         (swapped in once the current round drains).
         elif score in [
             Flashcard.Score.EASY,
             Flashcard.Score.GOOD,
@@ -787,15 +791,15 @@ class FlashcardReviewViewModel:
             requeued = current_card.fsrs_card.state in (State.Learning, State.Relearning)
 
             if requeued:
-                # Emplace this card at the back of the _cards list. Note that this implicitly moves the
-                # cursor: for middle/first positions it shifts a new card into _current_card_index; for
-                # the last position it leaves the cursor on the just-requeued card.
-                self._cards.remove(current_card)
-                self._cards.append(current_card)
+                # Re-insert in due-time order among the AWAITING_REVEAL cards ahead of
+                # the cursor. _emplace_in_due_order_fixing_current adjusts the cursor so
+                # it continues to point at the same logical "next card" it would have
+                # under the old append-to-back behavior.
+                self._emplace_in_due_order_fixing_current(current_card)
                 self._next_remaining_before_batched_autoscore.add(current_card.id)
 
             self._latest_message = f"Scored {score.name.lower()}" + (
-                " — requeued at back for later review" if requeued else ""
+                " — requeued for later review" if requeued else ""
             )
 
             # Land on the next unscored card. If the implicit shift above already placed us on an unscored
@@ -920,12 +924,52 @@ class FlashcardReviewViewModel:
         if self.current_card and self.current_card.state == Flashcard.State.FRONT:
             self.current_card.unpause()
 
-    def _emplace_back_fixing_current(self, card):
+    def _emplace_in_due_order_fixing_current(self, card):
+        """Re-insert a just-requeued AWAITING_REVEAL card in due-time order among the
+        AWAITING_REVEAL cards from the cursor forward.
+
+        Walks ``_cards`` from ``_current_card_index`` (inclusive) and finds the first
+        AWAITING_REVEAL card whose ``due_in`` is greater than ``card.due_in``; inserts
+        immediately before it. Non-AWAITING_REVEAL cards are transparent to the scan.
+        Falls back to appending at the end if no such card is found.
+
+        Cards behind the cursor are intentionally not consulted — the user has moved
+        past them, and yanking them back into the visited-forward path to maintain a
+        global ordering would be more disruptive than the local out-of-order. As a
+        corner case, the append fallback may land the card after a later-due
+        AWAITING_REVEAL sibling that lives behind the cursor; accepted under the same
+        trade-off.
+
+        Cursor handling matches the old remove+append behavior: tracks the same logical
+        card the cursor was on pre-pop, EXCEPT when the cursor was on the popped card
+        itself — then it preserves the cursor's numeric position, so a requeue of the
+        last card leaves the cursor on the just-requeued card (the requeue brings the
+        cursor back in-bounds at the same index), and a requeue of an earlier card
+        implicitly shifts a new card into the vacated cursor position.
+        """
         pos = self._cards.index(card)
+        cursor_was_on_card = pos == self._current_card_index
         self._cards.pop(pos)
         if pos < self._current_card_index:
             self._current_card_index -= 1
-        self._cards.append(card)
+
+        insert_at = len(self._cards)
+        for i in range(self._current_card_index, len(self._cards)):
+            other = self._cards[i]
+            if (
+                other.state == Flashcard.State.AWAITING_REVEAL
+                and other.due_in > card.due_in
+            ):
+                insert_at = i
+                break
+
+        self._cards.insert(insert_at, card)
+        # Only bump when cursor is tracking a logical card AND that card just shifted
+        # right by the insert. When cursor was on the popped card, there's no logical
+        # card to follow — leave cursor at its numeric position (the insert may have
+        # just made it valid again in the popped-last case).
+        if not cursor_was_on_card and insert_at <= self._current_card_index:
+            self._current_card_index += 1
 
     def _goto_next_unscored_card(self):
         """Land the cursor on the next card still needing attention.
@@ -1042,10 +1086,10 @@ class FlashcardReviewViewModel:
                     card._revert_auto_score_failure()
                     failed.append(card)
 
-        # Requeued cards (auto-accept mode, post-rating FSRS state in Learning/Relearning) get moved to
-        # the back of _cards.
+        # Requeued cards (auto-accept mode, post-rating FSRS state in Learning/Relearning) are
+        # re-inserted in due-time order among the AWAITING_REVEAL cards ahead of the cursor.
         for card in requeued:
-            self._emplace_back_fixing_current(card)
+            self._emplace_in_due_order_fixing_current(card)
             self._remaining_before_batched_autoscore.add(card.id)
 
         # Failed and pending-approval cards stay in place positionally. Failed cards need manual rating;
