@@ -664,22 +664,25 @@ class FlashcardReviewViewModel:
 
     @property
     def num_remaining(self) -> int:
-        """Number of cards still in the current round's remaining set."""
-        return len(self._remaining_before_batched_autoscore)
+        """Number of cards not yet in the terminal SCORED state — i.e. anything still
+        needing user attention (REVEALED_*, SCORED_PENDING_APPROVAL, AWAITING_REVEAL,
+        FRONT). Independent of the round-bookkeeping ``_remaining`` set, which only
+        governs auto-score batch timing."""
+        return sum(
+            1 for c in self._cards if c.state != Flashcard.State.SCORED
+        )
 
     @property
     def remaining_position(self) -> int | None:
-        """1-indexed position of the current card among the remaining cards (ordered by their index in
-        ``_cards``). ``None`` if the current card isn't in the remaining set (e.g. already scored, or in
-        AWAITING_REVEAL)."""
+        """1-indexed position of the current card among the not-yet-SCORED cards
+        (ordered by their index in ``_cards``). ``None`` if the current card is itself
+        in the SCORED state."""
         current = self.current_card
-        if current is None:
-            return None
-        if current.id not in self._remaining_before_batched_autoscore:
+        if current is None or current.state == Flashcard.State.SCORED:
             return None
         pos = 0
         for card in self._cards:
-            if card.id in self._remaining_before_batched_autoscore:
+            if card.state != Flashcard.State.SCORED:
                 pos += 1
                 if card is current:
                     return pos
