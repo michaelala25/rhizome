@@ -175,6 +175,26 @@ async def review(card_data, recording_scheduler):
         r._autoscore_task.cancel()
 
 
+@pytest.fixture
+async def review_require_approval(card_data, recording_scheduler):
+    """Same as ``review`` but in REQUIRE_APPROVAL auto-score mode (auto-scored ratings land in
+    SCORED_PENDING_APPROVAL and need explicit user approval / rejection)."""
+    r = FlashcardReviewViewModel(
+        cards=card_data,
+        session_factory=_fake_session_factory,
+        auto_score_enabled=True,
+        auto_scorer=None,
+        scheduler=recording_scheduler,
+        _auto_accept_auto_scores=False,
+    )
+    yield r
+    for c in r._cards:
+        if c._awaiting_reveal_task is not None and not c._awaiting_reveal_task.done():
+            c._awaiting_reveal_task.cancel()
+    if r._autoscore_task is not None and not r._autoscore_task.done():
+        r._autoscore_task.cancel()
+
+
 class _FakeScorer:
     """Mimics a StructuredSubagent for tests.
 
@@ -1260,4 +1280,192 @@ class TestRegressions:
             await review._autoscore_task
 
         assert scorer.invocations == 2
+        assert review.state == FlashcardReviewViewModel.State.DONE
+
+
+# ---------------------------------------------------------------------------
+# FlashcardReviewViewModel — SCORED_PENDING_APPROVAL routing
+# ---------------------------------------------------------------------------
+
+
+def _drain_to_pending_approval(review):
+    """Helper: defer all cards to AUTO and let the batch land them in
+    SCORED_PENDING_APPROVAL (REQUIRE_APPROVAL mode). Used by every test in
+    TestScoredPendingApproval as the setup phase."""
+    review.begin()
+    for _ in range(len(review._cards)):
+        review.current_card.reveal_back()
+        review.score_current_card(Flashcard.Score.AUTO)
+
+
+class TestScoredPendingApproval:
+    """Routing of key events on cards in SCORED_PENDING_APPROVAL.
+
+    REQUIRE_APPROVAL mode: every successful auto-score lands in
+    SCORED_PENDING_APPROVAL with a staged ``_pending_score``. The user
+    can approve (enter), reject (d), reject + manually rate (1/2/3/4),
+    or skip (alt+s).
+    """
+
+    async def test_batch_lands_cards_in_pending_approval(
+        self, review_require_approval
+    ):
+        review = review_require_approval
+        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        for c in review._cards:
+            assert c.state == Flashcard.State.SCORED_PENDING_APPROVAL
+            assert c.pending_score == Flashcard.Score.GOOD
+            assert c.score == Flashcard.Score.AUTO  # AUTO sentinel still set
+        # Round can't close — all three cards are still in _remaining
+        assert review._remaining_before_batched_autoscore == {1, 2, 3}
+        assert review.state == FlashcardReviewViewModel.State.REVIEWING
+
+    async def test_approve_via_enter_applies_rating_and_finishes(
+        self, review_require_approval
+    ):
+        """Enter on each pending-approval card approves the staged GOOD
+        rating; with all three on Review-state cards, the session reaches
+        DONE."""
+        review = review_require_approval
+        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        # Approve each pending-approval card via enter.
+        key_enter = SimpleNamespace(key="enter")
+        for _ in range(3):
+            review._on_key_reviewing(key_enter)
+
+        for c in review._cards:
+            assert c.state == Flashcard.State.SCORED
+            assert c.score == Flashcard.Score.GOOD
+            assert c.pending_score is None
+        assert review.state == FlashcardReviewViewModel.State.DONE
+
+    async def test_approve_again_routes_through_apply_rating(
+        self, review_require_approval
+    ):
+        """Approving a staged AGAIN must not trip the again() assertion —
+        it should land the card in AWAITING_REVEAL (Relearning) and add
+        it to _next_remaining."""
+        review = review_require_approval
+        review._auto_scorer = _FakeScorer({1: 1, 2: 3, 3: 3})  # card 1 → AGAIN
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        # Walk to card 1 (it was placed first in _cards, so cursor likely
+        # already there — but be defensive).
+        while review.current_card.id != 1:
+            review.next_card()
+        assert review.current_card.pending_score == Flashcard.Score.AGAIN
+
+        review._on_key_reviewing(SimpleNamespace(key="enter"))
+
+        card1 = next(c for c in review._cards if c.id == 1)
+        assert card1.state == Flashcard.State.AWAITING_REVEAL
+        assert card1.fsrs_card.state == State.Relearning
+        # Requeued: moved to back of _cards, added to _next_remaining
+        assert review._cards[-1] is card1
+        assert 1 in review._next_remaining_before_batched_autoscore
+
+    async def test_reject_via_d_returns_to_revealed_not_scored(
+        self, review_require_approval
+    ):
+        """`d` discards the staged score: card → REVEALED_NOT_SCORED with
+        ``_auto_score_discarded`` latched. Stays in _remaining for manual
+        rating. No FSRS state change."""
+        review = review_require_approval
+        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        target = review.current_card
+        target_id = target.id
+        fsrs_before = target.fsrs_card.state
+
+        review._on_key_reviewing(SimpleNamespace(key="d"))
+
+        assert target.state == Flashcard.State.REVEALED_NOT_SCORED
+        assert target.pending_score is None
+        assert target._auto_score_discarded is True
+        assert target.fsrs_card.state == fsrs_before  # FSRS untouched
+        assert target_id in review._remaining_before_batched_autoscore
+        assert review.state == FlashcardReviewViewModel.State.REVIEWING
+
+    async def test_reject_and_manually_score_via_digit_key(
+        self, review_require_approval, recording_scheduler
+    ):
+        """Pressing 1/2/3/4 on a SCORED_PENDING_APPROVAL card discards
+        the staged score and applies the manual rating instead, going
+        through the normal score_current_card pipeline."""
+        review = review_require_approval
+        # Scorer proposes GOOD for each, but user wants to override card 1
+        # with EASY.
+        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        while review.current_card.id != 1:
+            review.next_card()
+        review._on_key_reviewing(SimpleNamespace(key="4"))  # SCORE_EASY
+
+        card1 = next(c for c in review._cards if c.id == 1)
+        assert card1.state == Flashcard.State.SCORED
+        assert card1.score == Flashcard.Score.EASY
+        assert card1.pending_score is None
+        assert 1 not in review._remaining_before_batched_autoscore
+        # Last call to scheduler for card 1 was Rating.Easy (after the
+        # preview batch from reveal_back).
+        card1_scoring_calls = [
+            r for cid, r in recording_scheduler.scoring_calls if cid == 1
+        ]
+        assert card1_scoring_calls[-1] == Rating.Easy
+
+    async def test_skip_via_alt_s_on_pending_approval(
+        self, review_require_approval
+    ):
+        """alt+s on a SCORED_PENDING_APPROVAL card discards the staged
+        score and skips: card → SCORED(SKIPPED), drops out of both
+        queues. FSRS state untouched (skip never advances FSRS)."""
+        review = review_require_approval
+        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        target = review.current_card
+        target_id = target.id
+        fsrs_before = target.fsrs_card.state
+
+        review._on_key_reviewing(SimpleNamespace(key="alt+s"))
+
+        assert target.state == Flashcard.State.SCORED
+        assert target.score == Flashcard.Score.SKIPPED
+        assert target.pending_score is None
+        assert target.fsrs_card.state == fsrs_before
+        assert target_id not in review._remaining_before_batched_autoscore
+        assert target_id not in review._next_remaining_before_batched_autoscore
+
+    async def test_approve_all_drains_session_to_done(
+        self, review_require_approval
+    ):
+        """Approve-all (mixed ratings, all graduate from Review) drains
+        every card to SCORED and reaches DONE."""
+        review = review_require_approval
+        review._auto_scorer = _FakeScorer({1: 2, 2: 3, 3: 4})  # HARD/GOOD/EASY
+        _drain_to_pending_approval(review)
+        await review._autoscore_task
+
+        key_enter = SimpleNamespace(key="enter")
+        for _ in range(3):
+            review._on_key_reviewing(key_enter)
+
+        scores = {c.id: c.score for c in review._cards}
+        assert scores == {
+            1: Flashcard.Score.HARD,
+            2: Flashcard.Score.GOOD,
+            3: Flashcard.Score.EASY,
+        }
         assert review.state == FlashcardReviewViewModel.State.DONE

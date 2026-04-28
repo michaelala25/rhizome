@@ -12,6 +12,12 @@ States:
         The back of the card has been revealed; the user has not yet rated it.
     REVEALED_PENDING_AUTO_SCORE
         The user deferred this card to the auto-scorer (Score.AUTO).
+    SCORED_PENDING_APPROVAL
+        The auto-scorer produced a rating for this card and the VM is in REQUIRE_APPROVAL
+        mode, so the rating is staged in ``_pending_score`` awaiting user approval. FSRS
+        state is intentionally NOT advanced while we wait — the rating is only applied if
+        the user approves. Reached only from REVEALED_PENDING_AUTO_SCORE via the batch
+        scorer's per-card ``set_pending_score()`` call.
     SCORED
         Terminal scored state. Score is one of EASY/GOOD/HARD/SKIPPED. Reached when a
         rating advances ``_current_fsrs_card`` to ``State.Review`` (the card has graduated
@@ -68,9 +74,11 @@ Transitions (all enforced by asserts on the source state):
 
 
     REVEALED_PENDING_AUTO_SCORE
-        -> SCORED or AWAITING_REVEAL [via set_score(EASY|GOOD|HARD|AGAIN)]
-            - Either the user manually scored the card, or the batch auto-scorer returned a
-              rating in {1,2,3,4}.
+        -> SCORED or AWAITING_REVEAL [via set_score(EASY|GOOD|HARD|AGAIN); only when the
+                                      VM is in AUTO_ACCEPT mode, or when the user manually
+                                      pre-empts the auto-score]
+            - Either the user manually scored the card (any time), or the batch auto-scorer
+              returned a rating in {1,2,3,4} while the VM is in AUTO_ACCEPT mode.
             - Manual override of a PENDING_AUTO card is blocked by
               ``FlashcardReviewViewModel`` while the auto-score task is in flight (the
               user's score would be immediately overridden once the batch returns).
@@ -78,11 +86,43 @@ Transitions (all enforced by asserts on the source state):
               ``_current_fsrs_card``, then SCORED if Review or AWAITING_REVEAL if
               Learning/Relearning.
 
+        -> SCORED_PENDING_APPROVAL [via set_pending_score(EASY|GOOD|HARD|AGAIN); only when
+                                    the VM is in REQUIRE_APPROVAL mode]
+            - The batch auto-scorer returned a rating in {1,2,3,4} and the VM is in
+              REQUIRE_APPROVAL mode, so the rating is staged on ``_pending_score`` instead
+              of being applied immediately.
+            - FSRS state is NOT advanced — the scheduler is only invoked on approval.
+
         -> REVEALED_NOT_SCORED [via _revert_auto_score_failure()]
             - The batch scorer dropped this card, returned a non-integer / out-of-range
               score, or the whole batch raised.
             - Latches ``auto_scoring_failed=True``, which forbids future ``set_score_auto()``
               calls on this card until ``reset()`` is invoked.
+
+
+    SCORED_PENDING_APPROVAL
+        -> SCORED or AWAITING_REVEAL [via approve_pending_score(); equivalently via the VM's
+                                      score_current_card() when the user presses enter or a
+                                      digit key on a SCORED_PENDING_APPROVAL card]
+            - The user approved the staged rating (enter), or rejected it and supplied a
+              manual rating (1/2/3/4) — both paths clear ``_pending_score`` and route the
+              chosen rating through the normal scoring path. Scheduler advances
+              ``_current_fsrs_card``, then SCORED if Review or AWAITING_REVEAL if
+              Learning/Relearning.
+
+        -> REVEALED_NOT_SCORED [via discard_pending_score()]
+            - The user rejected the staged rating without supplying a manual one (``d`` key).
+            - Latches ``_auto_score_discarded=True`` (mirrors ``auto_scoring_failed`` —
+              suppresses the enter-default's auto-score fallback so the user gets a manual
+              GOOD instead of immediately re-deferring). FSRS state is unchanged since the
+              staged rating was never applied. Cleared by ``reset()`` and by
+              ``_reset_session_metadata()``.
+
+        -> SCORED(SKIPPED) [via discard_pending_score() then skip(), driven by the VM's
+                            alt+s handler]
+            - The user skipped the card while it was awaiting approval. The VM discards the
+              pending rating first (transitioning to REVEALED_NOT_SCORED) and then calls
+              skip() from there. FSRS state is unchanged.
 
 
     AWAITING_REVEAL
@@ -112,11 +152,12 @@ Transitions (all enforced by asserts on the source state):
               this; it uses ``_reset_session_metadata()`` directly when routing to
               AWAITING_REVEAL, so the rating it just applied isn't immediately rolled
               back.)
-            - Clears ``_score``, ``_user_answer``, and ``auto_scoring_failed``; resets the
-              think-time timer; cancels any in-flight ``_wait_until_due`` task; AND
-              restores ``_current_fsrs_card`` to a copy of ``_initial_fsrs_card`` (this is
-              the only operation that does so). Because no DB write has happened, this
-              restoration is fully consistent.
+            - Clears ``_score``, ``_user_answer``, ``auto_scoring_failed``,
+              ``_auto_score_discarded``, and ``_pending_score``; resets the think-time
+              timer; cancels any in-flight ``_wait_until_due`` task; AND restores
+              ``_current_fsrs_card`` to a copy of ``_initial_fsrs_card`` (this is the only
+              operation that does so). Because no DB write has happened, this restoration
+              is fully consistent.
 
               Remark: Resetting a card _after_ a DB commit is entirely valid, since each card
               maintains it's initial FSRS state, distinct from the DB. Future DB commits will
@@ -134,6 +175,11 @@ Per-card contracts:
       out of range, or the whole batch raised. While latched, ``set_score_auto`` is forbidden
       (asserts) and the view's default-rate-on-revealed path falls back to a manual GOOD rating.
       ``reset()`` clears the latch.
+    - ``_auto_score_discarded`` latches when the user rejects a SCORED_PENDING_APPROVAL
+      rating via ``discard_pending_score()``. Same suppressing effect on the enter-default
+      as ``auto_scoring_failed`` (manual GOOD fallback) but kept distinct so the view can
+      surface "user rejected" vs "scorer broke" differently. Cleared by ``reset()`` and by
+      ``_reset_session_metadata()``.
 
 ============================================================================================
 FSRS state ownership
@@ -189,10 +235,6 @@ class Flashcard:
         FRONT = auto()
         REVEALED_NOT_SCORED = auto()
         REVEALED_PENDING_AUTO_SCORE = auto()
-        # The auto-scorer has produced a rating, but the user still has to approve it (or discard it and
-        # rate manually). Reached only in REQUIRE_APPROVAL auto-score mode. The proposed rating lives in
-        # ``_pending_score`` — FSRS state is intentionally unchanged while we wait for approval, so
-        # ``discard_pending_score`` is just a field-clearing operation with no rollback.
         SCORED_PENDING_APPROVAL = auto()
         SCORED = auto()
         AWAITING_REVEAL = auto()
@@ -303,6 +345,10 @@ class Flashcard:
     @property
     def auto_scoring_failed(self) -> bool:
         return self._auto_scoring_failed
+    
+    @property
+    def auto_score_discarded(self) -> bool:
+        return self._auto_score_discarded
 
     @property
     def fsrs_card(self) -> Card:
@@ -590,7 +636,11 @@ class Flashcard:
         """
         assert self.state in [
             Flashcard.State.REVEALED_NOT_SCORED,
-            Flashcard.State.REVEALED_PENDING_AUTO_SCORE
+            Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+            # User approving a staged AGAIN auto-score, or rejecting a non-AGAIN auto-score and manually
+            # rating AGAIN. The dispatcher clears _pending_score before calling set_score, so reaching
+            # again() from SCORED_PENDING_APPROVAL is well-formed.
+            Flashcard.State.SCORED_PENDING_APPROVAL,
         ]
         self._apply_rating(Rating.Again, Flashcard.Score.AGAIN)
 

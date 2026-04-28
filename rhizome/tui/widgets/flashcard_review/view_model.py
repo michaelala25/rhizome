@@ -204,6 +204,8 @@ class Action(Enum):
     TOGGLE_TIMER = auto()      # ctrl+k
     RESET_CARD = auto()        # alt+x
     TOGGLE_SKIP = auto()       # alt+s
+    APPROVE_AUTO_SCORE = auto()  # enter on SCORED_PENDING_APPROVAL
+    REJECT_AUTO_SCORE = auto()   # d   on SCORED_PENDING_APPROVAL
 
     # DONE
     TOGGLE_COLLAPSED = auto()  # enter
@@ -229,6 +231,8 @@ KEYBINDINGS: dict[Action, str] = {
     Action.TOGGLE_TIMER: "ctrl+k",
     Action.RESET_CARD: "alt+x",
     Action.TOGGLE_SKIP: "alt+s",
+    Action.APPROVE_AUTO_SCORE: "enter",
+    Action.REJECT_AUTO_SCORE: "d",
     Action.TOGGLE_COLLAPSED: "enter",
     Action.TOGGLE_HELP: "alt+h",
     Action.TOGGLE_AUTO_SCORE: "alt+a",
@@ -419,13 +423,35 @@ class FlashcardReviewViewModel:
                     self._check_ready_to_autoscore()
                     self._check_done()
 
+                # SCORED_PENDING_APPROVAL: discard the staged auto-score (lands in REVEALED_NOT_SCORED) and
+                # then skip from there. Same queue treatment as the FRONT / REVEALED_NOT_SCORED branch above.
+                elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+                    self.current_card.discard_pending_score()
+                    self.current_card.skip()
+
+                    self._remaining_before_batched_autoscore.discard(self.current_card.id)
+                    self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
+                    self._emit(self.dirty)
+                    self._check_ready_to_autoscore()
+                    self._check_done()
+
 
         elif event.key in (score_keys := _score_key_map()):
             if self.current_card and self.current_card.state in [
                 Flashcard.State.REVEALED_NOT_SCORED,
-                Flashcard.State.REVEALED_PENDING_AUTO_SCORE
+                Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+                Flashcard.State.SCORED_PENDING_APPROVAL,
             ]:
+                # SCORED_PENDING_APPROVAL: digit acts as "reject the staged auto-score and apply the
+                # manual rating instead". score_current_card handles clearing _pending_score for this state.
                 self.score_current_card(score_keys[event.key])
+
+        elif event.key == KEYBINDINGS[Action.REJECT_AUTO_SCORE]:
+            # Reject the staged auto-score without applying a rating. Card goes back to REVEALED_NOT_SCORED
+            # (with _auto_score_discarded latched so the enter-default falls back to manual GOOD).
+            if self.current_card and self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+                self.current_card.discard_pending_score()
+                self._emit(self.dirty)
 
         # All four "enter" flavors in REVIEWING share the same key — keyed off SCORE_DEFAULT here for the
         # lookup; siblings REVEAL_BACK, REVEAL_FRONT, ADVANCE_NEXT all map to the same key. The branch
@@ -445,12 +471,20 @@ class FlashcardReviewViewModel:
                     if (
                         self._auto_score_enabled
                         and not self.current_card.auto_scoring_failed
+                        and not self.current_card.auto_score_discarded
                     ):
                         self.score_current_card(Flashcard.Score.AUTO)
                     else:
                         # Either auto-scoring is disabled, or this card has already burned its auto-score
                         # attempt — user needs to rate manually. Default to GOOD.
                         self.score_current_card(Flashcard.Score.GOOD)
+
+                elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+                    # Approve the staged auto-score — apply it via the normal scoring path. The pending
+                    # score is the rating the auto-scorer proposed.
+                    pending = self.current_card.pending_score
+                    assert pending is not None
+                    self.score_current_card(pending)
 
                 elif self.current_card.state in [
                     Flashcard.State.SCORED,
@@ -650,19 +684,23 @@ class FlashcardReviewViewModel:
         
         assert self.current_card.state in [
             Flashcard.State.REVEALED_NOT_SCORED,
-            Flashcard.State.REVEALED_PENDING_AUTO_SCORE
+            Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
+            Flashcard.State.SCORED_PENDING_APPROVAL,
         ]
 
-        # We can reach this method for a card in two states:
-        #   1) REVEALED_NOT_SCORED: this happens when the user manually scores a card that they just revealed
-        #   2) REVEALED_PENDING_AUTO_SCORE: this happens when either the user manually scores a card that was pending auto-score
-        #
-        # In this latter case, we additionally need to guard against an in-flight autoscore task (the user score would be immediately
-        # overridden by the auto-score once complete).
+        # We can reach this method for a card in three states:
+        #   1) REVEALED_NOT_SCORED: user manually scored a card they just revealed
+        #   2) REVEALED_PENDING_AUTO_SCORE: user manually scored a card that was pending auto-score (must
+        #      guard against in-flight autoscore task — user's score would be overridden by the batch)
+        #   3) SCORED_PENDING_APPROVAL: user is approving the staged auto-score rating; clear the pending
+        #      slot before set_score routes the card forward into SCORED / AWAITING_REVEAL.
 
         if self.current_card.state == Flashcard.State.REVEALED_PENDING_AUTO_SCORE:
             if self.autoscore_in_progress:
                 return
+
+        if self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
+            self.current_card._pending_score = None
 
         # Discard from BOTH queues — a card transitioning to SCORED must not leave a ghost id in
         # _next_remaining (e.g. a previously-AGAIN'd card that the user revealed and scored before its due
