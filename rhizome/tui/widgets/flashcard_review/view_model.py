@@ -314,6 +314,7 @@ class FlashcardReviewViewModel:
         self._help_visible = False
         self._timers_visible = False
         self._autoscore_task: asyncio.Task | None = None
+        self._latest_message: str | None = None
 
         self._remaining_before_batched_autoscore = set(card.id for card in self._cards)
         self._next_remaining_before_batched_autoscore = set()
@@ -607,6 +608,7 @@ class FlashcardReviewViewModel:
                 self._emplace_back_fixing_current(card)
                 self._remaining_before_batched_autoscore.add(card.id)
 
+        self._latest_message = f"Approved {len(pending_approval)} auto-scored card(s)"
         self._goto_next_unscored_card()
         self._emit(self.dirty)
         self._check_ready_to_autoscore()
@@ -616,6 +618,14 @@ class FlashcardReviewViewModel:
     @property
     def autoscore_in_progress(self) -> bool:
         return self._autoscore_task is not None and not self._autoscore_task.done()
+
+    def pop_latest_message(self) -> str | None:
+        """Read-and-clear the latest user-action message. Returns ``None`` if no
+        message has been emitted since the last pop. View calls this on every
+        refresh so that unrelated ``dirty`` emits don't re-surface a stale message."""
+        msg = self._latest_message
+        self._latest_message = None
+        return msg
 
     @property
     def num_remaining(self) -> int:
@@ -751,10 +761,12 @@ class FlashcardReviewViewModel:
         # on — they're terminal-for-now transitions handled directly.
         if score == Flashcard.Score.AUTO:
             self.current_card.set_score_auto()
+            self._latest_message = "Card deferred to auto-scorer"
             self._goto_next_unscored_card()
 
         elif score == Flashcard.Score.SKIPPED:
             self.current_card.skip()
+            self._latest_message = "Skipped card"
             self._goto_next_unscored_card()
 
         # EASY/GOOD/HARD/AGAIN: apply the rating, then branch on the post-rating FSRS state.
@@ -772,14 +784,19 @@ class FlashcardReviewViewModel:
         ]:
             current_card = self.current_card
             current_card.set_score(score)
+            requeued = current_card.fsrs_card.state in (State.Learning, State.Relearning)
 
-            if current_card.fsrs_card.state in (State.Learning, State.Relearning):
+            if requeued:
                 # Emplace this card at the back of the _cards list. Note that this implicitly moves the
                 # cursor: for middle/first positions it shifts a new card into _current_card_index; for
                 # the last position it leaves the cursor on the just-requeued card.
                 self._cards.remove(current_card)
                 self._cards.append(current_card)
                 self._next_remaining_before_batched_autoscore.add(current_card.id)
+
+            self._latest_message = f"Scored {score.name.lower()}" + (
+                " — requeued at back for later review" if requeued else ""
+            )
 
             # Land on the next unscored card. If the implicit shift above already placed us on an unscored
             # card, _goto will stay put and just start that card's timer.
@@ -812,6 +829,7 @@ class FlashcardReviewViewModel:
         self._remaining_before_batched_autoscore.add(self.current_card.id)
         self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
 
+        self._latest_message = "Reset card"
         self._emit(self.dirty)
         self._check_ready_to_autoscore()
         self._check_done()
@@ -869,7 +887,10 @@ class FlashcardReviewViewModel:
 
         else:
             return # Nothing to do
-        
+
+        self._latest_message = (
+            "Skipped card" if self.current_card.score == Flashcard.Score.SKIPPED else "Unskipped card"
+        )
         self._emit(self.dirty)
         self._check_ready_to_autoscore()
         self._check_done()
@@ -1043,6 +1064,10 @@ class FlashcardReviewViewModel:
         # or try to cancel us.
         self._autoscore_task = None
 
+        scored_n = len(requeued) + len(pending_approval)
+        self._latest_message = f"Auto-scorer finished — {scored_n} scored" + (
+            f", {len(failed)} failed" if failed else ""
+        )
         self._emit(self.dirty)
 
         # Pick up anything the user drained while the batch was running (may dispatch a follow-up batch),

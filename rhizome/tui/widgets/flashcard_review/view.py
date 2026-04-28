@@ -65,6 +65,9 @@ _DOT_CURSOR_GLYPH = "◉"
 # cards in the dot strip. Cursor still takes precedence.
 _DOT_FLAGGED_GLYPH = "∗"
 
+# How long messages remain visible before being wiped
+_MESSAGE_DISPLAY_SECONDS = 3.0
+
 
 def _format_due(seconds: float) -> str:
     """Anki-style compact interval label for a rating preview.
@@ -302,12 +305,12 @@ class FlashcardReview(InterruptWidgetBase):
         text-align: center;
         margin: 1 0 0 0;
     }
-    FlashcardReview #fr-bottom-row {
+    FlashcardReview #fr-dots-row {
         height: 1;
         margin: 1 0 0 0;
     }
-    FlashcardReview #fr-bottom-row > Static,
-    FlashcardReview #fr-bottom-row > _DotStrip {
+    FlashcardReview #fr-dots-row > Static,
+    FlashcardReview #fr-dots-row > _DotStrip {
         width: 1fr;
         height: 1;
     }
@@ -318,10 +321,20 @@ class FlashcardReview(InterruptWidgetBase):
         text-align: left;
         color: rgb(80,80,80);
     }
-    FlashcardReview #fr-auto-approve-hint {
+    FlashcardReview #fr-bottom-row {
         height: 1;
-        text-align: left;
         margin: 0;
+    }
+    FlashcardReview #fr-bottom-row > Static {
+        width: 1fr;
+        height: 1;
+    }
+    FlashcardReview #fr-auto-approve-hint {
+        text-align: left;
+    }
+    FlashcardReview #fr-message {
+        text-align: right;
+        color: rgb(80,80,80);
     }
     FlashcardReview #fr-start-summary,
     FlashcardReview #fr-start-prompt {
@@ -390,6 +403,8 @@ class FlashcardReview(InterruptWidgetBase):
         # Shared throbber frame counter — advanced by _tick_throbber.
         self._throbber_frame = 0
 
+        self._message_timer = None
+
     def compose(self) -> ComposeResult:
         yield Button("▼", id="fr-collapse")
         yield Static("", id="fr-batch-indicator")
@@ -417,11 +432,13 @@ class FlashcardReview(InterruptWidgetBase):
             yield Static("Answer", classes="fr-label", id="fr-answer-label")
             yield Static("", id="fr-answer")
             yield Static("", id="fr-below")
-            with Horizontal(id="fr-bottom-row"):
+            with Horizontal(id="fr-dots-row"):
                 yield Static("", id="fr-help-hint")
                 yield _DotStrip(id="fr-dots")
                 yield Static("", id="fr-bottom-spacer")
-            yield Static("", id="fr-auto-approve-hint")
+            with Horizontal(id="fr-bottom-row"):
+                yield Static("", id="fr-auto-approve-hint")
+                yield Static("", id="fr-message")
 
         with Vertical(id="fr-done"):
             yield Static("", id="fr-done-status")
@@ -580,6 +597,7 @@ class FlashcardReview(InterruptWidgetBase):
                 self._refresh_done()
         self._refresh_help()
         self._refresh_auto_approve_hint()
+        self._refresh_message()
 
     def _refresh_auto_approve_hint(self) -> None:
         """Status indicator under the bottom row: shows whether auto-scored ratings will
@@ -599,6 +617,26 @@ class FlashcardReview(InterruptWidgetBase):
         hint.update(
             f"{status}  [{_HINT_DIM}]({binding} to toggle)[/]"
         )
+
+    def _refresh_message(self) -> None:
+        """Flash the VM's latest user-action message in the bottom-right slot.
+
+        Pops the VM message so unrelated dirty emits don't re-display it after
+        the timer has cleared the widget. A new pop restarts the 3s timer.
+        """
+        new_msg = self._vm.pop_latest_message()
+        if new_msg is None:
+            return
+        if self._message_timer is not None:
+            self._message_timer.stop()
+        self.query_one("#fr-message", Static).update(new_msg)
+        self._message_timer = self.set_timer(
+            _MESSAGE_DISPLAY_SECONDS, self._clear_message,
+        )
+
+    def _clear_message(self) -> None:
+        self.query_one("#fr-message", Static).update("")
+        self._message_timer = None
 
     def _refresh_help(self) -> None:
         # Two slots:
