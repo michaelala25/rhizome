@@ -820,11 +820,14 @@ class FlashcardReview(InterruptWidgetBase):
     def _counter_text(self, card: Flashcard) -> str:
         position = f"{self._vm._current_card_index + 1}/{len(self._vm._cards)}"
         suffix = self._remaining_suffix()
+        if self._vm.timers_visible:
+            # Elapsed time is frozen on non-FRONT cards (think-time timer is
+            # paused on transitions out of FRONT); on FRONT it ticks live via
+            # _reconcile_timer_interval.
+            return f"{card.elapsed_time:.1f}s  ·  {position}{suffix}"
         if card.state != Flashcard.State.FRONT:
             return f"{position}{suffix}"
-        if self._vm.timers_visible:
-            return f"{card.elapsed_time:.1f}s  ·  {position}{suffix}"
-        # Throbber in place of the timer.
+        # FRONT without the timer visible — throbber in its place.
         char, color = _THROBBER_FRAMES[self._throbber_frame]
         return f"[{color}]{char}[/]  ·  {position}{suffix}"
 
