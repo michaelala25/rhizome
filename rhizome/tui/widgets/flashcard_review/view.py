@@ -739,9 +739,15 @@ class FlashcardReview(InterruptWidgetBase):
         self._show_question(card)
         self._sync_answer_input_visibility(input_visible=False, card=card)
         self._show_revealed_panel(card, show_answer=True)
+
+        if self._vm.autoscore_in_progress:
+            hint_text = "pending score..."
+        else:
+            hint_text = "press 1-4 to override"
+            
         self.query_one("#fr-below", Static).update(
             f"[{_RATING_LABEL_DIM}]Queued for auto-scoring  —  "
-            f"press 1-4 to override[/]"
+            f"{hint_text}[/]"
         )
 
     def _refresh_current_card_scored_pending_approval(self, card: Flashcard) -> None:
