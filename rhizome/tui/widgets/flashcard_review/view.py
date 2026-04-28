@@ -483,6 +483,7 @@ class FlashcardReview(InterruptWidgetBase):
                 "user_answer": card.user_answer or "",
                 "score": score_val,
                 "score_label": score_label,
+                "flagged": card.flagged,
                 "duration": round(card.elapsed_time, 1),
                 # Final in-memory FSRS state for this card. The widget
                 # never persists this itself — the consumer (typically
@@ -602,6 +603,7 @@ class FlashcardReview(InterruptWidgetBase):
             (Action.TOGGLE_TIMER, "toggle timer"),
             (Action.RESET_CARD, "reset current card"),
             (Action.TOGGLE_SKIP, "skip / unskip card"),
+            (Action.TOGGLE_FLAG, "flag / unflag card"),
             (Action.TOGGLE_AUTO_SCORE, auto_label),
         ]
         return "    ".join(
@@ -690,8 +692,10 @@ class FlashcardReview(InterruptWidgetBase):
         if card is None:
             return
 
+        # Trailing star when the user has flagged this card for later review.
+        star = f" [bold {_APPROVAL_YELLOW}]*[/]" if card.flagged else ""
         self.query_one("#fr-question-label", Static).update(
-            f"Question  [dim](id {card.id})[/dim]"
+            f"Question{star}  [dim](id {card.id})[/dim]"
         )
         self.query_one("#fr-counter", Static).update(self._counter_text(card))
 

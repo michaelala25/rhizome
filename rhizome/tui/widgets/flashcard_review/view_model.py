@@ -204,6 +204,7 @@ class Action(Enum):
     TOGGLE_TIMER = auto()      # ctrl+k
     RESET_CARD = auto()        # alt+x
     TOGGLE_SKIP = auto()       # alt+s
+    TOGGLE_FLAG = auto()       # alt+m
     APPROVE_AUTO_SCORE = auto()  # enter on SCORED_PENDING_APPROVAL
     REJECT_AUTO_SCORE = auto()   # d   on SCORED_PENDING_APPROVAL
 
@@ -235,6 +236,7 @@ KEYBINDINGS: dict[Action, str] = {
     Action.TOGGLE_TIMER: "ctrl+k",
     Action.RESET_CARD: "alt+x",
     Action.TOGGLE_SKIP: "alt+s",
+    Action.TOGGLE_FLAG: "alt+m",
     Action.APPROVE_AUTO_SCORE: "enter",
     Action.REJECT_AUTO_SCORE: "d",
     Action.TOGGLE_COLLAPSED: "enter",
@@ -378,6 +380,9 @@ class FlashcardReviewViewModel:
             if self.current_card:
                 self.current_card.toggle_timer_visible()
                 self._emit(self.dirty)
+
+        elif event.key == KEYBINDINGS[Action.TOGGLE_FLAG]:
+            self.toggle_flag_current_card()
 
         elif event.key == KEYBINDINGS[Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE]:
             self.toggle_auto_approve_auto_score()
@@ -612,6 +617,17 @@ class FlashcardReviewViewModel:
 
     def toggle_auto_approve_auto_score(self) -> None:
         self.auto_approve_auto_score = not self._auto_approve_auto_score
+
+    def toggle_flag_current_card(self) -> None:
+        """Flip the user's "flag for later" annotation on the current card. Entirely orthogonal to card state.
+        
+        Surfaces in the result payload so callers can revisit flagged cards after the
+        session."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        if self.current_card is None:
+            return
+        self.current_card.toggle_flagged()
+        self._emit(self.dirty)
 
     def accept_all_auto_scores(self) -> None:
         """Approve every card currently in SCORED_PENDING_APPROVAL with its staged

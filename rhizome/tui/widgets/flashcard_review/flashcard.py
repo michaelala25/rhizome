@@ -300,6 +300,10 @@ class Flashcard:
         # rollback needed.
         self._pending_score: Flashcard.Score | None = None
 
+        # User-toggled "flag for later" annotation. Orthogonal to all card-state machinery — toggleable from
+        # any state, no transitions, doesn't affect scoring or session flow.
+        self._flagged: bool = False
+
         # Fired from ``_wait_until_due`` after the card auto-reveals from AWAITING_REVEAL back to FRONT.
         # The VM wires this up to its ``dirty`` emit so listeners get notified of the async transition
         # (which otherwise bypasses all VM methods).
@@ -349,6 +353,14 @@ class Flashcard:
     @property
     def auto_score_discarded(self) -> bool:
         return self._auto_score_discarded
+
+    @property
+    def flagged(self) -> bool:
+        return self._flagged
+
+    def toggle_flagged(self) -> None:
+        """Flip the user's "flag for later" annotation. Orthogonal to card state — valid in any state."""
+        self._flagged = not self._flagged
 
     @property
     def fsrs_card(self) -> Card:
