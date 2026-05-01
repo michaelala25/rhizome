@@ -83,27 +83,24 @@ def _empty_review_state(session_id: int) -> ReviewState:
     )
 
 
-async def _ensure_review_state(
-    runtime: ToolRuntime,
-    session_factory,
-) -> tuple[ReviewState, bool]:
-    """Return the current ReviewState, lazily initializing if needed.
+_NOT_INITIALIZED_MSG = (
+    "Error: no active review session. Call review_start_session first."
+)
 
-    Returns (state, was_created).
-    """
-    existing: ReviewState | None = runtime.state.get("review")
-    if existing is not None:
-        return existing, False
 
-    # Create a bare DB ReviewSession
-    async with session_factory() as session:
-        review_session = await create_review_session(
-            session, topic_ids=[], entry_ids=[],
-        )
-        await session.commit()
-        session_id = review_session.id
+def _require_review_state(runtime: ToolRuntime) -> ReviewState | None:
+    """Return the active ReviewState, or None if no session has been started."""
+    return runtime.state.get("review")
 
-    return _empty_review_state(session_id), True
+
+def _not_initialized_command(tool_call_id: str) -> Command:
+    """Build the error Command for tools called before review_start_session."""
+    return Command(update={
+        "messages": [ToolMessage(
+            content=_NOT_INITIALIZED_MSG,
+            tool_call_id=tool_call_id,
+        )],
+    })
 
 
 async def _update_scope_in_db(
@@ -219,12 +216,53 @@ def build_review_tools(session_factory) -> dict:
         return "\n".join(lines)
 
     # -------------------------------------------------------------------
+    # review_start_session
+    # -------------------------------------------------------------------
+
+    @tool_visibility(ToolVisibility.LOW)
+    @tool("review_start_session", description=(
+        "Start a new review session. Creates the underlying DB record and "
+        "initializes the in-memory review state. MUST be called before any "
+        "other review_* tool that mutates session state "
+        "(review_update_session_state, review_record_interaction, "
+        "review_present_flashcards, review_finish_session). "
+        "If a session is already active, this tool returns an error — call "
+        "review_finish_session or review_update_session_state(clear=True) first."
+    ))
+    async def review_start_session_tool(runtime: ToolRuntime) -> Command:
+        if runtime.state.get("review") is not None:
+            return Command(update={
+                "messages": [ToolMessage(
+                    content=(
+                        "Error: a review session is already active. "
+                        "Finish or clear it before starting a new one."
+                    ),
+                    tool_call_id=runtime.tool_call_id,
+                )],
+            })
+
+        async with session_factory() as session:
+            review_session = await create_review_session(
+                session, topic_ids=[], entry_ids=[],
+            )
+            await session.commit()
+            session_id = review_session.id
+
+        new_state = _empty_review_state(session_id)
+        msg = f"Review session started (DB session #{session_id})."
+        return Command(update={
+            "review": new_state,
+            "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
+        })
+
+    # -------------------------------------------------------------------
     # review_update_session_state
     # -------------------------------------------------------------------
 
     @tool_visibility(ToolVisibility.LOW)
     @tool("review_update_session_state", description=(
-        "Update the review session state. Lazily initializes the session on first call. "
+        "Update the active review session state. Requires that "
+        "review_start_session has been called first. "
         "All parameters are optional — only provided values are applied.\n\n"
         "- scope: list of entry_ids to set as the review scope (derives topic_ids automatically).\n"
         "- config: partial config update (style, critique_timing, question_source, ephemeral, user_instructions).\n"
@@ -248,19 +286,20 @@ def build_review_tools(session_factory) -> dict:
                 "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
             })
 
-        # -- Lazy init --
-        review_state, was_created = await _ensure_review_state(runtime, session_factory)
-        new_state = dict(review_state)
-        session_id = new_state["session_id"]
-        results: list[str] = []
+        review_state = _require_review_state(runtime)
+        if review_state is None:
+            return _not_initialized_command(runtime.tool_call_id)
 
-        if was_created:
-            results.append(f"Review session initialized (DB session #{session_id}).")
+        session_id = review_state["session_id"]
+        # Returned as the right-hand side of merge_review_state — must be a
+        # PARTIAL dict containing only keys this call modified, so concurrent
+        # updates touching other keys aren't clobbered.
+        partial: dict = {}
+        results: list[str] = []
 
         # -- Scope --
         if scope is not None:
             entry_ids = list(scope)
-            # Derive topic_ids from entries
             async with session_factory() as session:
                 result = await session.execute(
                     select(KnowledgeEntry.topic_id)
@@ -269,16 +308,16 @@ def build_review_tools(session_factory) -> dict:
                 )
                 topic_ids = list(result.scalars().all())
 
-            # Update DB junction rows
             await _update_scope_in_db(session_factory, session_id, topic_ids, entry_ids)
 
-            new_state["scope"] = ReviewScope(topic_ids=topic_ids, entry_ids=entry_ids)
-            new_state["entry_coverage"] = {eid: new_state["entry_coverage"].get(eid, 0) for eid in entry_ids}
+            existing_coverage = review_state["entry_coverage"]
+            partial["scope"] = ReviewScope(topic_ids=topic_ids, entry_ids=entry_ids)
+            partial["entry_coverage"] = {eid: existing_coverage.get(eid, 0) for eid in entry_ids}
             results.append(f"Scope set: {len(entry_ids)} entries across {len(topic_ids)} topics.")
 
         # -- Config --
         if config is not None:
-            existing_config = new_state.get("config") or {}
+            existing_config = review_state.get("config") or {}
             updated = dict(existing_config)
 
             if config.style is not None:
@@ -298,14 +337,14 @@ def build_review_tools(session_factory) -> dict:
                     await update_session_instructions(session, session_id, config.user_instructions)
                     await session.commit()
 
-            new_state["config"] = ReviewConfig(**updated) if updated else None
+            partial["config"] = ReviewConfig(**updated) if updated else None
 
             set_fields = [k for k, v in (config.model_dump()).items() if v is not None]
             results.append(f"Config updated: {', '.join(set_fields)}.")
 
         # -- Flashcards --
         if flashcards is not None:
-            queue = list(new_state["flashcard_queue"])
+            queue = list(review_state["flashcard_queue"])
             action = flashcards.action
             ids = flashcards.flashcard_ids
 
@@ -323,24 +362,26 @@ def build_review_tools(session_factory) -> dict:
                 queue = []
                 results.append("Flashcard queue cleared.")
 
-            new_state["flashcard_queue"] = queue
+            partial["flashcard_queue"] = queue
 
         # -- Plan --
         if plan is not None:
             async with session_factory() as session:
                 await update_session_plan(session, session_id, plan)
                 await session.commit()
-            new_state["discussion_plan"] = plan
+            partial["discussion_plan"] = plan
             results.append("Discussion plan set.")
 
         if not results:
             results.append("No updates applied.")
 
         msg = " ".join(results)
-        return Command(update={
-            "review": new_state,
+        update: dict = {
             "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
-        })
+        }
+        if partial:
+            update["review"] = partial
+        return Command(update=update)
 
     # -------------------------------------------------------------------
     # review_record_interaction
@@ -358,7 +399,9 @@ def build_review_tools(session_factory) -> dict:
         runtime: ToolRuntime,
         summary: str | None = None,
     ) -> Command:
-        review_state: ReviewState = runtime.state["review"]
+        review_state = _require_review_state(runtime)
+        if review_state is None:
+            return _not_initialized_command(runtime.tool_call_id)
 
         session_id = review_state["session_id"]
         interaction_count = review_state["interaction_count"]
@@ -376,13 +419,10 @@ def build_review_tools(session_factory) -> dict:
             )
             await session.commit()
 
-        # Update ReviewState
-        new_state = dict(review_state)
+        # Update ReviewState (partial — only the keys this call mutates).
         new_coverage = dict(review_state["entry_coverage"])
         for eid in entry_ids:
             new_coverage[eid] = new_coverage.get(eid, 0) + 1
-        new_state["entry_coverage"] = new_coverage
-        new_state["interaction_count"] = position
 
         # Build tool message
         total_entries = len(new_coverage)
@@ -399,7 +439,10 @@ def build_review_tools(session_factory) -> dict:
 
         msg = " ".join(parts)
         return Command(update={
-            "review": new_state,
+            "review": {
+                "entry_coverage": new_coverage,
+                "interaction_count": position,
+            },
             "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
         })
 
@@ -435,8 +478,10 @@ def build_review_tools(session_factory) -> dict:
         runtime: ToolRuntime,
         flashcard_ids: list[int] | None = None,
     ) -> Command:
-        
-        review_state: ReviewState = runtime.state["review"]
+        review_state = _require_review_state(runtime)
+        if review_state is None:
+            return _not_initialized_command(runtime.tool_call_id)
+
         queue = list(review_state["flashcard_queue"])
 
         # Determine which flashcards to present
@@ -489,7 +534,6 @@ def build_review_tools(session_factory) -> dict:
         })
 
         # Process results
-        new_state = dict(review_state)
         new_queue = list(review_state["flashcard_queue"])
         new_coverage = dict(review_state["entry_coverage"])
         interaction_count = review_state["interaction_count"]
@@ -577,9 +621,12 @@ def build_review_tools(session_factory) -> dict:
                 # (cancelled while still on FRONT or REVEALED_NOT_SCORED).
                 untouched_ids.append(fc_id)
 
-        new_state["flashcard_queue"] = new_queue
-        new_state["entry_coverage"] = new_coverage
-        new_state["interaction_count"] = interaction_count
+        # Partial review-state update — only the keys this call mutates.
+        review_partial: dict = {
+            "flashcard_queue": new_queue,
+            "entry_coverage": new_coverage,
+            "interaction_count": interaction_count,
+        }
 
         # Build summary message
         parts: list[str] = []
@@ -624,7 +671,7 @@ def build_review_tools(session_factory) -> dict:
 
         msg = " ".join(parts)
         return Command(update={
-            "review": new_state,
+            "review": review_partial,
             "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
         })
 
@@ -644,7 +691,10 @@ def build_review_tools(session_factory) -> dict:
         runtime: ToolRuntime,
         agent_summary: str | None = None,
     ) -> Command:
-        review_state: ReviewState = runtime.state["review"]
+        review_state = _require_review_state(runtime)
+        if review_state is None:
+            return _not_initialized_command(runtime.tool_call_id)
+
         session_id = review_state["session_id"]
 
         # Compute stats and mark complete
@@ -707,6 +757,7 @@ def build_review_tools(session_factory) -> dict:
     return {
         "review_get_past_sessions": review_get_past_sessions_tool,
         "review_show_session_state": review_show_session_state_tool,
+        "review_start_session": review_start_session_tool,
         "review_update_session_state": review_update_session_state_tool,
         "review_record_interaction": review_record_interaction_tool,
         "review_present_flashcards": review_present_flashcards_tool,

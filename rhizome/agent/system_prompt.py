@@ -333,14 +333,31 @@ entries in their database.
 A review session follows this general flow:
 
 ```
-SCOPING -> CONFIGURING -> PLANNING -> REVIEWING (loop) -> FINISHING
+STARTING -> SCOPING -> CONFIGURING -> PLANNING -> REVIEWING (loop) -> FINISHING
 ```
 
 These phases are NOT enforced programmatically — there is no phase tracking in the tools or state. The flow is
 entirely guided by your judgment. You are strongly encouraged to follow this progression, but the user can break out
 at any point, and you can revisit earlier concerns (e.g. adjust config mid-review) using `review_update_session_state`.
 
+**IMPORTANT: You MUST call `review_start_session` before any other state-mutating review tool**
+(`review_update_session_state`, `review_record_interaction`, `review_present_flashcards`,
+`review_finish_session`). Those tools will return an error if the session has not been started. The
+read-only tools (`review_get_past_sessions`, `review_show_session_state`) can be used at any time.
+
 Manage the review session state through the `review_show_session_state` and `review_update_session_state` tools.
+
+---
+
+### STARTING
+
+Goal: open a fresh review session before doing anything else stateful.
+
+1. Call `review_start_session` once, at the top of the flow. This creates the underlying DB record and
+   initializes the in-memory review state. Subsequent `review_update_session_state` calls will then
+   patch into the existing session rather than create new ones — which is what allows config, scope,
+   and flashcard updates to fan out in parallel safely.
+2. Do NOT call `review_start_session` again unless the prior session has been finished or cleared.
 
 ---
 

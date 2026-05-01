@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from langchain.agents.middleware.types import AgentState
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +67,30 @@ class ReviewState(TypedDict):
 
     discussion_plan: str | None
     """Agent-generated plan for conversational review flow."""
+
+
+def merge_review_state(
+    left: ReviewState | None,
+    right: ReviewState | dict | None,
+) -> ReviewState | None:
+    """Merge a partial ``ReviewState`` update into the current state so that
+    parallel tool calls touching disjoint top-level keys compose cleanly.
+
+    - ``right is None`` → clear the session (LWW).
+    - ``left is None`` → adopt ``right`` wholesale (initialization path used
+      by ``review_start_session``, which returns a full ``ReviewState``).
+    - Both dicts → shallow merge: each key in ``right`` overwrites that key
+      in ``left``; keys absent from ``right`` are preserved.
+
+    Conflicts on the same top-level key fall back to LWW. Callers that mutate
+    state should return only the keys they changed; returning a full snapshot
+    would clobber concurrent updates.
+    """
+    if right is None:
+        return None
+    if left is None:
+        return right  # type: ignore[return-value]
+    return {**left, **right}  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +170,12 @@ class RhizomeAgentState(AgentState):
     ``AgentModeMiddleware.awrap_model_call``.
     """
 
-    review: ReviewState | None
-    """Review session state machine; ``None`` when no review is active."""
+    review: Annotated[ReviewState | None, merge_review_state]
+    """Review session state machine; ``None`` when no review is active.
+
+    Reduced via :func:`merge_review_state` so parallel tool calls that
+    touch disjoint top-level keys (e.g. one sets ``scope``, another sets
+    ``config``) compose cleanly. Same-key conflicts fall back to LWW."""
 
     flashcard_proposal_state: FlashcardProposalState | None
     """Consolidated flashcard proposal state: staged items.
