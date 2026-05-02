@@ -199,9 +199,17 @@ def build_review_tools(session_factory) -> dict:
 
         config = review_state.get("config")
         if config:
+            # Config is built up incrementally via review_update_session_state,
+            # so any subset of keys may be present. Render only what's set.
+            shown = {
+                "style": config.get("style"),
+                "timing": config.get("critique_timing"),
+                "source": config.get("question_source"),
+                "ephemeral": config.get("ephemeral"),
+            }
+            parts = [f"{k}={v}" for k, v in shown.items() if v is not None]
             lines.append(
-                f"Config: style={config['style']}, timing={config['critique_timing']}, "
-                f"source={config['question_source']}, ephemeral={config['ephemeral']}"
+                f"Config: {', '.join(parts)}" if parts else "Config: (set, no fields)"
             )
         else:
             lines.append("Config: (not set)")
