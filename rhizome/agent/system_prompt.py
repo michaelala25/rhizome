@@ -407,7 +407,6 @@ Configuration dimensions:
   Only meaningful for conversational/mixed reviews. Pure flashcard reviews ignore this setting: all 
   queued cards are presented in a single batch via `review_present_flashcards`.
   batch via `review_present_flashcards`.
-- **Question source** — reuse existing flashcards, generate new ones, or both.
 - **Tracked or one-off** — tracked sessions persist to the DB; one-off (ephemeral) sessions don't.
 - **Difficulty/Complexity** — how hard should the questions be? See below for further instruction on how to craft
   more complex questions.

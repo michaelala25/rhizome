@@ -52,7 +52,6 @@ class ReviewConfigUpdate(BaseModel):
     """Partial update to review configuration.  Only provided fields are applied."""
     style: str | None = Field(default=None, description="Review style: 'flashcard', 'conversation', or 'mixed'")
     critique_timing: str | None = Field(default=None, description="When to deliver critique: 'during' or 'after'")
-    question_source: str | None = Field(default=None, description="Question source: 'existing', 'generated', or 'both'")
     ephemeral: bool | None = Field(default=None, description="If true, session is not persisted for long-term tracking")
     user_instructions: str | None = Field(default=None, description="Free-form instructions from the user")
 
@@ -204,7 +203,6 @@ def build_review_tools(session_factory) -> dict:
             shown = {
                 "style": config.get("style"),
                 "timing": config.get("critique_timing"),
-                "source": config.get("question_source"),
                 "ephemeral": config.get("ephemeral"),
             }
             parts = [f"{k}={v}" for k, v in shown.items() if v is not None]
@@ -273,7 +271,7 @@ def build_review_tools(session_factory) -> dict:
         "review_start_session has been called first. "
         "All parameters are optional — only provided values are applied.\n\n"
         "- scope: list of entry_ids to set as the review scope (derives topic_ids automatically).\n"
-        "- config_update: partial config update (style, critique_timing, question_source, ephemeral, user_instructions).\n"
+        "- config_update: partial config update (style, critique_timing, ephemeral, user_instructions).\n"
         "- flashcards: update the flashcard queue (append/set/remove/clear).\n"
         "- plan: set the discussion plan for conversational review.\n"
         "- clear: abandon the session and clear all state (DB records remain)."
@@ -335,8 +333,6 @@ def build_review_tools(session_factory) -> dict:
                 updated["style"] = config_update.style
             if config_update.critique_timing is not None:
                 updated["critique_timing"] = config_update.critique_timing
-            if config_update.question_source is not None:
-                updated["question_source"] = config_update.question_source
             if config_update.ephemeral is not None:
                 updated["ephemeral"] = config_update.ephemeral
                 async with session_factory() as session:

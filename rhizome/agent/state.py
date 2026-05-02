@@ -29,9 +29,6 @@ class ReviewConfig(TypedDict):
     critique_timing: str
     """When to deliver critique: ``"during"`` or ``"after"``."""
 
-    question_source: str
-    """Where questions come from: ``"existing"``, ``"generated"``, or ``"both"``."""
-
     ephemeral: bool
     """If ``True``, the session is not persisted for long-term tracking."""
 
