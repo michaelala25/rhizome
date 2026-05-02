@@ -265,7 +265,7 @@ def build_review_tools(session_factory) -> dict:
         "review_start_session has been called first. "
         "All parameters are optional — only provided values are applied.\n\n"
         "- scope: list of entry_ids to set as the review scope (derives topic_ids automatically).\n"
-        "- config: partial config update (style, critique_timing, question_source, ephemeral, user_instructions).\n"
+        "- config_update: partial config update (style, critique_timing, question_source, ephemeral, user_instructions).\n"
         "- flashcards: update the flashcard queue (append/set/remove/clear).\n"
         "- plan: set the discussion plan for conversational review.\n"
         "- clear: abandon the session and clear all state (DB records remain)."
@@ -273,7 +273,10 @@ def build_review_tools(session_factory) -> dict:
     async def review_update_session_state_tool(
         runtime: ToolRuntime,
         scope: list[int] | None = None,
-        config: ReviewConfigUpdate | None = None,
+        # NB: parameter must NOT be named ``config`` — ``StructuredTool._arun``
+        # has a keyword-only ``config: RunnableConfig`` slot that silently
+        # absorbs any kwarg of that name, so the tool body would receive None.
+        config_update: ReviewConfigUpdate | None = None,
         flashcards: ReviewFlashcardUpdate | None = None,
         plan: str | None = None,
         clear: bool = False,
@@ -316,30 +319,30 @@ def build_review_tools(session_factory) -> dict:
             results.append(f"Scope set: {len(entry_ids)} entries across {len(topic_ids)} topics.")
 
         # -- Config --
-        if config is not None:
+        if config_update is not None:
             existing_config = review_state.get("config") or {}
             updated = dict(existing_config)
 
-            if config.style is not None:
-                updated["style"] = config.style
-            if config.critique_timing is not None:
-                updated["critique_timing"] = config.critique_timing
-            if config.question_source is not None:
-                updated["question_source"] = config.question_source
-            if config.ephemeral is not None:
-                updated["ephemeral"] = config.ephemeral
+            if config_update.style is not None:
+                updated["style"] = config_update.style
+            if config_update.critique_timing is not None:
+                updated["critique_timing"] = config_update.critique_timing
+            if config_update.question_source is not None:
+                updated["question_source"] = config_update.question_source
+            if config_update.ephemeral is not None:
+                updated["ephemeral"] = config_update.ephemeral
                 async with session_factory() as session:
-                    await update_session_ephemeral(session, session_id, config.ephemeral)
+                    await update_session_ephemeral(session, session_id, config_update.ephemeral)
                     await session.commit()
-            if config.user_instructions is not None:
-                updated["user_instructions"] = config.user_instructions
+            if config_update.user_instructions is not None:
+                updated["user_instructions"] = config_update.user_instructions
                 async with session_factory() as session:
-                    await update_session_instructions(session, session_id, config.user_instructions)
+                    await update_session_instructions(session, session_id, config_update.user_instructions)
                     await session.commit()
 
             partial["config"] = ReviewConfig(**updated) if updated else None
 
-            set_fields = [k for k, v in (config.model_dump()).items() if v is not None]
+            set_fields = [k for k, v in (config_update.model_dump()).items() if v is not None]
             results.append(f"Config updated: {', '.join(set_fields)}.")
 
         # -- Flashcards --

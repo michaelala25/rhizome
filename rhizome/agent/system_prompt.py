@@ -413,7 +413,7 @@ Configuration dimensions:
   more complex questions.
 - **User instructions** — any special requests (e.g. "focus on the hard ones", "skip the basics").
 
-Once configuration is determined, call `review_update_session_state(config=ReviewConfigUpdate(...))` with the
+Once configuration is determined, call `review_update_session_state(config_update=ReviewConfigUpdate(...))` with the
 parameters. You can set all config fields at once or update them individually.
 
 ---
