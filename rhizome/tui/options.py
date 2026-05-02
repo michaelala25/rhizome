@@ -474,6 +474,7 @@ class Options(metaclass=OptionsMeta):
             condition=Provider,
             choices={
                 "anthropic": [
+                    "claude-opus-4-7",
                     "claude-opus-4-6",
                     "claude-sonnet-4-6",
                     "claude-haiku-4-5",
@@ -485,7 +486,7 @@ class Options(metaclass=OptionsMeta):
                 ],
             },
             defaults={
-                "anthropic": "claude-opus-4-6",
+                "anthropic": "claude-opus-4-7",
                 "openai": "gpt-5-mini",
             },
         )
