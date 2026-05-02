@@ -27,13 +27,12 @@ The agent helps the user decide what to review:
 
 ### Configuring
 
-The agent sets session parameters via `review_update_session_state(config=ReviewConfigUpdate(...))`:
+The agent sets session parameters via `review_update_session_state(config_update=ReviewConfigUpdate(...))`:
 
 | Parameter | Options | Default behavior |
 |-----------|---------|-----------------|
 | **Review style** | `flashcard`, `conversation`, `mixed` | Flashcard: structured Q&A. Conversation: open-ended discussion. Mixed: flashcards then conversation. |
 | **Critique timing** | `during`, `after` | During: immediate feedback. After: batched at end. |
-| **Question source** | `existing`, `generated`, `both` | Existing: reuse saved flashcards. Generated: create new ones. Both: mix. |
 | **Ephemeral** | bool | If true, session won't appear in future `review_get_past_sessions` calls |
 | **User instructions** | text | Stored on the session for agent reference |
 

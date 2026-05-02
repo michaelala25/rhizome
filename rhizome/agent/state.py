@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from langchain.agents.middleware.types import AgentState
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 
 # ---------------------------------------------------------------------------
@@ -28,9 +28,6 @@ class ReviewConfig(TypedDict):
 
     critique_timing: str
     """When to deliver critique: ``"during"`` or ``"after"``."""
-
-    question_source: str
-    """Where questions come from: ``"existing"``, ``"generated"``, or ``"both"``."""
 
     ephemeral: bool
     """If ``True``, the session is not persisted for long-term tracking."""
@@ -67,6 +64,29 @@ class ReviewState(TypedDict):
 
     discussion_plan: str | None
     """Agent-generated plan for conversational review flow."""
+
+
+def merge_typeddict_field(left: dict | None, right: dict | None) -> dict | None:
+    """Generic shallow-merge reducer for nullable ``TypedDict`` agent-state
+    fields, so parallel tool calls that touch disjoint top-level keys compose
+    cleanly.
+
+    - ``right is None`` → clear the field (LWW).
+    - ``left is None`` → adopt ``right`` wholesale (initialization path —
+      tools that open a workflow return a full TypedDict here).
+    - Both dicts → shallow merge: each key in ``right`` overwrites that key
+      in ``left``; keys absent from ``right`` are preserved.
+
+    Conflicts on the same top-level key fall back to LWW. Callers that mutate
+    state should return only the keys they changed; returning a full snapshot
+    would clobber concurrent updates touching other keys. To clear the field
+    use ``None`` — an empty dict ``{}`` is a no-op merge, not a clear.
+    """
+    if right is None:
+        return None
+    if left is None:
+        return right
+    return {**left, **right}
 
 
 # ---------------------------------------------------------------------------
@@ -146,13 +166,21 @@ class RhizomeAgentState(AgentState):
     ``AgentModeMiddleware.awrap_model_call``.
     """
 
-    review: ReviewState | None
-    """Review session state machine; ``None`` when no review is active."""
+    review: Annotated[ReviewState | None, merge_typeddict_field]
+    """Review session state machine; ``None`` when no review is active.
 
-    flashcard_proposal_state: FlashcardProposalState | None
+    Reduced via :func:`merge_typeddict_field` so parallel tool calls that
+    touch disjoint top-level keys (e.g. one sets ``scope``, another sets
+    ``config``) compose cleanly. Same-key conflicts fall back to LWW."""
+
+    flashcard_proposal_state: Annotated[FlashcardProposalState | None, merge_typeddict_field]
     """Consolidated flashcard proposal state: staged items.
-    ``None`` when no proposal is active."""
+    ``None`` when no proposal is active.
 
-    commit_proposal_state: CommitProposalState | None
+    Reduced via :func:`merge_typeddict_field` — see ``review`` for details."""
+
+    commit_proposal_state: Annotated[CommitProposalState | None, merge_typeddict_field]
     """Consolidated commit proposal state: payload, proposal entries, and
-    diff summary.  ``None`` when no commit workflow is active."""
+    diff summary.  ``None`` when no commit workflow is active.
+
+    Reduced via :func:`merge_typeddict_field` — see ``review`` for details."""
