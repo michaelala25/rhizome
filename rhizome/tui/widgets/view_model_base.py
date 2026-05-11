@@ -129,19 +129,25 @@ class ViewModelBase:
     class Callbacks(Enum):
         DIRTY = "dirty"
         FOCUS = "focus"
+        BLURRED = "blurred"
 
 
     def __init__(self):
         self._dirty = CallbackGroup(ViewModelBase.Callbacks.DIRTY, [])
         self._focus = CallbackGroup(ViewModelBase.Callbacks.FOCUS, [])
-    
+        self._blurred = CallbackGroup(ViewModelBase.Callbacks.BLURRED, [])
+
     @property
     def dirty(self):
         return self._dirty
-    
+
     @property
     def focus(self):
         return self._focus
+
+    @property
+    def blurred(self):
+        return self._blurred
 
 
     def emit(
@@ -212,20 +218,24 @@ class ViewModelBase:
         emitter.emit(self.focus)
 
 
-    def notify_focused(self):
+    def notify_focused(self, emitter: Emitter | None = None):
         """View-side notification that focus has been acquired - View's "on_focus()" handler is
         required to call VM.notify_focused(), so this method is available to handle the case
         where the view receives focus _first_, rather than through a VM.
 
-        For this reason, you CANNOT call "request_focus()" from within "notify_focused()", as
-        this may create an infinite loop:
+        You MUST NOT call ``self.request_focus()`` from within ``self.notify_focused()`` — that
+        would create an infinite loop:
 
-            VM.request_focus() -> View.focus() -> View.on_focus() -> View.notify_focused()
-        
-        This method is instead typically used to reconcile view-side focus with VM-side
-        orchestration of sub-widgets and focus. For instance if a ParentVM is responsible for
-        deciding which ChildVM needs to be focused, and the ParentVM regains focus through
-        its View, then "notify_focused()" can be used to delegate focus to the correct child:
+            VM.request_focus() -> View.focus() -> View.on_focus() -> VM.notify_focused()
+                              -> VM.request_focus() -> ...
+
+        Calling a *child* VM's ``request_focus()`` is fine and is the whole point of the
+        delegation pattern below.
+
+        This method is typically used to reconcile view-side focus with VM-side orchestration of
+        sub-widgets. For instance if a ParentVM is responsible for deciding which ChildVM needs
+        to be focused, and the ParentVM regains focus through its View, then ``notify_focused()``
+        can be used to delegate focus to the correct child:
 
         ParentView.on_focus()       <-- happens at the View layer
             -> ParentVM.notify_focused()
@@ -236,5 +246,26 @@ class ViewModelBase:
             (-> ChildView.on_focus())
             (-> ChildVM.notify_focused())
             (-> ... continues if ChildVM has its own children)
+
+        ``emitter`` participates in a caller's ``emit_once`` batch; ``None`` means fire directly
+        via ``self``. Default impl is a no-op — most leaf VMs have nothing to reconcile.
         """
         pass
+
+
+    def notify_blurred(self, emitter: Emitter | None = None):
+        """View-side notification that focus has been lost - View's ``on_blur()`` handler is
+        expected to call ``VM.notify_blurred()`` (mirror of ``notify_focused``).
+
+        Same restriction as ``notify_focused``: do not call ``self.request_focus()`` here.
+        Subscribers can be wired up via the ``blurred`` CallbackGroup if they need to react
+        independently of an override.
+
+        ``emitter`` participates in a caller's ``emit_once`` batch; ``None`` means fire directly
+        via ``self``. Default impl emits the ``blurred`` group so subscribers fire; subclasses
+        that override should call ``super().notify_blurred(emitter)`` if they want subscribers
+        to still run.
+        """
+        if emitter is None:
+            emitter = self
+        emitter.emit(self.blurred)
