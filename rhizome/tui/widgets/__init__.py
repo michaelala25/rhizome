@@ -1,3 +1,8 @@
+# Core
+from .view_base import ViewBase
+from .view_model_base import CallbackGroup, Emitter, ViewModelBase
+
+# Specific Widgets
 from .agent_message_harness import AgentMessageHarness
 from .chat_input import ChatInput
 from .chat_pane import ChatPane, HintHigherVerbosity
@@ -28,6 +33,11 @@ from .topic_tree import TopicTree
 from .welcome import WelcomeHeader
 
 __all__ = [
+    "CallbackGroup",
+    "Emitter",
+    "ViewBase",
+    "ViewModelBase",
+
     "AgentMessageHarness",
     "ChatInput",
     "ChatMessage",
