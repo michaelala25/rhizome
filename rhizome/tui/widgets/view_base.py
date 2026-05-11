@@ -12,31 +12,24 @@ class ViewBase[T: ViewModelBase](Widget):
     widget whose VM orchestrates sub-VMs) can subscribe additional handlers in their own ``__init__``
     to those sub-VMs' dirty groups — typically a per-region ``_refresh_<region>`` method, for granular
     repaints.
+
+    Subscriptions are wired at construction and torn down on unmount. This is safe for the common case
+    where the VM and the view share a lifetime, and also handles the long-lived-VM case (a VM that
+    outlives several view instances across destroy/recreate cycles) — without ``on_unmount``, every
+    destroyed view's callback would stay subscribed to the VM forever.
     """
 
-    def __init__(
-        self,
-        vm: T,
-        *children: Widget,
-        name: str | None = None,
-        id: str | None = None,
-        classes: str | None = None,
-        disabled: bool = False,
-        markup: bool = True
-    ) -> None:
-        super().__init__(
-            *children,
-            name=name,
-            id=id,
-            classes=classes,
-            disabled=disabled,
-            markup=markup,
-        )
+    def __init__(self, vm: T, *children: Widget, **kwargs) -> None:
+        super().__init__(*children, **kwargs)
 
         self._vm = vm
 
         self._vm.subscribe(self._vm.dirty, self._refresh)
         self._vm.subscribe(self._vm.focus, self.focus)
+
+    def on_unmount(self) -> None:
+        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.focus, self.focus)
 
     def on_focus(self, event: Focus) -> None:
         self._vm.notify_focused()
