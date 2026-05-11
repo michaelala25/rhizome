@@ -21,6 +21,7 @@ from .view_model import (
     KEYBINDINGS,
 )
 from ..interrupt import InterruptWidgetBase
+from ..view_base import ViewBase
 
 
 # Throbber frames — pulsing dot used in both the counter (think-time) and
@@ -108,7 +109,7 @@ class _AnswerInput(TextArea):
             event.prevent_default()
 
 
-class FlashcardReview(InterruptWidgetBase):
+class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, can_focus=True):
 
     DEFAULT_CSS = """
     FlashcardReview {
@@ -271,13 +272,20 @@ class FlashcardReview(InterruptWidgetBase):
         auto_scorer: Any = None,
         **kwargs,
     ) -> None:
-        super().__init__(**kwargs)
-        self._vm = FlashcardReviewViewModel(
+        vm = FlashcardReviewViewModel(
             cards=cards,
             session_factory=session_factory,
             auto_score_enabled=auto_score_enabled,
             auto_scorer=auto_scorer,
         )
+        # ViewBase wires dirty→_refresh and focus→self.focus, and stores ``vm`` as ``self._vm``;
+        # InterruptWidgetBase (further up the MRO) sets up the asyncio.Future via **kwargs.
+        super().__init__(vm, **kwargs)
+
+        # Additional subscription specific to FlashcardReview: resolve the future when the VM reaches
+        # DONE. Doesn't query child widgets, so safe to subscribe pre-mount.
+        self._vm.subscribe(self._vm.dirty, self._maybe_resolve)
+
         # Set while ``_refresh`` programmatically rewrites the TextArea's
         # contents; the Changed handler checks this to avoid echoing the
         # value right back into the card as a user edit.
@@ -336,15 +344,18 @@ class FlashcardReview(InterruptWidgetBase):
     def on_mount(self) -> None:
         super().on_mount()  # InterruptWidgetBase → setup_navigation
 
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._vm.subscribe(self._vm.dirty, self._maybe_resolve)
-
-        # Border-title nav hint on the card container.
+        # Border-title nav hint on the card container — has to live in on_mount because it queries a
+        # child widget.
         card_container = self.query_one("#fr-card", Vertical)
         card_container.border_title = "alt+←/→ to navigate"
         card_container.styles.border_title_align = "right"
 
+        # Initial paint — also mount-deferred because _refresh queries children.
         self._refresh()
+
+    def on_unmount(self) -> None:
+        super().on_unmount()  # ViewBase tears down the dirty→_refresh / focus→self.focus subs
+        self._vm.unsubscribe(self._vm.dirty, self._maybe_resolve)
 
     def action_cancel_interrupt(self) -> None:
         """No-op. Ctrl+c is owned by the VM's ``on_key`` handler, which
@@ -437,6 +448,8 @@ class FlashcardReview(InterruptWidgetBase):
         card is in FRONT. Without this, the focus-shift logic inside
         ``_refresh_current_card`` never runs for externally-triggered
         focus changes (no VM dirty emit is fired)."""
+        super().on_focus(event)  # ViewBase → vm.notify_focused() → dirty → _refresh
+
         card = self._vm.current_card
         if card is None:
             return
