@@ -336,8 +336,8 @@ class FlashcardReview(InterruptWidgetBase):
     def on_mount(self) -> None:
         super().on_mount()  # InterruptWidgetBase → setup_navigation
 
-        self._vm.dirty.append(self._refresh)
-        self._vm.dirty.append(self._maybe_resolve)
+        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.dirty, self._maybe_resolve)
 
         # Border-title nav hint on the card container.
         card_container = self.query_one("#fr-card", Vertical)
