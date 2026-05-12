@@ -16,7 +16,8 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Input, Static, TextArea
+from textual.message import Message
+from textual.widgets import Button, Input, Static, TextArea
 
 from ..entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
 from ..interrupt import InterruptWidgetBase
@@ -36,6 +37,11 @@ _DIM = ENTRY_DIM
 _HINT = ENTRY_HINT
 _EXCLUDED = "rgb(60,60,60)"
 _FOCUS_GREEN = "rgb(100,200,100)"
+
+# Resolution-line colors — match FlashcardReview's ``Session complete`` / ``Session cancelled`` palette
+# so the two widgets read as a family when they appear in the same chat transcript.
+_DONE_GREEN = "rgb(120,210,110)"
+_CANCEL_RED = "rgb(235,100,100)"
 
 _HINTS_TEXT = (
     "  d: exclude/include  "
@@ -87,9 +93,18 @@ _DOUBLE_ESC_WINDOW = 0.5
 #
 # All three need ctrl+*/alt+* keys to escape their default handling so the outer widget's bindings can
 # fire. ``_EditInstructions`` additionally bubbles ``up`` at row 0 and ``escape`` so the parent can
-# route those (jump to choices, double-tap discard).
+# route those (jump to choices, double-tap discard), and posts ``EditInstructionsSubmit`` on enter so
+# the parent can route to ``vm.accept`` — same enter/ctrl+enter convention as ``chat_input``.
 #
 # ------------------------------------------------------------------------------------------------------------------------
+
+
+class EditInstructionsSubmit(Message):
+    """Posted by ``_EditInstructions`` when the user presses Enter to submit (matching chat_input's
+    enter-submits / ctrl+enter-newline convention). The owning ``CommitProposal`` translates this
+    into ``vm.accept()``, equivalent to picking "Approve" from the choices list. Lives at module
+    scope (rather than nested on ``_EditInstructions``) so the handler name on the owner reads as
+    a plain ``on_edit_instructions_submit`` without a leading double underscore."""
 
 
 def _bubble_app_keys(event: events.Key) -> bool:
@@ -141,6 +156,22 @@ class _EditInstructions(TextArea):
         super().__init__(show_line_numbers=False, **kwargs)
 
     def _on_key(self, event: events.Key) -> None:
+        # Submit / newline overrides — mirror ``chat_input``. Order matters: ``ctrl+j`` is what the
+        # terminal delivers for Ctrl+Enter in most setups, so we have to intercept it before the
+        # generic ``_bubble_app_keys`` swallows everything starting with ``ctrl+``.
+        if event.key == "enter":
+            # Default TextArea behavior inserts a newline; we want enter to submit instead. Hand off
+            # to the parent via a typed message rather than walking the DOM here.
+            self.post_message(EditInstructionsSubmit())
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "ctrl+j":
+            self.insert("\n")
+            event.stop()
+            event.prevent_default()
+            return
+
         if _bubble_app_keys(event):
             return
         if event.key == "escape":
@@ -191,6 +222,11 @@ class CommitProposal(
         Binding("ctrl+a", "accept", show=False),
         Binding("ctrl+r", "reset", show=False),
         Binding("enter", "select_choice", show=False),
+        # Same key, different state: in DONE, ``enter`` toggles the collapse fold. Both bindings are
+        # registered together — ``check_action`` is what picks which one fires based on ``vm.state``.
+        # If the first ``select_choice`` binding's check_action returns False (DONE), Textual falls
+        # through and tries the next, which is this one.
+        Binding("enter", "toggle_collapsed", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -199,6 +235,22 @@ class CommitProposal(
         layout: vertical;
         padding: 1 2;
         margin: 1 0;
+    }
+    CommitProposal #cp-collapse {
+        dock: right;
+        width: auto;
+        min-width: 3;
+        height: 1;
+        background: transparent;
+        border: none;
+        color: rgb(100,100,100);
+        display: none;
+    }
+    CommitProposal #cp-collapse:hover {
+        color: rgb(200,200,200);
+    }
+    CommitProposal #cp-collapse.-visible {
+        display: block;
     }
     CommitProposal #cp-hints {
         color: rgb(80,80,80);
@@ -250,6 +302,9 @@ class CommitProposal(
         color: rgb(150,150,150);
         margin-top: 1;
     }
+    CommitProposal #cp-choices.-hidden {
+        display: none;
+    }
     CommitProposal #cp-edit-instructions {
         background: transparent;
         border: solid $surface-lighten-2;
@@ -267,6 +322,28 @@ class CommitProposal(
     }
     CommitProposal #cp-edit-instructions:focus {
         border: solid rgb(120,120,140);
+    }
+    CommitProposal #cp-resolution {
+        height: 1;
+        margin: 1 0 0 0;
+        display: none;
+    }
+    CommitProposal #cp-resolution.-visible {
+        display: block;
+    }
+    CommitProposal #cp-resolution.-centered {
+        text-align: center;
+    }
+    CommitProposal #cp-resolution-edits {
+        background: rgb(32,32,32);
+        color: rgb(180,180,180);
+        height: auto;
+        padding: 1 2;
+        margin: 1 0 0 0;
+        display: none;
+    }
+    CommitProposal #cp-resolution-edits.-visible {
+        display: block;
     }
     """
 
@@ -308,6 +385,9 @@ class CommitProposal(
 
 
     def compose(self) -> ComposeResult:
+        # ``cp-collapse`` is docked top-right by CSS, not laid out inline; the rest of the children
+        # compose vertically below it. Only shown in DONE (see ``_refresh_collapse_button``).
+        yield Button("▼", id="cp-collapse")
         yield Static("", id="cp-header")
         yield Static(Text(_HINTS_TEXT, style=_HINT), id="cp-hints")
 
@@ -321,6 +401,13 @@ class CommitProposal(
 
         yield _ChoicesList(id="cp-choices")
         yield _EditInstructions(id="cp-edit-instructions")
+
+        # DONE-only siblings. ``cp-resolution`` shows a single-line status ("Accepted" / "Cancelled" /
+        # "Accepted with edits:") and ``cp-resolution-edits`` is the read-only panel that displays the
+        # user's submitted edit-instructions text — only visible when accepted with non-empty edits.
+        # Both default to ``display: none`` in CSS; ``_refresh_resolution`` toggles ``.-visible``.
+        yield Static("", id="cp-resolution")
+        yield Static("", id="cp-resolution-edits")
 
 
     def on_mount(self) -> None:
@@ -353,9 +440,17 @@ class CommitProposal(
         "cancel_interrupt",
     })
 
+    # Inverse — only valid once the widget is resolved. Currently just the collapse-fold toggle, which
+    # is bound on ``enter`` alongside ``select_choice``; ``check_action`` picks the right one by state.
+    _DONE_ONLY_ACTIONS = frozenset({
+        "toggle_collapsed",
+    })
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in self._EDITING_ONLY_ACTIONS:
             return self._vm.state == CommitProposalViewModel.State.EDITING
+        if action in self._DONE_ONLY_ACTIONS:
+            return self._vm.state == CommitProposalViewModel.State.DONE
         return super().check_action(action, parameters)
 
 
@@ -382,6 +477,27 @@ class CommitProposal(
             self._vm.set_entry_content(self._vm.cursor, event.text_area.text)
         elif wid == "cp-edit-instructions":
             self._vm.set_edit_instructions(event.text_area.text)
+
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        # Mouse path for the collapse-fold toggle. The keyboard equivalent is the ``enter`` binding,
+        # which dispatches to ``action_toggle_collapsed`` when ``check_action`` says we're in DONE.
+        # We don't gate by state here because the button itself is hidden outside DONE — clicking it
+        # is only physically possible when the binding would also be active.
+        if event.button.id == "cp-collapse":
+            event.stop()
+            self._vm.toggle_collapsed()
+            self.focus()
+
+
+    def on_edit_instructions_submit(self, event: EditInstructionsSubmit) -> None:
+        # Pressing ``enter`` inside the edit-instructions area submits the proposal — same effect as
+        # picking "Approve" from the choices list. ``_EditInstructions._on_key`` intercepts enter
+        # and posts ``EditInstructionsSubmit`` to get us here; ctrl+enter (sent as ``ctrl+j``) still
+        # inserts a literal newline so multi-line instructions are possible. No state guard needed
+        # here — the edit-instructions area is hidden outside EDITING, so this handler is unreachable
+        # in DONE; the VM's own ``accept`` assert would catch a hypothetical violation.
+        self._vm.accept()
 
 
     def _maybe_resolve(self) -> None:
@@ -421,15 +537,53 @@ class CommitProposal(
     # ========================================================================================================================
 
     def _refresh(self) -> None:
+        self._refresh_collapse_button()
         self._refresh_header()
+        self._refresh_hints()
         self._refresh_entry_list()
         self._refresh_detail()
         self._refresh_choices()
         self._refresh_edit_instructions()
+        self._refresh_resolution()
+
+
+    def _body_hidden(self) -> bool:
+        """Convenience predicate: the "body" elements (header, entry list, detail) collapse together
+        in DONE when ``vm.collapsed`` is True. In EDITING and in DONE-expanded, all three are shown.
+        """
+        return (
+            self._vm.state == CommitProposalViewModel.State.DONE
+            and self._vm.collapsed
+        )
+
+
+    def _refresh_collapse_button(self) -> None:
+        # The button is only meaningful in DONE; the binding is gated by ``check_action`` and the
+        # button widget itself is hidden via CSS class outside DONE. Label flips between ▶ (collapsed)
+        # and ▼ (expanded) so the affordance reads as "click here to flip whichever way".
+        btn = self.query_one("#cp-collapse", Button)
+        in_done = self._vm.state == CommitProposalViewModel.State.DONE
+        btn.set_class(in_done, "-visible")
+        if in_done:
+            btn.label = "▶" if self._vm.collapsed else "▼"
+
+
+    def _refresh_hints(self) -> None:
+        # Hints describe editing-only key bindings ("d: exclude/include", etc.); none apply outside
+        # EDITING, so hide the entire line in DONE.
+        hints = self.query_one("#cp-hints", Static)
+        hints.display = self._vm.state == CommitProposalViewModel.State.EDITING
 
 
     def _refresh_header(self) -> None:
-        # Header text reads as either "Commit Proposal (1 entry)" or "Commit Proposals ({n} entries)"
+        # Header text reads as either "Commit Proposal (1 entry)" or "Commit Proposals ({n} entries)".
+        # In DONE-collapsed the entry count is subsumed by the resolution summary below, so we hide
+        # the header entirely and let the summary stand on its own.
+        target = self.query_one("#cp-header", Static)
+        if self._body_hidden():
+            target.display = False
+            return
+        target.display = True
 
         text = Text()
         text.append("  Commit Proposal", style=f"bold {_RED}")
@@ -438,10 +592,18 @@ class CommitProposal(
         suffix = "y" if n == 1 else "ies"
         text.append(f"  ({n} entr{suffix})", style=_DIM)
 
-        self.query_one("#cp-header", Static).update(text)
+        target.update(text)
 
 
     def _refresh_entry_list(self) -> None:
+        # Hidden in DONE-collapsed (paired with the detail panel via ``_body_hidden``); always visible
+        # in EDITING and DONE-expanded.
+        scroll = self.query_one("#cp-entry-list-scroll", VerticalScroll)
+        if self._body_hidden():
+            scroll.display = False
+            return
+        scroll.display = True
+
         entries = self._vm.entries
         target = self.query_one("#cp-entry-list", Static)
 
@@ -526,6 +688,14 @@ class CommitProposal(
 
 
     def _refresh_detail(self) -> None:
+        # Paired with ``_refresh_entry_list`` via ``_body_hidden``: in DONE-collapsed the entry-list
+        # and its detail panel collapse together. Always visible in EDITING and DONE-expanded.
+        detail = self.query_one("#cp-detail", Vertical)
+        if self._body_hidden():
+            detail.display = False
+            return
+        detail.display = True
+
         title_input = self.query_one("#cp-detail-title", Input)
         content = self.query_one("#cp-detail-content", TextArea)
         meta = self.query_one("#cp-detail-meta", Static)
@@ -562,6 +732,15 @@ class CommitProposal(
 
     def _refresh_choices(self) -> None:
         widget = self.query_one("#cp-choices", _ChoicesList)
+
+        # In DONE the choices list is meaningless (every action it offers — Approve / Edit / Reset /
+        # Cancel — is gated by ``check_action``) so we hide it via the ``.-hidden`` CSS class. Skip
+        # the rest of the refresh; nothing will be visible regardless. ``display: none`` also drops
+        # the widget from focus traversal, so navigation can't land on it from any direction.
+        if self._vm.state != CommitProposalViewModel.State.EDITING:
+            widget.add_class("-hidden")
+            return
+
         choices = self._current_choices()
         if widget.cursor is not None:
             widget.cursor = max(0, min(widget.cursor, len(choices) - 1))
@@ -593,12 +772,100 @@ class CommitProposal(
 
 
     def _refresh_edit_instructions(self) -> None:
+        # The editable edit-instructions area is only meaningful in EDITING. In DONE we always hide it
+        # — even when the user had it open at the time of accept/cancel — and let ``_refresh_resolution``
+        # decide whether to show the read-only copy of the submitted text below the resolution status.
         area = self.query_one("#cp-edit-instructions", _EditInstructions)
-        area.set_class(self._vm.edit_instructions_visible, "-visible")
-        if not self._vm.edit_instructions_visible:
+        visible = (
+            self._vm.state == CommitProposalViewModel.State.EDITING
+            and self._vm.edit_instructions_visible
+        )
+        area.set_class(visible, "-visible")
+        if not visible:
             return
         if area.text != self._vm.edit_instructions:
             area.text = self._vm.edit_instructions
+
+
+    def _refresh_resolution(self) -> None:
+        # Counterpart to the choices / edit-instructions blocks: visible only in DONE. We render two
+        # adjacent elements:
+        #
+        #   1. ``#cp-resolution`` — a one-line status, rendered in green for non-cancelled outcomes
+        #      and red for cancellation. Wording depends on cancel/edit/collapsed:
+        #        Expanded (left-aligned, indented):
+        #          - "Cancelled"               (cancelled)
+        #          - "Accepted"                (accepted, no edit-instructions written)
+        #          - "Accepted with edits:"    (accepted + non-empty edits; trailing colon signals
+        #                                       that the panel below carries the body)
+        #        Collapsed (centered; entry list is hidden so the line grows a count suffix so the
+        #        reader can still gauge what they resolved):
+        #          - "Cancelled"
+        #          - "Accepted — N entries"
+        #          - "Accepted — N entries, M excluded"
+        #          - "Accepted with edits — N entries[, M excluded]"
+        #                                       (edits panel still renders below — see (2))
+        #
+        #   2. ``#cp-resolution-edits`` — read-only panel carrying the user's submitted edit-instructions
+        #      text. Shown whenever accepted-with-edits (both expanded and collapsed); only cancellation
+        #      hides it, since the agent won't act on those edits anyway.
+        #
+        # Both elements default to ``display: none`` in CSS; we toggle ``.-visible`` here.
+        status = self.query_one("#cp-resolution", Static)
+        edits_panel = self.query_one("#cp-resolution-edits", Static)
+
+        if self._vm.state != CommitProposalViewModel.State.DONE:
+            status.set_class(False, "-visible")
+            edits_panel.set_class(False, "-visible")
+            return
+
+        cancelled = self._vm.cancelled
+        has_edits = bool(self._vm.edit_instructions.strip())
+        collapsed = self._vm.collapsed
+        # Edits panel rides with the resolution status whenever there's something to show, regardless
+        # of collapsed/expanded — in the collapsed summary it sits directly below the centered status
+        # line so the reader sees both the verdict and the instructions at a glance.
+        show_edits_panel = (not cancelled) and has_edits
+
+        # Expanded mode keeps a 2-char indent so the line aligns with the entry-list padding above it.
+        # Collapsed mode centers the line via the ``.-centered`` CSS class, so we drop the indent —
+        # otherwise those leading spaces would shift the centered text off-axis.
+        indent = "" if collapsed else "  "
+
+        # Whole-line color: green for any non-cancelled resolution, red for cancellation. Matches
+        # FlashcardReview's ``Session complete`` / ``Session cancelled`` styling so the two widgets
+        # read as a family. No bold / no marker glyph — the color alone carries the sentiment.
+        if cancelled:
+            body = "Cancelled"
+            color = _CANCEL_RED
+        else:
+            color = _DONE_GREEN
+            # Expanded with edits gets a trailing colon (panel follows); collapsed-with-edits drops
+            # the colon since nothing renders below it.
+            if has_edits and not collapsed:
+                body = "Accepted with edits:"
+            elif has_edits:
+                body = "Accepted with edits"
+            else:
+                body = "Accepted"
+
+            # Count suffix only in the collapsed summary view — the entry list isn't visible so the
+            # reader needs the totals here instead.
+            if collapsed:
+                kept = len(self._vm.entries) - len(self._vm.excluded)
+                body += f" — {kept} entr{'y' if kept == 1 else 'ies'}"
+                if self._vm.excluded:
+                    body += f", {len(self._vm.excluded)} excluded"
+
+        status.update(Text(f"{indent}{body}", style=color))
+        status.set_class(True, "-visible")
+        status.set_class(collapsed, "-centered")
+
+        if show_edits_panel:
+            edits_panel.update(self._vm.edit_instructions)
+            edits_panel.set_class(True, "-visible")
+        else:
+            edits_panel.set_class(False, "-visible")
 
 
     # ========================================================================================================================
@@ -609,6 +876,14 @@ class CommitProposal(
         # All cross-region navigation lives in action_cursor_up/action_cursor_down. Child widgets let their
         # unused keys bubble up to the outer widget's bindings; these actions inspect ``self.app.focused``
         # and decide what to do based on which region is active.
+
+        # DONE short-circuit: the choices region is hidden and the edit-instructions area is read-only,
+        # so navigation is restricted to walking the entry list. We bypass the focus dispatch entirely
+        # — even if focus happened to land on one of the now-hidden regions during the EDITING→DONE
+        # transition, pressing up should still scroll the entry cursor, never step into a hidden region.
+        if self._vm.state != CommitProposalViewModel.State.EDITING:
+            self._vm.prev_entry()
+            return
 
         focused = self.app.focused
         choices = self.query_one("#cp-choices", _ChoicesList)
@@ -637,6 +912,13 @@ class CommitProposal(
             self._refresh_choices()
 
     def action_cursor_down(self) -> None:
+        # See action_cursor_up. In DONE the choices region is hidden — the "step out the bottom"
+        # affordance disappears, so the last entry becomes a hard boundary. We ignore next_entry's
+        # return value here since there's nowhere for the fall-through to land.
+        if self._vm.state != CommitProposalViewModel.State.EDITING:
+            self._vm.next_entry()
+            return
+
         focused = self.app.focused
         choices = self.query_one("#cp-choices", _ChoicesList)
         edits = self.query_one("#cp-edit-instructions", _EditInstructions)
@@ -698,10 +980,18 @@ class CommitProposal(
     def action_toggle_edit_instructions(self) -> None:
         self._vm.toggle_edit_instructions_area()
 
+        edits = self.query_one("#cp-edit-instructions", _EditInstructions)
+        choices = self.query_one("#cp-choices", _ChoicesList)
+
         if self._vm.edit_instructions_visible:
-            self.query_one("#cp-edit-instructions", _EditInstructions).focus()
+            edits.focus()
+            choices.cursor = None
+        elif choices.cursor is not None:
+            choices.focus()
         else:
             self.focus()
+        
+        self._refresh_choices()
 
     def action_swap_edit_focus(self) -> None:
         # Direct entry-list ↔ edit-instructions hop, skipping choices. If the
@@ -762,12 +1052,19 @@ class CommitProposal(
         current_choice = choices.cursor
         action = [
             self._vm.accept,
-            self._vm.toggle_edit_instructions_area,
+            self.action_toggle_edit_instructions,
             self._vm.reset,
             self._vm.cancel
         ][current_choice]
 
         action()
+
+    def action_toggle_collapsed(self) -> None:
+        # Bound on ``enter`` alongside ``action_select_choice``; ``check_action`` ensures only one of
+        # the two fires per keypress (DONE → here, EDITING → select_choice). The VM's
+        # ``toggle_collapsed`` asserts state == DONE, so we'd crash if both this guard and the binding
+        # gate ever drifted out of sync.
+        self._vm.toggle_collapsed()
 
     def action_cancel_interrupt(self) -> None:
         self._vm.cancel()
