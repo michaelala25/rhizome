@@ -1637,6 +1637,11 @@ class ChatPane(Widget, DockContainerMixin):
             1: "Data Structures",
             2: "Distributed Systems",
         }
+        # # Tile the seed entries to ~30 so we can exercise the entry-list scroll behavior.
+        # sample_entries = [
+        #     {**sample_entries[i % len(sample_entries)]}
+        #     for i in range(30)
+        # ]
 
         area = self.query_one("#message-area")
         proposal = CommitProposal(

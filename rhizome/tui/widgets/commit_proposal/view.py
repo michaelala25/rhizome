@@ -1,83 +1,98 @@
-"""CommitProposal — thin Textual view over CommitProposalViewModel.
+"""CommitProposal view — owns layout, focus routing, and key bindings.
 
-The view is a dumb mirror of the VM: every key event is forwarded to
-``vm.on_key``; every dirty emit triggers a single ``_refresh`` that reads
-the whole VM and reconciles the widget tree to it. State transitions,
-focus management, and choice activation live in the VM.
-
-Editor child widgets (`_TitleInput`, `_ContentInput`, `_EditInstructions`)
-forward their committed text up to the VM via ``set_title`` / ``set_content``
-on the entry-list sub-VM, and let app-level keys (alt+, ctrl+) bubble so the
-VM's global shortcuts and field-cycling still fire while the editor is
-focused.
+Talks to ``CommitProposalViewModel`` through plain method calls; subscribes to ``vm.dirty`` for repaints.
+The VM has no knowledge of which Textual widget is focused, which key fires which action, or which
+choices are visible — all of that is decided here.
 """
 
 from __future__ import annotations
 
+import time
+from contextlib import contextmanager
 from typing import Any, TYPE_CHECKING
-
-from rhizome.tui.types import DatabaseCommitted
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.message import Message
-from textual.widgets import Button, Input, Static, TextArea
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Input, Static, TextArea
 
 from ..entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
 from ..interrupt import InterruptWidgetBase
-from .view_model import (
-    Action,
-    CommitProposalViewModel,
-    EntryListVM,
-    KEYBINDINGS,
-    KnowledgeEntryType,
-)
+from ..view_base import ViewBase
+from .view_model import CommitProposalViewModel
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
+
+# ========================================================================================================================
+# Style constants & static text
+# ========================================================================================================================
 
 _RED = ENTRY_ACCENT
 _DIM = ENTRY_DIM
 _HINT = ENTRY_HINT
-_EXCLUDED_DIM = "rgb(60,60,60)"
+_EXCLUDED = "rgb(60,60,60)"
 _FOCUS_GREEN = "rgb(100,200,100)"
 
+_HINTS_TEXT = (
+    "  d: exclude/include  "
+    "f: cycle type  "
+    "t: change topic  "
+    "alt+t: change all topics  "
+    "alt+←/→: cycle fields"
+)
+
+_EDIT_INSTRUCTIONS_TITLE = "alt+e to toggle  ·  esc esc to discard"
+
+_CHOICE_APPROVE = "approve"
+_CHOICE_REQUEST_EDITS = "request_edits"
+_CHOICE_DISMISS_EDITS = "dismiss_edits"
+_CHOICE_RESET = "reset"
+_CHOICE_CANCEL = "cancel"
+
 _CHOICE_LABELS: dict[str, str] = {
-    "accept": "Approve",
-    "request_edits": "Edit",
-    "reset_all": "Reset",
-    "dismiss_edits": "Dismiss edits",
-    "cancel": "Cancel",
+    _CHOICE_APPROVE: "Approve",
+    _CHOICE_REQUEST_EDITS: "Edit",
+    _CHOICE_DISMISS_EDITS: "Dismiss edits",
+    _CHOICE_RESET: "Reset",
+    _CHOICE_CANCEL: "Cancel",
 }
+
 _CHOICE_HINTS: dict[str, str] = {
-    "accept": KEYBINDINGS[Action.ACCEPT_ALL],
-    "request_edits": KEYBINDINGS[Action.TOGGLE_EDIT_INSTRUCTIONS],
-    "reset_all": KEYBINDINGS[Action.RESET_ALL],
-    "dismiss_edits": KEYBINDINGS[Action.TOGGLE_EDIT_INSTRUCTIONS],
-    "cancel": KEYBINDINGS[Action.CANCEL],
+    _CHOICE_APPROVE: "ctrl+a",
+    _CHOICE_REQUEST_EDITS: "ctrl+e",
+    _CHOICE_DISMISS_EDITS: "ctrl+e",
+    _CHOICE_RESET: "ctrl+r",
+    _CHOICE_CANCEL: "esc",
 }
+
 _CHOICE_DESCRIPTIONS: dict[str, str] = {
-    "accept": "accept the proposal (including any changes made above)",
-    "request_edits": "describe the changes you'd like to make",
-    "reset_all": "discard all changes and restore the original proposal",
-    "dismiss_edits": "hide the edit-instructions area without discarding it",
-    "cancel": "cancel the proposal",
+    _CHOICE_APPROVE: "accept the proposal (including any changes made above)",
+    _CHOICE_REQUEST_EDITS: "describe the changes you'd like to make",
+    _CHOICE_DISMISS_EDITS: "hide the edit-instructions area without discarding it",
+    _CHOICE_RESET: "discard all changes and restore the original proposal",
+    _CHOICE_CANCEL: "cancel the proposal",
 }
+
+# Max gap (seconds) for the discard-edits chord — matches chat_input.
+_DOUBLE_ESC_WINDOW = 0.5
+
+
+# ========================================================================================================================
+# Child editors
+# ========================================================================================================================
+#
+# All three need ctrl+*/alt+* keys to escape their default handling so the outer widget's bindings can
+# fire. ``_EditInstructions`` additionally bubbles ``up`` at row 0 and ``escape`` so the parent can
+# route those (jump to choices, double-tap discard).
+#
+# ------------------------------------------------------------------------------------------------------------------------
 
 
 def _bubble_app_keys(event: events.Key) -> bool:
-    """Let app-level keys (alt+*, ctrl+*) bubble up to the parent's on_key
-    handler instead of being consumed by the focused editor. Returns True iff
-    the event was bubbled (and the caller should stop processing).
-
-    Mirrors the pattern in flashcard_review's ``_AnswerInput`` — the editor
-    eats normal typing, but anything that looks like an app shortcut needs to
-    reach the VM (cycle field with alt+left/right; global ctrl+a/r/c/e).
-    """
     if event.key.startswith("alt+") or event.key.startswith("ctrl+"):
         event.prevent_default()
         return True
@@ -85,32 +100,42 @@ def _bubble_app_keys(event: events.Key) -> bool:
 
 
 class _TitleInput(Input):
-    """Single-line title editor. Forwards changes to the VM and lets
-    app-level keys bubble."""
-
     def _on_key(self, event: events.Key) -> None:
-        if _bubble_app_keys(event):
-            return
-        super()._on_key(event)
+        if not _bubble_app_keys(event):
+            super()._on_key(event)
 
 
-class _ContentInput(TextArea):
-    """Multiline content editor. Forwards changes to the VM and lets
-    app-level keys bubble."""
-
+class _ContentArea(TextArea):
     def __init__(self, **kwargs) -> None:
         super().__init__(show_line_numbers=False, **kwargs)
 
     def _on_key(self, event: events.Key) -> None:
-        if _bubble_app_keys(event):
-            return
-        super()._on_key(event)
+        if not _bubble_app_keys(event):
+            super()._on_key(event)
+
+
+class _ChoicesList(Static, can_focus=True):
+    """Focusable list of actions. Pure data widget — holds the cursor and its own focused flag; all key
+    handling is centralised on the parent's ``on_key`` so navigation between regions lives in one place.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.cursor: int | None = None
 
 
 class _EditInstructions(TextArea):
-    """Edit-instructions buffer. Lets app-level keys bubble (so ctrl+e to
-    dismiss and esc+esc to discard reach the VM); ctrl+j inserts a literal
-    newline (Enter would otherwise be ambiguous)."""
+    """Lets ctrl+*/alt+* keys bubble (so global bindings still fire), and always bubbles ``escape`` so the
+    parent can run the double-tap discard chord. The ``up``-at-(0,0) escape is handled by gating our local
+    ``up`` binding through ``check_action`` — at the very top-left we return False, marking the binding
+    inactive so Textual continues walking the DOM and fires ``CommitProposal``'s ``up`` binding (which
+    steps focus to the choices list). Anywhere else, we return True; the binding is "active" but has no
+    matching ``action_cursor_up`` on this widget, so Textual falls through to ``TextArea``'s inherited
+    ``up`` binding for normal cursor movement."""
+
+    BINDINGS = [
+        Binding("up", "cursor_up", show=False),
+    ]
 
     def __init__(self, **kwargs) -> None:
         super().__init__(show_line_numbers=False, **kwargs)
@@ -119,32 +144,54 @@ class _EditInstructions(TextArea):
         if _bubble_app_keys(event):
             return
         if event.key == "escape":
-            # Let the VM see escape so its double-tap discard chord fires.
-            event.prevent_default()
-            return
-        if event.key == "ctrl+j":
-            self.insert("\n")
-            event.stop()
             event.prevent_default()
             return
         super()._on_key(event)
 
-    async def _on_mouse_down(self, event: events.MouseDown) -> None:
-        # When the VM doesn't own this region, ``can_focus`` is False so
-        # clicks don't actually shift focus here — but TextArea's default
-        # MouseDown still moves the cursor and restarts the blink, leaving
-        # a confusing blinking cursor in an unfocused widget. Swallow the
-        # event in that case.
-        if not self.has_focus:
-            event.stop()
-            event.prevent_default()
-            return
-        await super()._on_mouse_down(event)
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Returning False here marks the binding inactive on this widget, which causes Textual to keep
+        # walking the DOM and let the parent's ``up`` binding fire — that's how we route out to choices.
+        # Everywhere else (cursor not at (0,0)) we leave the binding "active"; since this widget has no
+        # ``action_cursor_up``, the lookup fails locally and Textual falls through to ``TextArea``'s
+        # inherited ``up`` binding for cursor movement.
+        if action == "cursor_up":
+            return self.cursor_location != (0, 0)
+        return super().check_action(action, parameters)
 
 
-class CommitProposal(InterruptWidgetBase):
+# ========================================================================================================================
+# CommitProposal
+# ========================================================================================================================
+
+
+class CommitProposal(
+    ViewBase[CommitProposalViewModel],
+    InterruptWidgetBase,
+    can_focus=True,
+):
 
     DISABLE_CHILDREN_ON_DEACTIVATE = False
+
+    # Region-cycle targets, in display order.
+    _CYCLE_TARGETS = ("outer", "cp-detail-title", "cp-detail-content")
+
+    BINDINGS = [
+        Binding("up,k", "cursor_up", show=False),
+        Binding("down,j", "cursor_down", show=False),
+        Binding("escape", "escape_chord", show=False),
+        Binding("f", "cycle_type('forward')", show=False),
+        Binding("shift+f", "cycle_type('back')", show=False),
+        Binding("d", "toggle_exclude", show=False),
+        Binding("t", "pick_topic('current')", show=False),
+        Binding("alt+t", "pick_topic('all')", show=False),
+        Binding("alt+right", "cycle_field('forward')", show=False),
+        Binding("alt+left", "cycle_field('back')", show=False),
+        Binding("ctrl+e", "toggle_edit_instructions", show=False),
+        Binding("alt+e", "swap_edit_focus", show=False),
+        Binding("ctrl+a", "accept", show=False),
+        Binding("ctrl+r", "reset", show=False),
+        Binding("enter", "select_choice", show=False),
+    ]
 
     DEFAULT_CSS = """
     CommitProposal {
@@ -153,24 +200,22 @@ class CommitProposal(InterruptWidgetBase):
         padding: 1 2;
         margin: 1 0;
     }
-    CommitProposal #cp-header {
-        margin-bottom: 0;
-    }
     CommitProposal #cp-hints {
         color: rgb(80,80,80);
         margin-bottom: 1;
     }
-    CommitProposal #cp-shared-topic {
-        height: 1;
+    CommitProposal #cp-entry-list-scroll {
+        height: auto;
+        max-height: 10;
         margin-bottom: 1;
+        scrollbar-size-vertical: 1;
     }
     CommitProposal #cp-entry-list {
         height: auto;
     }
-    CommitProposal #cp-detail-panel {
+    CommitProposal #cp-detail {
         border: solid $surface-lighten-2;
-        margin: 1 0;
-        padding: 1 2 1 2;
+        padding: 1 2;
         height: auto;
     }
     CommitProposal #cp-detail-title {
@@ -178,7 +223,7 @@ class CommitProposal(InterruptWidgetBase):
         border: none;
         height: 1;
         padding: 0;
-        margin: 0;
+        margin: 0 0 1 0;
     }
     CommitProposal #cp-detail-title:focus {
         border: solid $accent;
@@ -186,39 +231,48 @@ class CommitProposal(InterruptWidgetBase):
     }
     CommitProposal #cp-detail-meta {
         color: rgb(100,100,100);
+        height: 1;
         margin: 0 0 1 0;
-        padding: 0;
     }
     CommitProposal #cp-detail-content {
         background: transparent;
         border: none;
         height: auto;
-        max-height: 12;
         min-height: 3;
-        margin: 0;
+        max-height: 12;
         padding: 0 1;
     }
     CommitProposal #cp-detail-content:focus {
         border: solid $accent;
     }
     CommitProposal #cp-choices {
+        height: auto;
+        color: rgb(150,150,150);
         margin-top: 1;
     }
     CommitProposal #cp-edit-instructions {
         background: transparent;
         border: solid $surface-lighten-2;
-        margin: 1 0 0 0;
         height: auto;
         min-height: 3;
         max-height: 8;
+        margin: 1 0 0 0;
         padding: 0 1;
+        display: none;
         border-title-align: right;
         border-title-color: rgb(80,80,80);
+    }
+    CommitProposal #cp-edit-instructions.-visible {
+        display: block;
     }
     CommitProposal #cp-edit-instructions:focus {
         border: solid rgb(120,120,140);
     }
     """
+
+    # ========================================================================================================================
+    # Construction
+    # ========================================================================================================================
 
     @classmethod
     def from_interrupt(cls, value: dict[str, Any]) -> "CommitProposal":
@@ -235,92 +289,462 @@ class CommitProposal(InterruptWidgetBase):
         session_factory: "async_sessionmaker[AsyncSession] | None" = None,
         **kwargs,
     ) -> None:
-        super().__init__(**kwargs)
-        self._session_factory = session_factory
-        self._vm = CommitProposalViewModel(
-            entries=entries,
-            topic_map=topic_map,
-            session_factory=session_factory,
+        super().__init__(
+            CommitProposalViewModel(
+                entries=entries,
+                topic_map=topic_map,
+                session_factory=session_factory,
+            ),
+            **kwargs,
         )
-        # Set while ``_refresh`` programmatically rewrites the editors so
-        # the change handlers don't echo back into the VM as user edits.
-        self._suppress_text_change = False
+        self._session_factory = session_factory
 
-    @property
-    def _topic_map(self) -> dict[int, str]:
-        # The data model is the source of truth (it gets mutated when the
-        # user picks a new topic via ``apply_topic_selection``).
-        return self._vm._data.topic_map
+        # Last-escape timestamp for the discard-edits double-tap chord.
+        self._last_escape_at: float | None = None
 
-    # ------------------------------------------------------------------
-    # Compose & mount
-    # ------------------------------------------------------------------
+        # Resolve the future when the VM reaches DONE. Doesn't query child widgets, so safe to subscribe
+        # pre-mount; torn down in on_unmount.
+        self._vm.subscribe(self._vm.dirty, self._maybe_resolve)
+
 
     def compose(self) -> ComposeResult:
-        yield Static(id="cp-header")
-        yield Static(id="cp-hints")
-        yield Static(id="cp-shared-topic")
-        yield Static(id="cp-entry-list")
-        with Vertical(id="cp-detail-panel"):
-            yield _TitleInput(id="cp-detail-title")
-            yield Static(id="cp-detail-meta")
-            yield _ContentInput(id="cp-detail-content")
-        yield Static(id="cp-choices")
+        yield Static("", id="cp-header")
+        yield Static(Text(_HINTS_TEXT, style=_HINT), id="cp-hints")
+
+        with VerticalScroll(id="cp-entry-list-scroll"):
+            yield Static("", id="cp-entry-list")
+
+        with Vertical(id="cp-detail"):
+            yield _TitleInput(id="cp-detail-title", placeholder="(title)")
+            yield Static("", id="cp-detail-meta")
+            yield _ContentArea(id="cp-detail-content")
+
+        yield _ChoicesList(id="cp-choices")
         yield _EditInstructions(id="cp-edit-instructions")
+
 
     def on_mount(self) -> None:
         super().on_mount()
 
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._vm.subscribe(self._vm.topic_selection_requests, self._open_topic_selector)
-        self._vm.subscribe(self._vm.completion_blocked, self._on_completion_blocked)
-
-        edit_inst = self.query_one("#cp-edit-instructions", _EditInstructions)
-        edit_inst.border_title = (
-            f"{KEYBINDINGS[Action.TOGGLE_EDIT_INSTRUCTIONS]} to toggle  ·  "
-            f"{KEYBINDINGS[Action.DISCARD_EDIT_INSTRUCTIONS]} twice to discard"
+        self.query_one("#cp-edit-instructions", _EditInstructions).border_title = (
+            _EDIT_INSTRUCTIONS_TITLE
         )
 
-        self.query_one("#cp-detail-content", _ContentInput).cursor_blink = False
-
         self._refresh()
-        self.focus()
 
-    # ------------------------------------------------------------------
-    # Event forwarding
-    # ------------------------------------------------------------------
+    def on_unmount(self) -> None:
+        super().on_unmount()  # ViewBase tears down the dirty→_refresh / focus→self.focus subs
+        self._vm.unsubscribe(self._vm.dirty, self._maybe_resolve)
 
-    def on_key(self, event: events.Key) -> None:
-        self._vm.on_key(event)
 
-    def on_focus(self, event: events.Focus) -> None:
-        """Externally-triggered focus returns (e.g. ctrl+up navigation back
-        from chat input) land on the parent widget itself, but the VM's
-        logical focus may still point at a child editor. Reconcile here —
-        ``_refresh_focus`` already encodes the VM→Textual-focus mapping,
-        and its "must own focus somewhere in our subtree" guard is satisfied
-        because we just received focus."""
-        self._refresh_focus()
+    # Bindings that mutate VM state or trigger the resolve chain. Disabled in DONE so the parallel VM
+    # asserts can stay strict — Textual will mark each one inactive while ``state != EDITING``, and the
+    # widget itself remains focusable for post-resolve navigation.
+    _EDITING_ONLY_ACTIONS = frozenset({
+        "cycle_type",
+        "cycle_field",
+        "toggle_exclude",
+        "pick_topic",
+        "toggle_edit_instructions",
+        "swap_edit_focus",
+        "accept",
+        "reset",
+        "select_choice",
+        "cancel_interrupt",
+    })
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in self._EDITING_ONLY_ACTIONS:
+            return self._vm.state == CommitProposalViewModel.State.EDITING
+        return super().check_action(action, parameters)
+
+
+    # ========================================================================================================================
+    # Event Handling
+    # ========================================================================================================================
+
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id != "cp-detail-title" or self._suppress_text_change:
+        # Echoes from ``_refresh_detail``'s programmatic writes also reach us; in DONE we drop them so
+        # they don't trip the VM's EDITING-only asserts. Navigating across entries post-resolve still
+        # rewrites the title field, but that's just paint, not a model change.
+        if self._vm.state != CommitProposalViewModel.State.EDITING:
             return
-        self._vm.entry_list.set_title(event.value)
+        if event.input.id == "cp-detail-title":
+            self._vm.set_entry_title(self._vm.cursor, event.value)
 
-    # ------------------------------------------------------------------
-    # Topic selection — VM emits a request, we push the modal screen and
-    # forward the result back via ``apply_topic_selection``. The VM never
-    # sees ``self.app`` or knows the screen exists.
-    # ------------------------------------------------------------------
 
-    def _open_topic_selector(
-        self,
-        request: CommitProposalViewModel.TopicSelectionRequest,
-    ) -> None:
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self._vm.state != CommitProposalViewModel.State.EDITING:
+            return
+        wid = event.text_area.id
+        if wid == "cp-detail-content" and self._vm.cursor is not None:
+            self._vm.set_entry_content(self._vm.cursor, event.text_area.text)
+        elif wid == "cp-edit-instructions":
+            self._vm.set_edit_instructions(event.text_area.text)
+
+
+    def _maybe_resolve(self) -> None:
+        """Called on every VM ``dirty`` emit. The first time we observe the VM reach its DONE state,
+        resolve the future with the result. Both accept and cancel route here — ``_build_result`` keys
+        on ``completed`` so the caller can distinguish them. Subsequent emits after DONE (e.g. navigation
+        through the entries while the widget is still mounted) are no-ops because ``_future`` is done."""
+        if self._future.done():
+            return
+        if self._vm.state != CommitProposalViewModel.State.DONE:
+            return
+
+        # Resolve while keeping the widget interactive (the user can still scroll through entries
+        # post-resolve, just not mutate them).
+        self.resolve(self._build_result(), deactivate_navigation=False)
+
+
+    def _build_result(self) -> dict[str, Any]:
+        return {
+            "completed": not self._vm.cancelled,
+            "entries": [
+                {
+                    "title": e.title,
+                    "content": e.content,
+                    "entry_type": e.entry_type.value,
+                    "topic_id": e.topic_id,
+                    "excluded": i in self._vm.excluded,
+                }
+                for i, e in enumerate(self._vm.entries)
+            ],
+            "edit_instructions": self._vm.edit_instructions or None,
+        }
+
+
+    # ========================================================================================================================
+    # Rendering
+    # ========================================================================================================================
+
+    def _refresh(self) -> None:
+        self._refresh_header()
+        self._refresh_entry_list()
+        self._refresh_detail()
+        self._refresh_choices()
+        self._refresh_edit_instructions()
+
+
+    def _refresh_header(self) -> None:
+        # Header text reads as either "Commit Proposal (1 entry)" or "Commit Proposals ({n} entries)"
+
+        text = Text()
+        text.append("  Commit Proposal", style=f"bold {_RED}")
+
+        n = len(self._vm.entries)
+        suffix = "y" if n == 1 else "ies"
+        text.append(f"  ({n} entr{suffix})", style=_DIM)
+
+        self.query_one("#cp-header", Static).update(text)
+
+
+    def _refresh_entry_list(self) -> None:
+        entries = self._vm.entries
+        target = self.query_one("#cp-entry-list", Static)
+
+        if not entries:
+            target.update(Text("(no entries)", style=_DIM))
+            return
+
+        right_parts: list[str] = []
+        stale_flags: list[bool] = []
+        for entry in entries:
+            label, is_stale = self._format_topic(entry.topic_id)
+            right_parts.append(f"{entry.entry_type.value} │ {label}")
+            stale_flags.append(is_stale)
+        max_right = max(len(r) for r in right_parts)
+        max_title = max(len(e.title) for e in entries)
+        num_width = len(str(len(entries))) + 2  # "N." plus trailing space
+
+        cursor = self._vm.cursor
+
+        rows: list[Text] = []
+        for i, entry in enumerate(entries):
+            selected = cursor == i
+            excluded = self._vm.is_excluded(i)
+            marker_st, body_st, right_st = self._row_styles(
+                selected=selected, excluded=excluded, stale=stale_flags[i]
+            )
+
+            marker = "► " if selected else "  "
+            num = f"{i + 1}. ".rjust(num_width + 1)
+            gap = " " * (max_title - len(entry.title) + 2)
+            right = right_parts[i].rjust(max_right)
+
+            row = Text()
+            row.append(marker, style=marker_st)
+            row.append(num, style=body_st)
+            row.append(entry.title, style=body_st)
+            row.append(gap)
+            row.append(right, style=right_st)
+            rows.append(row)
+
+        target.update(Text("\n").join(rows))
+        
+        if cursor is not None:
+            self._scroll_entry_into_view(cursor)
+
+
+    def _scroll_entry_into_view(self, row: int) -> None:
+        scroll = self.query_one("#cp-entry-list-scroll", VerticalScroll)
+        visible = scroll.size.height or 10
+        y = scroll.scroll_offset.y
+        if row < y:
+            scroll.scroll_to(y=row, animate=False)
+        elif row >= y + visible:
+            scroll.scroll_to(y=row - visible + 1, animate=False)
+
+
+    @staticmethod
+    def _row_styles(*, selected: bool, excluded: bool, stale: bool) -> tuple[str, str, str]:
+        """Returns ``(marker_style, body_style, right_style)``. Excluded takes precedence for body/right
+        (strike-through, dim); the marker still paints green on selection so the cursor stays visible."""
+
+        marker = f"bold {_FOCUS_GREEN}" if selected else ""
+        if excluded:
+            return (marker, f"{_EXCLUDED} strike", f"{_EXCLUDED} strike")
+        
+        right = _RED if stale else _DIM
+        if selected:
+            return (marker, f"bold {_FOCUS_GREEN}", right)
+        
+        return ("", "", right)
+
+
+    def _format_topic(self, topic_id: int | None) -> tuple[str, bool]:
+        if topic_id is None:
+            return ("(none)", False)
+        
+        name = self._vm.topic_map.get(topic_id)
+        if name is None:
+            return (f"(deleted) [{topic_id}]", True)
+        
+        return (f"{name} [{topic_id}]", False)
+
+
+    def _refresh_detail(self) -> None:
+        title_input = self.query_one("#cp-detail-title", Input)
+        content = self.query_one("#cp-detail-content", TextArea)
+        meta = self.query_one("#cp-detail-meta", Static)
+
+        cur = self._vm.cursor
+        if cur is None:
+            title_input.value = ""
+            content.text = ""
+            meta.update("")
+            return
+
+        entry = self._vm.entries[cur]
+        topic_name = self._vm.topic_name(entry.topic_id) or "(none)"
+        meta.update(Text.assemble(
+            (f"type: {entry.entry_type.value}", _HINT),
+            "    ",
+            (f"topic: {topic_name}", _HINT),
+        ))
+
+        if title_input.value != entry.title:
+            title_input.value = entry.title
+        if content.text != entry.content:
+            content.text = entry.content
+
+
+    def _current_choices(self) -> list[str]:
+        edit_label = (
+            _CHOICE_DISMISS_EDITS
+            if self._vm.edit_instructions_visible
+            else _CHOICE_REQUEST_EDITS
+        )
+        return [_CHOICE_APPROVE, edit_label, _CHOICE_RESET, _CHOICE_CANCEL]
+
+
+    def _refresh_choices(self) -> None:
+        widget = self.query_one("#cp-choices", _ChoicesList)
+        choices = self._current_choices()
+        if widget.cursor is not None:
+            widget.cursor = max(0, min(widget.cursor, len(choices) - 1))
+
+        # "► Label (hint)" — descriptions are right-aligned by padding the widest prefix to a common width.
+        prefix_lengths = [
+            2 + len(_CHOICE_LABELS[c]) + 1 + len(f"({_CHOICE_HINTS[c]})")
+            for c in choices
+        ]
+        max_prefix = max(prefix_lengths)
+
+        rows: list[Text] = []
+        for i, choice in enumerate(choices):
+            selected = i == widget.cursor
+            label = _CHOICE_LABELS[choice]
+            hint = _CHOICE_HINTS[choice]
+            desc = _CHOICE_DESCRIPTIONS[choice]
+
+            row = Text()
+            if selected:
+                row.append(f"► {label}", style=f"bold {_RED}")
+            else:
+                row.append(f"  {label}", style=_DIM)
+            row.append(f" ({hint})", style=_HINT)
+            padding = max_prefix - prefix_lengths[i] + 2
+            row.append(" " * padding + desc, style=_HINT)
+            rows.append(row)
+        widget.update(Text("\n").join(rows))
+
+
+    def _refresh_edit_instructions(self) -> None:
+        area = self.query_one("#cp-edit-instructions", _EditInstructions)
+        area.set_class(self._vm.edit_instructions_visible, "-visible")
+        if not self._vm.edit_instructions_visible:
+            return
+        if area.text != self._vm.edit_instructions:
+            area.text = self._vm.edit_instructions
+
+
+    # ========================================================================================================================
+    # Bindings
+    # ========================================================================================================================
+
+    def action_cursor_up(self) -> None:
+        # All cross-region navigation lives in action_cursor_up/action_cursor_down. Child widgets let their
+        # unused keys bubble up to the outer widget's bindings; these actions inspect ``self.app.focused``
+        # and decide what to do based on which region is active.
+
+        focused = self.app.focused
+        choices = self.query_one("#cp-choices", _ChoicesList)
+        edits = self.query_one("#cp-edit-instructions", _EditInstructions)
+
+        # Outer (entry list) focused: walk the entry cursor up.
+        if focused is self:
+            self._vm.prev_entry()
+
+        # Choices focused: walk cursor up, or step out to the entry list past the top.
+        elif focused is choices:
+            if choices.cursor > 0:
+                choices.cursor -= 1
+            else:
+                choices.cursor = None
+                self.focus()
+
+            self._refresh_choices()
+
+        # Edits focused: we only witness this when the cursor is at row 0 in the edit-instructions area;
+        # otherwise the keystroke is captured by _EditInstructions._on_key and never bubbles. Thus it's
+        # safe to always assume this input means "step up to choices".
+        elif focused is edits:
+            choices.cursor = len(self._current_choices()) - 1
+            choices.focus()
+            self._refresh_choices()
+
+    def action_cursor_down(self) -> None:
+        focused = self.app.focused
+        choices = self.query_one("#cp-choices", _ChoicesList)
+        edits = self.query_one("#cp-edit-instructions", _EditInstructions)
+
+        # Outer (entry list) focused: walk the entry cursor down. At the bottom, step out to the choices
+        # list — matches the legacy "step out the bottom" affordance. Choices, in turn, can step further
+        # down to the edit-instructions area.
+        if focused is self:
+            if not self._vm.next_entry():
+                choices.focus()
+                choices.cursor = 0
+
+        # Choices focused: walk cursor down, or step out to the edit-instructions area past the bottom.
+        elif focused is choices:
+            items = self._current_choices()
+
+            if choices.cursor is None:
+                choices.cursor = 0
+            elif choices.cursor < len(items) - 1:
+                choices.cursor += 1
+            elif self._vm.edit_instructions_visible:
+                choices.cursor = None
+                edits.focus()
+
+            self._refresh_choices()
+
+    def action_escape_chord(self) -> None:
+        # Double-tap escape inside the edit-instructions area discards its contents. We only witness escape
+        # here at all because _EditInstructions calls prevent_default on it so it bubbles up; for any other
+        # focus this action is a no-op.
+        edits = self.query_one("#cp-edit-instructions", _EditInstructions)
+        if self.app.focused is not edits:
+            return
+
+        now = time.monotonic()
+
+        if (
+            self._last_escape_at is not None and
+            now - self._last_escape_at < _DOUBLE_ESC_WINDOW
+        ):
+            self._vm.discard_edit_instructions()
+            self._last_escape_at = None
+
+        else:
+            self._last_escape_at = now
+
+    def action_cycle_type(self, direction: str) -> None:
+        self._vm.cycle_current_entry_type(forward=(direction == "forward"))
+
+    def action_toggle_exclude(self) -> None:
+        self._vm.toggle_exclude_current_entry()
+
+    def action_accept(self) -> None:
+        self._vm.accept()
+
+    def action_reset(self) -> None:
+        self._vm.reset()
+
+    def action_toggle_edit_instructions(self) -> None:
+        self._vm.toggle_edit_instructions_area()
+
+        if self._vm.edit_instructions_visible:
+            self.query_one("#cp-edit-instructions", _EditInstructions).focus()
+        else:
+            self.focus()
+
+    def action_swap_edit_focus(self) -> None:
+        # Direct entry-list ↔ edit-instructions hop, skipping choices. If the
+        # area isn't open yet, open it and land there.
+        edits = self.query_one("#cp-edit-instructions", _EditInstructions)
+        if self.app.focused is edits:
+            self.focus()
+            return
+        if not self._vm.edit_instructions_visible:
+            self._vm.toggle_edit_instructions_area()
+        edits.focus()
+
+    def action_cycle_field(self, direction: str) -> None:
+        focused = self.app.focused
+        focused_id = focused.id if focused is not None else None
+        if focused is self or focused_id not in self._CYCLE_TARGETS:
+            current = "outer"
+        else:
+            current = focused_id
+
+        step = 1 if direction == "forward" else -1
+        nxt = self._CYCLE_TARGETS[
+            (self._CYCLE_TARGETS.index(current) + step) % len(self._CYCLE_TARGETS)
+        ]
+        target = self if nxt == "outer" else self.query_one(f"#{nxt}")
+        target.focus()
+
+    def action_pick_topic(self, scope: str) -> None:
         from rhizome.tui.screens.topic_selector import TopicSelectorScreen
 
+        cur = self._vm.cursor
+        if scope == "current" and cur is None:
+            return
+
         def on_dismiss(result: tuple[int, str] | None) -> None:
-            self._vm.apply_topic_selection(request, result)
+            if result is not None:
+                topic_id, topic_name = result
+                self._vm.topic_map[topic_id] = topic_name
+                if scope == "all":
+                    self._vm.set_topic_all(topic_id)
+                else:
+                    assert cur is not None
+                    self._vm.set_entry_topic(cur, topic_id)
             self.focus()
 
         self.app.push_screen(
@@ -328,334 +752,23 @@ class CommitProposal(InterruptWidgetBase):
             callback=on_dismiss,
         )
 
-    # ------------------------------------------------------------------
-    # DB-driven refresh
-    # ------------------------------------------------------------------
+    def action_select_choice(self) -> None:
+        focused = self.app.focused
+        choices = self.query_one("#cp-choices", _ChoicesList)
 
-    async def notify_database_committed(self, event: DatabaseCommitted) -> None:
-        """Routed here by the parent (chat_pane). Refresh topics if a topic
-        row may have changed; empty ``changed_tables`` means "unknown" so we
-        refresh defensively."""
-        if not event.changed_tables or "topic" in event.changed_tables:
-            await self._vm.refresh_topics()
-
-    def _on_completion_blocked(self) -> None:
-        """The VM refused to accept because at least one entry references a
-        deleted topic. Refresh topics in case the snapshot was just stale; if
-        the entry is *still* stale after refresh, the next accept attempt
-        will block again — at which point the View should surface the offending
-        rows to the user. (Visual flagging is left to ``_refresh``.)"""
-        async def _refresh_then_retry() -> None:
-            await self._vm.refresh_topics()
-            if not self._vm._data.stale_topic_entry_indices():
-                self._vm._accept_all()
-        self.run_worker(_refresh_then_retry(), exclusive=True)
-
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if self._suppress_text_change:
-            return
-        if event.text_area.id == "cp-detail-content":
-            self._vm.entry_list.set_content(event.text_area.text)
-        elif event.text_area.id == "cp-edit-instructions":
-            # Edit-instructions buffer is owned by the sub-VM; mirror raw text.
-            self._vm.edit_instructions.buffer = event.text_area.text
-
-    # ------------------------------------------------------------------
-    # Refresh
-    # ------------------------------------------------------------------
-
-    def _refresh(self) -> None:
-        # Painted top-to-bottom; each helper owns exactly one region of the
-        # widget. _refresh_focus runs last because earlier helpers toggle
-        # ``can_focus`` on child editors that focus reconciliation depends on.
-        self._refresh_header()             # "Commit Proposal (N entries)"
-        self._refresh_hints()               # one-line keybinding cheatsheet
-        self._refresh_shared_topic()        # "Topic (all): …" row
-        self._refresh_entry_list()          # numbered list of entry rows
-        self._refresh_detail()              # title + meta + content for the cursor entry
-        self._refresh_choices()             # accept / edit / reset / cancel column
-        self._refresh_edit_instructions()   # multiline buffer (when visible)
-        self._refresh_focus()               # route Textual focus to the VM's focused region
-
-    # ----- header / hints ---------------------------------------------
-
-    def _refresh_header(self) -> None:
-        # Title + entry count, e.g. "Commit Proposal  (3 entries)".
-        text = Text()
-        text.append("  Commit Proposal", style=f"bold {_RED}")
-
-        n = len(self._vm._data.entries)
-        suffix = "y" if n == 1 else "ies"
-        text.append(f"  ({n} entr{suffix})", style=_DIM)
-        
-        self.query_one("#cp-header", Static).update(text)
-
-    def _refresh_hints(self) -> None:
-        # One-line cheatsheet of entry-list keybindings, sourced from KEYBINDINGS
-        # so renames in the VM propagate automatically.
-        kb = KEYBINDINGS
-        hints = (
-            f"  {kb[Action.TOGGLE_EXCLUDED]}: exclude/include  "
-            f"{kb[Action.CYCLE_TYPE]}: cycle type  "
-            f"{kb[Action.OPEN_TOPIC_SELECTOR]}: change topic  "
-            f"{kb[Action.OPEN_SHARED_TOPIC_SELECTOR]}: change all topics  "
-            f"{kb[Action.CYCLE_FIELD_FORWARD]}: edit fields"
-        )
-        self.query_one("#cp-hints", Static).update(Text(hints, style=_HINT))
-
-    # ----- shared topic row -------------------------------------------
-
-    def _refresh_shared_topic(self) -> None:
-        # Single-line row above the entry list. Shows the topic shared by all
-        # entries, or "(mixed)" when entries disagree. Highlights when focused.
-        focused = self._vm.focused == CommitProposalViewModel.Region.SHARED_TOPIC
-        topic_id = self._common_topic_id()
-        if topic_id is None:
-            label, is_stale = "(mixed)", False
-        else:
-            label, is_stale = self._format_topic(topic_id)
-
-        marker_style = f"bold {_FOCUS_GREEN}" if focused else ""
-        if is_stale:
-            body_style = f"bold {_RED}" if focused else _RED
-        else:
-            body_style = f"bold {_FOCUS_GREEN}" if focused else _DIM
-        text = Text()
-        text.append("► " if focused else "  ", style=marker_style)
-        text.append(f"Topic (all): {label}", style=body_style)
-        self.query_one("#cp-shared-topic", Static).update(text)
-
-    def _common_topic_id(self) -> int | None:
-        ids = {e.topic_id for e in self._vm._data.entries}
-        return ids.pop() if len(ids) == 1 else None
-
-    def _format_topic(self, topic_id: int | None) -> tuple[str, bool]:
-        """Render a topic_id for display. Returns ``(label, is_stale)`` where
-        ``is_stale`` is True iff the id is set but missing from the topic map
-        — i.e. the topic was deleted and the entry can't be safely committed
-        until the user picks a new topic."""
-        if topic_id is None:
-            return ("(none)", False)
-        name = self._topic_map.get(topic_id)
-        if name is None:
-            return (f"(deleted) [{topic_id}]", True)
-        return (f"{name} [{topic_id}]", False)
-
-    # ----- entry list -------------------------------------------------
-
-    def _refresh_entry_list(self) -> None:
-        # Renders one row per entry, laid out as:
-        #   "► 1.  <title>          <type> │ <topic> [id]"
-        # The title column flexes to the longest title; the right column
-        # (type + topic) is right-padded to a uniform width so it lines up.
-        entries = self._vm._data.entries
-        focused = self._vm.focused == CommitProposalViewModel.Region.ENTRY_LIST
-        cursor = self._vm.entry_list.cursor
-
-        # Pre-compute the right-column strings so we can size the column to
-        # the widest one before we start painting rows. ``stale_flags`` tracks
-        # which rows reference a deleted topic so the row paints in red.
-        right_parts: list[str] = []
-        stale_flags: list[bool] = []
-        for entry in entries:
-            etype = self._format_type(entry.entry_type)
-            topic_label, is_stale = self._format_topic(entry.topic_id)
-            right_parts.append(f"{etype} │ {topic_label}")
-            stale_flags.append(is_stale)
-        max_right = max((len(r) for r in right_parts), default=0)
-
-        num_width = len(str(len(entries))) + 2  # "N." + trailing space
-        max_title = max((len(e.title) for e in entries), default=0)
-
-        text = Text()
-        for i, entry in enumerate(entries):
-            if i > 0:
-                text.append("\n")
-            is_selected = focused and cursor == i
-            is_excluded = self._vm._data.is_excluded(i)
-
-            # Row pieces — marker, number, title, gap to right column, right column.
-            marker = "► " if is_selected else "  "
-            num = f"{i + 1}. ".rjust(num_width + 1)
-            title = entry.title
-            right = right_parts[i].rjust(max_right)
-            gap = " " * (max_title - len(title) + 2)
-
-            # Excluded entries take precedence over selection (struck-through, dim).
-            # Stale-topic entries get a red right column so the user can see at a
-            # glance which rows are blocking commit; the title column keeps its
-            # normal styling so selection/focus still reads correctly.
-            if is_excluded:
-                style = f"{_EXCLUDED_DIM} strike"
-                right_style = f"{_EXCLUDED_DIM} strike"
-            elif is_selected:
-                style = f"bold {_FOCUS_GREEN}"
-                right_style = _RED if stale_flags[i] else _DIM
-            else:
-                style = ""
-                right_style = _RED if stale_flags[i] else _DIM
-
-            text.append(marker, style=f"bold {_FOCUS_GREEN}" if is_selected else "")
-            text.append(num, style=style)
-            text.append(title, style=style)
-            text.append(gap)
-            text.append(right, style=right_style)
-
-        self.query_one("#cp-entry-list", Static).update(text)
-
-    @staticmethod
-    def _format_type(value: KnowledgeEntryType | None) -> str:
-        return value.name.lower() if value is not None else ""
-
-    # ----- detail panel -----------------------------------------------
-
-    def _refresh_detail(self) -> None:
-        # Bordered panel below the entry list showing the current entry's
-        # title (Input), meta line (Type / Topic), and content (TextArea).
-        # Hidden entirely when the proposal has no entries.
-        entries = self._vm._data.entries
-        if not entries:
-            self.query_one("#cp-detail-panel", Vertical).display = False
-            return
-        self.query_one("#cp-detail-panel", Vertical).display = True
-
-        idx = max(0, min(self._vm.entry_list.cursor, len(entries) - 1))
-        entry = entries[idx]
-
-        panel = self.query_one("#cp-detail-panel", Vertical)
-        panel.border_title = f"Entry {idx + 1}"
-
-        # Title editor.
-        # ``can_focus`` mirrors VM intent: editors only accept focus when the
-        # entry-list field state says they should. This is what enforces
-        # unidirectional VM → V focus — a stray mouse click can't focus an
-        # editor the VM hasn't transitioned into.
-        title_input = self.query_one("#cp-detail-title", _TitleInput)
-        title_input.can_focus = (
-            self._vm.focused == CommitProposalViewModel.Region.ENTRY_LIST
-            and self._vm.entry_list.field == EntryListVM.Field.TITLE
-        )
-        if title_input.value != entry.title:
-            self._suppress_text_change = True
-            try:
-                title_input.value = entry.title
-            finally:
-                self._suppress_text_change = False
-
-        # Content editor — same can_focus / suppress-echo dance as the title.
-        content_area = self.query_one("#cp-detail-content", _ContentInput)
-        content_area.can_focus = (
-            self._vm.focused == CommitProposalViewModel.Region.ENTRY_LIST
-            and self._vm.entry_list.field == EntryListVM.Field.CONTENT
-        )
-        if content_area.text != entry.content:
-            self._suppress_text_change = True
-            try:
-                content_area.load_text(entry.content)
-            finally:
-                self._suppress_text_change = False
-
-        # Meta line (read-only): "Type: …   Topic: … [id]   (excluded)".
-        # Stale topic id is rendered in red as a hint that the user must
-        # re-pick before the proposal can be accepted.
-        etype = self._format_type(entry.entry_type)
-        topic_label, is_stale = self._format_topic(entry.topic_id)
-        topic_markup = f"[{_RED}]{topic_label}[/]" if is_stale else topic_label
-        excluded_note = "  [dim](excluded)[/dim]" if self._vm._data.is_excluded(idx) else ""
-        self.query_one("#cp-detail-meta", Static).update(
-            f"  Type: {etype}   Topic: {topic_markup}{excluded_note}"
-        )
-
-    # ----- choices ----------------------------------------------------
-
-    def _refresh_choices(self) -> None:
-        # Renders the bottom action column. Each row is:
-        #   "► <Label> (<hint>)        <description>"
-        # The hint column is right-padded so descriptions line up. The choice
-        # set itself is owned by the VM (it shrinks/grows with the edit-
-        # instructions panel), so we just iterate whatever it hands us.
-        choices = self._vm.choices.items
-        focused = self._vm.focused == CommitProposalViewModel.Region.CHOICES_LIST
-        cursor = self._vm.choices.cursor % max(len(choices), 1)
-
-        # Width of "► <Label> (<hint>)" per row, used to align descriptions.
-        prefix_lengths = [
-            2 + len(_CHOICE_LABELS[c]) + 1 + len(f"({_CHOICE_HINTS[c]})")
-            for c in choices
-        ]
-        max_prefix = max(prefix_lengths, default=0)
-
-        text = Text()
-        for i, choice in enumerate(choices):
-            if i > 0:
-                text.append("\n")
-            is_selected = focused and i == cursor
-            label = _CHOICE_LABELS[choice]
-            hint = _CHOICE_HINTS[choice]
-            desc = _CHOICE_DESCRIPTIONS[choice]
-            if is_selected:
-                text.append(f"► {label}", style=f"bold {_RED}")
-            else:
-                text.append(f"  {label}", style=_DIM)
-            text.append(f" ({hint})", style=_HINT)
-            padding = max_prefix - prefix_lengths[i] + 2
-            text.append(" " * padding + desc, style=_HINT)
-        self.query_one("#cp-choices", Static).update(text)
-
-    # ----- edit instructions ------------------------------------------
-
-    def _refresh_edit_instructions(self) -> None:
-        # Multiline buffer below the choices column. Hidden by default; shown
-        # only when the user opts in via ctrl+e or the "Edit" choice. We mirror
-        # the VM's buffer into the TextArea here whenever the two diverge
-        # (i.e. the VM was edited from somewhere other than this widget).
-        edit_inst = self.query_one("#cp-edit-instructions", _EditInstructions)
-        edit_inst.display = self._vm.edit_instructions.visible
-        # Only focusable when the VM says this region owns focus.
-        edit_inst.can_focus = (
-            self._vm.focused == CommitProposalViewModel.Region.EDIT_INSTRUCTIONS
-        )
-        if not self._vm.edit_instructions.visible:
-            return
-        if edit_inst.text != self._vm.edit_instructions.buffer:
-            self._suppress_text_change = True
-            try:
-                edit_inst.load_text(self._vm.edit_instructions.buffer)
-            finally:
-                self._suppress_text_change = False
-
-    # ----- focus reconciliation ---------------------------------------
-
-    def _refresh_focus(self) -> None:
-        """Route Textual focus to match the VM's logical focus.
-
-        VM is the source of truth: every dirty emit reconciles Textual focus
-        to whichever widget the VM currently delegates input to. Most regions
-        don't take focus themselves — the parent eats keys and forwards to
-        ``vm.on_key``. The exceptions are:
-
-          - entry list with ``field`` in {TITLE, CONTENT}: focus the matching
-            editor so typing lands there.
-          - edit instructions visible AND focused: focus the textarea.
-
-        Only reconciles when we already own focus somewhere in our subtree —
-        otherwise we'd steal focus from sibling widgets (chat input, etc.).
-        Initial routing on widget mount is handled by ``on_mount`` calling
-        ``self.focus()``.
-        """
-        app_focused = self.app.focused
-        own_subtree = {self, *self.query("*")}
-        if app_focused not in own_subtree:
+        if focused is not choices:
             return
 
-        target: Any = self
-        in_entry_list = self._vm.focused == CommitProposalViewModel.Region.ENTRY_LIST
-        if in_entry_list and self._vm.entry_list.field == EntryListVM.Field.TITLE:
-            target = self.query_one("#cp-detail-title", _TitleInput)
-        elif in_entry_list and self._vm.entry_list.field == EntryListVM.Field.CONTENT:
-            target = self.query_one("#cp-detail-content", _ContentInput)
-        elif self._vm.focused == CommitProposalViewModel.Region.EDIT_INSTRUCTIONS:
-            target = self.query_one("#cp-edit-instructions", _EditInstructions)
+        current_choice = choices.cursor
+        action = [
+            self._vm.accept,
+            self._vm.toggle_edit_instructions_area,
+            self._vm.reset,
+            self._vm.cancel
+        ][current_choice]
 
-        if app_focused is not target:
-            target.focus()
+        action()
+
+    def action_cancel_interrupt(self) -> None:
+        self._vm.cancel()
+
