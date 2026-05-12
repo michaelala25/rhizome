@@ -14,8 +14,8 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 
-from .entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
-from .interrupt import InterruptWidgetBase
+from ..entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
+from ..interrupt import InterruptWidgetBase
 
 # ---------------------------------------------------------------------------
 # Constants

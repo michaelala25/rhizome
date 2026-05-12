@@ -66,6 +66,7 @@ from .resource.view_model import ResourceViewerViewModel
 from .resource.viewer import ResourceViewer
 from .commit_proposal.view import CommitProposal
 from .flashcard_proposal import FlashcardProposal
+from .flashcard_proposal.view import FlashcardProposal as FlashcardProposalMVVM
 from .flashcard_review.view import FlashcardReview
 from .choices import Choices
 from .multiple_choices import MultipleChoices
@@ -1602,7 +1603,7 @@ class ChatPane(Widget, DockContainerMixin):
         ]
 
         area = self.query_one("#message-area")
-        proposal = FlashcardProposal(flashcards=sample_cards)
+        proposal = FlashcardProposalMVVM(flashcards=sample_cards)
         await area.mount(proposal)
         area.scroll_end(animate=False)
         self._active_widgets.append(proposal)
