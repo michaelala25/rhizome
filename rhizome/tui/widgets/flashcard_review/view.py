@@ -13,12 +13,12 @@ from textual.widgets import Button, Rule, Static, TextArea
 from fsrs import Rating
 
 from ._dot_strips import _DotStrip
+from .keymap import KEYBINDINGS, key_to_action
 from .view_model import (
-    Action,
     Flashcard,
     FlashcardData,
+    FlashcardReviewAction,
     FlashcardReviewViewModel,
-    KEYBINDINGS,
 )
 from ..interrupt import InterruptWidgetBase
 from ..view_base import ViewBase
@@ -358,8 +358,8 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         self._vm.unsubscribe(self._vm.dirty, self._maybe_resolve)
 
     def action_cancel_interrupt(self) -> None:
-        """No-op. Ctrl+c is owned by the VM's ``on_key`` handler, which
-        transitions the VM to its DONE(cancelled=True) state;
+        """No-op. Ctrl+c is owned by this widget's ``on_key`` handler, which
+        resolves it to ``FlashcardReviewAction.CANCEL`` and routes it through ``vm.dispatch``;
         ``_maybe_resolve`` then cancels the underlying future.
 
         If this also called ``self._vm.cancel()``, Textual would fire
@@ -460,13 +460,25 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
     def on_key(self, event: events.Key) -> None:
-        self._vm.on_key(event)
+        # Resolve the key to a semantic FlashcardReviewAction via the binding layer. If it
+        # maps to nothing in the current VM state, let Textual handle it
+        # normally (focus traversal, app-level bindings, etc.).
+        action = key_to_action(event.key, self._vm)
+        if action is None:
+            return
+        self._vm.dispatch(action)
+        event.stop()
+        event.prevent_default()
 
     def on__answer_input_submitted(
         self, event: _AnswerInput.Submitted
     ) -> None:
-        # Route the enter keypress the TextArea swallowed up to the VM.
-        self._vm.on_key(events.Key("enter", "\r"))
+        # Route the enter keypress the TextArea swallowed through the binding
+        # layer just like any other on_key — the action it resolves to depends
+        # on the current card state (FRONT → REVEAL_BACK during normal flow).
+        action = key_to_action("enter", self._vm)
+        if action is not None:
+            self._vm.dispatch(action)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "fr-answer-input":
@@ -514,7 +526,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
             status = f"[bold {_APPROVAL_YELLOW}]auto-approve enabled[/]"
         else:
             status = f"[{_HINT_DIM}]auto-approve disabled[/]"
-        binding = KEYBINDINGS[Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE]
+        binding = KEYBINDINGS[FlashcardReviewAction.TOGGLE_AUTO_APPROVE_AUTO_SCORE]
         hint.update(
             f"{status}  [{_HINT_DIM}]({binding} to toggle)[/]"
         )
@@ -552,7 +564,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         if self._vm.help_visible:
             hint.update("")
         else:
-            hint.update(f"[bold]{KEYBINDINGS[Action.TOGGLE_HELP]}[/]  show help")
+            hint.update(f"[bold]{KEYBINDINGS[FlashcardReviewAction.TOGGLE_HELP]}[/]  show help")
 
         full = self.query_one("#fr-help", Static)
         full.display = self._vm.help_visible
@@ -565,13 +577,13 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         current_default = "auto" if self._vm.auto_score_enabled else "good"
         auto_label = f"enter default = {current_default}"
         rows = [
-            (Action.TOGGLE_HELP, "hide help"),
-            (Action.CANCEL, "cancel session"),
-            (Action.TOGGLE_TIMER, "toggle timer"),
-            (Action.RESET_CARD, "reset current card"),
-            (Action.TOGGLE_SKIP, "skip / unskip card"),
-            (Action.TOGGLE_FLAG, "flag / unflag card"),
-            (Action.TOGGLE_AUTO_SCORE, auto_label),
+            (FlashcardReviewAction.TOGGLE_HELP, "hide help"),
+            (FlashcardReviewAction.CANCEL, "cancel session"),
+            (FlashcardReviewAction.TOGGLE_TIMER, "toggle timer"),
+            (FlashcardReviewAction.RESET_CARD, "reset current card"),
+            (FlashcardReviewAction.TOGGLE_SKIP, "skip / unskip card"),
+            (FlashcardReviewAction.TOGGLE_FLAG, "flag / unflag card"),
+            (FlashcardReviewAction.TOGGLE_AUTO_SCORE, auto_label),
         ]
         return "    ".join(
             f"[bold]{KEYBINDINGS[action]}[/]  {label}"
@@ -768,7 +780,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         draft sync suppresses the echo back through ``on_text_area_changed``.
 
         Focus management: route focus to the input when it's visible (so typing lands
-        there), to ``self`` otherwise (so enter/1-4/nav keys reach ``vm.on_key``). Only
+        there), to ``self`` otherwise (so enter/1-4/nav keys reach ``on_key``). Only
         move focus if we already own it somewhere — don't steal from the chat input or
         anywhere else outside this widget.
         """
@@ -929,9 +941,9 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         row = "    ".join(segments)
 
         # Bold yellow for [approve]
-        approve_binding     = KEYBINDINGS[Action.APPROVE_AUTO_SCORE]
-        approve_all_binding = KEYBINDINGS[Action.ACCEPT_ALL_AUTO_SCORES]
-        reject_binding      = KEYBINDINGS[Action.REJECT_AUTO_SCORE]
+        approve_binding     = KEYBINDINGS[FlashcardReviewAction.APPROVE_AUTO_SCORE]
+        approve_all_binding = KEYBINDINGS[FlashcardReviewAction.ACCEPT_ALL_AUTO_SCORES]
+        reject_binding      = KEYBINDINGS[FlashcardReviewAction.REJECT_AUTO_SCORE]
 
         hint = (
             f"[bold {_APPROVAL_YELLOW}]\\[{approve_binding}] to approve[/]  ·  "

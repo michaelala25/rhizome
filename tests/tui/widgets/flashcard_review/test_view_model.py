@@ -28,11 +28,20 @@ from types import SimpleNamespace
 import pytest
 from fsrs import Card, Rating, Scheduler, State
 
+from rhizome.tui.widgets.flashcard_review.keymap import key_to_action
 from rhizome.tui.widgets.flashcard_review.view_model import (
     Flashcard,
     FlashcardReviewViewModel,
     Timer,
 )
+
+
+def _press(vm: FlashcardReviewViewModel, key: str) -> None:
+    """Simulate a keypress at the View boundary: resolve to a FlashcardReviewAction via the
+    binding layer, then dispatch it. Mirrors what view.py's on_key does."""
+    action = key_to_action(key, vm)
+    if action is not None:
+        vm.dispatch(action)
 
 
 # ---------------------------------------------------------------------------
@@ -1042,8 +1051,7 @@ class TestReviewBatchAutoScore:
 
         # Simulate the user pressing enter (via the key handler). Must rate
         # GOOD, not re-defer to AUTO (which would assert).
-        key = SimpleNamespace(key="enter")
-        review._on_key_reviewing(key)
+        _press(review, "enter")
 
         assert review.current_card.state == Flashcard.State.SCORED
         assert review.current_card.score == Flashcard.Score.GOOD
@@ -1175,14 +1183,13 @@ class TestRegressions:
         assert review.current_card.id == 2
 
         # alt+s skip card 2
-        key = SimpleNamespace(key="alt+s")
-        review._on_key_reviewing(key)
+        _press(review, "alt+s")
         assert review._cards[1].score == Flashcard.Score.SKIPPED
 
         # Navigate to card 3 and alt+s skip
         while review.current_card.id != 3:
             review.next_card()
-        review._on_key_reviewing(key)
+        _press(review, "alt+s")
         assert review._cards[2].score == Flashcard.Score.SKIPPED
 
         # The fix: alt+s now calls _check_ready_to_autoscore, which finds
@@ -1335,9 +1342,8 @@ class TestScoredPendingApproval:
         await review._autoscore_task
 
         # Approve each pending-approval card via enter.
-        key_enter = SimpleNamespace(key="enter")
         for _ in range(3):
-            review._on_key_reviewing(key_enter)
+            _press(review, "enter")
 
         for c in review._cards:
             assert c.state == Flashcard.State.SCORED
@@ -1362,7 +1368,7 @@ class TestScoredPendingApproval:
             review.next_card()
         assert review.current_card.pending_score == Flashcard.Score.AGAIN
 
-        review._on_key_reviewing(SimpleNamespace(key="enter"))
+        _press(review, "enter")
 
         card1 = next(c for c in review._cards if c.id == 1)
         assert card1.state == Flashcard.State.AWAITING_REVEAL
@@ -1386,7 +1392,7 @@ class TestScoredPendingApproval:
         target_id = target.id
         fsrs_before = target.fsrs_card.state
 
-        review._on_key_reviewing(SimpleNamespace(key="d"))
+        _press(review, "d")
 
         assert target.state == Flashcard.State.REVEALED_NOT_SCORED
         assert target.pending_score is None
@@ -1410,7 +1416,7 @@ class TestScoredPendingApproval:
 
         while review.current_card.id != 1:
             review.next_card()
-        review._on_key_reviewing(SimpleNamespace(key="4"))  # SCORE_EASY
+        _press(review, "4")  # SCORE_EASY
 
         card1 = next(c for c in review._cards if c.id == 1)
         assert card1.state == Flashcard.State.SCORED
@@ -1439,7 +1445,7 @@ class TestScoredPendingApproval:
         target_id = target.id
         fsrs_before = target.fsrs_card.state
 
-        review._on_key_reviewing(SimpleNamespace(key="alt+s"))
+        _press(review, "alt+s")
 
         assert target.state == Flashcard.State.SCORED
         assert target.score == Flashcard.Score.SKIPPED
@@ -1458,9 +1464,8 @@ class TestScoredPendingApproval:
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
-        key_enter = SimpleNamespace(key="enter")
         for _ in range(3):
-            review._on_key_reviewing(key_enter)
+            _press(review, "enter")
 
         scores = {c.id: c.score for c in review._cards}
         assert scores == {

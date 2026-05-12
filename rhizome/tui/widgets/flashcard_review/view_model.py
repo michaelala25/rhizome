@@ -173,7 +173,6 @@ from enum import Enum, auto
 from typing import Any
 
 from fsrs import Scheduler, State
-from textual import events
 
 from rhizome.db.operations.flashcards import commit_fsrs_card
 from rhizome.logs import get_logger
@@ -184,12 +183,16 @@ from rhizome.tui.widgets.view_model_base import Emitter, ViewModelBase
 _logger = get_logger("tui.flashcard_review_vm")
 
 
-class Action(Enum):
-    """Semantic keyboard actions handled by the view-model.
+class FlashcardReviewAction(Enum):
+    """Semantic actions handled by the view-model — the VM's action vocabulary.
 
-    Multiple actions can map to the same key (e.g. all four ``enter`` flavors in REVIEWING — REVEAL_BACK /
-    REVEAL_FRONT / SCORE_DEFAULT / ADVANCE_NEXT — share ``"enter"``); the dispatcher disambiguates by state.
-    Keeping them as separate Action members lets a help dropdown show contextual labels per state.
+    The keymap layer (``keymap.py``) resolves raw keys to one of these; the VM's
+    ``dispatch(action)`` routes each to its handler method. Multiple actions can
+    map to the same key (e.g. all five ``enter`` flavors in REVIEWING — REVEAL_BACK
+    / REVEAL_FRONT / SCORE_DEFAULT / SCORE_DEFAULT_GOOD / ADVANCE_NEXT /
+    APPROVE_AUTO_SCORE — share ``"enter"``); ``key_to_action`` disambiguates by
+    state. Keeping them as separate FlashcardReviewAction members lets a help dropdown show
+    contextual labels per state.
     """
     # START
     BEGIN = auto()             # enter
@@ -199,21 +202,27 @@ class Action(Enum):
     PREV_CARD = auto()         # alt+left  (REVIEWING + DONE)
     NEXT_CARD = auto()         # alt+right (REVIEWING + DONE)
 
-    # REVIEWING
+    # REVIEWING — enter flavors (all map to "enter"; key_to_action disambiguates)
     REVEAL_BACK = auto()       # enter on FRONT
     REVEAL_FRONT = auto()      # enter on AWAITING_REVEAL
-    SCORE_DEFAULT = auto()     # enter on REVEALED_NOT_SCORED
+    SCORE_DEFAULT = auto()     # enter on REVEALED_NOT_SCORED (auto path)
+    SCORE_DEFAULT_GOOD = auto()# enter on REVEALED_NOT_SCORED (manual fallback)
     ADVANCE_NEXT = auto()      # enter on SCORED / PENDING_AUTO_SCORE
+    APPROVE_AUTO_SCORE = auto()# enter on SCORED_PENDING_APPROVAL
+
+    # REVIEWING — digit / letter ratings
     SCORE_AGAIN = auto()       # 1
     SCORE_HARD = auto()        # 2
     SCORE_GOOD = auto()        # 3
     SCORE_EASY = auto()        # 4
+    REJECT_AUTO_SCORE = auto() # d   on SCORED_PENDING_APPROVAL
+
+    # REVIEWING — toggles
     TOGGLE_TIMER = auto()      # ctrl+k
     RESET_CARD = auto()        # alt+x
     TOGGLE_SKIP = auto()       # alt+s
     TOGGLE_FLAG = auto()       # alt+m
-    APPROVE_AUTO_SCORE = auto()  # enter on SCORED_PENDING_APPROVAL
-    REJECT_AUTO_SCORE = auto()   # d   on SCORED_PENDING_APPROVAL
+    TOGGLE_AUTO_APPROVE_AUTO_SCORE = auto()  # shift+tab
 
     # DONE
     TOGGLE_COLLAPSED = auto()  # enter
@@ -221,63 +230,9 @@ class Action(Enum):
     # Cross-state UI toggle
     TOGGLE_HELP = auto()       # alt+h
     TOGGLE_AUTO_SCORE = auto() # alt+a
-    TOGGLE_AUTO_APPROVE_AUTO_SCORE = auto()  # shift+tab
 
     # Bulk action
     ACCEPT_ALL_AUTO_SCORES = auto()  # ctrl+enter (alias: ctrl+j)
-
-
-KEYBINDINGS: dict[Action, str] = {
-    Action.BEGIN: "enter",
-    Action.CANCEL: "ctrl+c",
-    Action.PREV_CARD: "alt+left",
-    Action.NEXT_CARD: "alt+right",
-    Action.REVEAL_BACK: "enter",
-    Action.REVEAL_FRONT: "enter",
-    Action.SCORE_DEFAULT: "enter",
-    Action.ADVANCE_NEXT: "enter",
-    Action.SCORE_AGAIN: "1",
-    Action.SCORE_HARD: "2",
-    Action.SCORE_GOOD: "3",
-    Action.SCORE_EASY: "4",
-    Action.TOGGLE_TIMER: "ctrl+k",
-    Action.RESET_CARD: "alt+x",
-    Action.TOGGLE_SKIP: "alt+s",
-    Action.TOGGLE_FLAG: "alt+m",
-    Action.APPROVE_AUTO_SCORE: "enter",
-    Action.REJECT_AUTO_SCORE: "d",
-    Action.TOGGLE_COLLAPSED: "enter",
-    Action.TOGGLE_HELP: "alt+h",
-    Action.TOGGLE_AUTO_SCORE: "alt+a",
-    Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE: "shift+tab",
-    Action.ACCEPT_ALL_AUTO_SCORES: "ctrl+enter",
-}
-
-
-# Textual reports certain Ctrl+<letter> keypresses as their underlying control-character
-# names — most notably ``ctrl+enter`` arrives as ``ctrl+j``. Keep KEYBINDINGS using the
-# user-friendly form (so the UI displays "ctrl+enter") and resolve aliases here when
-# matching against ``event.key``.
-_KEY_ALIASES: dict[str, str] = {
-    "ctrl+j": "ctrl+enter",
-}
-
-
-def _matches_binding(event_key: str, binding: str) -> bool:
-    """True iff ``event_key`` matches ``binding`` directly or via a known control-char
-    alias (see ``_KEY_ALIASES``). Use in place of a raw ``==`` whenever the binding
-    string might use a display-friendly form like ``ctrl+enter``."""
-    return event_key == binding or _KEY_ALIASES.get(event_key) == binding
-
-
-# Map of digit-key → score for the REVIEWING digit dispatch.
-def _score_key_map() -> dict[str, "Flashcard.Score"]:
-    return {
-        KEYBINDINGS[Action.SCORE_AGAIN]: Flashcard.Score.AGAIN,
-        KEYBINDINGS[Action.SCORE_HARD]: Flashcard.Score.HARD,
-        KEYBINDINGS[Action.SCORE_GOOD]: Flashcard.Score.GOOD,
-        KEYBINDINGS[Action.SCORE_EASY]: Flashcard.Score.EASY,
-    }
 
 
 class FlashcardReviewViewModel(ViewModelBase):
@@ -333,149 +288,45 @@ class FlashcardReviewViewModel(ViewModelBase):
 
 
     # ========================================================================================================================
-    # Event Handlers
+    # FlashcardReviewAction dispatch
     # ========================================================================================================================
 
-    def on_key(self, event: events.Key) -> None:
+    def dispatch(self, action: FlashcardReviewAction) -> None:
+        """Run the VM-side handler for a semantic FlashcardReviewAction.
 
-        _logger.info("on_key: state=%s key=%r", self.state.name, event.key)
+        Bindings are resolved upstream by ``keymap.key_to_action`` — by the time
+        an action reaches here, it has already been disambiguated against the
+        current VM state (e.g. one of the five "enter" flavors in REVIEWING).
+        Each branch is a thin wrapper around an existing public method or a
+        small inline operation that emits ``dirty`` exactly once.
+        """
+        _logger.info("dispatch: state=%s action=%s", self.state.name, action.name)
 
-        # Cross-state: help toggle works in any state.
-        if event.key == KEYBINDINGS[Action.TOGGLE_HELP]:
-            self.toggle_help_visible()
-            return
-
-        # Cross-state: enter-default toggle (auto vs good).
-        if event.key == KEYBINDINGS[Action.TOGGLE_AUTO_SCORE]:
-            self.toggle_auto_score_enabled()
-            return
-
-        match self.state:
-            case FlashcardReviewViewModel.State.START:
-                self._on_key_start(event)
-            case FlashcardReviewViewModel.State.REVIEWING:
-                self._on_key_reviewing(event)
-            case FlashcardReviewViewModel.State.DONE:
-                self._on_key_done(event)
-
-
-    def _on_key_start(self, event: events.Key) -> None:
-        assert self.state == FlashcardReviewViewModel.State.START
-
-        if event.key == KEYBINDINGS[Action.BEGIN]:
-            self.begin()
-        elif event.key == KEYBINDINGS[Action.CANCEL]:
-            self.cancel()
-            event.stop()
-
-    def _on_key_reviewing(self, event: events.Key) -> None:
-        assert self.state == FlashcardReviewViewModel.State.REVIEWING
-
-        if event.key == KEYBINDINGS[Action.PREV_CARD]:
-            self.prev_card()
-
-        elif event.key == KEYBINDINGS[Action.NEXT_CARD]:
-            self.next_card()
-
-        elif event.key == KEYBINDINGS[Action.CANCEL]:
-            self.cancel()
-            event.stop()
-
-        elif event.key == KEYBINDINGS[Action.TOGGLE_TIMER]:
-            self.toggle_timers_visible()
-
-        elif event.key == KEYBINDINGS[Action.TOGGLE_FLAG]:
-            self.toggle_flag_current_card()
-
-        elif event.key == KEYBINDINGS[Action.TOGGLE_AUTO_APPROVE_AUTO_SCORE]:
-            self.toggle_auto_approve_auto_score()
-            event.stop()
-
-        elif _matches_binding(event.key, KEYBINDINGS[Action.ACCEPT_ALL_AUTO_SCORES]):
-            self.accept_all_auto_scores()
-            event.stop()
-
-        elif event.key == KEYBINDINGS[Action.RESET_CARD]:
-            self.reset_current_card()
-
-        elif event.key == KEYBINDINGS[Action.TOGGLE_SKIP]:
-            self.toggle_skip_current_card()
-
-
-        elif event.key in (score_keys := _score_key_map()):
-            if self.current_card and self.current_card.state in [
-                Flashcard.State.REVEALED_NOT_SCORED,
-                Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
-                Flashcard.State.SCORED_PENDING_APPROVAL,
-            ]:
-                # SCORED_PENDING_APPROVAL: digit acts as "reject the staged auto-score and apply the
-                # manual rating instead". score_current_card handles clearing _pending_score for this state.
-                self.score_current_card(score_keys[event.key])
-
-        elif event.key == KEYBINDINGS[Action.REJECT_AUTO_SCORE]:
-            # Reject the staged auto-score without applying a rating. Card goes back to REVEALED_NOT_SCORED
-            # (with _auto_score_discarded latched so the enter-default falls back to manual GOOD).
-            if self.current_card and self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
-                self.current_card.discard_pending_score()
-                self.emit(self.dirty)
-
-        # All four "enter" flavors in REVIEWING share the same key — keyed off SCORE_DEFAULT here for the
-        # lookup; siblings REVEAL_BACK, REVEAL_FRONT, ADVANCE_NEXT all map to the same key. The branch
-        # below disambiguates by card state.
-        elif event.key == KEYBINDINGS[Action.SCORE_DEFAULT]:
-            if not self.current_card:
-                return
-            
-            if self.current_card.state == Flashcard.State.FRONT:
-                self.current_card.reveal_back()
-                self.emit(self.dirty)
-
-            elif self.current_card.state == Flashcard.State.AWAITING_REVEAL:
-                self.current_card.reveal_front()
-                self.emit(self.dirty)
-
-            elif self.current_card.state == Flashcard.State.REVEALED_NOT_SCORED:
-                # Default enter-on-revealed action depends on config and on whether this card has
-                # already failed auto-scoring.
-                if (
-                    self._auto_score_enabled
-                    and not self.current_card.auto_scoring_failed
-                    and not self.current_card.auto_score_discarded
-                ):
-                    self.score_current_card(Flashcard.Score.AUTO)
-                else:
-                    # Either auto-scoring is disabled, or this card has already burned its auto-score
-                    # attempt — user needs to rate manually. Default to GOOD.
-                    self.score_current_card(Flashcard.Score.GOOD)
-
-            elif self.current_card.state == Flashcard.State.SCORED_PENDING_APPROVAL:
-                # Approve the staged auto-score — apply it via the normal scoring path. The pending
-                # score is the rating the auto-scorer proposed.
-                pending = self.current_card.pending_score
-                assert pending is not None
-                self.score_current_card(pending)
-
-            elif self.current_card.state in [
-                Flashcard.State.SCORED,
-                Flashcard.State.REVEALED_PENDING_AUTO_SCORE,
-            ]:
-                # Card is already done (or queued for auto-score) — enter advances to the next card
-                # still needing attention.
-                self._goto_next_unscored_card()
-                self.emit(self.dirty)
-
-            
-    def _on_key_done(self, event: events.Key) -> None:
-        assert self.state == FlashcardReviewViewModel.State.DONE
-
-        if event.key == KEYBINDINGS[Action.PREV_CARD]:
-            self.prev_card()
-
-        elif event.key == KEYBINDINGS[Action.NEXT_CARD]:
-            self.next_card()
-
-        elif event.key == KEYBINDINGS[Action.TOGGLE_COLLAPSED]:
-            self.toggle_collapsed()
+        match action:
+            case FlashcardReviewAction.BEGIN:                          self.begin()
+            case FlashcardReviewAction.CANCEL:                         self.cancel()
+            case FlashcardReviewAction.PREV_CARD:                      self.prev_card()
+            case FlashcardReviewAction.NEXT_CARD:                      self.next_card()
+            case FlashcardReviewAction.REVEAL_BACK:                    self.reveal_back_current_card()
+            case FlashcardReviewAction.REVEAL_FRONT:                   self.reveal_front_current_card()
+            case FlashcardReviewAction.ADVANCE_NEXT:                   self.advance_to_next_unscored()
+            case FlashcardReviewAction.APPROVE_AUTO_SCORE:             self.approve_pending_score()
+            case FlashcardReviewAction.REJECT_AUTO_SCORE:              self.reject_pending_score()
+            case FlashcardReviewAction.SCORE_DEFAULT:                  self.score_current_card(Flashcard.Score.AUTO)
+            case FlashcardReviewAction.SCORE_DEFAULT_GOOD:             self.score_current_card(Flashcard.Score.GOOD)
+            case FlashcardReviewAction.SCORE_AGAIN:                    self.score_current_card(Flashcard.Score.AGAIN)
+            case FlashcardReviewAction.SCORE_HARD:                     self.score_current_card(Flashcard.Score.HARD)
+            case FlashcardReviewAction.SCORE_GOOD:                     self.score_current_card(Flashcard.Score.GOOD)
+            case FlashcardReviewAction.SCORE_EASY:                     self.score_current_card(Flashcard.Score.EASY)
+            case FlashcardReviewAction.TOGGLE_TIMER:                   self.toggle_timers_visible()
+            case FlashcardReviewAction.RESET_CARD:                     self.reset_current_card()
+            case FlashcardReviewAction.TOGGLE_SKIP:                    self.toggle_skip_current_card()
+            case FlashcardReviewAction.TOGGLE_FLAG:                    self.toggle_flag_current_card()
+            case FlashcardReviewAction.TOGGLE_AUTO_APPROVE_AUTO_SCORE: self.toggle_auto_approve_auto_score()
+            case FlashcardReviewAction.ACCEPT_ALL_AUTO_SCORES:         self.accept_all_auto_scores()
+            case FlashcardReviewAction.TOGGLE_COLLAPSED:               self.toggle_collapsed()
+            case FlashcardReviewAction.TOGGLE_HELP:                    self.toggle_help_visible()
+            case FlashcardReviewAction.TOGGLE_AUTO_SCORE:              self.toggle_auto_score_enabled()
 
 
     # ========================================================================================================================
@@ -661,6 +512,58 @@ class FlashcardReviewViewModel(ViewModelBase):
         # Kick off the first card's think-time timer.
         self._unpause_current_if_front()
 
+        self.emit(self.dirty)
+
+
+    def reveal_back_current_card(self) -> None:
+        """Flip a FRONT card to REVEALED_NOT_SCORED. Driven by enter on FRONT."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        if self.current_card is None or self.current_card.state != Flashcard.State.FRONT:
+            return
+        self.current_card.reveal_back()
+        self.emit(self.dirty)
+
+
+    def reveal_front_current_card(self) -> None:
+        """Flip an AWAITING_REVEAL card back to FRONT for re-rating. Driven by enter on AWAITING_REVEAL."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        if self.current_card is None or self.current_card.state != Flashcard.State.AWAITING_REVEAL:
+            return
+        self.current_card.reveal_front()
+        self.emit(self.dirty)
+
+
+    def advance_to_next_unscored(self) -> None:
+        """Move the cursor to the next card needing attention. Driven by enter on
+        SCORED / REVEALED_PENDING_AUTO_SCORE."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        if self.current_card is None:
+            return
+        self._goto_next_unscored_card()
+        self.emit(self.dirty)
+
+
+    def approve_pending_score(self) -> None:
+        """Approve a staged auto-score by routing the proposed rating through the
+        normal scoring path. Driven by enter on SCORED_PENDING_APPROVAL."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        card = self.current_card
+        if card is None or card.state != Flashcard.State.SCORED_PENDING_APPROVAL:
+            return
+        pending = card.pending_score
+        assert pending is not None
+        self.score_current_card(pending)
+
+
+    def reject_pending_score(self) -> None:
+        """Discard a staged auto-score without applying a rating. Card returns to
+        REVEALED_NOT_SCORED with ``auto_score_discarded`` latched (so the enter-
+        default falls back to manual GOOD). Driven by 'd' on SCORED_PENDING_APPROVAL."""
+        assert self.state == FlashcardReviewViewModel.State.REVIEWING
+        card = self.current_card
+        if card is None or card.state != Flashcard.State.SCORED_PENDING_APPROVAL:
+            return
+        card.discard_pending_score()
         self.emit(self.dirty)
 
 
