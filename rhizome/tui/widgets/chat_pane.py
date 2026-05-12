@@ -64,7 +64,7 @@ from .explorer_viewer import ExplorerViewer
 from .messages import ActiveTopicChanged
 from .resource.view_model import ResourceViewerViewModel
 from .resource.viewer import ResourceViewer
-from .commit_proposal import CommitProposal
+from .commit_proposal.view import CommitProposal
 from .flashcard_proposal import FlashcardProposal
 from .flashcard_review.view import FlashcardReview
 from .choices import Choices
@@ -1639,7 +1639,11 @@ class ChatPane(Widget, DockContainerMixin):
         }
 
         area = self.query_one("#message-area")
-        proposal = CommitProposal(entries=sample_entries, topic_map=sample_topic_map)
+        proposal = CommitProposal(
+            entries=sample_entries,
+            topic_map=sample_topic_map,
+            session_factory=self._session_factory,
+        )
         await area.mount(proposal)
         area.scroll_end(animate=False)
         self._active_widgets.append(proposal)

@@ -18,7 +18,12 @@ class TopicSelectorScreen(ModalScreen[tuple[int, str] | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", show=False),
+        Binding("enter,ctrl+j", "select", show=False),
     ]
+
+    def __init__(self, *, session_factory=None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._session_factory = session_factory
 
     DEFAULT_CSS = """
     TopicSelectorScreen {
@@ -40,12 +45,18 @@ class TopicSelectorScreen(ModalScreen[tuple[int, str] | None]):
 
     def compose(self):
         with Vertical():
-            yield Static("Select a topic  (arrows navigate, enter select, esc cancel)")
-            yield TopicTree()
+            yield Static("Select a topic  (arrows navigate, ctrl+enter select, esc cancel)")
+            yield TopicTree(session_factory=self._session_factory)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         if event.node.data is not None:
             self.dismiss((event.node.data.id, event.node.data.name))
+
+    def action_select(self) -> None:
+        tree = self.query_one(TopicTree)
+        node = tree.cursor_node
+        if node is not None and node.data is not None:
+            self.dismiss((node.data.id, node.data.name))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
