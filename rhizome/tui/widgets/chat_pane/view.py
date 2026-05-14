@@ -63,6 +63,11 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # AgentMessageView for AgentMessageViewModel.
         self._mounted: list[FeedEntryWidget] = []
 
+        # Mirrors vm.input_enabled across _refresh calls so we can detect a
+        # False→True transition and refocus the input. The VM doesn't need to
+        # know about focus — it's a view-side derived behavior.
+        self._prev_input_enabled: bool = self._vm.input_enabled
+
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
 
@@ -139,7 +144,14 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
         if chat_input.disabled != (not self._vm.input_enabled):
             chat_input.disabled = not self._vm.input_enabled
-            
+
+        # Refocus on a disabled→enabled transition. Covers the interrupt
+        # case (input is disabled while awaiting resolution, then re-enabled
+        # on resolve/cancel) and any future state that toggles the input.
+        if self._vm.input_enabled and not self._prev_input_enabled:
+            chat_input.focus()
+        self._prev_input_enabled = self._vm.input_enabled
+
         if chat_input.text != self._vm.input_buffer:
             chat_input.text = self._vm.input_buffer
 
