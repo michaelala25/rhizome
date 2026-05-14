@@ -286,7 +286,7 @@ class ChatPaneViewModel(ViewModelBase):
         self.emit(self.dirty)
 
         try:
-            return await vm.wait_for_selection()
+            return await vm.future()
         except asyncio.CancelledError:
             return None
         finally:

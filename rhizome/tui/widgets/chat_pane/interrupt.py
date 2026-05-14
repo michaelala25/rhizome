@@ -40,7 +40,7 @@ class InterruptViewModelBase(ViewModelBase):
         self.cancelled: bool = False
         self.result: Any | None = None
 
-    async def wait_for_selection(self) -> Any:
+    async def future(self) -> Any:
         """Block until the user resolves (or cancels) this interrupt. Returns
         the resolved value, or raises ``asyncio.CancelledError`` on cancel.
         """
@@ -50,10 +50,12 @@ class InterruptViewModelBase(ViewModelBase):
         """Set the future to ``value``. No-op if already resolved/cancelled."""
         if self.resolved:
             return
+        
         self.resolved = True
         self.result = value
         if not self._future.done():
             self._future.set_result(value)
+
         self.emit(self.dirty)
 
     def cancel(self) -> None:
@@ -62,10 +64,12 @@ class InterruptViewModelBase(ViewModelBase):
         """
         if self.resolved:
             return
+        
         self.resolved = True
         self.cancelled = True
         if not self._future.done():
             self._future.cancel()
+
         self.emit(self.dirty)
 
 
@@ -144,13 +148,16 @@ class TestInterruptView(ViewBase[TestInterruptViewModel]):
 
     def _refresh(self) -> None:
         lines: list[str] = [self._vm.prompt, ""]
+
         for i, opt in enumerate(self._vm.options):
             marker = ">" if (i == self._vm.cursor and not self._vm.resolved) else " "
             lines.append(f"{marker} {opt}")
+
         if self._vm.resolved:
             tail = "(cancelled)" if self._vm.cancelled else f"chose: {self._vm.result}"
             lines.extend(["", tail])
             self.add_class("--resolved")
+
         self.query_one("#interrupt-body", Static).update("\n".join(lines))
 
     def action_move_cursor(self, delta: int) -> None:
