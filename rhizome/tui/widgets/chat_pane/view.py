@@ -24,6 +24,9 @@ from .view_model import ChatPaneViewModel
 from rhizome.tui.types import ChatMessageData
 
 
+FeedEntryWidget = ChatMessage | AgentMessageView | TestInterruptView
+
+
 class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
     DEFAULT_CSS = """
@@ -58,7 +61,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # callbacks can reach them directly. The element type depends on the
         # corresponding feed entry: ChatMessage for ChatMessageData,
         # AgentMessageView for AgentMessageViewModel.
-        self._mounted: list[ChatMessage | AgentMessageView] = []
+        self._mounted: list[FeedEntryWidget] = []
 
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
@@ -97,7 +100,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
         if isinstance(entry, ChatMessageData):
             cls = RichChatMessage if entry.rich else MarkdownChatMessage
-            widget: ChatMessage | AgentMessageView | TestInterruptView = cls(
+            widget: FeedEntryWidget = cls(
                 role=entry.role, content=entry.content, mode=entry.mode
             )
         elif isinstance(entry, AgentMessageViewModel):
