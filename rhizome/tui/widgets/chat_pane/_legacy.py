@@ -52,27 +52,27 @@ from rhizome.tui.options import Options, OptionScope, build_jsonc_snapshot, pars
 from rhizome.tui.dock import DockContainerMixin, HorizontalDockArea, VerticalDockArea
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Mode, Role
 
-from .chat_input import ChatInput
-from .command_palette import CommandPalette
-from .agent_message_harness import AgentMessageHarness
-from .shell_message import ShellCommandMessage
-from .message import ChatMessage, MarkdownChatMessage, RichChatMessage
-from .options_editor import OptionsEditor
-from .welcome import WelcomeHeader
-from .status_bar import StatusBar
-from .explorer_viewer import ExplorerViewer
-from .messages import ActiveTopicChanged
-from .resource.view_model import ResourceViewerViewModel
-from .resource.viewer import ResourceViewer
-from .commit_proposal.view import CommitProposal
-from .flashcard_proposal import FlashcardProposal
-from .flashcard_proposal.view import FlashcardProposal as FlashcardProposalMVVM
-from .flashcard_review.view import FlashcardReview
-from .choices import Choices
-from .multiple_choices import MultipleChoices
-from .navigable import WidgetDeactivated
-from .resource.loader_tree import _fmt_tokens
-from .thinking import Spinner
+from ..chat_input import ChatInput
+from ..command_palette import CommandPalette
+from ..agent_message_harness import AgentMessageHarness
+from ..shell_message import ShellCommandMessage
+from ..message import ChatMessage, MarkdownChatMessage, RichChatMessage
+from ..options_editor import OptionsEditor
+from ..welcome import WelcomeHeader
+from ..status_bar import StatusBar
+from ..explorer_viewer import ExplorerViewer
+from ..messages import ActiveTopicChanged
+from ..resource.view_model import ResourceViewerViewModel
+from ..resource.viewer import ResourceViewer
+from ..commit_proposal.view import CommitProposal
+from ..flashcard_proposal import FlashcardProposal
+from ..flashcard_proposal.view import FlashcardProposal as FlashcardProposalMVVM
+from ..flashcard_review.view import FlashcardReview
+from ..choices import Choices
+from ..multiple_choices import MultipleChoices
+from ..navigable import WidgetDeactivated
+from ..resource.loader_tree import _fmt_tokens
+from ..thinking import Spinner
 
 
 class HintHigherVerbosity(Message):
