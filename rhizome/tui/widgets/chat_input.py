@@ -144,17 +144,16 @@ class ChatInput(TextArea):
 
     def _is_complete_command(self, text: str) -> bool:
         """Return True if *text* is a fully typed known command (e.g. '/explore')."""
-        from .chat_pane import ChatPane
-
         parsed = parse_input(text)
         if parsed is None:
             return False
         if parsed.name == "quit":
             return True
 
-        # Walk up to find the parent ChatPane's registry
+        # Walk up to find any ancestor exposing a command registry — works for
+        # both the legacy ChatPane and the MVVM ChatPaneMVVM passthrough.
         node = self.parent
-        while node is not None and not isinstance(node, ChatPane):
+        while node is not None and not hasattr(node, "_command_registry"):
             node = node.parent
         if node is None:
             return False

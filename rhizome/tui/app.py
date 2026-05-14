@@ -43,9 +43,17 @@ class RhizomeApp(App):
     }
     """
 
-    def __init__(self, db_path: str | Path | None = None, debug: bool = False) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        debug: bool = False,
+        new_chat_pane: bool = False,
+    ) -> None:
         super().__init__()
         self.debug_logging = debug
+        # Temporary: opt-in to the MVVM chat-pane rewrite. Read by MainScreen /
+        # ChatTabPane to pick which widget to mount.
+        self.new_chat_pane = new_chat_pane
         engine = get_engine(db_path or get_default_db_path())
         self.session_factory = NotifyingSessionFactory(
             get_session_factory(engine),

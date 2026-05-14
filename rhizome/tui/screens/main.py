@@ -10,6 +10,7 @@ from textual.widgets import TabbedContent, TabPane
 from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Role, UserFeedback
 from rhizome.tui.widgets import ChatPane, LoggingPane
+from rhizome.tui.widgets.chat_pane import ChatPaneMVVM
 
 
 class LogTabPane(TabPane):
@@ -47,12 +48,20 @@ class ChatTabPane(TabPane):
     the displayed label when ``tab_name_len`` changes.
     """
 
-    def __init__(self, title: str, *, session_factory=None, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
+    def __init__(self, title: str, *, session_factory=None, tab_max_length: int = 20, show_welcome: bool = False, new_chat_pane: bool = False, **kwargs) -> None:
         self.full_name: str = title
         self._session_factory = session_factory
         self._tab_max_length: int = tab_max_length
         self._show_welcome = show_welcome
+        self._new_chat_pane = new_chat_pane
         super().__init__(self._truncated_label(), **kwargs)
+
+    @property
+    def chat_pane(self):
+        """Return the mounted chat pane (legacy or MVVM)."""
+        if self._new_chat_pane:
+            return self.query_one(ChatPaneMVVM)
+        return self.query_one(ChatPane)
 
     def _truncated_label(self) -> str:
         """Return ``full_name`` truncated to ``_tab_max_length`` characters."""
@@ -73,14 +82,18 @@ class ChatTabPane(TabPane):
 
     def notify_database_committed(self, event: DatabaseCommitted) -> None:
         """Propagate to the ChatPane."""
-        self.query_one(ChatPane).notify_database_committed(event)
+        pane = self.chat_pane
+        if hasattr(pane, "notify_database_committed"):
+            pane.notify_database_committed(event)
 
     def on_user_feedback(self, event: UserFeedback) -> None:
-        chat_pane = self.query_one(ChatPane)
-        chat_pane.append_message(ChatMessageData(role=Role.SYSTEM, content=event.text))
+        self.chat_pane.append_message(ChatMessageData(role=Role.SYSTEM, content=event.text))
 
     def compose(self) -> ComposeResult:
-        yield ChatPane(session_factory=self._session_factory, show_welcome=self._show_welcome)
+        if self._new_chat_pane:
+            yield ChatPaneMVVM(session_factory=self._session_factory)
+        else:
+            yield ChatPane(session_factory=self._session_factory, show_welcome=self._show_welcome)
 
 
 class MainScreen(Screen):
@@ -125,8 +138,16 @@ class MainScreen(Screen):
 
     def compose(self) -> ComposeResult:
         max_len = self.app.options.get(Options.TabMaxLength)  # type: ignore[attr-defined]
+        new_chat_pane = getattr(self.app, "new_chat_pane", False)
         with TabbedContent(id="tabs"):
-            yield ChatTabPane("Session 1", session_factory=self.app.session_factory, tab_max_length=max_len, show_welcome=True, id="session-1")
+            yield ChatTabPane(
+                "Session 1",
+                session_factory=self.app.session_factory,
+                tab_max_length=max_len,
+                show_welcome=True,
+                new_chat_pane=new_chat_pane,
+                id="session-1",
+            )
 
     async def _add_log_tab(self) -> None:
         """Open the logs tab, or switch to it if it already exists."""
@@ -149,7 +170,13 @@ class MainScreen(Screen):
         tab_label = label or f"Session {self._tab_counter}"
         tabs = self.query_one("#tabs", TabbedContent)
         max_len = self.app.options.get(Options.TabMaxLength)  # type: ignore[attr-defined]
-        pane = ChatTabPane(tab_label, session_factory=self.app.session_factory, tab_max_length=max_len, id=tab_id)
+        pane = ChatTabPane(
+            tab_label,
+            session_factory=self.app.session_factory,
+            tab_max_length=max_len,
+            new_chat_pane=getattr(self.app, "new_chat_pane", False),
+            id=tab_id,
+        )
         await tabs.add_pane(pane)
         tabs.active = tab_id
 
@@ -198,10 +225,11 @@ class MainScreen(Screen):
         # doesn't cause TabbedContent to revert the switch.
         new_pane = tabs.get_pane(new_id)
         if isinstance(new_pane, ChatTabPane):
-            chat_pane = new_pane.query_one(ChatPane)
+            chat_pane = new_pane.chat_pane
             chat_input = chat_pane.query_one("#chat-input")
-            if chat_input.disabled and chat_pane._active_widgets:
-                chat_pane._active_widgets[-1].focus()
+            active_widgets = getattr(chat_pane, "_active_widgets", None)
+            if chat_input.disabled and active_widgets:
+                active_widgets[-1].focus()
             else:
                 chat_input.focus()
         elif isinstance(new_pane, LogTabPane):
@@ -218,5 +246,5 @@ class MainScreen(Screen):
         tabs = self.query_one("#tabs", TabbedContent)
         pane = tabs.active_pane
         if isinstance(pane, ChatTabPane):
-            pane.query_one(ChatPane).query_one("#chat-input").focus()
+            pane.chat_pane.query_one("#chat-input").focus()
 
