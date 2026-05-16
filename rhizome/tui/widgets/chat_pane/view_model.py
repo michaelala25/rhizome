@@ -167,13 +167,26 @@ class ChatPaneViewModel(ViewModelBase):
     # Feed
     # ------------------------------------------------------------------
 
-    def append_message(self, msg: ChatMessageData) -> None:
+    def append_message(
+        self,
+        msg: ChatMessageData,
+        *,
+        include_in_agent_context: bool = True,
+    ) -> None:
         """Append a message to the feed, applying the consecutive-system dedup rule.
 
         If the previous feed entry is a system message with identical content, we
         suppress the append; otherwise the message is appended and ``feed_append``
         fires with the new index. Does **not** close any open agent turn — see
         "Feed ordering rules" above ``open_agent_turn``.
+
+        When ``include_in_agent_context`` is True (the default), USER messages
+        are pushed to the agent via ``add_human_message`` and SYSTEM messages
+        via ``add_system_notification`` so they land in the conversation
+        history on the next stream. Other roles (ERROR, etc.) are never
+        forwarded — they're UI-side noise the agent shouldn't react to.
+        Callers wanting feed-only mutation (test commands, UI echoes,
+        legacy ``ui_only=True`` cases) pass ``include_in_agent_context=False``.
         """
         tail = self.feed[-1] if self.feed else None
         if (
@@ -189,6 +202,12 @@ class ChatPaneViewModel(ViewModelBase):
 
         self.feed.append(msg)
         self.emit(self.feed_append, len(self.feed) - 1)
+
+        if include_in_agent_context and self.agent_session is not None:
+            if msg.role == Role.USER:
+                self.agent_session.add_human_message(msg.content)
+            elif msg.role == Role.SYSTEM:
+                self.agent_session.add_system_notification(msg.content)
 
     def clear_feed(self) -> None:
         if not self.feed:
@@ -352,7 +371,6 @@ class ChatPaneViewModel(ViewModelBase):
             return
 
         self.append_message(ChatMessageData(role=Role.USER, content=user_text))
-        self.agent_session.add_human_message(user_text)
 
         self._agent_task = asyncio.create_task(self._run_agent_turn())
 
@@ -496,23 +514,21 @@ class ChatPaneViewModel(ViewModelBase):
             if self.agent_session is not None:
                 await self.agent_session.set_pending_user_mode(mode.value)
             if not silent:
-                # UI-only: set_pending_user_mode handles the agent side
+                # Feed-only: set_pending_user_mode handles the agent side
                 # when the queue drains.
-                self.append_message(ChatMessageData(
-                    role=Role.SYSTEM, content=message, mode=mode,
-                ))
+                self.append_message(
+                    ChatMessageData(role=Role.SYSTEM, content=message, mode=mode),
+                    include_in_agent_context=False,
+                )
         else:
             self.session_mode = mode
             if silent:
                 if self.agent_session is not None:
                     self.agent_session.add_system_notification(message)
             else:
-                # append_message + agent notification (legacy ui_only=False).
                 self.append_message(ChatMessageData(
                     role=Role.SYSTEM, content=message, mode=mode,
                 ))
-                if self.agent_session is not None:
-                    self.agent_session.add_system_notification(message)
 
         self.emit(self.dirty)
 
@@ -654,7 +670,10 @@ class ChatPaneViewModel(ViewModelBase):
             return
 
         if result is not None:
-            self.append_message(ChatMessageData(role=Role.SYSTEM, content=str(result), rich=True))
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=str(result), rich=True),
+                include_in_agent_context=False,
+            )
 
 
     def _register_commands(self) -> None:
@@ -679,9 +698,10 @@ class ChatPaneViewModel(ViewModelBase):
         @reg.command(name="echo", help="Echo arguments back as a system message.")
         @click.argument("words", nargs=-1)
         def _echo(words: tuple[str, ...]) -> None:
-            self.append_message(ChatMessageData(
-                role=Role.SYSTEM, content=" ".join(words) if words else ""
-            ))
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=" ".join(words) if words else ""),
+                include_in_agent_context=False,
+            )
 
         @reg.command(name="test-turn", help="Run a synthetic agent turn to exercise routing.")
         async def _test_turn() -> None:
@@ -702,13 +722,15 @@ class ChatPaneViewModel(ViewModelBase):
             )
             result = await self.present_interrupt(interrupt)
             if result is None:
-                self.append_message(ChatMessageData(
-                    role=Role.SYSTEM, content="interrupt cancelled"
-                ))
+                self.append_message(
+                    ChatMessageData(role=Role.SYSTEM, content="interrupt cancelled"),
+                    include_in_agent_context=False,
+                )
             else:
-                self.append_message(ChatMessageData(
-                    role=Role.SYSTEM, content=f"interrupt resolved: {result!r}"
-                ))
+                self.append_message(
+                    ChatMessageData(role=Role.SYSTEM, content=f"interrupt resolved: {result!r}"),
+                    include_in_agent_context=False,
+                )
 
     async def _run_synthetic_turn(self) -> None:
         """Drive the peek-tail routing without invoking the real agent.
