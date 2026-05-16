@@ -10,8 +10,9 @@ the agent-busy half of the mode-transition matrix.
 """
 
 import asyncio
+from collections.abc import Coroutine
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import rich_click as click
 from langchain_core.messages import AIMessageChunk
@@ -91,10 +92,18 @@ class ChatPaneViewModel(ViewModelBase):
         # resolve it from outside the awaiting coroutine.
         self._pending_interrupt: InterruptViewModelBase | None = None
 
-        # A non-None task means an agent turn is in flight. Cleared by
-        # the task's own finally block, so cancellation is effectively
+        # A non-None worker means an agent turn is in flight. Cleared by
+        # the worker's own finally block, so cancellation is effectively
         # synchronous from the caller's perspective.
-        self._agent_task: asyncio.Task | None = None
+        self._agent_task: object | None = None
+
+        # Scheduler hook: the View overrides this on mount to use Textual's
+        # ``run_worker`` (lifecycle binds to the widget, errors surface via
+        # the app, DevTools sees the worker). Default plain ``create_task``
+        # keeps headless/test usage working.
+        self._schedule_worker: Callable[[Coroutine[Any, Any, Any]], object] = (
+            asyncio.create_task
+        )
 
     # ------------------------------------------------------------------
     # Callback group accessors
@@ -123,6 +132,17 @@ class ChatPaneViewModel(ViewModelBase):
     # ------------------------------------------------------------------
     # Bootstrap
     # ------------------------------------------------------------------
+
+    def set_worker_scheduler(
+        self,
+        scheduler: Callable[[Coroutine[Any, Any, Any]], object],
+    ) -> None:
+        """Inject a scheduler for spawning long-running coroutines (agent
+        turn, async command handlers). Called by the View on mount with
+        Textual's ``run_worker``; tests / headless callers can leave the
+        default ``asyncio.create_task``.
+        """
+        self._schedule_worker = scheduler
 
     def bootstrap_agent_session(
         self,
@@ -339,14 +359,12 @@ class ChatPaneViewModel(ViewModelBase):
     # Agent run lifecycle
     # ------------------------------------------------------------------
     #
-    # Bones only: ``start_agent_run`` appends the user message, queues it
-    # on the AgentSession, and spawns ``_run_agent_turn`` as an asyncio
-    # task. ``_run_agent_turn`` drives ``AgentSession.stream`` with VM-side
-    # callbacks that route into the open AgentMessage VM.
-    #
-    # TODO: worker scheduling belongs to the view (Textual ``run_worker``),
-    # not the VM. For now the VM owns the task so the bones are
-    # self-contained. Cancellation hooks land with the worker move.
+    # ``start_agent_run`` appends the user message, queues it on the
+    # AgentSession, and spawns ``_run_agent_turn`` via the injected
+    # ``_schedule_worker``. ``_run_agent_turn`` drives
+    # ``AgentSession.stream`` with VM-side callbacks that route into the
+    # open AgentMessage VM. Under Textual, the View injects
+    # ``self.run_worker`` so the worker's lifecycle binds to the widget.
 
     @property
     def agent_busy(self) -> bool:
@@ -367,7 +385,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         self.append_message(ChatMessageData(role=Role.USER, content=user_text))
 
-        self._agent_task = asyncio.create_task(self._run_agent_turn())
+        self._agent_task = self._schedule_worker(self._run_agent_turn())
         self.emit(self.dirty)
 
 
@@ -614,7 +632,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         if text.lstrip().startswith("/"):
             self.set_user_input_buffer("")
-            asyncio.create_task(self._execute_command(text.lstrip()))
+            self._schedule_worker(self._execute_command(text.lstrip()))
             return
 
         self.set_user_input_buffer("")

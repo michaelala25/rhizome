@@ -88,6 +88,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         return self._vm.command_registry
 
     def on_mount(self) -> None:
+        self._vm.set_worker_scheduler(self.run_worker)
         self._vm.bootstrap_agent_session(
             self.app.options,  # type: ignore[attr-defined]
             debug=getattr(self.app, "debug_logging", False),
