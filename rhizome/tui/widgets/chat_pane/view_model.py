@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, TYPE_CHECKING
 
 import rich_click as click
+from langchain_core.messages import AIMessageChunk
 
 from ..view_model_base import ViewModelBase
 from rhizome.agent.session import AgentSession, get_agent_kwargs
@@ -35,6 +36,12 @@ if TYPE_CHECKING:
 
 
 _DEFAULT_HINT = "Type a message or /command ..."
+
+
+class RunState(Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
 
 
 class ChatPaneViewModel(ViewModelBase):
@@ -82,6 +89,11 @@ class ChatPaneViewModel(ViewModelBase):
         # external callers (eventually: a cancel-during-agent-run path) can
         # resolve it from outside the awaiting coroutine.
         self._pending_interrupt: InterruptViewModelBase | None = None
+
+        # Agent run state — bones only. CANCELLING is reserved for when we
+        # wire up explicit cancellation; for now we just flip IDLE↔RUNNING.
+        self.agent_run_state: RunState = RunState.IDLE
+        self._agent_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Callback group accessors
@@ -295,6 +307,120 @@ class ChatPaneViewModel(ViewModelBase):
             self.input_hint = prev_hint
             self.emit(self.dirty)
 
+    # ------------------------------------------------------------------
+    # Agent run lifecycle
+    # ------------------------------------------------------------------
+    #
+    # Bones only: ``start_agent_run`` appends the user message, queues it
+    # on the AgentSession, and spawns ``_run_agent_turn`` as an asyncio
+    # task. ``_run_agent_turn`` drives ``AgentSession.stream`` with VM-side
+    # callbacks that route into the open AgentMessage VM.
+    #
+    # TODO: worker scheduling belongs to the view (Textual ``run_worker``),
+    # not the VM. For now the VM owns the task so the bones are
+    # self-contained. Cancellation hooks land with the worker move.
+
+    def start_agent_run(self, user_text: str) -> None:
+        """Append the user message and kick off an agent turn. No-op if a
+        run is already in flight (real queueing comes with the feed-queue)."""
+        if self.agent_run_state is not RunState.IDLE:
+            return
+        
+        if self.agent_session is None:
+            self.append_message(ChatMessageData(
+                role=Role.ERROR, content="Agent session not bootstrapped.",
+            ))
+            return
+
+        self.append_message(ChatMessageData(role=Role.USER, content=user_text))
+        self.agent_session.add_human_message(user_text)
+
+        self._agent_task = asyncio.create_task(self._run_agent_turn())
+
+
+    async def _run_agent_turn(self) -> None:
+        assert self.agent_session is not None
+
+        self.agent_run_state = RunState.RUNNING
+        self.emit(self.dirty)
+        self.open_agent_turn()
+
+        try:
+            await self.agent_session.stream(
+                mode=self.session_mode.value,
+                on_message=self._on_agent_message,
+                on_update=self._on_agent_update,
+                on_interrupt=self._on_agent_interrupt,
+            )
+
+        except asyncio.CancelledError:
+            self.append_message(ChatMessageData(role=Role.SYSTEM, content="(user cancelled)"))
+            raise
+
+        except Exception as exc:  # noqa: BLE001 — surface stream errors as ERROR messages
+            self.append_message(ChatMessageData(role=Role.ERROR, content=f"Agent error: {exc}"))
+
+        finally:
+            self.close_agent_turn(empty_fallback="(no response)")
+            self.agent_run_state = RunState.IDLE
+            self._agent_task = None
+            self.emit(self.dirty)
+
+
+    async def _on_agent_message(self, kind: str, payload: Any) -> None:
+        """``messages`` stream callback: append text deltas from AIMessageChunks."""
+        chunk, _meta = payload
+        if not isinstance(chunk, AIMessageChunk):
+            return
+        if not chunk.text:
+            # input_json_delta chunks etc. have no text — ignore so we don't
+            # start a message segment for them.
+            return
+        self._route_agent_chunk(chunk.text)
+
+
+    async def _on_agent_update(self, kind: str, payload: dict) -> None:
+        """``updates`` stream callback: extract tool_use block names and
+        route them as tool-call entries on the open AgentMessage VM."""
+        for update in payload.values():
+            if update is None:
+                continue
+
+            for msg in update.get("messages", []):
+                content = getattr(msg, "content", None)
+                if not isinstance(content, list):
+                    continue
+
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+
+                    btype = block.get("type")
+                    # Skip Anthropic's internal code_execution wrapper — the
+                    # actual tool (web_fetch etc.) appears as its own block.
+                    if btype == "server_tool_use" and block.get("name") == "code_execution":
+                        continue
+                    if btype not in ("tool_use", "server_tool_use"):
+                        continue
+
+                    name = block.get("name")
+                    if not name:
+                        continue
+
+                    args = block.get("input") or {}
+                    self._route_agent_tool_call(name, args)
+
+
+    async def _on_agent_interrupt(self, value: Any, context: Any) -> Any:
+        """Stub: surface the interrupt payload via TestInterrupt so the
+        pause/resume path is at least visible. Real per-type dispatch
+        (commit/flashcard/choices/etc.) lands with the interrupt registry."""
+        interrupt = TestInterruptViewModel(
+            prompt=f"(interrupt) {value!r}",
+            options=["continue"],
+        )
+        return await self.present_interrupt(interrupt)
+
 
     # ------------------------------------------------------------------
     # Session mode
@@ -344,25 +470,23 @@ class ChatPaneViewModel(ViewModelBase):
         if not text.strip():
             return
 
-        # TODO(feed-queue): once ``agent_run_state`` lands, this branches:
+        # TODO(feed-queue): once shell commands land + we want
+        # mid-stream-dispatchable chat text, this branches:
         #   - dispatchable now (slash/shell command, or chat text with the
         #     agent idle) → run immediately. Output appends after the open
         #     agent VM if one exists; the agent keeps streaming into it.
         #   - chat text with the agent running → enqueue on a feed-queue
         #     for drain after the current run terminates.
-        # We don't have a real "can we handle this now?" predicate yet
-        # (no run-state, no shell commands), so everything currently runs
-        # immediately.
+        # For now: slash commands run anytime, chat text only starts a
+        # run when the agent is idle (drops on the floor otherwise).
 
         if text.lstrip().startswith("/"):
             self.set_user_input_buffer("")
             asyncio.create_task(self._execute_command(text.lstrip()))
             return
 
-        self.append_message(ChatMessageData(role=Role.USER, content=text))
-        self.append_message(ChatMessageData(role=Role.SYSTEM, content=f"echo: {text}"))
-
         self.set_user_input_buffer("")
+        self.start_agent_run(text)
 
 
     def move_palette_cursor(self, delta: int) -> None:
