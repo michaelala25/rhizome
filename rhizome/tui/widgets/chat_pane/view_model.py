@@ -9,14 +9,13 @@ status-bar projection, shell ``!`` commands, agent gating of commands,
 the agent-busy half of the mode-transition matrix.
 """
 
-from __future__ import annotations
-
 import asyncio
 from enum import Enum
-from typing import Any, Literal, TYPE_CHECKING
+from typing import Any, Literal
 
 import rich_click as click
 from langchain_core.messages import AIMessageChunk
+from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from ..view_model_base import ViewModelBase
 from rhizome.agent.session import AgentSession, get_agent_kwargs
@@ -33,17 +32,8 @@ from .interrupt import InterruptViewModelBase, TestInterruptViewModel
 
 FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase
 
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
-
 
 _DEFAULT_HINT = "Type a message or /command ..."
-
-
-class RunState(Enum):
-    IDLE = "idle"
-    RUNNING = "running"
-    CANCELLING = "cancelling"
 
 
 class ChatPaneViewModel(ViewModelBase):
@@ -56,7 +46,7 @@ class ChatPaneViewModel(ViewModelBase):
 
     def __init__(
         self,
-        session_factory: "async_sessionmaker[AsyncSession] | None" = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         super().__init__()
 
@@ -101,9 +91,9 @@ class ChatPaneViewModel(ViewModelBase):
         # resolve it from outside the awaiting coroutine.
         self._pending_interrupt: InterruptViewModelBase | None = None
 
-        # Agent run state — bones only. CANCELLING is reserved for when we
-        # wire up explicit cancellation; for now we just flip IDLE↔RUNNING.
-        self.agent_run_state: RunState = RunState.IDLE
+        # A non-None task means an agent turn is in flight. Cleared by
+        # the task's own finally block, so cancellation is effectively
+        # synchronous from the caller's perspective.
         self._agent_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
@@ -358,12 +348,17 @@ class ChatPaneViewModel(ViewModelBase):
     # not the VM. For now the VM owns the task so the bones are
     # self-contained. Cancellation hooks land with the worker move.
 
+    @property
+    def agent_busy(self) -> bool:
+        """An agent turn is in flight whenever the worker task is alive."""
+        return self._agent_task is not None
+
     def start_agent_run(self, user_text: str) -> None:
         """Append the user message and kick off an agent turn. No-op if a
         run is already in flight (real queueing comes with the feed-queue)."""
-        if self.agent_run_state is not RunState.IDLE:
+        if self.agent_busy:
             return
-        
+
         if self.agent_session is None:
             self.append_message(ChatMessageData(
                 role=Role.ERROR, content="Agent session not bootstrapped.",
@@ -373,13 +368,12 @@ class ChatPaneViewModel(ViewModelBase):
         self.append_message(ChatMessageData(role=Role.USER, content=user_text))
 
         self._agent_task = asyncio.create_task(self._run_agent_turn())
+        self.emit(self.dirty)
 
 
     async def _run_agent_turn(self) -> None:
         assert self.agent_session is not None
 
-        self.agent_run_state = RunState.RUNNING
-        self.emit(self.dirty)
         self.open_agent_turn()
 
         try:
@@ -399,7 +393,6 @@ class ChatPaneViewModel(ViewModelBase):
 
         finally:
             self.close_agent_turn(empty_fallback="(no response)")
-            self.agent_run_state = RunState.IDLE
             self._agent_task = None
             self.emit(self.dirty)
 
@@ -481,10 +474,8 @@ class ChatPaneViewModel(ViewModelBase):
                 next model call) or ``"agent"`` (tool-initiated — graph
                 state is updated directly via ``Command``).
         """
-        agent_busy = self.agent_run_state is RunState.RUNNING
-
         if source == "agent":
-            assert agent_busy
+            assert self.agent_busy
             silent = True
 
         if self.session_mode == mode:
@@ -509,7 +500,7 @@ class ChatPaneViewModel(ViewModelBase):
             return
 
         # source == "user"
-        if agent_busy:
+        if self.agent_busy:
             self.session_mode = mode
             if self.agent_session is not None:
                 await self.agent_session.set_pending_user_mode(mode.value)
