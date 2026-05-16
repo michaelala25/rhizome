@@ -7,7 +7,6 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
 from rhizome.agent.tools.visibility import ToolVisibility, tool_visibility
-from rhizome.db.operations import get_topic
 from rhizome.tui.types import Mode
 
 
@@ -39,45 +38,27 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
         tab_name: str | None = None,
         hint_higher_verbosity: bool = False,
     ) -> str:
+        if chat_pane is None:
+            return "Chat pane not available."
+
         results: list[str] = []
 
         if clear_topic:
-            if chat_pane is not None:
-                chat_pane.active_topic = None
-                chat_pane._topic_path = []
-                chat_pane.update_status_bar()
+            chat_pane.clear_topic()
             results.append("Active topic cleared.")
         elif topic_id is not None:
-            if chat_pane is None:
-                results.append("Chat pane not available.")
+            ok = await chat_pane.set_topic(topic_id)
+            if ok:
+                results.append(f"Active topic set to: {chat_pane.active_topic.name}")
             else:
-                async with session_factory() as session:
-                    topic = await get_topic(session, topic_id)
-                    if topic is None:
-                        results.append(f"Topic {topic_id} not found.")
-                    else:
-                        path: list[str] = [topic.name]
-                        current = topic
-                        while current.parent_id is not None:
-                            current = await get_topic(session, current.parent_id)
-                            if current is None:
-                                break
-                            path.append(current.name)
-                        path.reverse()
-                        chat_pane.active_topic = topic
-                        chat_pane._topic_path = path
-                        chat_pane.update_status_bar()
-                        results.append(f"Active topic set to: {topic.name}")
+                results.append(f"Topic {topic_id} not found.")
 
         if tab_name is not None:
-            if chat_pane is not None:
-                await chat_pane._cmd_rename(tab_name)
+            await chat_pane.set_tab_name(tab_name)
             results.append(f"Tab renamed to: {tab_name}")
 
         if hint_higher_verbosity:
-            if chat_pane is not None:
-                from rhizome.tui.widgets import HintHigherVerbosity
-                chat_pane.post_message(HintHigherVerbosity())
+            chat_pane.hint_higher_verbosity()
             results.append("Higher verbosity hint sent.")
 
         if not results:
@@ -92,7 +73,8 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
             target = Mode(mode)
         except ValueError:
             return f"Invalid mode '{mode}'. Must be one of: idle, learn, review."
-        await chat_pane._set_mode(target, silent=True, source="agent")
+        if chat_pane is not None:
+            await chat_pane.set_mode(target, silent=True, source="agent")
         return Command(update={
             "mode": target.value,
             "messages": [ToolMessage(

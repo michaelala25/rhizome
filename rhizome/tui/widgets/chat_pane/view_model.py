@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import asyncio
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import Any, Literal, TYPE_CHECKING
 
 import rich_click as click
 from langchain_core.messages import AIMessageChunk
 
 from ..view_model_base import ViewModelBase
 from rhizome.agent.session import AgentSession, get_agent_kwargs
+from rhizome.db import Topic
+from rhizome.db.operations import get_topic
 from rhizome.resources.manager import ResourceManager
 from rhizome.tui.commands import CommandRegistry
 from rhizome.tui.options import Options
@@ -49,6 +51,8 @@ class ChatPaneViewModel(ViewModelBase):
     class Callbacks(Enum):
         FEED_APPEND = "feed_append"
         FEED_CLEAR = "feed_clear"
+        TAB_RENAME = "tab_rename"
+        VERBOSITY_HINT = "verbosity_hint"
 
     def __init__(
         self,
@@ -58,6 +62,8 @@ class ChatPaneViewModel(ViewModelBase):
 
         self._feed_append = self._make_group(ChatPaneViewModel.Callbacks.FEED_APPEND)
         self._feed_clear = self._make_group(ChatPaneViewModel.Callbacks.FEED_CLEAR)
+        self._tab_rename = self._make_group(ChatPaneViewModel.Callbacks.TAB_RENAME)
+        self._verbosity_hint = self._make_group(ChatPaneViewModel.Callbacks.VERBOSITY_HINT)
 
         self.feed: list[FeedEntry] = []
 
@@ -66,6 +72,11 @@ class ChatPaneViewModel(ViewModelBase):
         self.input_buffer: str = ""
 
         self.session_mode: Mode = Mode.IDLE
+
+        # Active topic + path from the topic tree root. Mutated via
+        # set_topic / clear_topic; surfaced by the view in the status bar.
+        self.active_topic: Topic | None = None
+        self.topic_path: list[str] = []
 
         self.command_palette = CommandPaletteViewModel()
         self._command_registry = CommandRegistry()
@@ -108,6 +119,14 @@ class ChatPaneViewModel(ViewModelBase):
         return self._feed_clear
 
     @property
+    def tab_rename(self):
+        return self._tab_rename
+
+    @property
+    def verbosity_hint(self):
+        return self._verbosity_hint
+
+    @property
     def command_registry(self) -> CommandRegistry:
         return self._command_registry
 
@@ -136,7 +155,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         self.agent_session = AgentSession(
             self._session_factory,
-            chat_pane=None,
+            chat_pane=self,
             resource_manager=self.resource_manager,
             provider=provider,
             model_name=model_name,
@@ -426,26 +445,132 @@ class ChatPaneViewModel(ViewModelBase):
     # Session mode
     # ------------------------------------------------------------------
 
-    def set_session_mode(self, mode: Mode) -> None:
-        """Set the session mode and announce the change as a system message.
+    async def set_mode(
+        self,
+        mode: Mode,
+        *,
+        silent: bool = False,
+        source: Literal["user", "agent"] = "user",
+    ) -> None:
+        """Set the session mode.
 
-        Step 2 only handles the user-initiated, agent-idle branch of the
-        legacy transition matrix; the agent_busy / source=agent branches
-        come in with the agent session in step 3.
+        Args:
+            mode: target mode.
+            silent: suppress the chat system message (shift+tab cycling,
+                agent-initiated changes). Forced True when source=="agent".
+            source: ``"user"`` (UI-initiated — queues a pending change on
+                the agent middleware so graph state catches up on the
+                next model call) or ``"agent"`` (tool-initiated — graph
+                state is updated directly via ``Command``).
         """
+        agent_busy = self.agent_run_state is RunState.RUNNING
+
+        if source == "agent":
+            assert agent_busy
+            silent = True
+
         if self.session_mode == mode:
-            self.append_message(ChatMessageData(
-                role=Role.SYSTEM, content=f"Already in {mode.value} mode."
-            ))
+            if not silent:
+                self.append_message(ChatMessageData(
+                    role=Role.SYSTEM, content=f"Already in {mode.value} mode.",
+                ))
             return
 
-        self.session_mode = mode
-        if mode == Mode.IDLE:
-            text = "Returned to idle mode."
-        else:
-            text = f"Entered {mode.value} mode."
+        message = (
+            "Returned to idle mode." if mode == Mode.IDLE
+            else f"Entered {mode.value} mode."
+        )
 
-        self.append_message(ChatMessageData(role=Role.SYSTEM, content=text, mode=mode))
+        if source == "agent":
+            self.session_mode = mode
+            self.emit(self.dirty)
+            # User-initiated mode set while the agent was running is
+            # superseded by the agent's tool call.
+            if self.agent_session is not None:
+                await self.agent_session._mode_middleware.clear_pending_user_mode()
+            return
+
+        # source == "user"
+        if agent_busy:
+            self.session_mode = mode
+            if self.agent_session is not None:
+                await self.agent_session.set_pending_user_mode(mode.value)
+            if not silent:
+                # UI-only: set_pending_user_mode handles the agent side
+                # when the queue drains.
+                self.append_message(ChatMessageData(
+                    role=Role.SYSTEM, content=message, mode=mode,
+                ))
+        else:
+            self.session_mode = mode
+            if silent:
+                if self.agent_session is not None:
+                    self.agent_session.add_system_notification(message)
+            else:
+                # append_message + agent notification (legacy ui_only=False).
+                self.append_message(ChatMessageData(
+                    role=Role.SYSTEM, content=message, mode=mode,
+                ))
+                if self.agent_session is not None:
+                    self.agent_session.add_system_notification(message)
+
+        self.emit(self.dirty)
+
+    # ------------------------------------------------------------------
+    # Topic / tab / verbosity (agent-tool-facing API)
+    # ------------------------------------------------------------------
+
+    def clear_topic(self) -> None:
+        """Drop the active topic. View re-renders the status bar via dirty."""
+        if self.active_topic is None and not self.topic_path:
+            return
+        self.active_topic = None
+        self.topic_path = []
+        self.emit(self.dirty)
+
+    async def set_topic(self, topic_id: int) -> bool:
+        """Resolve ``topic_id`` and set it as the active topic. Walks
+        parents to build ``topic_path``. Returns False if the topic does
+        not exist (state is left unchanged).
+        """
+        if self._session_factory is None:
+            return False
+
+        async with self._session_factory() as session:
+            topic = await get_topic(session, topic_id)
+            if topic is None:
+                return False
+            path: list[str] = [topic.name]
+            current = topic
+            while current.parent_id is not None:
+                current = await get_topic(session, current.parent_id)
+                if current is None:
+                    break
+                path.append(current.name)
+            path.reverse()
+
+        self.active_topic = topic
+        self.topic_path = path
+        self.emit(self.dirty)
+        return True
+
+    async def set_tab_name(self, name: str) -> None:
+        """Rename the active tab. The VM doesn't own tab state — emits
+        through the ``tab_rename`` callback group for the view (or a
+        Tabs-level VM) to apply.
+        """
+        new_name = name.strip()
+        if not new_name:
+            return
+        self.emit(self.tab_rename, new_name)
+
+    def hint_higher_verbosity(self) -> None:
+        """Hint to the user that a higher verbosity setting may help.
+
+        TODO: remove this API — the underlying UX cue is on the way out.
+        Kept as a no-op-ish emit so the agent tool stays valid.
+        """
+        self.emit(self.verbosity_hint)
 
     # ------------------------------------------------------------------
     # Input area
@@ -518,6 +643,7 @@ class ChatPaneViewModel(ViewModelBase):
         line = text.lstrip("/").strip()
         if not line:
             return
+        
         try:
             result = await self._command_registry.execute(line)
         except KeyError as exc:
@@ -539,16 +665,16 @@ class ChatPaneViewModel(ViewModelBase):
             self.clear_feed()
 
         @reg.command(name="idle", help="Switch to idle mode.")
-        def _idle() -> None:
-            self.set_session_mode(Mode.IDLE)
+        async def _idle() -> None:
+            await self.set_mode(Mode.IDLE)
 
         @reg.command(name="learn", help="Switch to learn mode.")
-        def _learn() -> None:
-            self.set_session_mode(Mode.LEARN)
+        async def _learn() -> None:
+            await self.set_mode(Mode.LEARN)
 
         @reg.command(name="review", help="Switch to review mode.")
-        def _review() -> None:
-            self.set_session_mode(Mode.REVIEW)
+        async def _review() -> None:
+            await self.set_mode(Mode.REVIEW)
 
         @reg.command(name="echo", help="Echo arguments back as a system message.")
         @click.argument("words", nargs=-1)

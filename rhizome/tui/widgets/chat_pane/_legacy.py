@@ -35,6 +35,7 @@ from rhizome.db import Topic
 from rhizome.db.operations import (
     delete_resource,
     get_resource,
+    get_topic,
     insert_sections,
     link_chunks_to_sections,
     link_resource_to_topic,
@@ -966,6 +967,52 @@ class ChatPane(Widget, DockContainerMixin):
 
         # Propagate to UI
         self.update_status_bar()
+
+    # ------------------------------------------------------------------
+    # Agent-tool-facing API (mirrors ChatPaneViewModel public surface so
+    # the same agent tools can drive either implementation).
+    # ------------------------------------------------------------------
+
+    async def set_mode(
+        self,
+        mode: Mode,
+        *,
+        silent: bool = False,
+        source: Literal["user", "agent"] = "user",
+    ) -> None:
+        await self._set_mode(mode, silent=silent, source=source)
+
+    def clear_topic(self) -> None:
+        self.active_topic = None
+        self._topic_path = []
+        self.update_status_bar()
+
+    async def set_topic(self, topic_id: int) -> bool:
+        if self._session_factory is None:
+            return False
+        async with self._session_factory() as session:
+            topic = await get_topic(session, topic_id)
+            if topic is None:
+                return False
+            path: list[str] = [topic.name]
+            current = topic
+            while current.parent_id is not None:
+                current = await get_topic(session, current.parent_id)
+                if current is None:
+                    break
+                path.append(current.name)
+            path.reverse()
+        self.active_topic = topic
+        self._topic_path = path
+        self.update_status_bar()
+        return True
+
+    async def set_tab_name(self, name: str) -> None:
+        await self._cmd_rename(name)
+
+    def hint_higher_verbosity(self) -> None:
+        # TODO: remove this API — the underlying UX cue is on the way out.
+        self.post_message(HintHigherVerbosity())
 
     async def _cmd_idle(self) -> None:
         await self._set_mode(Mode.IDLE)
