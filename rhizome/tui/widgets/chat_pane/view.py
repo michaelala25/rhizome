@@ -20,11 +20,12 @@ from .agent_message import AgentMessageView, AgentMessageViewModel
 from .chat_input import ChatInputView
 from .command_palette import CommandPalette
 from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
+from .shell_command import ShellCommandView, ShellCommandViewModel
 from .view_model import ChatPaneViewModel
 from rhizome.tui.types import ChatMessageData
 
 
-FeedEntryWidget = ChatMessage | AgentMessageView | TestInterruptView
+FeedEntryWidget = ChatMessage | AgentMessageView | TestInterruptView | ShellCommandView
 
 
 class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
@@ -48,6 +49,10 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         max-height: 10;
         padding: 0 1;
         background: rgb(12, 12, 12);
+    }
+    ChatPaneMVVM #chat-input.--shell-mode,
+    ChatPaneMVVM #chat-input.--shell-mode:focus {
+        border: tall rgb(200, 60, 60);
     }
     ChatPaneMVVM CommandPalette {
         background: rgb(12, 12, 12);
@@ -99,6 +104,8 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             )
         elif isinstance(entry, AgentMessageViewModel):
             widget = AgentMessageView(entry)
+        elif isinstance(entry, ShellCommandViewModel):
+            widget = ShellCommandView(entry)
         elif isinstance(entry, TestInterruptViewModel):
             widget = TestInterruptView(entry)
         elif isinstance(entry, InterruptViewModelBase):

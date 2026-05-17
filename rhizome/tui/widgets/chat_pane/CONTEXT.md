@@ -42,6 +42,15 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
   delegates), so the palette view only renders state. Exposes
   `has_exact_match(buffer_text)` so the input can decide
   Enter-confirms-palette vs Enter-submits without a widget-tree walk.
+- **shell_command.py** — `ShellCommandViewModel` + `ShellCommandView`.
+  Buffer entries that start with `!` are routed by the pane through
+  `start_shell_command`, which appends a VM to the feed and schedules
+  `vm.execute()` on the worker. The VM owns the `asyncio.subprocess`
+  lifecycle, streamed output, return code, and elapsed timing; the view
+  subscribes to `dirty` and uses `set_interval` while `vm.running` so
+  the elapsed display ticks even when no new output arrives. Input-side
+  visual cue (red border) lives on `ChatInputViewModel.shell_mode`,
+  which the input view reflects as the `--shell-mode` class.
 - **agent_message.py** — `AgentMessageViewModel` + `AgentMessageView`. A
   single contiguous agent turn (interleaved text + tool-call segments).
   Mounted into the feed by the pane's peek-tail routing; the view

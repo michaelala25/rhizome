@@ -69,6 +69,12 @@ class ChatInputViewModel(ViewModelBase):
     def palette(self) -> CommandPaletteViewModel:
         return self._palette
 
+    @property
+    def shell_mode(self) -> bool:
+        """True when the buffer parses as a single-line ``!``-prefixed shell
+        command. The view reads this to swap in the shell-mode border color."""
+        return self.buffer.startswith("!") and "\n" not in self.buffer
+
     # ------------------------------------------------------------------
     # Buffer / state mutators
     # ------------------------------------------------------------------
@@ -225,6 +231,8 @@ class ChatInputView(TextArea):
 
         if self.text != self._vm.buffer:
             self.text = self._vm.buffer
+
+        self.set_class(self._vm.shell_mode, "--shell-mode")
 
     # ------------------------------------------------------------------
     # View → VM

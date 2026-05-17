@@ -30,9 +30,10 @@ from .agent_message import AgentMessageViewModel
 from .chat_input import ChatInputViewModel
 from .command_palette import CommandPaletteViewModel
 from .interrupt import InterruptViewModelBase, TestInterruptViewModel
+from .shell_command import ShellCommandViewModel
 
 
-FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase
+FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase | ShellCommandViewModel
 
 
 _DEFAULT_HINT = "Type a message or /command ..."
@@ -626,7 +627,23 @@ class ChatPaneViewModel(ViewModelBase):
             self._schedule_worker(self._execute_command(stripped))
             return
 
+        if stripped.startswith("!"):
+            cmd = stripped[1:].strip()
+            if cmd:
+                self.start_shell_command(cmd)
+            return
+
         self.start_agent_run(text)
+
+    def start_shell_command(self, cmd: str) -> None:
+        """Append a shell-command VM to the feed and kick off its execute()
+        on the worker scheduler. Unlike agent runs, shell commands aren't
+        gated by ``agent_busy`` — they're side-channel to the conversation.
+        """
+        vm = ShellCommandViewModel(cmd)
+        self.feed.append(vm)
+        self.emit(self.feed_append, len(self.feed) - 1)
+        self._schedule_worker(vm.execute())
 
 
     # ------------------------------------------------------------------
