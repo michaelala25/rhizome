@@ -55,6 +55,17 @@ class CommandPaletteViewModel(ViewModelBase):
         idx = min(self._cursor, len(items) - 1)
         return items[idx][0]
 
+    def has_exact_match(self, buffer_text: str) -> bool:
+        """True if ``buffer_text`` parses to ``/<name>`` where ``<name>`` is a
+        registered command. Used by the chat input to decide whether Enter on
+        a visible palette should submit the command or confirm the selection
+        (tab-completion).
+        """
+        name = self._name_prefix(buffer_text)
+        if not name:
+            return False
+        return any(cmd_name == name for cmd_name, _ in self._all_commands)
+
     @staticmethod
     def _name_prefix(buffer_text: str) -> str:
         """Extract the command-name portion of a `/cmd ...` buffer."""

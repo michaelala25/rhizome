@@ -1,23 +1,23 @@
 """ChatPane view — steps 1+2 of the MVVM rewrite.
 
-Layout: a ``VerticalScroll`` feed, a ``ChatInput``, and a
-``CommandPalette`` panel bound to the VM's palette sub-VM. The view
-subscribes to the VM's ``feed_append`` to mount one ``ChatMessage`` per
-appended feed entry, to ``feed_clear`` to drop them all, and forwards
-``ChatInput``'s palette-nav messages into the VM. ``_refresh`` reconciles
-the chat input (placeholder, disabled, text, palette_active).
+Layout: a ``VerticalScroll`` feed, a ``ChatInputView`` bound to
+``vm.chat_input``, and a ``CommandPalette`` bound to the shared
+``vm.command_palette``. The view subscribes to the VM's ``feed_append``
+to mount one widget per appended feed entry and to ``feed_clear`` to
+drop them all. All input-area keystroke handling (Enter, Tab, Up, Down,
+Escape, Ctrl+Enter) lives inside ``ChatInputView`` itself, which talks
+to the input VM directly — the pane is no longer in the path.
 """
 
 from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
-from textual.widgets import TextArea
 
-from ..chat_input import ChatInput
 from ..message import ChatMessage, MarkdownChatMessage, RichChatMessage
 from ..view_base import ViewBase
 from .agent_message import AgentMessageView, AgentMessageViewModel
+from .chat_input import ChatInputView
 from .command_palette import CommandPalette
 from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
 from .view_model import ChatPaneViewModel
@@ -63,11 +63,6 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # AgentMessageView for AgentMessageViewModel.
         self._mounted: list[FeedEntryWidget] = []
 
-        # Mirrors vm.input_enabled across _refresh calls so we can detect a
-        # False→True transition and refocus the input. The VM doesn't need to
-        # know about focus — it's a view-side derived behavior.
-        self._prev_input_enabled: bool = self._vm.input_enabled
-
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
 
@@ -78,14 +73,8 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="message-area")
-        yield ChatInput(id="chat-input")
+        yield ChatInputView(self._vm.chat_input, id="chat-input")
         yield CommandPalette(self._vm.command_palette, id="command-palette")
-
-    # Passthrough so ``ChatInput._is_complete_command`` can find the registry by
-    # walking up the widget tree (the legacy widget exposes it as an attribute).
-    @property
-    def _command_registry(self):
-        return self._vm.command_registry
 
     def on_mount(self) -> None:
         self._vm.set_worker_scheduler(self.run_worker)
@@ -93,8 +82,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             self.app.options,  # type: ignore[attr-defined]
             debug=getattr(self.app, "debug_logging", False),
         )
-        self._refresh()
-        self.query_one("#chat-input", ChatInput).focus()
+        self.query_one("#chat-input", ChatInputView).focus()
 
     # ------------------------------------------------------------------
     # VM → view callbacks
@@ -119,7 +107,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             )
         else:
             raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
-        
+
         area.mount(widget)
         self._mounted.append(widget)
         area.scroll_end(animate=False)
@@ -127,63 +115,8 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     def _on_feed_clear(self) -> None:
         for widget in self._mounted:
             widget.remove()
-            
+
         self._mounted.clear()
-
-    # ------------------------------------------------------------------
-    # Input area sync
-    # ------------------------------------------------------------------
-
-    def _refresh(self) -> None:
-        chat_input = self.query_one("#chat-input", ChatInput)
-
-        # ChatInput's own _placeholder is read on focus/blur to repaint, so we set
-        # both the cached value and the live attribute to keep them in sync.
-        if chat_input._placeholder != self._vm.input_hint:
-            chat_input._placeholder = self._vm.input_hint
-            chat_input.placeholder = self._vm.input_hint
-
-        if chat_input.disabled != (not self._vm.input_enabled):
-            chat_input.disabled = not self._vm.input_enabled
-
-        # Refocus on a disabled→enabled transition. Covers the interrupt
-        # case (input is disabled while awaiting resolution, then re-enabled
-        # on resolve/cancel) and any future state that toggles the input.
-        if self._vm.input_enabled and not self._prev_input_enabled:
-            chat_input.focus()
-        self._prev_input_enabled = self._vm.input_enabled
-
-        if chat_input.text != self._vm.input_buffer:
-            chat_input.text = self._vm.input_buffer
-
-        # Drives ChatInput's Enter/Tab/Up/Down branching when a slash command
-        # is being typed. The palette's own widget reflects vm.command_palette.
-        palette_visible = self._vm.command_palette.visible
-        if chat_input.palette_active != palette_visible:
-            chat_input.palette_active = palette_visible
-
-    # ------------------------------------------------------------------
-    # ChatInput → VM
-    # ------------------------------------------------------------------
-
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id != "chat-input":
-            return
-        # Echoes from our own _refresh() write also land here; the VM no-ops when
-        # the buffer hasn't changed, so we don't need to gate on it.
-        self._vm.set_user_input_buffer(event.text_area.text)
-
-    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-        event.stop()
-        self._vm.submit_user_input()
-
-    def on_chat_input_palette_navigate(self, event: ChatInput.PaletteNavigate) -> None:
-        event.stop()
-        self._vm.move_palette_cursor(event.delta)
-
-    def on_chat_input_palette_confirm(self, event: ChatInput.PaletteConfirm) -> None:
-        event.stop()
-        self._vm.confirm_palette_selection()
 
     # ------------------------------------------------------------------
     # Compatibility shims for the --new-chat-pane integration. These let

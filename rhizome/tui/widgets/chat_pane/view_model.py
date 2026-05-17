@@ -27,6 +27,7 @@ from rhizome.tui.commands import CommandRegistry
 from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 from .agent_message import AgentMessageViewModel
+from .chat_input import ChatInputViewModel
 from .command_palette import CommandPaletteViewModel
 from .interrupt import InterruptViewModelBase, TestInterruptViewModel
 
@@ -35,6 +36,7 @@ FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase
 
 
 _DEFAULT_HINT = "Type a message or /command ..."
+_INTERRUPT_HINT = "Resolve the prompt above to continue..."
 
 
 class ChatPaneViewModel(ViewModelBase):
@@ -58,10 +60,6 @@ class ChatPaneViewModel(ViewModelBase):
 
         self.feed: list[FeedEntry] = []
 
-        self.input_enabled: bool = True
-        self.input_hint: str = _DEFAULT_HINT
-        self.input_buffer: str = ""
-
         self.session_mode: Mode = Mode.IDLE
 
         # Active topic + path from the topic tree root. Mutated via
@@ -73,6 +71,15 @@ class ChatPaneViewModel(ViewModelBase):
         self._command_registry = CommandRegistry()
         self._register_commands()
         self.command_palette.set_commands(self._registry_rows())
+
+        # Input sub-VM owns buffer/enabled/hint/history + holds the shared
+        # palette so the input view never reaches into the pane to filter,
+        # navigate, or decide tab-completion vs submit. The pane subscribes
+        # to ``submitted`` to dispatch chat-vs-slash + agent-busy gating.
+        self.chat_input = ChatInputViewModel(
+            self.command_palette, default_hint=_DEFAULT_HINT,
+        )
+        self.chat_input.subscribe(self.chat_input.submitted, self._on_input_submitted)
 
         # Agent plumbing — instantiated on bootstrap (after the view has access
         # to app.options). Held but unused at step 3.
@@ -339,11 +346,10 @@ class ChatPaneViewModel(ViewModelBase):
         self._pending_interrupt = vm
         self.emit(self.feed_append, len(self.feed) - 1)
 
-        prev_enabled = self.input_enabled
-        prev_hint = self.input_hint
-        self.input_enabled = False
-        self.input_hint = "Resolve the prompt above to continue..."
-        self.emit(self.dirty)
+        prev_enabled = self.chat_input.enabled
+        prev_hint = self.chat_input.hint
+        self.chat_input.set_enabled(False)
+        self.chat_input.set_hint(_INTERRUPT_HINT)
 
         try:
             return await vm.future()
@@ -351,9 +357,8 @@ class ChatPaneViewModel(ViewModelBase):
             return None
         finally:
             self._pending_interrupt = None
-            self.input_enabled = prev_enabled
-            self.input_hint = prev_hint
-            self.emit(self.dirty)
+            self.chat_input.set_enabled(prev_enabled)
+            self.chat_input.set_hint(prev_hint)
 
     # ------------------------------------------------------------------
     # Agent run lifecycle
@@ -598,57 +603,30 @@ class ChatPaneViewModel(ViewModelBase):
         self.emit(self.verbosity_hint)
 
     # ------------------------------------------------------------------
-    # Input area
+    # Input dispatch
     # ------------------------------------------------------------------
 
-    def set_user_input_buffer(self, text: str) -> None:
-        if self.input_buffer == text:
-            return
-        self.input_buffer = text
-        self.command_palette.update_for_input(text)
-        self.emit(self.dirty)
+    def _on_input_submitted(self, text: str) -> None:
+        """Subscriber on ``chat_input.submitted``: route the submitted text to
+        a command or an agent turn. Text is already buffer-cleared and
+        history-pushed by the input VM by the time we see it.
 
-
-    def submit_user_input(self) -> None:
-        """Dispatch the current buffer.
-
-        ``/cmd ...`` runs a registered command (async, fire-and-forget);
-        anything else falls through to the step-1 user-message + stub
-        system echo so plain chat still works while the agent is absent.
+        TODO(feed-queue): once shell commands land + we want
+        mid-stream-dispatchable chat text, this branches:
+          - dispatchable now (slash/shell command, or chat text with the
+            agent idle) → run immediately. Output appends after the open
+            agent VM if one exists; the agent keeps streaming into it.
+          - chat text with the agent running → enqueue on a feed-queue
+            for drain after the current run terminates.
+        For now: slash commands run anytime, chat text only starts a
+        run when the agent is idle (drops on the floor otherwise).
         """
-        text = self.input_buffer
-        if not text.strip():
+        stripped = text.lstrip()
+        if stripped.startswith("/"):
+            self._schedule_worker(self._execute_command(stripped))
             return
 
-        # TODO(feed-queue): once shell commands land + we want
-        # mid-stream-dispatchable chat text, this branches:
-        #   - dispatchable now (slash/shell command, or chat text with the
-        #     agent idle) → run immediately. Output appends after the open
-        #     agent VM if one exists; the agent keeps streaming into it.
-        #   - chat text with the agent running → enqueue on a feed-queue
-        #     for drain after the current run terminates.
-        # For now: slash commands run anytime, chat text only starts a
-        # run when the agent is idle (drops on the floor otherwise).
-
-        if text.lstrip().startswith("/"):
-            self.set_user_input_buffer("")
-            self._schedule_worker(self._execute_command(text.lstrip()))
-            return
-
-        self.set_user_input_buffer("")
         self.start_agent_run(text)
-
-
-    def move_palette_cursor(self, delta: int) -> None:
-        self.command_palette.move_cursor(delta)
-
-
-    def confirm_palette_selection(self) -> None:
-        """Tab-completion: replace the buffer with ``/<selected> ``."""
-        name = self.command_palette.selected_command
-        if name is None:
-            return
-        self.set_user_input_buffer(f"/{name} ")
 
 
     # ------------------------------------------------------------------
