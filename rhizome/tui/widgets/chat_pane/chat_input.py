@@ -1,15 +1,12 @@
 """Chat input — sub-VM + view used by the MVVM chat pane.
 
-The input owns the visible buffer, the disabled/hint reconciliation, and
-the per-session history ring. It holds a reference to the shared
-``CommandPaletteViewModel`` (constructed by the pane) so that buffer
-mutations can update palette filtering and so that Enter-on-visible-palette
-can ask the palette directly whether the typed text is a complete command
-— no widget-tree walks, no parent mediation.
+The input owns the visible buffer, the disabled/hint reconciliation, and the per-session history ring. It
+holds a reference to the shared ``CommandPaletteViewModel`` (constructed by the pane) so that buffer mutations
+can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
+typed text is a complete command — no widget-tree walks, no parent mediation.
 
-The pane subscribes to the input's ``SUBMITTED`` callback group to learn
-when to dispatch text (chat vs slash vs agent-busy gating all stays on
-the pane). The pane also flips ``enabled`` / ``hint`` during interrupts.
+The pane subscribes to the input's ``SUBMITTED`` callback group to learn when to dispatch text (chat vs slash
+vs agent-busy gating all stays on the pane). The pane also flips ``enabled`` / ``hint`` during interrupts.
 """
 
 from __future__ import annotations
@@ -32,12 +29,7 @@ class ChatInputViewModel(ViewModelBase):
     class Callbacks(Enum):
         SUBMITTED = "submitted"
 
-    def __init__(
-        self,
-        palette: CommandPaletteViewModel,
-        *,
-        default_hint: str = "",
-    ) -> None:
+    def __init__(self, palette: CommandPaletteViewModel, *, default_hint: str = "") -> None:
         super().__init__()
 
         self._submitted = self._make_group(ChatInputViewModel.Callbacks.SUBMITTED)
@@ -49,10 +41,9 @@ class ChatInputViewModel(ViewModelBase):
         self.default_hint: str = default_hint
         self.hint: str = default_hint
 
-        # Per-session history ring. ``index == -1`` means "not currently
-        # navigating history" (the live buffer is the user's working draft).
-        # On entry into history, the live buffer is preserved in ``_draft``
-        # so down-arrow can restore it on exit.
+        # Per-session history ring. ``index == -1`` means "not currently navigating history" (the live buffer
+        # is the user's working draft). On entry into history, the live buffer is preserved in ``_draft`` so
+        # down-arrow can restore it on exit.
         self._history: list[str] = []
         self._history_index: int = -1
         self._draft: str = ""
@@ -71,8 +62,8 @@ class ChatInputViewModel(ViewModelBase):
 
     @property
     def shell_mode(self) -> bool:
-        """True when the buffer parses as a single-line ``!``-prefixed shell
-        command. The view reads this to swap in the shell-mode border color."""
+        """True when the buffer parses as a single-line ``!``-prefixed shell command. The view reads this to
+        swap in the shell-mode border color."""
         return self.buffer.startswith("!") and "\n" not in self.buffer
 
     # ------------------------------------------------------------------
@@ -106,12 +97,10 @@ class ChatInputViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def submit(self) -> None:
-        """Fire SUBMITTED with the current buffer (stripped). No-op on
-        empty/whitespace-only buffers. Does NOT clear the buffer or push
-        history — subscribers decide whether the submission is accepted
-        (e.g. the pane gates some commands while the agent is busy) and
-        call ``accept_submission(text)`` to commit the clear+history-push
-        only on accept.
+        """Fire SUBMITTED with the current buffer (stripped). No-op on empty/whitespace-only buffers. Does NOT
+        clear the buffer or push history — subscribers decide whether the submission is accepted (e.g. the
+        pane gates some commands while the agent is busy) and call ``accept_submission(text)`` to commit the
+        clear+history-push only on accept.
         """
         text = self.buffer.strip()
         if not text:
@@ -119,10 +108,8 @@ class ChatInputViewModel(ViewModelBase):
         self.emit(self.submitted, text)
 
     def accept_submission(self, text: str) -> None:
-        """Commit a submission: clear the buffer and record ``text`` in
-        history. Called by subscribers after they accept the submitted
-        text — rejected/gated submissions skip this so the user can
-        edit and retry.
+        """Commit a submission: clear the buffer and record ``text`` in history. Called by subscribers after
+        they accept the submitted text — rejected/gated submissions skip this so the user can edit and retry.
         """
         self._push_history(text)
         self.set_buffer("")
@@ -189,29 +176,21 @@ class ChatInputViewModel(ViewModelBase):
 class ChatInputView(TextArea):
     """View for ``ChatInputViewModel``.
 
-    Subclasses ``TextArea`` rather than ``ViewBase`` so we keep the
-    TextArea editing surface intact while still binding to a VM. Standard
-    ``dirty`` subscription is wired manually in ``on_mount`` /
-    ``on_unmount`` (matching the convention ``ViewBase`` codifies for the
-    rest of the directory).
+    Subclasses ``TextArea`` rather than ``ViewBase`` so we keep the TextArea editing surface intact while
+    still binding to a VM. Standard ``dirty`` subscription is wired manually in ``on_mount`` / ``on_unmount``
+    (matching the convention ``ViewBase`` codifies for the rest of the directory).
 
-    All keystroke semantics that used to round-trip through the pane —
-    Enter/Tab confirming a palette selection, up/down navigating history
-    or the palette, double-Escape clearing — are handled here by calling
-    the VM directly. The pane only learns about submissions via the
-    ``submitted`` callback group.
+    All keystroke semantics that used to round-trip through the pane — Enter/Tab confirming a palette
+    selection, up/down navigating history or the palette, double-Escape clearing — are handled here by
+    calling the VM directly. The pane only learns about submissions via the ``submitted`` callback group.
     """
 
     def __init__(self, vm: ChatInputViewModel, *, id: str | None = None) -> None:
-        super().__init__(
-            show_line_numbers=False,
-            tab_behavior="focus",
-            id=id,
-        )
+        super().__init__(show_line_numbers=False, tab_behavior="focus", id=id)
         self._vm = vm
         self._last_escape: float = 0.0
-        # Track previous enabled state to detect disabled→enabled transitions
-        # (e.g. interrupt resolved) and refocus the input.
+        # Track previous enabled state to detect disabled→enabled transitions (e.g. interrupt resolved) and
+        # refocus the input.
         self._prev_enabled: bool = vm.enabled
 
     def on_mount(self) -> None:
@@ -247,21 +226,19 @@ class ChatInputView(TextArea):
     # ------------------------------------------------------------------
 
     def _move_cursor_to_end(self) -> None:
-        """Place the cursor at the end of the buffer. Called after
-        tab-completion so the user can keep typing args immediately.
-        TextArea resets the cursor when ``text`` is reassigned in
-        ``_refresh``, so we re-park it here after the VM round-trip."""
+        """Place the cursor at the end of the buffer. Called after tab-completion so the user can keep typing
+        args immediately. TextArea resets the cursor when ``text`` is reassigned in ``_refresh``, so we
+        re-park it here after the VM round-trip."""
         self.move_cursor(self.document.end)
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        # Echoes from our own _refresh write also land here; the VM no-ops
-        # when the buffer hasn't changed, so we don't need to gate on it.
+        # Echoes from our own _refresh write also land here; the VM no-ops when the buffer hasn't changed, so
+        # we don't need to gate on it.
         event.stop()
         self._vm.set_buffer(event.text_area.text)
 
     def on_focus(self, event: Focus) -> None:
-        # Restore the active hint on focus (the blur hook may have swapped
-        # in the "ctrl+l to return" cue).
+        # Restore the active hint on focus (the blur hook may have swapped in the "ctrl+l to return" cue).
         self.placeholder = self._vm.hint
 
     def on_blur(self, event: Blur) -> None:
@@ -320,8 +297,8 @@ class ChatInputView(TextArea):
             event.prevent_default()
             return
 
-        # Ctrl+Enter sends \n (0x0A) in most terminals, which Textual maps
-        # to ctrl+j. Insert a literal newline.
+        # Ctrl+Enter sends \n (0x0A) in most terminals, which Textual maps to ctrl+j. Insert a literal
+        # newline.
         if event.key == "ctrl+j":
             self.insert("\n")
             event.stop()

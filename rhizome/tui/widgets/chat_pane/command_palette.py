@@ -1,10 +1,9 @@
 """Slash-command palette — sub-VM + view used by the MVVM chat pane.
 
-The palette knows nothing about the chat pane: the parent VM hands it a
-list of ``(name, description)`` rows, pushes the current input buffer
-into ``update_for_input``, and reads ``selected_command`` on tab-confirm.
-The palette owns its own filtering, visibility, cursor, and dirty
-channel; the view subscribes to it directly.
+The palette knows nothing about the chat pane: the parent VM hands it a list of ``(name, description)``
+rows, pushes the current input buffer into ``update_for_input``, and reads ``selected_command`` on
+tab-confirm. The palette owns its own filtering, visibility, cursor, and dirty channel; the view
+subscribes to it directly.
 """
 
 from __future__ import annotations
@@ -56,10 +55,9 @@ class CommandPaletteViewModel(ViewModelBase):
         return items[idx][0]
 
     def has_exact_match(self, buffer_text: str) -> bool:
-        """True if ``buffer_text`` parses to ``/<name>`` where ``<name>`` is a
-        registered command. Used by the chat input to decide whether Enter on
-        a visible palette should submit the command or confirm the selection
-        (tab-completion).
+        """True if ``buffer_text`` parses to ``/<name>`` where ``<name>`` is a registered command. Used by the
+        chat input to decide whether Enter on a visible palette should submit the command or confirm the
+        selection (tab-completion).
         """
         name = self._name_prefix(buffer_text)
         if not name:
@@ -89,9 +87,8 @@ class CommandPaletteViewModel(ViewModelBase):
     def update_for_input(self, buffer_text: str) -> None:
         """Derive filter + visibility from a chat input buffer.
 
-        Visible iff the buffer starts with ``/`` (no embedded newline) and
-        there's at least one matching command. Cursor resets when the
-        name-prefix changes.
+        Visible iff the buffer starts with ``/`` (no embedded newline) and there's at least one matching
+        command. Cursor resets when the name-prefix changes.
         """
         is_command = buffer_text.startswith("/") and "\n" not in buffer_text
         next_filter = buffer_text if is_command else ""

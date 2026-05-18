@@ -1,18 +1,16 @@
 """InterruptViewModelBase + TestInterrupt for the chat-pane MVVM rewrite.
 
-Interrupts are feed-native sub-VMs: they live as siblings of AgentMessage in
-the chat pane's feed, not as children of it. The peek-tail rule means an
-interrupt appearing implicitly closes the open AgentMessage (since the feed
-tail is no longer one), and the next agent chunk opens a fresh one.
+Interrupts are feed-native sub-VMs: they live as siblings of AgentMessage in the chat pane's feed, not as
+children of it. The peek-tail rule means an interrupt appearing implicitly closes the open AgentMessage
+(since the feed tail is no longer one), and the next agent chunk opens a fresh one.
 
-The future lives on the VM, not on the widget. ``present_interrupt`` on the
-chat pane awaits ``vm.wait_for_selection()``; view-side mutator calls
-(``move_cursor``, ``confirm``) eventually trigger ``resolve(value)``, which
-sets the future. This survives view re-mount, decouples the awaiter from
-Textual, and keeps the interrupt unit-testable without a Textual app.
+The future lives on the VM, not on the widget. ``present_interrupt`` on the chat pane awaits
+``vm.wait_for_selection()``; view-side mutator calls (``move_cursor``, ``confirm``) eventually trigger
+``resolve(value)``, which sets the future. This survives view re-mount, decouples the awaiter from Textual,
+and keeps the interrupt unit-testable without a Textual app.
 
-Mutators are idempotent on the resolved state: stale key handlers can't
-double-fire the future, and ``cancel`` after ``resolve`` is a no-op.
+Mutators are idempotent on the resolved state: stale key handlers can't double-fire the future, and
+``cancel`` after ``resolve`` is a no-op.
 """
 
 from __future__ import annotations
@@ -28,9 +26,8 @@ from ..view_model_base import ViewModelBase
 
 
 class InterruptViewModelBase(ViewModelBase):
-    """Common machinery for any feed-resident interrupt VM. Subclasses define
-    the interaction surface (cursor, options, etc.); the base owns the future
-    plumbing + idempotency guards.
+    """Common machinery for any feed-resident interrupt VM. Subclasses define the interaction surface
+    (cursor, options, etc.); the base owns the future plumbing + idempotency guards.
     """
 
     def __init__(self) -> None:
@@ -41,8 +38,8 @@ class InterruptViewModelBase(ViewModelBase):
         self.result: Any | None = None
 
     async def future(self) -> Any:
-        """Block until the user resolves (or cancels) this interrupt. Returns
-        the resolved value, or raises ``asyncio.CancelledError`` on cancel.
+        """Block until the user resolves (or cancels) this interrupt. Returns the resolved value, or raises
+        ``asyncio.CancelledError`` on cancel.
         """
         return await self._future
 
@@ -50,7 +47,7 @@ class InterruptViewModelBase(ViewModelBase):
         """Set the future to ``value``. No-op if already resolved/cancelled."""
         if self.resolved:
             return
-        
+
         self.resolved = True
         self.result = value
         if not self._future.done():
@@ -59,12 +56,10 @@ class InterruptViewModelBase(ViewModelBase):
         self.emit(self.dirty)
 
     def cancel(self) -> None:
-        """Cancel the future (the awaiter sees ``CancelledError``). No-op if
-        already resolved or cancelled.
-        """
+        """Cancel the future (the awaiter sees ``CancelledError``). No-op if already resolved or cancelled."""
         if self.resolved:
             return
-        
+
         self.resolved = True
         self.cancelled = True
         if not self._future.done():
@@ -74,16 +69,11 @@ class InterruptViewModelBase(ViewModelBase):
 
 
 class TestInterruptViewModel(InterruptViewModelBase):
-    """Minimal interrupt: a cursor over a list of options, Enter resolves with
-    the selected option's value. Built for routing verification — not linked
-    to any tool call.
+    """Minimal interrupt: a cursor over a list of options, Enter resolves with the selected option's value.
+    Built for routing verification — not linked to any tool call.
     """
 
-    def __init__(
-        self,
-        prompt: str = "Choose one:",
-        options: list[str] | None = None,
-    ) -> None:
+    def __init__(self, prompt: str = "Choose one:", options: list[str] | None = None) -> None:
         super().__init__()
         self.prompt = prompt
         self.options = options or ["ok", "cancel"]
@@ -105,9 +95,8 @@ class TestInterruptViewModel(InterruptViewModelBase):
 
 
 class TestInterruptView(ViewBase[TestInterruptViewModel]):
-    """Single-Static projection of ``TestInterruptViewModel``. Up/Down move
-    the cursor; Enter confirms. The widget keeps itself rendered after
-    resolution so the conversational record shows what was chosen.
+    """Single-Static projection of ``TestInterruptViewModel``. Up/Down move the cursor; Enter confirms. The
+    widget keeps itself rendered after resolution so the conversational record shows what was chosen.
     """
 
     DEFAULT_CSS = """

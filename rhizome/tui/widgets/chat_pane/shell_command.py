@@ -1,16 +1,13 @@
 """Shell command — sub-VM + view used by the MVVM chat pane.
 
-Buffer entries starting with ``!`` are dispatched as shell commands by
-the pane: a ``ShellCommandViewModel`` is appended to the feed and its
-``execute()`` coroutine is scheduled on the pane's worker. The VM owns
-the subprocess lifecycle, the streamed output, and the final exit code;
-the view subscribes to ``dirty`` and renders header / output area /
-exit code into stock ``Static`` widgets.
+Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandViewModel``
+is appended to the feed and its ``execute()`` coroutine is scheduled on the pane's worker. The VM owns the
+subprocess lifecycle, the streamed output, and the final exit code; the view subscribes to ``dirty`` and
+renders header / output area / exit code into stock ``Static`` widgets.
 
-The view runs its own ``set_interval`` while the VM is still ``running``
-so the "running… (Ns)" elapsed display updates without the VM having to
-self-tick. The interval is cancelled on the next ``dirty`` that arrives
-after ``running`` flips to False.
+The view runs its own ``set_interval`` while the VM is still ``running`` so the "running… (Ns)" elapsed
+display updates without the VM having to self-tick. The interval is cancelled on the next ``dirty`` that
+arrives after ``running`` flips to False.
 """
 
 from __future__ import annotations
@@ -37,12 +34,10 @@ class ShellCommandViewModel(ViewModelBase):
 
     Lifecycle:
       - construct with the command string
-      - caller schedules ``execute()`` on a worker (e.g. the pane's worker
-        scheduler) — the coroutine runs the subprocess, appends to
-        ``output`` as bytes arrive, and flips ``running`` False in its
-        finally block
-      - subscribers see ``dirty`` on each output append, on completion,
-        and on error
+      - caller schedules ``execute()`` on a worker (e.g. the pane's worker scheduler) — the coroutine runs
+        the subprocess, appends to ``output`` as bytes arrive, and flips ``running`` False in its finally
+        block
+      - subscribers see ``dirty`` on each output append, on completion, and on error
     """
 
     def __init__(self, command: str) -> None:
@@ -52,12 +47,11 @@ class ShellCommandViewModel(ViewModelBase):
         # Streamed stdout/stderr lines (raw — view joins them).
         self.output: list[str] = []
 
-        # None while running; int after subprocess exit; -1 if we never
-        # got a return code (exception path).
+        # None while running; int after subprocess exit; -1 if we never got a return code (exception path).
         self.returncode: int | None = None
 
-        # Wall-clock book-keeping. ``finished_at`` is None until ``execute``
-        # returns; the view computes elapsed live while ``running``.
+        # Wall-clock book-keeping. ``finished_at`` is None until ``execute`` returns; the view computes
+        # elapsed live while ``running``.
         self.started_at: float | None = None
         self.finished_at: float | None = None
 
@@ -88,9 +82,8 @@ class ShellCommandViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     async def execute(self) -> None:
-        """Run the command via ``asyncio.create_subprocess_shell`` and stream
-        its combined stdout/stderr into ``self.output``. Idempotent guard:
-        a second call while already running is a no-op.
+        """Run the command via ``asyncio.create_subprocess_shell`` and stream its combined stdout/stderr
+        into ``self.output``. Idempotent guard: a second call while already running is a no-op.
         """
         if self.running or self.finished_at is not None:
             return
@@ -119,9 +112,7 @@ class ShellCommandViewModel(ViewModelBase):
                 await proc.wait()
                 self.output.append(f"\n[timed out after {SHELL_TIMEOUT}s]\n")
 
-            self.returncode = (
-                proc.returncode if proc.returncode is not None else await proc.wait()
-            )
+            self.returncode = proc.returncode if proc.returncode is not None else await proc.wait()
 
         except Exception as exc:  # noqa: BLE001 — surface subprocess errors on the VM
             self.error = str(exc)
@@ -134,12 +125,11 @@ class ShellCommandViewModel(ViewModelBase):
 
 
 class ShellCommandView(ViewBase[ShellCommandViewModel]):
-    """Renders a ``ShellCommandViewModel``: header line, output area,
-    elapsed display (while running and on completion if >=10s), and a
-    trailing exit-code line on non-zero exits.
+    """Renders a ``ShellCommandViewModel``: header line, output area, elapsed display (while running and on
+    completion if >=10s), and a trailing exit-code line on non-zero exits.
 
-    Uses ``set_interval`` to repaint elapsed while the VM is running;
-    the interval is cancelled once the VM flips to finished.
+    Uses ``set_interval`` to repaint elapsed while the VM is running; the interval is cancelled once the VM
+    flips to finished.
     """
 
     DEFAULT_CSS = f"""
@@ -233,8 +223,8 @@ class ShellCommandView(ViewBase[ShellCommandViewModel]):
         area = self.query_one(".shell-output-area", VerticalScroll)
         widget = self.query_one(".shell-output", Static)
 
-        # Hide the output area only after completion produced nothing visible;
-        # during run we want it visible so output appears immediately.
+        # Hide the output area only after completion produced nothing visible; during run we want it visible
+        # so output appears immediately.
         if self._vm.running or self._vm.has_visible_output:
             area.add_class("--visible")
         else:

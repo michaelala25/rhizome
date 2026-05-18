@@ -1,17 +1,13 @@
 """AgentMessageViewModel + view — a single contiguous run of agent output.
 
-The VM holds an ordered list of interleaved segments (``ChatSegment`` for
-streamed text, ``ToolListSegment`` for tool calls) and a ``streaming`` flag
-that flips on ``close()``. ChatPane peek-tail routing dispatches each
-incoming chunk/tool-call into the trailing AgentMessage VM, creating a new
-one when the tail isn't one.
+The VM holds an ordered list of interleaved segments (``ChatSegment`` for streamed text, ``ToolListSegment``
+for tool calls) and a ``streaming`` flag that flips on ``close()``. ChatPane peek-tail routing dispatches
+each incoming chunk/tool-call into the trailing AgentMessage VM, creating a new one when the tail isn't one.
 
-Both segment streams are append-only — new segments only get appended,
-``ChatSegment.body`` only grows, ``ToolListSegment.tools`` only grows. The
-view diffs against its last-rendered state on each ``dirty`` and writes the
-deltas (using ``MarkdownStream`` for incremental text rendering). That
-keeps the VM → view channel minimal: a single ``dirty`` signal carries the
-whole communication.
+Both segment streams are append-only — new segments only get appended, ``ChatSegment.body`` only grows,
+``ToolListSegment.tools`` only grows. The view diffs against its last-rendered state on each ``dirty`` and
+writes the deltas (using ``MarkdownStream`` for incremental text rendering). That keeps the VM → view
+channel minimal: a single ``dirty`` signal carries the whole communication.
 """
 
 from __future__ import annotations
@@ -58,17 +54,14 @@ class AgentMessageViewModel(ViewModelBase):
         return not self.segments
 
     def append_token(self, text: str) -> None:
-        """Route a streamed text delta into the trailing ``ChatSegment``,
-        opening a new one if the last segment isn't a chat segment.
+        """Route a streamed text delta into the trailing ``ChatSegment``, opening a new one if the last
+        segment isn't a chat segment.
         """
         assert self.streaming, "append_token after close()"
         if not text:
             return
         
-        if (
-            not self.segments
-            or not isinstance(self.segments[-1], ChatSegment)
-        ):
+        if not self.segments or not isinstance(self.segments[-1], ChatSegment):
             self.segments.append(ChatSegment())
 
         seg = self.segments[-1]
@@ -79,16 +72,13 @@ class AgentMessageViewModel(ViewModelBase):
 
 
     def add_tool_call(self, name: str, args: dict[str, Any] | None = None) -> None:
-        """Append a tool call to the trailing ``ToolListSegment``, opening a
-        new one if the last segment isn't a tool list.
+        """Append a tool call to the trailing ``ToolListSegment``, opening a new one if the last segment
+        isn't a tool list.
         """
         assert self.streaming, "add_tool_call after close()"
 
         args = args or {}
-        if (
-            not self.segments
-            or not isinstance(self.segments[-1], ToolListSegment)
-        ):
+        if not self.segments or not isinstance(self.segments[-1], ToolListSegment):
             self.segments.append(ToolListSegment())
 
         seg = self.segments[-1]
@@ -99,9 +89,8 @@ class AgentMessageViewModel(ViewModelBase):
 
 
     def close(self, *, empty_fallback: str | None = None) -> None:
-        """Finalize the message. Idempotent. If no segments accumulated and
-        ``empty_fallback`` is provided, append a single chat segment with that
-        body so the run still leaves a visible trace.
+        """Finalize the message. Idempotent. If no segments accumulated and ``empty_fallback`` is provided,
+        append a single chat segment with that body so the run still leaves a visible trace.
         """
         if not self.streaming:
             return
@@ -113,12 +102,11 @@ class AgentMessageViewModel(ViewModelBase):
 
 
 class AgentMessageView(ViewBase[AgentMessageViewModel]):
-    """Renders an ``AgentMessageViewModel``: a vertical stack of segment
-    widgets plus a trailing ``ThinkingIndicator`` while ``vm.streaming``.
+    """Renders an ``AgentMessageViewModel``: a vertical stack of segment widgets plus a trailing
+    ``ThinkingIndicator`` while ``vm.streaming``.
 
-    Diffs the VM's append-only segments against its own last-rendered state on
-    each ``dirty`` and writes the deltas — using ``MarkdownStream`` for
-    incremental text, ``ToolCallList.add_tool`` for new tool entries.
+    Diffs the VM's append-only segments against its own last-rendered state on each ``dirty`` and writes the
+    deltas — using ``MarkdownStream`` for incremental text, ``ToolCallList.add_tool`` for new tool entries.
     """
 
     DEFAULT_CSS = """
@@ -132,8 +120,7 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         super().__init__(vm, **kwargs)
         # Mounted children in segment order — indices line up with vm.segments.
         self._segment_widgets: list[MarkdownChatMessage | ToolCallList] = []
-        # Per-segment last-rendered counter: char count for ChatSegments,
-        # tool count for ToolListSegments.
+        # Per-segment last-rendered counter: char count for ChatSegments, tool count for ToolListSegments.
         self._rendered_size: list[int] = []
         self._streams: dict[int, MarkdownStream] = {}
         self._thinking: ThinkingIndicator | None = None
@@ -168,15 +155,11 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         seg = self._vm.segments[idx]
 
         if isinstance(seg, ChatSegment):
-            # Always mount empty; the so-far body (if any) gets written through
-            # the stream once it opens. Mixing Markdown's constructor-driven
-            # _initial_markdown path with subsequent stream appends races on
-            # content that ends at a block boundary (e.g. "...:\n\n") because
-            # Markdown.append's _last_parsed_line bookkeeping gets desynced
-            # against the _on_mount-side update.
-            widget = MarkdownChatMessage(
-                role=Role.AGENT, content="", mode=self._vm.mode
-            )
+            # Always mount empty; the so-far body (if any) gets written through the stream once it opens.
+            # Mixing Markdown's constructor-driven _initial_markdown path with subsequent stream appends
+            # races on content that ends at a block boundary (e.g. "...:\n\n") because Markdown.append's
+            # _last_parsed_line bookkeeping gets desynced against the _on_mount-side update.
+            widget = MarkdownChatMessage(role=Role.AGENT, content="", mode=self._vm.mode)
             self._mount_before_thinking(widget)
             self._segment_widgets.append(widget)
             # Nothing rendered yet — _open_stream will catch up the body.
@@ -208,9 +191,8 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
 
         self._streams[idx] = stream
 
-        # Catch up the so-far body (anything that accumulated on the VM before
-        # the stream was ready) through the same stream API we'll use for
-        # subsequent deltas. Keeps the rendering path uniform.
+        # Catch up the so-far body (anything that accumulated on the VM before the stream was ready) through
+        # the same stream API we'll use for subsequent deltas. Keeps the rendering path uniform.
         seg = self._vm.segments[idx]
         if isinstance(seg, ChatSegment) and seg.body:
             widget._body = seg.body
@@ -230,9 +212,9 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
 
             stream = self._streams.get(idx)
             if stream is None:
-                # Stream not open yet — defer. _open_stream will catch up the
-                # entire so-far body in one write. Mixing inner_markdown.update
-                # here with the later stream writes corrupts append bookkeeping.
+                # Stream not open yet — defer. _open_stream will catch up the entire so-far body in one
+                # write. Mixing inner_markdown.update here with the later stream writes corrupts append
+                # bookkeeping.
                 return
 
             delta = seg.body[rendered:]

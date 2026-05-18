@@ -1,16 +1,14 @@
 """Status bar — sub-VM + view used by the MVVM chat pane.
 
-The status bar is a projection of facts that live elsewhere: mode and
-topic_path on the pane VM, token_usage + model_name on the AgentSession,
-verbosity on app.options. Rather than have the view reach into all
-three, ``StatusBarViewModel`` owns the projected slice. Each source's
-update path writes through to a setter here; the setter no-ops on no
-change and emits ``dirty`` otherwise — giving the bar repaint
-isolation from the rest of the pane's dirty churn (token usage in
-particular updates on every model chunk).
+The status bar is a projection of facts that live elsewhere: mode and topic_path on the pane VM,
+token_usage + model_name on the AgentSession, verbosity on app.options. Rather than have the view
+reach into all three, ``StatusBarViewModel`` owns the projected slice. Each source's update path
+writes through to a setter here; the setter no-ops on no change and emits ``dirty`` otherwise —
+giving the bar repaint isolation from the rest of the pane's dirty churn (token usage in particular
+updates on every model chunk).
 
-The view ports the legacy ``widgets/status_bar.py`` render verbatim,
-sourced from the VM instead of Textual reactives.
+The view ports the legacy ``widgets/status_bar.py`` render verbatim, sourced from the VM instead of
+Textual reactives.
 """
 
 from __future__ import annotations
@@ -81,9 +79,9 @@ class StatusBarViewModel(ViewModelBase):
         self.emit(self.dirty)
 
     def set_token_usage(self, usage: TokenUsageData) -> None:
-        """Token usage is mutated in-place on the AgentSession, so identity
-        checks won't catch updates. Always emit — callers (the agent session
-        callback) only fire on actual updates anyway."""
+        """Token usage is mutated in-place on the AgentSession, so identity checks won't catch
+        updates. Always emit — callers (the agent session callback) only fire on actual updates
+        anyway."""
         self.token_usage = usage
         self.emit(self.dirty)
 
@@ -176,15 +174,9 @@ class StatusBarView(ViewBase[StatusBarViewModel]):
             if system_overhead is not None or tool_overhead is not None:
                 overhead_parts = []
                 if system_overhead is not None:
-                    overhead_parts.append((
-                        f"system: {system_overhead:,}",
-                        "rgb(120,120,120)",
-                    ))
+                    overhead_parts.append((f"system: {system_overhead:,}", "rgb(120,120,120)"))
                 if tool_overhead is not None:
-                    overhead_parts.append((
-                        f"tools: {tool_overhead:,}",
-                        "rgb(220,160,80)",
-                    ))
+                    overhead_parts.append((f"tools: {tool_overhead:,}", "rgb(220,160,80)"))
 
                 token_text.append(f"tokens: {total:,}")
                 token_text.append(" (", style="rgb(100,100,100)")
@@ -215,10 +207,7 @@ class StatusBarView(ViewBase[StatusBarViewModel]):
         cache_create = vm.token_usage.cache_creation_tokens
         if cache_read is not None or cache_create is not None:
             cache_text = Text()
-            cache_text.append(
-                f"cache read: {cache_read:,}  create: {cache_create:,}",
-                style="rgb(90,90,90)",
-            )
+            cache_text.append(f"cache read: {cache_read:,}  create: {cache_create:,}", style="rgb(90,90,90)")
             self._right_align(cache_line, cache_text)
 
         return Text.assemble(topic_line, "\n", mode_line, "\n", cache_line)
