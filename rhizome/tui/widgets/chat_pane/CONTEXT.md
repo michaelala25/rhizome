@@ -42,6 +42,15 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
   delegates), so the palette view only renders state. Exposes
   `has_exact_match(buffer_text)` so the input can decide
   Enter-confirms-palette vs Enter-submits without a widget-tree walk.
+- **status_bar.py** — `StatusBarViewModel` + `StatusBarView`. Projection
+  of facts that live elsewhere: `mode` and `topic_path` are written by
+  the pane VM via `_set_session_mode` / `set_topic` / `clear_topic`;
+  `model_name` and `token_usage` are seeded at bootstrap and updated by
+  the agent session's `on_token_usage_changed` callback; `verbosity` is
+  seeded at bootstrap and updated via an `Options.Agent.AnswerVerbosity`
+  subscription. Each setter no-ops on no change and emits the VM's own
+  `dirty`, so token-usage chatter during streaming repaints only the
+  status bar, not the rest of the pane.
 - **shell_command.py** — `ShellCommandViewModel` + `ShellCommandView`.
   Buffer entries that start with `!` are routed by the pane through
   `start_shell_command`, which appends a VM to the feed and schedules

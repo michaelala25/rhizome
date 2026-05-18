@@ -31,6 +31,7 @@ from .chat_input import ChatInputViewModel
 from .command_palette import CommandPaletteViewModel
 from .interrupt import InterruptViewModelBase, TestInterruptViewModel
 from .shell_command import ShellCommandViewModel
+from .status_bar import StatusBarViewModel
 
 
 FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase | ShellCommandViewModel
@@ -81,6 +82,14 @@ class ChatPaneViewModel(ViewModelBase):
             self.command_palette, default_hint=_DEFAULT_HINT,
         )
         self.chat_input.subscribe(self.chat_input.submitted, self._on_input_submitted)
+
+        # Status-bar sub-VM. Projection of mode / topic_path (from this VM),
+        # token_usage + model_name (from the agent session), and verbosity
+        # (from app.options). Pane mutates it through setters; the view
+        # subscribes to its own dirty so token updates don't repaint the
+        # rest of the pane.
+        self.status_bar = StatusBarViewModel()
+        self._options: Options | None = None
 
         # Agent plumbing — instantiated on bootstrap (after the view has access
         # to app.options). Held but unused at step 3.
@@ -167,6 +176,8 @@ class ChatPaneViewModel(ViewModelBase):
         if self._session_factory is None:
             return
 
+        self._options = app_options
+
         provider = app_options.get(Options.Agent.Provider)
         model_name = app_options.get(Options.Agent.Model)
         agent_kwargs = get_agent_kwargs(app_options)
@@ -178,8 +189,21 @@ class ChatPaneViewModel(ViewModelBase):
             provider=provider,
             model_name=model_name,
             agent_kwargs=agent_kwargs,
+            on_token_usage_changed=self._on_token_usage_changed,
             debug=debug,
         )
+
+        # Seed status-bar fields that come from the agent session / options.
+        self.status_bar.set_model_name(self.agent_session._model_name or "")
+        self.status_bar.set_verbosity(app_options.get(Options.Agent.AnswerVerbosity))
+        app_options.subscribe(Options.Agent.AnswerVerbosity, self._on_verbosity_changed)
+
+    def _on_token_usage_changed(self) -> None:
+        if self.agent_session is not None:
+            self.status_bar.set_token_usage(self.agent_session.token_usage)
+
+    async def _on_verbosity_changed(self, _old, new) -> None:
+        self.status_bar.set_verbosity(new)
 
     # ------------------------------------------------------------------
     # Feed
@@ -480,6 +504,11 @@ class ChatPaneViewModel(ViewModelBase):
     # Session mode
     # ------------------------------------------------------------------
 
+    def _set_session_mode(self, mode: Mode) -> None:
+        """Assign session_mode and forward to the status-bar VM in one place."""
+        self.session_mode = mode
+        self.status_bar.set_mode(mode.value)
+
     async def set_mode(
         self,
         mode: Mode,
@@ -515,7 +544,7 @@ class ChatPaneViewModel(ViewModelBase):
         )
 
         if source == "agent":
-            self.session_mode = mode
+            self._set_session_mode(mode)
             self.emit(self.dirty)
             # User-initiated mode set while the agent was running is
             # superseded by the agent's tool call.
@@ -525,7 +554,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         # source == "user"
         if self.agent_busy:
-            self.session_mode = mode
+            self._set_session_mode(mode)
             if self.agent_session is not None:
                 await self.agent_session.set_pending_user_mode(mode.value)
             if not silent:
@@ -536,7 +565,7 @@ class ChatPaneViewModel(ViewModelBase):
                     include_in_agent_context=False,
                 )
         else:
-            self.session_mode = mode
+            self._set_session_mode(mode)
             if silent:
                 if self.agent_session is not None:
                     self.agent_session.add_system_notification(message)
@@ -557,6 +586,7 @@ class ChatPaneViewModel(ViewModelBase):
             return
         self.active_topic = None
         self.topic_path = []
+        self.status_bar.set_topic_path([])
         self.emit(self.dirty)
 
     async def set_topic(self, topic_id: int) -> bool:
@@ -582,6 +612,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         self.active_topic = topic
         self.topic_path = path
+        self.status_bar.set_topic_path(path)
         self.emit(self.dirty)
         return True
 

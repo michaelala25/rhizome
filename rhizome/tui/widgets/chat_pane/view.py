@@ -21,6 +21,7 @@ from .chat_input import ChatInputView
 from .command_palette import CommandPalette
 from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
 from .shell_command import ShellCommandView, ShellCommandViewModel
+from .status_bar import StatusBarView
 from .view_model import ChatPaneViewModel
 from rhizome.tui.types import ChatMessageData
 
@@ -80,6 +81,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         yield VerticalScroll(id="message-area")
         yield ChatInputView(self._vm.chat_input, id="chat-input")
         yield CommandPalette(self._vm.command_palette, id="command-palette")
+        yield StatusBarView(self._vm.status_bar, id="status-bar")
 
     def on_mount(self) -> None:
         self._vm.set_worker_scheduler(self.run_worker)
