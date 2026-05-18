@@ -39,15 +39,25 @@ FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase | S
 
 _DEFAULT_HINT = "Type a message or /command ..."
 _INTERRUPT_HINT = "Resolve the prompt above to continue..."
+_AGENT_BUSY_HINT = (
+    "Agent is thinking, you can submit after it completes or interrupt with Ctrl+C"
+)
 
 
 class ChatPaneViewModel(ViewModelBase):
+
+    # Slash commands that must wait for the agent to be idle. Anything not
+    # in this set is allowed to dispatch mid-stream (mode toggles, echo,
+    # test-* helpers, etc.). Shell `!` commands and free-text chat are
+    # gated separately in ``_on_input_submitted``.
+    _AGENT_GATED_COMMANDS: frozenset[str] = frozenset()
 
     class Callbacks(Enum):
         FEED_APPEND = "feed_append"
         FEED_CLEAR = "feed_clear"
         TAB_RENAME = "tab_rename"
         VERBOSITY_HINT = "verbosity_hint"
+        NOTIFY = "notify"
 
     def __init__(
         self,
@@ -59,6 +69,7 @@ class ChatPaneViewModel(ViewModelBase):
         self._feed_clear = self._make_group(ChatPaneViewModel.Callbacks.FEED_CLEAR)
         self._tab_rename = self._make_group(ChatPaneViewModel.Callbacks.TAB_RENAME)
         self._verbosity_hint = self._make_group(ChatPaneViewModel.Callbacks.VERBOSITY_HINT)
+        self._notify = self._make_group(ChatPaneViewModel.Callbacks.NOTIFY)
 
         self.feed: list[FeedEntry] = []
 
@@ -141,6 +152,10 @@ class ChatPaneViewModel(ViewModelBase):
     @property
     def verbosity_hint(self):
         return self._verbosity_hint
+
+    @property
+    def notify(self):
+        return self._notify
 
     @property
     def command_registry(self) -> CommandRegistry:
@@ -659,30 +674,42 @@ class ChatPaneViewModel(ViewModelBase):
 
     def _on_input_submitted(self, text: str) -> None:
         """Subscriber on ``chat_input.submitted``: route the submitted text to
-        a command or an agent turn. Text is already buffer-cleared and
-        history-pushed by the input VM by the time we see it.
+        a command, a shell command, or an agent turn. Text is already
+        buffer-cleared and history-pushed by the input VM by the time we
+        see it.
 
-        TODO(feed-queue): once shell commands land + we want
-        mid-stream-dispatchable chat text, this branches:
-          - dispatchable now (slash/shell command, or chat text with the
-            agent idle) → run immediately. Output appends after the open
-            agent VM if one exists; the agent keeps streaming into it.
-          - chat text with the agent running → enqueue on a feed-queue
-            for drain after the current run terminates.
-        For now: slash commands run anytime, chat text only starts a
-        run when the agent is idle (drops on the floor otherwise).
+        Agent-busy gating (no feed queue yet):
+          - shell ``!`` commands always pass through
+          - slash commands pass through unless the name is in
+            ``_AGENT_GATED_COMMANDS``
+          - chat text requires the agent to be idle
+        Blocked submissions surface as a transient notification.
         """
         stripped = text.lstrip()
-        if stripped.startswith("/"):
-            self._schedule_worker(self._execute_command(stripped))
-            return
 
         if stripped.startswith("!"):
             cmd = stripped[1:].strip()
             if cmd:
+                self.chat_input.accept_submission(text)
                 self.start_shell_command(cmd)
             return
 
+        if stripped.startswith("/"):
+
+            name = stripped.lstrip("/").split(maxsplit=1)[0]
+            if self.agent_busy and name in self._AGENT_GATED_COMMANDS:
+                self.emit(self.notify, _AGENT_BUSY_HINT)
+                return
+            
+            self.chat_input.accept_submission(text)
+            self._schedule_worker(self._execute_command(stripped))
+            return
+
+        if self.agent_busy:
+            self.emit(self.notify, _AGENT_BUSY_HINT)
+            return
+
+        self.chat_input.accept_submission(text)
         self.start_agent_run(text)
 
     def start_shell_command(self, cmd: str) -> None:

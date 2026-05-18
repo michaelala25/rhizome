@@ -77,11 +77,16 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
+        self._vm.subscribe(self._vm.notify, self._on_notify)
 
     def on_unmount(self) -> None:
         super().on_unmount()
         self._vm.unsubscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.unsubscribe(self._vm.feed_clear, self._on_feed_clear)
+        self._vm.unsubscribe(self._vm.notify, self._on_notify)
+
+    def _on_notify(self, message: str) -> None:
+        self.app.notify(message)
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="message-area")

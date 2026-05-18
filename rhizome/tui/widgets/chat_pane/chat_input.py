@@ -106,18 +106,26 @@ class ChatInputViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def submit(self) -> None:
-        """Fire SUBMITTED with the current buffer (stripped), clear the buffer,
-        and record the entry in history. No-op on empty/whitespace-only
-        buffers. Subscribers (the chat pane) decide chat-vs-slash and any
-        agent-busy gating — the input itself doesn't know.
+        """Fire SUBMITTED with the current buffer (stripped). No-op on
+        empty/whitespace-only buffers. Does NOT clear the buffer or push
+        history — subscribers decide whether the submission is accepted
+        (e.g. the pane gates some commands while the agent is busy) and
+        call ``accept_submission(text)`` to commit the clear+history-push
+        only on accept.
         """
         text = self.buffer.strip()
         if not text:
             return
+        self.emit(self.submitted, text)
 
+    def accept_submission(self, text: str) -> None:
+        """Commit a submission: clear the buffer and record ``text`` in
+        history. Called by subscribers after they accept the submitted
+        text — rejected/gated submissions skip this so the user can
+        edit and retry.
+        """
         self._push_history(text)
         self.set_buffer("")
-        self.emit(self.submitted, text)
 
     def _push_history(self, text: str) -> None:
         self._history.append(text)
