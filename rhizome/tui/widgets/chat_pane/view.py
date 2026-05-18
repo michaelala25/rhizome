@@ -12,6 +12,7 @@ to the input VM directly — the pane is no longer in the path.
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import VerticalScroll
 
 from ..message import ChatMessage, MarkdownChatMessage, RichChatMessage
@@ -30,6 +31,11 @@ FeedEntryWidget = ChatMessage | AgentMessageView | TestInterruptView | ShellComm
 
 
 class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
+
+    BINDINGS = [
+        Binding("shift+tab", "cycle_mode", "Cycle mode", show=False),
+        Binding("ctrl+b", "cycle_verbosity", "Cycle verbosity", show=False, priority=True),
+    ]
 
     DEFAULT_CSS = """
     ChatPaneMVVM {
@@ -136,3 +142,13 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
     def append_message(self, msg) -> None:
         self._vm.append_message(msg)
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    async def action_cycle_mode(self) -> None:
+        await self._vm.cycle_mode()
+
+    async def action_cycle_verbosity(self) -> None:
+        await self._vm.cycle_verbosity()

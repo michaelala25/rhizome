@@ -504,6 +504,25 @@ class ChatPaneViewModel(ViewModelBase):
     # Session mode
     # ------------------------------------------------------------------
 
+    async def cycle_mode(self) -> None:
+        """Advance through IDLE → LEARN → REVIEW → IDLE. Silent — the
+        binding's intent is a quick cycle, not a chat-visible mode change.
+        """
+        cycle = {Mode.IDLE: Mode.LEARN, Mode.LEARN: Mode.REVIEW, Mode.REVIEW: Mode.IDLE}
+        await self.set_mode(cycle[self.session_mode], silent=True)
+
+    async def cycle_verbosity(self) -> None:
+        """Advance through ``Options.Agent.AnswerVerbosity.choices``. The
+        existing options subscription updates the status bar VM."""
+        if self._options is None:
+            return
+        choices = Options.Agent.AnswerVerbosity.choices
+        current = self._options.get(Options.Agent.AnswerVerbosity)
+        idx = choices.index(current) if current in choices else 0
+        new_value = choices[(idx + 1) % len(choices)]
+        await self._options.set(Options.Agent.AnswerVerbosity, new_value)
+        await self._options.post_update()
+
     def _set_session_mode(self, mode: Mode) -> None:
         """Assign session_mode and forward to the status-bar VM in one place."""
         self.session_mode = mode
