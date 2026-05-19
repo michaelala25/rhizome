@@ -85,8 +85,27 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         self._vm.unsubscribe(self._vm.feed_clear, self._on_feed_clear)
         self._vm.unsubscribe(self._vm.notify, self._on_notify)
 
-    def _on_notify(self, message: str) -> None:
-        self.app.notify(message)
+    def _on_notify(self, action: ChatPaneViewModel.NotifyAction) -> None:
+        handler = self._NOTIFY_HANDLERS.get(action)
+        if handler is None:
+            return
+        handler(self)
+
+    def _notify_agent_busy(self) -> None:
+        self.app.notify(
+            "Agent is thinking, you can submit after it completes or interrupt with Ctrl+C"
+        )
+
+    def _notify_hint_higher_verbosity(self) -> None:
+        self.app.notify(
+            "Hint: the agent has indicated that a higher verbosity "
+            "may be required to properly answer your query."
+        )
+
+    _NOTIFY_HANDLERS = {
+        ChatPaneViewModel.NotifyAction.AGENT_BUSY: _notify_agent_busy,
+        ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
+    }
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="message-area")

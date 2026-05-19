@@ -38,7 +38,6 @@ FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase | S
 
 _DEFAULT_HINT = "Type a message or /command ..."
 _INTERRUPT_HINT = "Resolve the prompt above to continue..."
-_AGENT_BUSY_HINT = "Agent is thinking, you can submit after it completes or interrupt with Ctrl+C"
 
 
 class ChatPaneViewModel(ViewModelBase):
@@ -52,8 +51,16 @@ class ChatPaneViewModel(ViewModelBase):
         FEED_APPEND = "feed_append"
         FEED_CLEAR = "feed_clear"
         TAB_RENAME = "tab_rename"
-        VERBOSITY_HINT = "verbosity_hint"
         NOTIFY = "notify"
+
+    class NotifyAction(Enum):
+        """Actions the VM asks the parent view to perform. The VM specifies the action; the view
+        owns the concrete user-facing presentation (message text, severity, timeout, routing to a
+        sibling pane, etc.). Use this for anything the chat-pane VM can't accomplish directly —
+        eventually things like "open logs pane" once an app-level VM exists.
+        """
+        HINT_HIGHER_VERBOSITY = "hint_higher_verbosity"
+        AGENT_BUSY = "agent_busy"
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
         super().__init__()
@@ -61,7 +68,6 @@ class ChatPaneViewModel(ViewModelBase):
         self._feed_append = self._make_group(ChatPaneViewModel.Callbacks.FEED_APPEND)
         self._feed_clear = self._make_group(ChatPaneViewModel.Callbacks.FEED_CLEAR)
         self._tab_rename = self._make_group(ChatPaneViewModel.Callbacks.TAB_RENAME)
-        self._verbosity_hint = self._make_group(ChatPaneViewModel.Callbacks.VERBOSITY_HINT)
         self._notify = self._make_group(ChatPaneViewModel.Callbacks.NOTIFY)
 
         self.feed: list[FeedEntry] = []
@@ -132,10 +138,6 @@ class ChatPaneViewModel(ViewModelBase):
     @property
     def tab_rename(self):
         return self._tab_rename
-
-    @property
-    def verbosity_hint(self):
-        return self._verbosity_hint
 
     @property
     def notify(self):
@@ -592,12 +594,10 @@ class ChatPaneViewModel(ViewModelBase):
         self.emit(self.tab_rename, new_name)
 
     def hint_higher_verbosity(self) -> None:
-        """Hint to the user that a higher verbosity setting may help.
-
-        TODO: remove this API — the underlying UX cue is on the way out. Kept as a no-op-ish emit so
-        the agent tool stays valid.
+        """Hint to the user that a higher verbosity setting may help. The view decides how to
+        present the cue.
         """
-        self.emit(self.verbosity_hint)
+        self.emit(self.notify, ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY)
 
     # ------------------------------------------------------------------
     # Input dispatch
@@ -627,7 +627,7 @@ class ChatPaneViewModel(ViewModelBase):
 
             name = stripped.lstrip("/").split(maxsplit=1)[0]
             if self.agent_busy and name in self._AGENT_GATED_COMMANDS:
-                self.emit(self.notify, _AGENT_BUSY_HINT)
+                self.emit(self.notify, ChatPaneViewModel.NotifyAction.AGENT_BUSY)
                 return
 
             self.chat_input.accept_submission(text)
@@ -635,7 +635,7 @@ class ChatPaneViewModel(ViewModelBase):
             return
 
         if self.agent_busy:
-            self.emit(self.notify, _AGENT_BUSY_HINT)
+            self.emit(self.notify, ChatPaneViewModel.NotifyAction.AGENT_BUSY)
             return
 
         self.chat_input.accept_submission(text)
