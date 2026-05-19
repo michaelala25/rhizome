@@ -6,12 +6,16 @@ each incoming chunk/tool-call into the trailing AgentMessage VM, creating a new 
 
 Both segment streams are append-only — new segments only get appended, ``ChatSegment.body`` only grows,
 ``ToolListSegment.tools`` only grows. The view diffs against its last-rendered state on each ``dirty`` and
-writes the deltas (using ``MarkdownStream`` for incremental text rendering). That keeps the VM → view
-channel minimal: a single ``dirty`` signal carries the whole communication.
+writes deltas. Tool list deltas go straight to the widget; chat-text deltas are smoothed through a per-view
+drain task that pushes adaptive slices into the ``MarkdownStream`` on a fixed tick. The drain rate adapts so
+bursty arrivals catch up within a target window rather than blitting in one frame, and the thinking
+indicator stays mounted until the drain catches up to ``close()``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -116,14 +120,30 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
     }
     """
 
+    # Smoothing parameters for the chat-text drain. The drain wakes every ``_TICK_MS`` and writes a slice
+    # sized so that current pending content would fully drain in roughly ``_CATCHUP_BUDGET_MS`` (or
+    # ``_TAIL_BUDGET_MS`` once the VM has closed — slightly snappier so the message doesn't linger).
+    _TICK_MS = 40
+    _CATCHUP_BUDGET_MS = 500
+    _TAIL_BUDGET_MS = 200
+    _MIN_SLICE_CHARS = 2
+
     def __init__(self, vm: AgentMessageViewModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
+
         # Mounted children in segment order — indices line up with vm.segments.
         self._segment_widgets: list[MarkdownChatMessage | ToolCallList] = []
-        # Per-segment last-rendered counter: char count for ChatSegments, tool count for ToolListSegments.
+
+        # Per-segment last-rendered counter: char count actually pushed to the MarkdownStream for
+        # ChatSegments, tool count for ToolListSegments.
         self._rendered_size: list[int] = []
         self._streams: dict[int, MarkdownStream] = {}
         self._thinking: ThinkingIndicator | None = None
+        self._drain_task: asyncio.Task[None] | None = None
+
+        # Signal raised on every VM event (new chunks, close). The drain blocks on this when idle and
+        # re-evaluates state when it fires — so VM lifecycle, not a polling clock, owns the drain's wakeups.
+        self._wakeup: asyncio.Event = asyncio.Event()
 
     def compose(self) -> ComposeResult:
         # Children are mounted imperatively by _refresh as the VM grows.
@@ -138,6 +158,12 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
 
     def _refresh(self) -> None:
         self._reconcile_segments()
+        
+        # Every VM signal — new chunks or close — pokes the drain. Both transitions are events the drain
+        # needs to react to (consume more, or wind down), and `_refresh` is the single place we observe
+        # them, so this is the natural choke point.
+        self._ensure_drain_task()
+        self._wakeup.set()
         self._sync_thinking()
 
 
@@ -160,8 +186,10 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
             # races on content that ends at a block boundary (e.g. "...:\n\n") because Markdown.append's
             # _last_parsed_line bookkeeping gets desynced against the _on_mount-side update.
             widget = MarkdownChatMessage(role=Role.AGENT, content="", mode=self._vm.mode)
+
             self._mount_before_thinking(widget)
             self._segment_widgets.append(widget)
+
             # Nothing rendered yet — _open_stream will catch up the body.
             self._rendered_size.append(0)
 
@@ -170,12 +198,14 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
 
         else:
             widget = ToolCallList()
+
             self._mount_before_thinking(widget)
             self._segment_widgets.append(widget)
 
             # Seed any tools that were already on the segment before mount.
             for name, args in seg.tools:
                 widget.add_tool(name, args)
+
             self._rendered_size.append(len(seg.tools))
 
 
@@ -191,45 +221,121 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
 
         self._streams[idx] = stream
 
-        # Catch up the so-far body (anything that accumulated on the VM before the stream was ready) through
-        # the same stream API we'll use for subsequent deltas. Keeps the rendering path uniform.
-        seg = self._vm.segments[idx]
-        if isinstance(seg, ChatSegment) and seg.body:
-            widget._body = seg.body
-            import asyncio
-            asyncio.create_task(stream.write(seg.body))
-            self._rendered_size[idx] = len(seg.body)
+        # Any body that landed before the stream was ready will be picked up by the drain on its next wake.
+        # Poke the drain in case it's currently idle waiting for the stream to become writable.
+        self._wakeup.set()
 
 
     def _update_segment(self, idx: int, seg: Segment) -> None:
-        widget = self._segment_widgets[idx]
-        rendered = self._rendered_size[idx]
-
         if isinstance(seg, ChatSegment):
-            assert isinstance(widget, MarkdownChatMessage)
-            if len(seg.body) == rendered:
-                return
+            # ChatSegment writes are routed through the drain task so bursty chunks paint at a smooth,
+            # adaptive rate. We do not touch the stream here — the drain compares ``seg.body`` against
+            # ``_rendered_size[idx]`` when woken.
+            return
+
+        widget = self._segment_widgets[idx]
+        assert isinstance(widget, ToolCallList)
+
+        rendered = self._rendered_size[idx]
+        for i in range(rendered, len(seg.tools)):
+            name, args = seg.tools[i]
+            widget.add_tool(name, args)
+
+        self._rendered_size[idx] = len(seg.tools)
+
+    # ------------------------------------------------------------------
+    # Smoothing drain
+    # ------------------------------------------------------------------
+
+    def _ensure_drain_task(self) -> None:
+        # One drain per view, created the first time `_refresh` observes the VM. Lives from that moment
+        # until the VM has closed *and* every segment is fully painted. Idempotent — only the first call
+        # creates the task; subsequent calls are no-ops.
+        if self._drain_task is None:
+            self._drain_task = asyncio.create_task(self._drain_loop())
+
+
+    async def _drain_loop(self) -> None:
+        """Wakeup-driven drain: idles on ``_wakeup`` between VM events, paces with sleep during a burst.
+
+        Lifecycle:
+          * Created once when the view first sees the VM and lives for the message's full lifetime.
+          * While the VM is open and there's nothing pending, blocks on ``_wakeup`` (set by ``_refresh``
+            on every VM signal). It is *informed* of new chunks and of close, not polling for them.
+          * While there's pending content, consumes one adaptive slice per ``_TICK_MS`` so bursts paint
+            smoothly rather than blitting.
+          * Exits exactly once after the VM has closed and every segment has fully drained — taking the
+            thinking indicator down on the way out so the "done" cue lands with the final painted glyph.
+        """
+        try:
+            while True:
+                # Idle path: stream still open and nothing pending → wait until the VM signals us.
+                if self._vm.streaming and self._all_caught_up():
+                    await self._wakeup.wait()
+                self._wakeup.clear()
+
+                await self._drain_tick()
+
+                if not self._vm.streaming and self._all_caught_up():
+                    self._sync_thinking()
+                    return
+
+                # Pace the next slice. During a burst the wakeup may fire again mid-sleep; that's fine,
+                # `_wakeup.set()` is idempotent and we'll observe it on the next iteration's clear.
+                await asyncio.sleep(self._TICK_MS / 1000)
+        finally:
+            self._drain_task = None
+
+
+    async def _drain_tick(self) -> None:
+        budget_ms = self._TAIL_BUDGET_MS if not self._vm.streaming else self._CATCHUP_BUDGET_MS
+        budget_ticks = max(1, budget_ms // self._TICK_MS)
+
+        for idx, seg in enumerate(self._vm.segments):
+            if not isinstance(seg, ChatSegment):
+                continue
 
             stream = self._streams.get(idx)
             if stream is None:
-                # Stream not open yet — defer. _open_stream will catch up the entire so-far body in one
-                # write. Mixing inner_markdown.update here with the later stream writes corrupts append
-                # bookkeeping.
-                return
+                continue  # stream not opened yet — next tick
 
-            delta = seg.body[rendered:]
-            widget._body = seg.body
-            import asyncio
-            asyncio.create_task(stream.write(delta))
-            self._rendered_size[idx] = len(seg.body)
+            rendered = self._rendered_size[idx]
+            pending = len(seg.body) - rendered
+            if pending <= 0:
+                continue
 
-        else:
-            assert isinstance(widget, ToolCallList)
+            slice_size = max(self._MIN_SLICE_CHARS, math.ceil(pending / budget_ticks))
+            slice_size = min(slice_size, pending)
+            end = rendered + slice_size
+            delta = seg.body[rendered:end]
 
-            for i in range(rendered, len(seg.tools)):
-                name, args = seg.tools[i]
-                widget.add_tool(name, args)
-            self._rendered_size[idx] = len(seg.tools)
+            widget = self._segment_widgets[idx]
+            assert isinstance(widget, MarkdownChatMessage)
+            # TODO: ``_body`` is our own MarkdownChatMessage attribute (used for non-rendering reads like
+            # copy-to-clipboard), kept in lockstep with the painted prefix. That means a mid-stream copy
+            # would yield the slice we've rendered so far rather than the full canonical body the VM
+            # already knows about. Worth reconciling — either drive ``_body`` from ``seg.body`` directly,
+            # or have MarkdownChatMessage derive it from the underlying stream — when we revisit.
+            widget._body = seg.body[:end]
+
+            await stream.write(delta)
+
+            self._rendered_size[idx] = end
+
+
+    def _all_caught_up(self) -> bool:
+        for idx, seg in enumerate(self._vm.segments):
+            if not isinstance(seg, ChatSegment):
+                continue
+
+            # Stream not yet opened but body already exists → not caught up.
+            if self._streams.get(idx) is None and seg.body:
+                return False
+            
+            if len(seg.body) > self._rendered_size[idx]:
+                return False
+            
+        return True
 
 
     def _mount_before_thinking(self, widget) -> None:
@@ -244,17 +350,24 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
             self._thinking = ThinkingIndicator()
             self.mount(self._thinking)
 
-        elif not self._vm.streaming and self._thinking is not None:
+        elif not self._vm.streaming and self._thinking is not None and self._all_caught_up():
+            # Hold the indicator until the drain has flushed remaining text — otherwise the "done" cue
+            # lands before the message has finished painting.
             self._thinking.remove()
             self._thinking = None
 
 
     def on_unmount(self) -> None:
         super().on_unmount()
+
+        if self._drain_task is not None:
+            self._drain_task.cancel()
+            self._drain_task = None
+
         for stream in self._streams.values():
             try:
-                import asyncio
                 asyncio.ensure_future(stream.stop())
             except Exception:
                 pass
+
         self._streams.clear()
