@@ -37,6 +37,12 @@ class AgentMessageViewModel(ViewModelBase):
         self.streaming: bool = True
         self.mode: Mode = mode
 
+        # Commit-mode decoration. Set by the chat-pane VM while in COMMIT state; the view paints
+        # borders + a checkbox in the header off these flags.
+        self.is_selectable: bool = False
+        self.is_selected: bool = False
+        self.is_cursor: bool = False
+
     @property
     def is_empty(self) -> bool:
         return self.body == ""
@@ -52,6 +58,34 @@ class AgentMessageViewModel(ViewModelBase):
         if not self.streaming:
             return
         self.streaming = False
+        self.emit(self.dirty)
+
+    def set_selectable(self, selectable: bool) -> None:
+        if self.is_selectable == selectable:
+            return
+        self.is_selectable = selectable
+        self.emit(self.dirty)
+
+    def set_selected(self, selected: bool) -> None:
+        if self.is_selected == selected:
+            return
+        self.is_selected = selected
+        self.emit(self.dirty)
+
+    def set_cursor(self, cursor: bool) -> None:
+        if self.is_cursor == cursor:
+            return
+        self.is_cursor = cursor
+        self.emit(self.dirty)
+
+    def clear_commit_decoration(self) -> None:
+        if not (self.is_selectable or self.is_selected or self.is_cursor):
+            return
+        
+        self.is_selectable = False
+        self.is_selected = False
+        self.is_cursor = False
+        
         self.emit(self.dirty)
 
 
@@ -79,12 +113,34 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         border: round {Colors.REVIEW_AGENT_BORDER};
         margin: 0 2;
     }}
+    AgentMessageView.--commit-selectable {{
+        border: round {Colors.COMMIT_SELECTABLE};
+    }}
+    AgentMessageView.--commit-selectable.--commit-cursor {{
+        border: round {Colors.COMMIT_CURSOR};
+    }}
+    AgentMessageView.--commit-selected {{
+        border: round {Colors.COMMIT_SELECTED};
+    }}
+    AgentMessageView.--commit-selected.--commit-cursor {{
+        border: round {Colors.COMMIT_SELECTED_CURSOR};
+    }}
     AgentMessageView .msg-header {{
         height: auto;
         width: 1fr;
     }}
     AgentMessageView .msg-prefix {{
         height: auto;
+    }}
+    AgentMessageView .commit-checkbox {{
+        height: auto;
+        width: auto;
+        margin-right: 1;
+        display: none;
+    }}
+    AgentMessageView.--commit-selectable .commit-checkbox,
+    AgentMessageView.--commit-selected .commit-checkbox {{
+        display: block;
     }}
     AgentMessageView .agent-body {{
         width: 1fr;
@@ -113,6 +169,7 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
     def compose(self) -> ComposeResult:
         prefix = f"[bold {Colors.AGENT_PREFIX}]agent:[/bold {Colors.AGENT_PREFIX}] "
         with Horizontal(classes="msg-header"):
+            yield Static("□", classes="commit-checkbox")
             yield Static(prefix, classes="msg-prefix")
         yield Markdown("", classes="agent-body")
 
@@ -122,6 +179,18 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         # mirror the call_after_refresh dance from the legacy AgentMessage view.
         self.call_after_refresh(self._open_stream)
         self._refresh()
+
+    def _apply_commit_decoration(self) -> None:
+        self.set_class(self._vm.is_selectable and not self._vm.is_selected, "--commit-selectable")
+        self.set_class(self._vm.is_selected, "--commit-selected")
+        self.set_class(self._vm.is_cursor, "--commit-cursor")
+        try:
+            checkbox = self.query_one(".commit-checkbox", Static)
+        except Exception:
+            return
+        checkbox.update("■" if self._vm.is_selected else "□")
+        if self._vm.is_cursor:
+            self.scroll_visible()
 
     def _open_stream(self) -> None:
         if self._markdown is None:
@@ -139,6 +208,7 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         if self._drain_task is None:
             self._drain_task = asyncio.create_task(self._drain_loop())
         self._wakeup.set()
+        self._apply_commit_decoration()
 
     async def _drain_loop(self) -> None:
         try:

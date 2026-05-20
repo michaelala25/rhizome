@@ -14,6 +14,8 @@ from enum import Enum
 from typing import Any, Callable, Literal
 
 import rich_click as click
+from langchain_core.messages import HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from rhizome.agent.session import AgentSession, get_agent_kwargs
@@ -67,7 +69,15 @@ class ChatPaneViewModel(ViewModelBase):
     # Slash commands that must wait for the agent to be idle. Anything not in this set is allowed to
     # dispatch mid-stream (mode toggles, echo, test-* helpers, etc.). Shell `!` commands and free-text
     # chat are gated separately in ``_on_input_submitted``.
-    _AGENT_GATED_COMMANDS: frozenset[str] = frozenset()
+    _AGENT_GATED_COMMANDS: frozenset[str] = frozenset({"commit"})
+
+    class State(Enum):
+        """Coarse VM state. Most of the public API asserts ``state == CONVERSATION``; the COMMIT
+        branch is entered via ``enter_commit_mode`` and exited via ``exit_commit_mode`` or
+        ``submit_commit_payload``.
+        """
+        CONVERSATION = "conversation"
+        COMMIT = "commit"
 
     class Callbacks(Enum):
         FEED_APPEND = "feed_append"
@@ -96,6 +106,15 @@ class ChatPaneViewModel(ViewModelBase):
 
         self.feed: list[FeedItem] = []
         self._next_feed_id: int = 0
+
+        self.state: ChatPaneViewModel.State = ChatPaneViewModel.State.CONVERSATION
+
+        # Commit-mode working set, valid only while ``state == COMMIT``. ``_commit_selectable`` is
+        # the snapshot of learn-mode AgentMessageVMs in feed order at enter time; ``_commit_cursor``
+        # is the index of the highlighted entry. Reset by ``exit_commit_mode`` /
+        # ``submit_commit_payload``.
+        self._commit_selectable: list[AgentMessageViewModel] = []
+        self._commit_cursor: int = 0
 
         self.session_mode: Mode = Mode.IDLE
 
@@ -263,6 +282,7 @@ class ChatPaneViewModel(ViewModelBase):
         they're UI-side noise the agent shouldn't react to. Callers wanting feed-only mutation (test
         commands, UI echoes, legacy ``ui_only=True`` cases) pass ``include_in_agent_context=False``.
         """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
         tail_entry = self.feed[-1].entry if self.feed else None
         if (
             msg.role == Role.SYSTEM
@@ -283,6 +303,7 @@ class ChatPaneViewModel(ViewModelBase):
                 self.agent_session.add_system_notification(msg.content)
 
     def clear_feed(self) -> None:
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
         if not self.feed and self._current_router is None:
             return
 
@@ -338,6 +359,7 @@ class ChatPaneViewModel(ViewModelBase):
         The interrupt VM stays in the feed after resolution as an inert record — the View dims it but
         doesn't remove it, so the conversation history reflects what was chosen.
         """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
 
         # TODO: It is up in the air whether or not we want to pause the current router to post _any_ interrupt
         # or let the router itself pause when posting it's own interrupt (through the on_interrupt handler).
@@ -385,6 +407,7 @@ class ChatPaneViewModel(ViewModelBase):
     def start_agent_run(self, user_text: str) -> None:
         """Append the user message and kick off an agent turn. No-op if a run is already in flight
         (real queueing comes with the feed-queue)."""
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
         if self.agent_busy:
             return
 
@@ -393,7 +416,18 @@ class ChatPaneViewModel(ViewModelBase):
             return
 
         self.append_message(ChatMessageData(role=Role.USER, content=user_text))
+        self._start_agent_turn()
 
+    def _start_agent_turn(self) -> None:
+        """Spawn ``_run_agent_turn`` on the worker scheduler. Used by ``start_agent_run`` (which
+        prefixes a USER message) and by ``submit_commit_payload`` (which kicks off agent-only,
+        driven by an injected commit payload + system notification, with no USER message).
+
+        Caller preconditions: ``state == CONVERSATION``, ``agent_session`` non-None, not
+        ``agent_busy``. No-op if already busy (defensive).
+        """
+        if self.agent_busy:
+            return
         self._agent_task = self._schedule_worker(self._run_agent_turn())
         self.emit(self.dirty)
 
@@ -436,6 +470,7 @@ class ChatPaneViewModel(ViewModelBase):
         """Advance through IDLE → LEARN → REVIEW → IDLE. Silent — the binding's intent is a quick
         cycle, not a chat-visible mode change.
         """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
         cycle = {Mode.IDLE: Mode.LEARN, Mode.LEARN: Mode.REVIEW, Mode.REVIEW: Mode.IDLE}
         await self.set_mode(cycle[self.session_mode], silent=True)
 
@@ -469,6 +504,7 @@ class ChatPaneViewModel(ViewModelBase):
                 graph state catches up on the next model call) or ``"agent"`` (tool-initiated — graph
                 state is updated directly via ``Command``).
         """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
         if source == "agent":
             assert self.agent_busy
             silent = True
@@ -581,6 +617,12 @@ class ChatPaneViewModel(ViewModelBase):
           - chat text requires the agent to be idle
         Blocked submissions surface as a transient notification.
         """
+        if self.state == ChatPaneViewModel.State.COMMIT:
+            # In commit mode the input buffer is interpreted as optional commit instructions.
+            self.chat_input.accept_submission(text)
+            self.submit_commit_payload(text)
+            return
+
         stripped = text.lstrip()
 
         if stripped.startswith("!"):
@@ -613,10 +655,232 @@ class ChatPaneViewModel(ViewModelBase):
         Unlike agent runs, shell commands aren't gated by ``agent_busy`` — they're side-channel to
         the conversation.
         """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
         vm = ShellCommandViewModel(cmd)
         self._append_feed(vm)
         self._schedule_worker(vm.execute())
 
+
+    # ------------------------------------------------------------------
+    # Commit mode
+    # ------------------------------------------------------------------
+    #
+    # State machine: CONVERSATION ↔ COMMIT. Most public API asserts CONVERSATION; the methods below
+    # are the only legal way in and out of COMMIT. Selection state lives on each
+    # ``AgentMessageViewModel`` (its own dirty drives the per-message border + checkbox); the pane
+    # holds the ordered snapshot of selectable VMs and the cursor index so navigation is O(1).
+    #
+    # ``submit_commit_payload`` is stubbed: it cleans up decoration and returns to CONVERSATION but
+    # doesn't yet build/forward the payload to the agent — that wiring (and the routing decision
+    # between direct/subagent paths) lands in a follow-up.
+
+    _COMMIT_HINT = "Type instructions for the commit (Enter to submit, may be empty)..."
+
+    def enter_commit_mode(self) -> None:
+        """Snapshot learn-mode agent messages, decorate them as the selectable set, and transition to
+        COMMIT. If no learn-mode agent messages exist, append a system message and stay in
+        CONVERSATION.
+        """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert not self.agent_busy
+
+        selectable = [
+            item.entry for item in self.feed
+            if isinstance(item.entry, AgentMessageViewModel) and item.entry.mode == Mode.LEARN
+        ]
+        if not selectable:
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content="No selectable messages to commit."),
+                include_in_agent_context=False,
+            )
+            return
+
+        self._commit_selectable = selectable
+        self._commit_cursor = 0
+        for i, vm in enumerate(selectable):
+            vm.set_selectable(True)
+            vm.set_cursor(i == 0)
+
+        self.state = ChatPaneViewModel.State.COMMIT
+        self.chat_input.set_hint(self._COMMIT_HINT)
+        self.chat_input.set_state(ChatInputViewModel.State.COMMIT)
+        # Move focus off the input so up/down/enter drive the cursor rather than the input's
+        # history nav / submit. The view's focus subscription routes this to the message-area
+        # scroll container; events bubble back to the pane's commit-mode bindings.
+        self.request_focus()
+        self.emit(self.dirty)
+
+
+    def navigate_commit_cursor_up(self) -> None:
+        assert self.state == ChatPaneViewModel.State.COMMIT
+        self._move_commit_cursor(-1)
+
+
+    def navigate_commit_cursor_down(self) -> None:
+        assert self.state == ChatPaneViewModel.State.COMMIT
+        self._move_commit_cursor(1)
+
+
+    def _move_commit_cursor(self, delta: int) -> None:
+        new_index = self._commit_cursor + delta
+        if new_index < 0 or new_index >= len(self._commit_selectable):
+            return
+        self._commit_selectable[self._commit_cursor].set_cursor(False)
+        self._commit_cursor = new_index
+        self._commit_selectable[new_index].set_cursor(True)
+
+
+    def toggle_include_current_message_in_commit(self) -> None:
+        """Toggle the message under the cursor. On select (not deselect), auto-advance the cursor
+        to the next selectable if there is one.
+        """
+        assert self.state == ChatPaneViewModel.State.COMMIT
+
+        if not self._commit_selectable:
+            return
+        
+        current = self._commit_selectable[self._commit_cursor]
+        was_selected = current.is_selected
+        current.set_selected(not was_selected)
+
+        # Auto-advance logic
+        if not was_selected and self._commit_cursor < len(self._commit_selectable) - 1:
+            self._move_commit_cursor(1)
+
+
+    def exit_commit_mode(self) -> None:
+        """Cancel commit mode without submitting. Clears all decoration and returns to CONVERSATION."""
+        assert self.state == ChatPaneViewModel.State.COMMIT
+        self._reset_commit_state()
+
+
+    def submit_commit_payload(self, instructions: str) -> None:
+        """Submit the commit payload (selected messages + optional free-text instructions) and return
+        to CONVERSATION.
+
+        Builds a payload from the selected ``AgentMessageViewModel`` bodies (each annotated with the
+        immediately-preceding USER message as ``user_context``), injects it into the agent session,
+        posts a system notification with the direct-vs-subagent routing hint, and kicks off an
+        agent-only turn (no USER message in the feed — the notification is the prompt).
+
+        Edge case: if the user submitted with zero selected messages, exit COMMIT and append
+        "No messages selected for commit." Mirrors the legacy ``confirm_commit_selection`` behavior.
+        """
+        assert self.state == ChatPaneViewModel.State.COMMIT
+
+        payload = self._build_commit_payload()
+
+        # Transition out of COMMIT first — every subsequent feed mutation / agent kick-off requires
+        # CONVERSATION state, and we never re-enter COMMIT from inside this method.
+        self._reset_commit_state()
+
+        if not payload:
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content="No messages selected for commit."),
+                include_in_agent_context=False,
+            )
+            return
+
+        if self.agent_session is None:
+            self.append_message(
+                ChatMessageData(role=Role.ERROR, content="Agent session not bootstrapped."),
+            )
+            return
+
+        self.agent_session.set_commit_payload(payload)
+        self.agent_session.add_system_notification(
+            self._build_commit_notification(payload, instructions),
+        )
+        self._start_agent_turn()
+
+    def _build_commit_payload(self) -> list[dict]:
+        """Walk ``_commit_selectable`` (in feed order) and build one dict per selected message:
+
+            {"index": int, "content": str, "user_context": str | None}
+
+        ``user_context`` is the most recent USER ``ChatMessageData`` preceding this agent message
+        in the feed, bailing on an earlier ``AgentMessageViewModel`` so we capture the immediate
+        prompt rather than stale conversation. Messages with empty bodies are skipped.
+        """
+        payload: list[dict] = []
+        for idx, vm in enumerate(self._commit_selectable):
+            if not vm.is_selected or vm.is_empty:
+                continue
+            entry: dict = {"index": idx, "content": vm.body}
+            user_context = self._preceding_user_context(vm)
+            if user_context is not None:
+                entry["user_context"] = user_context
+            payload.append(entry)
+        return payload
+
+    def _preceding_user_context(self, vm: AgentMessageViewModel) -> str | None:
+        """Scan backwards in the feed from ``vm``'s position for the nearest USER ChatMessageData.
+        Stop and return None if we hit an earlier AgentMessageViewModel first — that means the
+        prompt for this segment is somewhere upstream we shouldn't conflate.
+        """
+        feed_pos = next((i for i, item in enumerate(self.feed) if item.entry is vm), None)
+        if feed_pos is None:
+            return None
+        for item in reversed(self.feed[:feed_pos]):
+            entry = item.entry
+            if isinstance(entry, AgentMessageViewModel):
+                return None
+            if isinstance(entry, ChatMessageData) and entry.role == Role.USER:
+                return entry.content
+        return None
+
+    def _build_commit_notification(self, payload: list[dict], instructions: str) -> str:
+        """Compose the system notification handed to the agent. Routing (direct vs subagent) follows
+        ``Options.Subagents.Commit.*``; this matches the legacy chat pane's behavior verbatim. The
+        subagent path will eventually move to the agent session itself — see the design discussion
+        in this turn — but for now the pane owns the decision so we don't touch the session API.
+        """
+        combined = "\n".join(entry["content"] for entry in payload)
+        approx_tokens = count_tokens_approximately([HumanMessage(content=combined)])
+        num_messages = len(payload)
+
+        use_subagent = False
+        if self._options is not None and self._options.get(Options.Subagents.Commit.Enabled) == "enabled":
+            criterion = self._options.get(Options.Subagents.Commit.RoutingCriterion)
+            threshold = self._options.get(Options.Subagents.Commit.RoutingThreshold)
+            if criterion == "tokens":
+                use_subagent = approx_tokens >= threshold
+            else:
+                use_subagent = num_messages >= threshold
+
+        if use_subagent:
+            notification = (
+                f"User selected {num_messages} message(s) for commit "
+                f"(~{approx_tokens} tokens). Use commit_invoke_subagent to delegate "
+                "knowledge entry extraction, then present the proposal to the user."
+            )
+        else:
+            notification = (
+                f"User selected {num_messages} message(s) for commit "
+                f"(~{approx_tokens} tokens). Use commit_show_selected_messages and "
+                "commit_proposal_create to draft entries directly, then present "
+                "the proposal to the user."
+            )
+
+        if instructions:
+            notification += (
+                f"\n\nUser provided these additional instructions for the commit:\n{instructions}"
+            )
+        return notification
+
+
+    def _reset_commit_state(self) -> None:
+        for vm in self._commit_selectable:
+            vm.clear_commit_decoration()
+
+        self.state = ChatPaneViewModel.State.CONVERSATION
+        self._commit_selectable = []
+        self._commit_cursor = 0
+
+        self.chat_input.set_state(ChatInputViewModel.State.CHAT)
+        self.chat_input.reset_hint()
+        self.chat_input.request_focus()
+        self.emit(self.dirty)
 
     # ------------------------------------------------------------------
     # Command registry
@@ -658,6 +922,10 @@ class ChatPaneViewModel(ViewModelBase):
         @reg.command(name="clear", help="Clear the message feed.")
         def _clear() -> None:
             self.clear_feed()
+
+        @reg.command(name="commit", help="Enter commit mode to select learn-mode messages.")
+        def _commit() -> None:
+            self.enter_commit_mode()
 
         @reg.command(name="idle", help="Switch to idle mode.")
         async def _idle() -> None:

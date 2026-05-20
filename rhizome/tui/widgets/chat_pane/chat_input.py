@@ -29,6 +29,20 @@ class ChatInputViewModel(ViewModelBase):
     class Callbacks(Enum):
         SUBMITTED = "submitted"
 
+    class State(Enum):
+        """Coarse input-VM state, managed by the parent pane to stay in lockstep with its own state.
+
+        - ``CHAT``: default. ``submit`` no-ops on empty buffers; up/down navigate command history.
+        - ``COMMIT``: ``submit`` fires on empty buffers (so Enter submits the commit with no
+          additional instructions); up/down skip history nav and fall through to the underlying
+          TextArea cursor movement instead.
+
+        The input doesn't know *why* it's in COMMIT — it just follows the rules. The pane VM toggles
+        via ``set_state`` from its own ``enter_commit_mode`` / exit paths.
+        """
+        CHAT = "chat"
+        COMMIT = "commit"
+
     def __init__(self, palette: CommandPaletteViewModel, *, default_hint: str = "") -> None:
         super().__init__()
 
@@ -36,6 +50,7 @@ class ChatInputViewModel(ViewModelBase):
 
         self._palette = palette
 
+        self.state: ChatInputViewModel.State = ChatInputViewModel.State.CHAT
         self.buffer: str = ""
         self.enabled: bool = True
         self.default_hint: str = default_hint
@@ -74,7 +89,24 @@ class ChatInputViewModel(ViewModelBase):
         if self.buffer == text:
             return
         self.buffer = text
-        self._palette.update_for_input(text)
+
+        # In COMMIT state the buffer is free-text commit instructions, not slash-command input —
+        # feeding it to the palette would surface a misleading "/c…" match on the first character.
+        if self.state == ChatInputViewModel.State.CHAT:
+            self._palette.update_for_input(text)
+        self.emit(self.dirty)
+
+    def set_state(self, state: "ChatInputViewModel.State") -> None:
+        if self.state == state:
+            return
+        self.state = state
+        
+        # Reconcile the palette with the new state: hide on entering COMMIT, re-filter against the
+        # current buffer on returning to CHAT.
+        if state == ChatInputViewModel.State.COMMIT:
+            self._palette.update_for_input("")
+        else:
+            self._palette.update_for_input(self.buffer)
         self.emit(self.dirty)
 
     def set_enabled(self, enabled: bool) -> None:
@@ -97,13 +129,14 @@ class ChatInputViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def submit(self) -> None:
-        """Fire SUBMITTED with the current buffer (stripped). No-op on empty/whitespace-only buffers. Does NOT
-        clear the buffer or push history — subscribers decide whether the submission is accepted (e.g. the
-        pane gates some commands while the agent is busy) and call ``accept_submission(text)`` to commit the
-        clear+history-push only on accept.
+        """Fire SUBMITTED with the current buffer (stripped). In CHAT state, no-op on empty
+        buffers; in COMMIT state, empty submissions are allowed (Enter submits the commit with no
+        additional instructions). Does NOT clear the buffer or push history — subscribers decide
+        whether the submission is accepted (e.g. the pane gates some commands while the agent is
+        busy) and call ``accept_submission(text)`` to commit the clear+history-push only on accept.
         """
         text = self.buffer.strip()
-        if not text:
+        if not text and self.state != ChatInputViewModel.State.COMMIT:
             return
         self.emit(self.submitted, text)
 
@@ -195,10 +228,12 @@ class ChatInputView(TextArea):
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.focus, self.focus)
         self._refresh()
 
     def on_unmount(self) -> None:
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.focus, self.focus)
 
     # ------------------------------------------------------------------
     # VM → view
@@ -280,9 +315,13 @@ class ChatInputView(TextArea):
             event.prevent_default()
             return
 
+        # In COMMIT state, up/down skip history nav entirely and behave as plain TextArea cursor
+        # movement so the user can navigate multi-line instructions.
+        in_commit = self._vm.state == ChatInputViewModel.State.COMMIT
+
         if event.key == "up":
             row, col = self.cursor_location
-            if row == 0 and col == 0 and self._vm.can_history_prev():
+            if not in_commit and row == 0 and col == 0 and self._vm.can_history_prev():
                 self._vm.history_prev()
                 self.move_cursor((0, 0))
                 event.stop()
@@ -291,7 +330,7 @@ class ChatInputView(TextArea):
             super()._on_key(event)
             return
 
-        if event.key == "down" and self._vm.can_history_next():
+        if event.key == "down" and not in_commit and self._vm.can_history_next():
             self._vm.history_next()
             event.stop()
             event.prevent_default()

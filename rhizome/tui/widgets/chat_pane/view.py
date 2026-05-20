@@ -39,6 +39,24 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     BINDINGS = [
         Binding("shift+tab", "cycle_mode", "Cycle mode", show=False),
         Binding("ctrl+b", "cycle_verbosity", "Cycle verbosity", show=False, priority=True),
+        # Commit-mode bindings. Guarded inside the action via ``check_action`` so they only fire
+        # while ``state == COMMIT``. Priority handling:
+        #   - up/down: priority so VerticalScroll's scroll bindings don't eat them when the
+        #     message-area is focused. Trade-off: in commit mode, up/down in the chat input drive
+        #     the cursor rather than history nav — acceptable since the input is just free-text
+        #     instructions during commit.
+        #   - space/enter/ctrl+j: no priority. When the input is focused it consumes them (typing /
+        #     newline / submit-instructions); when the message-area is focused they bubble to the
+        #     pane and toggle / submit.
+        #   - ctrl+c / ctrl+up / ctrl+down: priority — always behave the same regardless of focus.
+        Binding("up", "commit_cursor_up", "Commit: cursor up", show=False, priority=True),
+        Binding("down", "commit_cursor_down", "Commit: cursor down", show=False, priority=True),
+        Binding("space", "commit_toggle", "Commit: toggle", show=False),
+        Binding("enter", "commit_toggle", "Commit: toggle", show=False),
+        Binding("ctrl+j", "commit_submit", "Commit: submit", show=False),
+        Binding("ctrl+c", "commit_cancel", "Commit: cancel", show=False, priority=True),
+        Binding("ctrl+up", "commit_focus_cursor", "Commit: focus cursor", show=False, priority=True),
+        Binding("ctrl+down", "commit_focus_input", "Commit: focus input", show=False, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -193,3 +211,57 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
     async def action_cycle_verbosity(self) -> None:
         await self._vm.cycle_verbosity()
+
+    # ------------------------------------------------------------------
+    # Commit-mode actions. ``check_action`` returns ``None`` to suppress the binding entirely when
+    # the VM is not in COMMIT state, so up/down/enter etc. behave normally during conversations.
+    # ------------------------------------------------------------------
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action.startswith("commit_"):
+            if self._vm.state != ChatPaneViewModel.State.COMMIT:
+                return None
+            # When the chat input is focused, up/down should drive the TextArea / history nav, not
+            # the commit cursor. Returning None suppresses the priority binding so the keystroke
+            # falls through to the input's _on_key. Toggle / submit / cancel / focus-flip bindings
+            # remain active regardless of focus.
+            if action in ("commit_cursor_up", "commit_cursor_down"):
+                if self.query_one("#chat-input", ChatInputView).has_focus:
+                    return None
+        return True
+
+    def action_commit_cursor_up(self) -> None:
+        self._vm.navigate_commit_cursor_up()
+
+    def action_commit_cursor_down(self) -> None:
+        self._vm.navigate_commit_cursor_down()
+
+    def action_commit_toggle(self) -> None:
+        self._vm.toggle_include_current_message_in_commit()
+
+    def action_commit_submit(self) -> None:
+        # ctrl+enter from the pane (input not focused) submits with empty instructions. ctrl+j sent
+        # from the input is intercepted there as "insert newline" before this binding sees it.
+        self._vm.submit_commit_payload("")
+
+    def action_commit_cancel(self) -> None:
+        # If the user has a text selection on the screen, ctrl+c should copy it (standard terminal
+        # behavior) rather than exit commit mode. Mirrors the legacy chat pane's cancel-or-copy.
+        selected = self.screen.get_selected_text()
+        if selected:
+            self.app.copy_to_clipboard(selected)
+            return
+        self._vm.exit_commit_mode()
+
+    def action_commit_focus_cursor(self) -> None:
+        self._vm.request_focus()
+
+    def action_commit_focus_input(self) -> None:
+        self._vm.chat_input.request_focus()
+
+    # The pane widget itself isn't focusable, so ``vm.request_focus()`` lands here — we route it to
+    # the message-area scroll container. Keystrokes bubble back up to this pane, so the commit-mode
+    # bindings still fire.
+    def focus(self, scroll_visible: bool = True) -> "ChatPaneMVVM":
+        self.query_one("#message-area", VerticalScroll).focus(scroll_visible=scroll_visible)
+        return self
