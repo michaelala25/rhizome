@@ -152,9 +152,13 @@ class AgentStreamRouter:
 
     async def on_interrupt(self, value: Any, context: Any) -> Any:
         self.pause()
+        self._hide_thinking()
         # TODO: this is a test interrupt, we need to dispatch on type properly
         interrupt = TestInterruptViewModel(prompt=f"(interrupt) {value!r}", options=["continue"])
-        return await self._pane.present_interrupt(interrupt)
+        try:
+            return await self._pane.present_interrupt(interrupt)
+        finally:
+            self._show_thinking()
 
     # ------------------------------------------------------------------
     # Routing primitives (also called by synthetic test commands)
