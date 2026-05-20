@@ -85,14 +85,16 @@ class ChatInputViewModel(ViewModelBase):
     # Buffer / state mutators
     # ------------------------------------------------------------------
 
-    def set_buffer(self, text: str) -> None:
+    def set_buffer(self, text: str, *, update_palette: bool = True) -> None:
         if self.buffer == text:
             return
         self.buffer = text
 
         # In COMMIT state the buffer is free-text commit instructions, not slash-command input —
         # feeding it to the palette would surface a misleading "/c…" match on the first character.
-        if self.state == ChatInputViewModel.State.CHAT:
+        # ``update_palette=False`` is used by history nav: recalling a "/foo" entry should not pop
+        # the palette open, since that would steal up/down from further history traversal.
+        if update_palette and self.state == ChatInputViewModel.State.CHAT:
             self._palette.update_for_input(text)
         self.emit(self.dirty)
 
@@ -171,7 +173,7 @@ class ChatInputViewModel(ViewModelBase):
             self._history_index = len(self._history) - 1
         else:
             self._history_index -= 1
-        self.set_buffer(self._history[self._history_index])
+        self.set_buffer(self._history[self._history_index], update_palette=False)
 
     def can_history_next(self) -> bool:
         return self._history_index >= 0
@@ -181,12 +183,12 @@ class ChatInputViewModel(ViewModelBase):
             return
         if self._history_index < len(self._history) - 1:
             self._history_index += 1
-            self.set_buffer(self._history[self._history_index])
+            self.set_buffer(self._history[self._history_index], update_palette=False)
         else:
             self._history_index = -1
             restored = self._draft
             self._draft = ""
-            self.set_buffer(restored)
+            self.set_buffer(restored, update_palette=False)
 
     # ------------------------------------------------------------------
     # Palette pass-throughs (so the view never touches the palette directly)
