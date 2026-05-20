@@ -13,19 +13,22 @@ sub-VMs that own their own slices of state. Each sub-VM has its view
 co-located in the same file as the VM (mirroring this directory's
 convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
 
-- **view_model.py** — `ChatPaneViewModel`: orchestrates feed (`list[FeedEntry]`),
+- **view_model.py** — `ChatPaneViewModel`: orchestrates feed (`list[FeedItem]`,
+  where each `FeedItem` wraps a `FeedEntry` with a stable monotonic id),
   session mode, active topic, command registry, the agent run lifecycle
   (`start_agent_run` / `_run_agent_turn`), interrupt presentation
   (`present_interrupt`), and the chat-vs-slash dispatch decision. Owns
   the shared `CommandPaletteViewModel` and the `ChatInputViewModel`,
   subscribing to `chat_input.submitted` to route submissions. Does **not**
   own input buffer, enabled, hint, or history — those live on
-  `chat_input` (see below).
+  `chat_input` (see below). Feed mutations are addressed by id: callbacks
+  `feed_append(item_id)`, `feed_remove(item_id)`, `feed_clear()` so consumers
+  never need to reason about positional indices.
 - **view.py** — `ChatPaneMVVM`: composes `VerticalScroll` (feed),
   `ChatInputView` (bound to `vm.chat_input`), and `CommandPalette` (bound
   to the shared `vm.command_palette`). Subscribes to `vm.feed_append` /
-  `vm.feed_clear` to mount/remove per-entry widgets; no input-area
-  keystroke handling lives here.
+  `vm.feed_remove` / `vm.feed_clear` to mount/dismount per-entry widgets,
+  keyed by `FeedItem.id`; no input-area keystroke handling lives here.
 - **chat_input.py** — `ChatInputViewModel` + `ChatInputView`. The VM owns
   `buffer`, `enabled`, `hint`, and per-session history (`_history`,
   `_history_index`, `_draft`), plus a reference to the shared palette VM.
@@ -60,14 +63,41 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
   the elapsed display ticks even when no new output arrives. Input-side
   visual cue (red border) lives on `ChatInputViewModel.shell_mode`,
   which the input view reflects as the `--shell-mode` class.
+- **agent_stream_router.py** — `AgentStreamRouter`. Owns the routing of
+  agent stream events into feed entries: opens/extends chat segments
+  (`AgentMessageViewModel`), opens/extends tool lists
+  (`ToolMessageViewModel`), and pins a `ThinkingIndicatorViewModel` to
+  the feed tail for the duration of the turn. Exposes
+  `start` / `pause` / `close` for turn lifecycle and
+  `on_message` / `on_update` callbacks the pane wires into
+  `agent_session.stream`. Stateless from the pane's perspective —
+  `agent_busy` (worker task aliveness) is the single source of truth
+  for "is the agent running". Mutates the feed via
+  `pane._append_feed` / `pane._remove_feed`.
 - **agent_message.py** — `AgentMessageViewModel` + `AgentMessageView`. A
-  single contiguous agent turn (interleaved text + tool-call segments).
-  Mounted into the feed by the pane's peek-tail routing; the view
-  diff-renders against its last paint on each `dirty`.
+  single contiguous **chat segment** of agent output (one run of
+  streamed text). Multiple of these can appear in one turn, interleaved
+  with `ToolMessageViewModel` entries. The view owns its own drain task
+  that pulls characters from `vm.body` and writes adaptive-sized slices
+  into a `MarkdownStream` so bursty arrivals paint smoothly.
+- **tool_message.py** — `ToolMessageViewModel` + `ToolMessageView`. A
+  contiguous run of tool calls between agent text segments. Lightweight
+  append-only list rendered as a Unicode box-drawing tree. No streaming
+  concept — tool calls land atomically.
+- **thinking_indicator.py** — `ThinkingIndicatorViewModel` (sentinel) +
+  `ThinkingIndicatorView` (braille spinner). Lives in the feed as its
+  own entry; the pane mounts it at turn start, repins it to the tail
+  whenever a new agent segment is appended, and unmounts it at turn
+  close. The VM has no mutable state.
+- **chat_message.py** — `ChatMessageView`. Static (non-streaming) view
+  for USER / SYSTEM / ERROR messages backed by `ChatMessageData`
+  (immutable dataclass — no VM needed). Renders markdown or
+  ANSI-via-`rich.Text` based on the `rich` flag.
 - **interrupt.py** — `InterruptViewModelBase` + `TestInterruptViewModel` /
   `TestInterruptView`. Future-based interrupt VMs presented inline in
   the feed; pane's `present_interrupt` appends and awaits resolution
-  (closes any open agent turn first, flips input enabled/hint via
+  (calls `pause_agent_turn` first to seal the current chat segment but
+  keep the thinking indicator mounted, flips input enabled/hint via
   `chat_input.set_enabled` / `set_hint` for the duration).
 - **view_model.md** — Design doc for the MVVM rewrite (step-by-step
   rollout notes).
@@ -84,9 +114,19 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
 
 ## Feed ordering rules
 
-Documented inline in `view_model.py` above `open_agent_turn`. Key
-property: the feed is append-only and **position is not identity** — the
-currently open agent message VM is tracked by reference
-(`_current_agent_message`), not by being at the tail. Mid-stream user
-messages or commands can land between an open agent VM and its
-subsequent chunks.
+Documented inline in `agent_stream_router.py`. Key properties: the
+feed is append-only, addressed by `FeedItem.id`, and **position is
+not identity** — the router tracks the currently-open chat segment
+and tool list by reference, not by being at the tail. Mid-stream user
+messages or commands can land between an open segment and its
+subsequent chunks. The thinking indicator lives in the feed as its
+own entry and gets repinned to the tail (remove + re-append) whenever
+a new agent segment is appended.
+
+Agent turn lifecycle: `agent_router.start()` (mounts indicator) →
+stream callbacks `agent_router.on_message` / `on_update` route chunks
+and tool calls → `agent_router.pause()` (for interrupts, keeps
+indicator) or `agent_router.close()` (turn end, removes indicator and
+synthesizes a "(no response)" stub if nothing was emitted). The pane
+calls these from `_run_agent_turn` and `present_interrupt`; nothing
+else touches the routing state.

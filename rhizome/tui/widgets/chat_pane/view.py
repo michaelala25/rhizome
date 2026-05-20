@@ -15,19 +15,23 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 
-from ..message import ChatMessage, MarkdownChatMessage, RichChatMessage
+from textual.widget import Widget
+
 from ..view_base import ViewBase
 from .agent_message import AgentMessageView, AgentMessageViewModel
 from .chat_input import ChatInputView
+from .chat_message import ChatMessageView
 from .command_palette import CommandPalette
 from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
 from .shell_command import ShellCommandView, ShellCommandViewModel
 from .status_bar import StatusBarView
+from .thinking_indicator import ThinkingIndicatorView, ThinkingIndicatorViewModel
+from .tool_message import ToolMessageView, ToolMessageViewModel
 from .view_model import ChatPaneViewModel
 from rhizome.tui.types import ChatMessageData
 
 
-FeedEntryWidget = ChatMessage | AgentMessageView | TestInterruptView | ShellCommandView
+FeedEntryWidget = Widget
 
 
 class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
@@ -69,19 +73,21 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     def __init__(self, *, session_factory=None, **kwargs) -> None:
         super().__init__(ChatPaneViewModel(session_factory=session_factory), **kwargs)
 
-        # Mounted widgets in feed order. Indices line up with vm.feed so ping/clear
-        # callbacks can reach them directly. The element type depends on the
-        # corresponding feed entry: ChatMessage for ChatMessageData,
-        # AgentMessageView for AgentMessageViewModel.
-        self._mounted: list[FeedEntryWidget] = []
+        # Mounted widgets keyed by FeedItem.id. The pane addresses widgets by id (not position)
+        # because the feed may be mutated mid-stream — items can be appended after the agent's open
+        # segment, and later in the refactor the router will remove items (e.g. the thinking
+        # indicator) without disturbing surrounding positions.
+        self._mounted: dict[int, FeedEntryWidget] = {}
 
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
+        self._vm.subscribe(self._vm.feed_remove, self._on_feed_remove)
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
         self._vm.subscribe(self._vm.notify, self._on_notify)
 
     def on_unmount(self) -> None:
         super().on_unmount()
         self._vm.unsubscribe(self._vm.feed_append, self._on_feed_append)
+        self._vm.unsubscribe(self._vm.feed_remove, self._on_feed_remove)
         self._vm.unsubscribe(self._vm.feed_clear, self._on_feed_clear)
         self._vm.unsubscribe(self._vm.notify, self._on_notify)
 
@@ -125,17 +131,23 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     # VM → view callbacks
     # ------------------------------------------------------------------
 
-    def _on_feed_append(self, idx: int) -> None:
-        entry = self._vm.feed[idx]
+    def _on_feed_append(self, item_id: int) -> None:
+        item = next((it for it in self._vm.feed if it.id == item_id), None)
+        if item is None:
+            return
+        entry = item.entry
         area = self.query_one("#message-area", VerticalScroll)
 
         if isinstance(entry, ChatMessageData):
-            cls = RichChatMessage if entry.rich else MarkdownChatMessage
-            widget: FeedEntryWidget = cls(
-                role=entry.role, content=entry.content, mode=entry.mode
+            widget: FeedEntryWidget = ChatMessageView(
+                role=entry.role, content=entry.content, mode=entry.mode, rich=entry.rich,
             )
         elif isinstance(entry, AgentMessageViewModel):
             widget = AgentMessageView(entry)
+        elif isinstance(entry, ToolMessageViewModel):
+            widget = ToolMessageView(entry)
+        elif isinstance(entry, ThinkingIndicatorViewModel):
+            widget = ThinkingIndicatorView(entry)
         elif isinstance(entry, ShellCommandViewModel):
             widget = ShellCommandView(entry)
         elif isinstance(entry, TestInterruptViewModel):
@@ -148,11 +160,16 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
 
         area.mount(widget)
-        self._mounted.append(widget)
+        self._mounted[item_id] = widget
         area.scroll_end(animate=False)
 
+    def _on_feed_remove(self, item_id: int) -> None:
+        widget = self._mounted.pop(item_id, None)
+        if widget is not None:
+            widget.remove()
+
     def _on_feed_clear(self) -> None:
-        for widget in self._mounted:
+        for widget in self._mounted.values():
             widget.remove()
 
         self._mounted.clear()

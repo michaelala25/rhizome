@@ -9,11 +9,11 @@ commands, agent gating of commands, the agent-busy half of the mode-transition m
 
 import asyncio
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Literal
 
 import rich_click as click
-from langchain_core.messages import AIMessageChunk
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from rhizome.agent.session import AgentSession, get_agent_kwargs
@@ -26,14 +26,36 @@ from rhizome.tui.types import ChatMessageData, Mode, Role
 
 from ..view_model_base import ViewModelBase
 from .agent_message import AgentMessageViewModel
+from .agent_stream_router import AgentStreamRouter
 from .chat_input import ChatInputViewModel
 from .command_palette import CommandPaletteViewModel
 from .interrupt import InterruptViewModelBase, TestInterruptViewModel
 from .shell_command import ShellCommandViewModel
 from .status_bar import StatusBarViewModel
+from .thinking_indicator import ThinkingIndicatorViewModel
+from .tool_message import ToolMessageViewModel
 
 
-FeedEntry = ChatMessageData | AgentMessageViewModel | InterruptViewModelBase | ShellCommandViewModel
+FeedEntry = (
+    ChatMessageData
+    | AgentMessageViewModel
+    | ToolMessageViewModel
+    | ThinkingIndicatorViewModel
+    | InterruptViewModelBase
+    | ShellCommandViewModel
+)
+
+
+@dataclass
+class FeedItem:
+    """Wraps a feed entry with a stable, monotonically-assigned id.
+
+    The id is the canonical handle for feed mutations (remove, future replace/ping). Position is not
+    identity: a feed item's index can shift as later code adds out-of-band operations, so consumers
+    that need to address a specific item must hold its id rather than its index.
+    """
+    id: int
+    entry: FeedEntry
 
 
 _DEFAULT_HINT = "Type a message or /command ..."
@@ -49,6 +71,7 @@ class ChatPaneViewModel(ViewModelBase):
 
     class Callbacks(Enum):
         FEED_APPEND = "feed_append"
+        FEED_REMOVE = "feed_remove"
         FEED_CLEAR = "feed_clear"
         TAB_RENAME = "tab_rename"
         NOTIFY = "notify"
@@ -66,11 +89,13 @@ class ChatPaneViewModel(ViewModelBase):
         super().__init__()
 
         self._feed_append = self._make_group(ChatPaneViewModel.Callbacks.FEED_APPEND)
+        self._feed_remove = self._make_group(ChatPaneViewModel.Callbacks.FEED_REMOVE)
         self._feed_clear = self._make_group(ChatPaneViewModel.Callbacks.FEED_CLEAR)
         self._tab_rename = self._make_group(ChatPaneViewModel.Callbacks.TAB_RENAME)
         self._notify = self._make_group(ChatPaneViewModel.Callbacks.NOTIFY)
 
-        self.feed: list[FeedEntry] = []
+        self.feed: list[FeedItem] = []
+        self._next_feed_id: int = 0
 
         self.session_mode: Mode = Mode.IDLE
 
@@ -104,10 +129,12 @@ class ChatPaneViewModel(ViewModelBase):
         )
         self.agent_session: AgentSession | None = None
 
-        # The currently-open AgentMessage VM at the feed tail, if any. Set by ``open_agent_turn``;
-        # cleared whenever a non-AgentMessage entry is appended (peek-tail rule) or
-        # ``close_agent_turn`` runs.
-        self._current_agent_message: AgentMessageViewModel | None = None
+        # Agent stream router (transient): constructed at the start of each turn by
+        # ``_run_agent_turn`` (or a synthetic-test driver) and discarded in the same finally block
+        # that closes it. The pane holds this slot during the turn so the interrupt path can reach
+        # the in-flight router; ``None`` between turns. ``agent_busy`` (worker task aliveness) is
+        # the single source of truth for "is the agent running".
+        self._current_router: AgentStreamRouter | None = None
 
         # The interrupt VM currently awaiting user input, if any. Tracked so external callers
         # (eventually: a cancel-during-agent-run path) can resolve it from outside the awaiting
@@ -130,6 +157,10 @@ class ChatPaneViewModel(ViewModelBase):
     @property
     def feed_append(self):
         return self._feed_append
+
+    @property
+    def feed_remove(self):
+        return self._feed_remove
 
     @property
     def feed_clear(self):
@@ -201,11 +232,29 @@ class ChatPaneViewModel(ViewModelBase):
     # Feed
     # ------------------------------------------------------------------
 
+    def _append_feed(self, entry: FeedEntry) -> FeedItem:
+        """Wrap ``entry`` in a ``FeedItem`` with a fresh id, append it, and emit ``feed_append`` with
+        the new id. Returns the wrapper so callers can hold the id for later mutations.
+        """
+        item = FeedItem(id=self._next_feed_id, entry=entry)
+        self._next_feed_id += 1
+        self.feed.append(item)
+        self.emit(self.feed_append, item.id)
+        return item
+
+    def _remove_feed(self, item_id: int) -> None:
+        """Remove the feed item with the given id, emitting ``feed_remove``. No-op if not found."""
+        for i, item in enumerate(self.feed):
+            if item.id == item_id:
+                del self.feed[i]
+                self.emit(self.feed_remove, item_id)
+                return
+
     def append_message(self, msg: ChatMessageData, *, include_in_agent_context: bool = True) -> None:
         """Append a message to the feed, applying the consecutive-system dedup rule.
 
         If the previous feed entry is a system message with identical content, we suppress the append;
-        otherwise the message is appended and ``feed_append`` fires with the new index. Does **not**
+        otherwise the message is appended and ``feed_append`` fires with the new item id. Does **not**
         close any open agent turn — see "Feed ordering rules" above ``open_agent_turn``.
 
         When ``include_in_agent_context`` is True (the default), USER messages are pushed to the agent
@@ -214,19 +263,18 @@ class ChatPaneViewModel(ViewModelBase):
         they're UI-side noise the agent shouldn't react to. Callers wanting feed-only mutation (test
         commands, UI echoes, legacy ``ui_only=True`` cases) pass ``include_in_agent_context=False``.
         """
-        tail = self.feed[-1] if self.feed else None
+        tail_entry = self.feed[-1].entry if self.feed else None
         if (
             msg.role == Role.SYSTEM
-            and isinstance(tail, ChatMessageData)
-            and tail.role == Role.SYSTEM
-            and tail.content == msg.content
+            and isinstance(tail_entry, ChatMessageData)
+            and tail_entry.role == Role.SYSTEM
+            and tail_entry.content == msg.content
         ):
             # TODO: ping the existing entry. Will likely flow through a per-entry dirty once
             # ChatMessageData (or a wrapping sub-VM) owns its own emit channel.
             return
 
-        self.feed.append(msg)
-        self.emit(self.feed_append, len(self.feed) - 1)
+        self._append_feed(msg)
 
         if include_in_agent_context and self.agent_session is not None:
             if msg.role == Role.USER:
@@ -235,89 +283,45 @@ class ChatPaneViewModel(ViewModelBase):
                 self.agent_session.add_system_notification(msg.content)
 
     def clear_feed(self) -> None:
-        if not self.feed:
+        if not self.feed and self._current_router is None:
             return
 
-        self.feed.clear()
-        self._current_agent_message = None
-        self.emit(self.feed_clear)
+        self._abandon_agent_turn()
+
+        if self.feed:
+            self.feed.clear()
+            self.emit(self.feed_clear)
+
+        # The pane state may have changed (agent_busy flipped to False if we abandoned a turn);
+        # repaint so the input reflects that.
+        self.emit(self.dirty)
+
+    def _abandon_agent_turn(self) -> None:
+        """Forcefully tear down the in-flight agent turn without posting user-facing artifacts."""
+        if self._current_router is None:
+            return
+
+        self._current_router = None
+        if self._agent_task is not None:
+            task = self._agent_task
+            self._agent_task = None
+            # ``_agent_task`` is typed ``object`` to keep Textual's Worker out of this VM's
+            # surface, but at runtime it's always cancellable (asyncio.Task or Textual Worker).
+            task.cancel()  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Feed ordering rules
     # ------------------------------------------------------------------
     #
-    # The feed is append-only; **position is not identity**. The currently open AgentMessage VM is
-    # tracked by the ``_current_agent_message`` reference, not by being at the tail.
-    #
-    # This matters because a user message can land in the feed mid-stream — e.g. a ``/command``
-    # dispatched while the agent is still responding. The open agent VM is no longer trailing the
-    # feed, but the agent session keeps streaming into it. (Free-text chat mid-stream is the queued
-    # case; see ``submit_user_input``.)
-    #
-    # Lifecycle:
-    #
-    # - **Open**: ``open_agent_turn`` creates an AgentMessage VM, appends it to the feed, and stores
-    #   it as ``_current_agent_message``. Idempotent while the VM is still streaming.
-    #
-    # - **Stream**: ``_route_agent_chunk`` / ``_route_agent_tool_call`` resolve the open VM by
-    #   *reference*, opening a fresh one only if there isn't one. They never consult feed position.
-    #
-    # - **Close**: ``close_agent_turn`` finalizes the VM and clears the reference. Closure is
-    #   **explicit** — driven by the agent worker terminating, or by the interrupt path sealing the
-    #   current turn before awaiting user input. Appending an unrelated entry (user message, system
-    #   echo, sub-VM) does NOT close the open agent turn.
-    #
-    # Interrupt sequence:
-    #   1. agent emits an interrupt-requesting tool call
-    #   2. caller closes the current agent turn explicitly
-    #   3. caller appends the interrupt VM and awaits resolution
-    #   4. on resolve, a fresh ``open_agent_turn`` starts the next VM
-
-    def open_agent_turn(self) -> AgentMessageViewModel:
-        """Eagerly create an AgentMessage VM and append it to the feed so the view can render the
-        thinking indicator before any chunks arrive. Idempotent while ``_current_agent_message`` is
-        still streaming.
-        """
-        if self._current_agent_message is not None and self._current_agent_message.streaming:
-            return self._current_agent_message
-
-        vm = AgentMessageViewModel(mode=self.session_mode)
-        self._current_agent_message = vm
-        self.feed.append(vm)
-        self.emit(self.feed_append, len(self.feed) - 1)
-
-        return vm
-
-
-    def close_agent_turn(self, *, empty_fallback: str | None = None) -> None:
-        """Close the currently-open AgentMessage VM, if any. Safe to call multiple times."""
-        if self._current_agent_message is None:
-            return
-
-        self._current_agent_message.close(empty_fallback=empty_fallback)
-        self._current_agent_message = None
-
-
-    def _route_agent_chunk(self, text: str) -> None:
-        """Append a streamed text delta to the open AgentMessage VM, opening a fresh one if there
-        isn't one."""
-        vm = self._ensure_open_agent_message()
-        vm.append_token(text)
-
-
-    def _route_agent_tool_call(self, name: str, args: dict | None = None) -> None:
-        """Append a tool call to the open AgentMessage VM, opening a fresh one if there isn't one."""
-        vm = self._ensure_open_agent_message()
-        vm.add_tool_call(name, args)
-
-
-    def _ensure_open_agent_message(self) -> AgentMessageViewModel:
-        """Reference-only: return the open AgentMessage VM, or open a fresh one. Does not consult
-        feed position — the open VM may sit anywhere in the feed if the user has dispatched commands
-        mid-stream."""
-        if self._current_agent_message is not None and self._current_agent_message.streaming:
-            return self._current_agent_message
-        return self.open_agent_turn()
+    # The feed is append-only and addressed by ``FeedItem.id`` — **position is not identity**.
+    # Agent-turn routing lives in ``AgentStreamRouter`` (see ``agent_stream_router.py``), one
+    # instance per turn. ``_run_agent_turn`` constructs the router (which mounts the thinking
+    # indicator), stores it on ``_current_router`` for the duration, and closes + discards it in
+    # its finally block.
+    # The router's stream callbacks route chunks/tool calls into chat/tool segments and repin the
+    # indicator; ``present_interrupt`` reaches into ``_current_router`` to pause before awaiting
+    # the user. ``agent_busy`` (worker task aliveness) is the single source of truth for "is the
+    # agent running".
 
 
     # ------------------------------------------------------------------
@@ -334,10 +338,21 @@ class ChatPaneViewModel(ViewModelBase):
         The interrupt VM stays in the feed after resolution as an inert record — the View dims it but
         doesn't remove it, so the conversation history reflects what was chosen.
         """
-        self.close_agent_turn()
-        self.feed.append(vm)
+
+        # TODO: It is up in the air whether or not we want to pause the current router to post _any_ interrupt
+        # or let the router itself pause when posting it's own interrupt (through the on_interrupt handler).
+        #
+        # The behaviour if we pause here is as follows: while the agent is responding, if a separate interrupt
+        # is posted to the feed, then the .pause() call will close the current agent message, then append the
+        # interrupt to the feed, then the next agent response chunk will spawn a _new_ agent message _below_
+        # the interrupt. In other words, calling .pause() here means exogenous interrupts "break agent messages
+        # in half".
+
+        # if self._current_router is not None:
+        #     self._current_router.pause()
+
         self._pending_interrupt = vm
-        self.emit(self.feed_append, len(self.feed) - 1)
+        self._append_feed(vm)
 
         prev_enabled = self.chat_input.enabled
         prev_hint = self.chat_input.hint
@@ -386,14 +401,15 @@ class ChatPaneViewModel(ViewModelBase):
     async def _run_agent_turn(self) -> None:
         assert self.agent_session is not None
 
-        self.open_agent_turn()
+        router = AgentStreamRouter(self)
+        self._current_router = router
 
         try:
             await self.agent_session.stream(
                 mode=self.session_mode.value,
-                on_message=self._on_agent_message,
-                on_update=self._on_agent_update,
-                on_interrupt=self._on_agent_interrupt,
+                on_message=router.on_message,
+                on_update=router.on_update,
+                on_interrupt=router.on_interrupt,
             )
 
         except asyncio.CancelledError:
@@ -401,64 +417,15 @@ class ChatPaneViewModel(ViewModelBase):
             raise
 
         except Exception as exc:  # noqa: BLE001 — surface stream errors as ERROR messages
-            self.append_message(ChatMessageData(role=Role.ERROR, content=f"Agent error: {exc}"))
+            if self._current_router is router:
+                self.append_message(ChatMessageData(role=Role.ERROR, content=f"Agent error: {exc}"))
 
         finally:
-            self.close_agent_turn(empty_fallback="(no response)")
-            self._agent_task = None
-            self.emit(self.dirty)
-
-
-    async def _on_agent_message(self, kind: str, payload: Any) -> None:
-        """``messages`` stream callback: append text deltas from AIMessageChunks."""
-        chunk, _meta = payload
-        if not isinstance(chunk, AIMessageChunk):
-            return
-        if not chunk.text:
-            # input_json_delta chunks etc. have no text — ignore so we don't start a message segment
-            # for them.
-            return
-        self._route_agent_chunk(chunk.text)
-
-
-    async def _on_agent_update(self, kind: str, payload: dict) -> None:
-        """``updates`` stream callback: extract tool_use block names and route them as tool-call
-        entries on the open AgentMessage VM."""
-        for update in payload.values():
-            if update is None:
-                continue
-
-            for msg in update.get("messages", []):
-                content = getattr(msg, "content", None)
-                if not isinstance(content, list):
-                    continue
-
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-
-                    btype = block.get("type")
-                    # Skip Anthropic's internal code_execution wrapper — the actual tool (web_fetch
-                    # etc.) appears as its own block.
-                    if btype == "server_tool_use" and block.get("name") == "code_execution":
-                        continue
-                    if btype not in ("tool_use", "server_tool_use"):
-                        continue
-
-                    name = block.get("name")
-                    if not name:
-                        continue
-
-                    args = block.get("input") or {}
-                    self._route_agent_tool_call(name, args)
-
-
-    async def _on_agent_interrupt(self, value: Any, context: Any) -> Any:
-        """Stub: surface the interrupt payload via TestInterrupt so the pause/resume path is at least
-        visible. Real per-type dispatch (commit/flashcard/choices/etc.) lands with the interrupt
-        registry."""
-        interrupt = TestInterruptViewModel(prompt=f"(interrupt) {value!r}", options=["continue"])
-        return await self.present_interrupt(interrupt)
+            if self._current_router is router:
+                router.close()
+                self._current_router = None
+                self._agent_task = None
+                self.emit(self.dirty)
 
 
     # ------------------------------------------------------------------
@@ -647,8 +614,7 @@ class ChatPaneViewModel(ViewModelBase):
         the conversation.
         """
         vm = ShellCommandViewModel(cmd)
-        self.feed.append(vm)
-        self.emit(self.feed_append, len(self.feed) - 1)
+        self._append_feed(vm)
         self._schedule_worker(vm.execute())
 
 
@@ -743,63 +709,72 @@ class ChatPaneViewModel(ViewModelBase):
                 )
 
     async def _run_synthetic_turn(self) -> None:
-        """Drive the peek-tail routing without invoking the real agent.
+        """Drive the router without invoking the real agent.
 
-        Opens a turn, streams some markdown, emits a synthetic tool call, streams more, then closes.
-        Useful as an eyeball test of the AgentMessage view's segment mounting + delta-streaming
-        behavior.
+        Mounts the thinking indicator via the router's constructor, streams some markdown, emits a
+        synthetic tool call, streams more, then closes. Useful as an eyeball test of the
+        per-segment routing + delta-streaming.
         """
-        self.open_agent_turn()
+        router = AgentStreamRouter(self)
+        self._current_router = router
 
-        await asyncio.sleep(2)
-        for chunk in ("Sure, let me ", "think about ", "**that** for ", "a moment.\n\n"):
-            self._route_agent_chunk(chunk)
-            await asyncio.sleep(0.08)
+        try:
+            await asyncio.sleep(2)
+            for chunk in ("Sure, let me ", "think about ", "**that** for ", "a moment.\n\n"):
+                router.route_chunk(chunk)
+                await asyncio.sleep(0.08)
 
-        self._route_agent_tool_call("search_entries", {"query": "mvvm refactor", "limit": 10})
-        await asyncio.sleep(0.3)
+            router.route_tool_call("search_entries", {"query": "mvvm refactor", "limit": 10})
+            await asyncio.sleep(0.3)
 
-        self._route_agent_tool_call("list_topics", {})
-        await asyncio.sleep(0.3)
+            router.route_tool_call("list_topics", {})
+            await asyncio.sleep(0.3)
 
-        for chunk in ("Here's what I found:\n\n", "- Item one\n", "- Item two\n", "- Item three\n"):
-            self._route_agent_chunk(chunk)
-            await asyncio.sleep(0.08)
+            for chunk in ("Here's what I found:\n\n", "- Item one\n", "- Item two\n", "- Item three\n"):
+                router.route_chunk(chunk)
+                await asyncio.sleep(0.08)
 
-        self.close_agent_turn(empty_fallback="(no response)")
+        finally:
+            router.close()
+            self._current_router = None
 
     async def _run_synthetic_flow(self) -> None:
         """End-to-end flow exerciser: streams, pauses long enough for the user to submit something
-        mid-stream, emits an interrupt, then resumes in a fresh agent turn. Useful for eyeballing the
-        reference-only routing — anything submitted during the pause should land between the two
-        agent turns, while the first turn stays "open" and keeps receiving chunks.
+        mid-stream, emits an interrupt, then resumes in a fresh agent segment. Useful for eyeballing
+        the reference-only routing — anything submitted during the pause should land between the
+        two segments, while the first stays "open" and keeps receiving chunks.
         """
-        self.open_agent_turn()
-        for chunk in ("Starting a longer turn — ", "I'll pause in a moment ", "so you can chime in.\n\n"):
-            self._route_agent_chunk(chunk)
-            await asyncio.sleep(0.08)
+        router = AgentStreamRouter(self)
+        self._current_router = router
 
-        self._route_agent_tool_call("search_entries", {"query": "mid-stream", "limit": 5})
-        await asyncio.sleep(0.3)
-
-        self._route_agent_chunk("(pausing ~6s — try `/echo hello` or `/learn` now)\n\n")
-        await asyncio.sleep(6.0)
-
-        for chunk in ("Back. ", "Now I need to ask you something.\n\n"):
-            self._route_agent_chunk(chunk)
-            await asyncio.sleep(0.08)
-
-        interrupt = TestInterruptViewModel(
-            prompt="Continue with which branch?", options=["left", "right", "neither"],
-        )
-        result = await self.present_interrupt(interrupt)
-
-        self.open_agent_turn()
-        if result is None:
-            self._route_agent_chunk("Interrupt cancelled — wrapping up.\n")
-        else:
-            self._route_agent_chunk(f"Got it: **{result}**. Continuing.\n\n")
-            for chunk in ("- step one\n", "- step two\n", "- done\n"):
-                self._route_agent_chunk(chunk)
+        try:
+            for chunk in ("Starting a longer turn — ", "I'll pause in a moment ", "so you can chime in.\n\n"):
+                router.route_chunk(chunk)
                 await asyncio.sleep(0.08)
-        self.close_agent_turn(empty_fallback="(no response)")
+
+            router.route_tool_call("search_entries", {"query": "mid-stream", "limit": 5})
+            await asyncio.sleep(0.3)
+
+            router.route_chunk("(pausing ~6s — try `/echo hello` or `/learn` now)\n\n")
+            await asyncio.sleep(6.0)
+
+            for chunk in ("Back. ", "Now I need to ask you something.\n\n"):
+                router.route_chunk(chunk)
+                await asyncio.sleep(0.08)
+
+            interrupt = TestInterruptViewModel(
+                prompt="Continue with which branch?", options=["left", "right", "neither"],
+            )
+            result = await self.present_interrupt(interrupt)
+
+            if result is None:
+                router.route_chunk("Interrupt cancelled — wrapping up.\n")
+            else:
+                router.route_chunk(f"Got it: **{result}**. Continuing.\n\n")
+                for chunk in ("- step one\n", "- step two\n", "- done\n"):
+                    router.route_chunk(chunk)
+                    await asyncio.sleep(0.08)
+
+        finally:
+            router.close()
+            self._current_router = None
