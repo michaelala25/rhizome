@@ -181,6 +181,14 @@ class ViewModelBase:
         DIRTY = "dirty"
         FOCUS = "focus"
 
+    # Whether this VM is part of the chat pane's ctrl+up/ctrl+down navigation rotation. Default False;
+    # feed VMs that present an interactive surface (interrupts, branch indicators) flip this to True
+    # in their __init__, and back to False when they become non-interactive (e.g. on interrupt resolve).
+    # TODO: this lives on ``ViewModelBase`` for now because adding a feed-only base class would touch
+    # every feed VM at once. Consider splitting ``ViewModelBase`` → ``FeedEntryViewModel`` (houses
+    # ``is_navigable``) → concrete VMs once the chat-pane MVVM port stabilizes.
+    is_navigable: bool = False
+
 
     def __init__(self):
         self._dirty = self._make_group(ViewModelBase.Callbacks.DIRTY)

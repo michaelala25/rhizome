@@ -37,6 +37,7 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
 
     def __init__(self, questions: list[dict[str, Any]]) -> None:
         super().__init__()
+        self.is_navigable = True
         # Each question: {"name": str, "prompt": str, "options": list[str]}.
         self._questions: list[dict[str, Any]] = questions
         self._answers: dict[int, str] = {}

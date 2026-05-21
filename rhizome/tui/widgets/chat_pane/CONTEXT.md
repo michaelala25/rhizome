@@ -112,6 +112,31 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
   unchanged because legacy and the commit-instructions input both still
   depend on it.
 
+## Feed navigation (ctrl+up / ctrl+down)
+
+The pane VM exposes `navigate_feed(direction, current_id)` which walks the
+`visible_feed` filtered by each entry's `is_navigable` attribute (defined on
+`ViewModelBase`, default `False`) and calls `request_focus()` on the next
+navigable VM. Interrupt VMs (`Choices`, `WarningChoices`, `MultipleChoices`,
+`SqlConfirmation`) and `BranchIndicatorViewModel` flip `is_navigable = True`
+in their `__init__`; `InterruptViewModelBase.resolve()` / `cancel()` flip it
+back to `False` so resolved interrupts drop out of the rotation.
+
+View-side: `ChatPaneMVVM` binds `ctrl+up` / `ctrl+down` (priority) to
+`action_nav_up` / `action_nav_down`, which dispatch by `vm.state` —
+`COMMIT` keeps the legacy focus-flip between cursor and input, `CONVERSATION`
+calls `navigate_feed`. The view resolves the current `FeedItem.id` from
+`screen.focused` via the `_mounted` map and passes it to the VM; `None`
+(focus on the chat input) jumps to the bottom-most navigable on ctrl+up and
+the top-most on ctrl+down. From a navigable entry, ctrl+up clamps at the
+top; ctrl+down past the last navigable hands focus back to the chat input.
+
+Important: feed VMs that own a focusable widget must NOT bind `ctrl+up` /
+`ctrl+down` themselves, or those events won't bubble to the pane and feed
+nav breaks when the widget is focused. `BranchIndicatorView` therefore uses
+`alt+up` / `alt+down` for its ascend/descend graph nav (the sibling-swap
+bindings remain on `ctrl+left` / `ctrl+right`).
+
 ## Feed ordering rules
 
 Documented inline in `agent_stream_router.py`. Key properties: the

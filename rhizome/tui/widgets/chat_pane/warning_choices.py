@@ -36,6 +36,7 @@ class WarningChoicesViewModel(InterruptViewModelBase):
         options: list[str] | None = None,
     ) -> None:
         super().__init__()
+        self.is_navigable = True
         self.prompt = prompt
         self.options = list(options) if options else ["Approve", "Deny"]
         self.cursor: int = 0

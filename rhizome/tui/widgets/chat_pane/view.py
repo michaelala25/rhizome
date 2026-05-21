@@ -53,7 +53,9 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         #   - space/enter/ctrl+j: no priority. When the input is focused it consumes them (typing /
         #     newline / submit-instructions); when the message-area is focused they bubble to the
         #     pane and toggle / submit.
-        #   - ctrl+c / ctrl+up / ctrl+down: priority — always behave the same regardless of focus.
+        #   - ctrl+c: priority — always behaves the same regardless of focus.
+        #   - ctrl+up / ctrl+down: priority — state-dispatched (see the nav_up/nav_down bindings
+        #     below); behavior differs by ``vm.state`` but never falls through.
         Binding("up", "commit_cursor_up", "Commit: cursor up", show=False, priority=True),
         Binding("down", "commit_cursor_down", "Commit: cursor down", show=False, priority=True),
         Binding("space", "commit_toggle", "Commit: toggle", show=False),
@@ -63,8 +65,12 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # (CONVERSATION + current branch busy). Lives on the pane, not commit-prefixed, so it
         # bypasses ``check_action``'s commit-only gate.
         Binding("ctrl+c", "cancel", "Cancel", show=False, priority=False),
-        Binding("ctrl+up", "commit_focus_cursor", "Commit: focus cursor", show=False, priority=True),
-        Binding("ctrl+down", "commit_focus_input", "Commit: focus input", show=False, priority=True),
+        # ctrl+up / ctrl+down do double duty depending on ``vm.state``: in COMMIT they flip focus
+        # between the message-area cursor and the chat input (the legacy commit-mode behavior); in
+        # CONVERSATION they walk the navigable feed entries (interrupts, branch indicators). Both
+        # branches are dispatched from ``action_nav_up`` / ``action_nav_down``.
+        Binding("ctrl+up", "nav_up", "Navigate up", show=False, priority=True),
+        Binding("ctrl+down", "nav_down", "Navigate down", show=False, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -139,7 +145,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     def _notify_descend_required(self) -> None:
         self.app.notify(
             "You're sitting on a branch point. Click a branch indicator and descend "
-            "(ctrl+↓) into one of the branches to continue."
+            "(alt+↓) into one of the branches to continue."
         )
 
     _NOTIFY_HANDLERS = {
@@ -309,11 +315,40 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         if self._vm.agent_busy:
             self._vm.cancel_agent_turn()
 
-    def action_commit_focus_cursor(self) -> None:
-        self._vm.request_focus()
+    def action_nav_up(self) -> None:
+        """ctrl+up dispatch. COMMIT → focus the message-area cursor (legacy commit-mode flip).
+        CONVERSATION → step to the previous navigable feed entry (or jump to the bottom-most one
+        when focus is on the chat input).
+        """
+        if self._vm.state == ChatPaneViewModel.State.COMMIT:
+            self._vm.request_focus()
+            return
+        self._vm.navigate_feed(-1, current_id=self._current_feed_id())
 
-    def action_commit_focus_input(self) -> None:
-        self._vm.chat_input.request_focus()
+    def action_nav_down(self) -> None:
+        """ctrl+down dispatch. COMMIT → focus the chat input (legacy commit-mode flip).
+        CONVERSATION → step to the next navigable feed entry (or jump to the top-most one when
+        focus is on the chat input).
+        """
+        if self._vm.state == ChatPaneViewModel.State.COMMIT:
+            self._vm.chat_input.request_focus()
+            return
+        self._vm.navigate_feed(+1, current_id=self._current_feed_id())
+
+    def _current_feed_id(self) -> int | None:
+        """Map the currently-focused widget back to a ``FeedItem.id`` via ``self._mounted``.
+
+        Returns ``None`` if focus is on the chat input, the message-area scroll container, or any
+        widget not descended from a mounted feed entry. The VM uses this to decide where to land
+        next: a non-None id steps within the navigable list; ``None`` jumps to one end.
+        """
+        focused = self.screen.focused
+        if focused is None:
+            return None
+        for fid, widget in self._mounted.items():
+            if focused is widget or widget in focused.ancestors_with_self:
+                return fid
+        return None
 
     # The pane widget itself isn't focusable, so ``vm.request_focus()`` lands here — we route it to
     # the message-area scroll container. Keystrokes bubble back up to this pane, so the commit-mode

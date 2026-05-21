@@ -49,6 +49,7 @@ class BranchIndicatorViewModel(ViewModelBase):
         self._parent_node_id = parent_node_id
         self._chat_pane = chat_pane
         self._selected_child: NodeId | None = None
+        self.is_navigable = True
         # Focus state mirrored from the view. The view-side ``has_focus`` is set asynchronously
         # by Textual relative to the focus/blur event dispatch, so reading it inside the
         # ensuing ``_refresh`` can return stale values. We snapshot focus into the VM
@@ -112,7 +113,7 @@ class BranchIndicatorViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def request_descend(self) -> None:
-        """ctrl+down: descend into the leftmost child. Only meaningful at-point."""
+        """alt+down: descend into the leftmost child. Only meaningful at-point."""
         if self._selected_child is not None:
             return
         children = self.children
@@ -121,7 +122,7 @@ class BranchIndicatorViewModel(ViewModelBase):
         self._chat_pane.descend_into(children[0])
 
     def request_ascend(self) -> None:
-        """ctrl+up: truncate the cursor to this indicator's parent. Only meaningful when descended.
+        """alt+up: truncate the cursor to this indicator's parent. Only meaningful when descended.
 
         Passes ``parent_node_id`` so an ancestor indicator (higher in the path) ascends out of its
         own branch point rather than just popping one level from the leaf — see
@@ -149,11 +150,14 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
 
     can_focus = True
 
+    # ctrl+up / ctrl+down are reserved by the chat pane for feed-wide navigation; ascend/descend
+    # therefore live on alt+up / alt+down. TODO: the asymmetry with sibling-swap on ctrl+left/right is
+    # a wart — consider moving all four to alt+arrows for consistency once the feed-nav UX settles.
     BINDINGS = [
         Binding("ctrl+left", "sibling_left", "Sibling left", show=False),
         Binding("ctrl+right", "sibling_right", "Sibling right", show=False),
-        Binding("ctrl+up", "ascend", "Ascend", show=False),
-        Binding("ctrl+down", "descend", "Descend", show=False),
+        Binding("alt+up", "ascend", "Ascend", show=False),
+        Binding("alt+down", "descend", "Descend", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -253,7 +257,7 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
     def _render_hint(self) -> str:
         focused = self._vm.is_focused
         if self._vm.selected_child is None:
-            action_hint = "ctrl+↓ to descend"
+            action_hint = "alt+↓ to descend"
         else:
             action_hint = "ctrl+←/→ to navigate"
         return f"[dim]{action_hint if focused else 'click to focus'}[/]"

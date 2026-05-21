@@ -49,6 +49,7 @@ class InterruptViewModelBase(ViewModelBase):
             return
 
         self.resolved = True
+        self.is_navigable = False
         self.result = value
         if not self._future.done():
             self._future.set_result(value)
@@ -61,6 +62,7 @@ class InterruptViewModelBase(ViewModelBase):
             return
 
         self.resolved = True
+        self.is_navigable = False
         self.cancelled = True
         if not self._future.done():
             self._future.cancel()

@@ -44,6 +44,7 @@ class SqlConfirmationViewModel(InterruptViewModelBase):
         row_count: int | None = None,
     ) -> None:
         super().__init__()
+        self.is_navigable = True
         self.sql = sql
         self.preview_columns: list[str] = list(preview_columns or [])
         self.preview_rows: list[list[Any]] = list(preview_rows or [])

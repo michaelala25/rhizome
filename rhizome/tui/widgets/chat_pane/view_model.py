@@ -295,6 +295,51 @@ class ChatPaneViewModel(ViewModelBase):
         return self._conversation.visible_feed(self._cursor)
 
     # ------------------------------------------------------------------
+    # Feed-wide navigation (ctrl+up / ctrl+down)
+    # ------------------------------------------------------------------
+
+    def navigate_feed(self, direction: int, current_id: int | None) -> None:
+        """Move focus across navigable feed entries.
+
+        Filters ``visible_feed`` by ``entry.is_navigable`` and walks the resulting list. ``direction``
+        is ``-1`` (up) or ``+1`` (down). ``current_id`` is the ``FeedItem.id`` containing focus, or
+        ``None`` when focus is on the chat input (or elsewhere outside the feed).
+
+        Semantics:
+        - From the input (``current_id is None``): ctrl+up jumps to the bottom-most navigable;
+          ctrl+down jumps to the top-most.
+        - From a navigable entry: step by ``direction``. Ctrl+up clamps at the top (there is
+          nothing useful above the feed). Ctrl+down past the last navigable hands focus back to
+          the chat input — completing a single-key round-trip out of the feed.
+        - With no navigable entries: no-op.
+        """
+        # ``getattr`` guard: ``ChatMessageData`` (a plain dataclass) lives in the feed alongside VMs
+        # and doesn't inherit ``is_navigable`` from ``ViewModelBase``.
+        navigables = [item for item in self.visible_feed if getattr(item.entry, "is_navigable", False)]
+        if not navigables:
+            return
+
+        current_idx: int | None = None
+        if current_id is not None:
+            for i, item in enumerate(navigables):
+                if item.id == current_id:
+                    current_idx = i
+                    break
+
+        if current_idx is None:
+            new_idx = len(navigables) - 1 if direction < 0 else 0
+        else:
+            new_idx = current_idx + direction
+            if new_idx >= len(navigables):
+                # Past the bottom: fall through to the chat input.
+                self.chat_input.request_focus()
+                return
+            new_idx = max(0, new_idx)
+
+        target = navigables[new_idx].entry
+        target.request_focus()
+
+    # ------------------------------------------------------------------
     # Bootstrap
     # ------------------------------------------------------------------
 
