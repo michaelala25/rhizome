@@ -105,10 +105,17 @@ class AgentStreamRouter:
         produced, append a "(no response)" stub so empty turns leave a trace.
 
         ``cancelled=True`` (user-initiated cancel, via ``ChatPaneViewModel.cancel_agent_turn``):
-        skip the stub. The worker's ``CancelledError`` handler posts a "(user cancelled)" system
-        message which is the appropriate visible trace; doubling up with "(no response)" is
-        noise.
+        mark the currently-open agent message cancelled *before* sealing it, so the view's drain
+        loop bails on its next iteration instead of slowly catching up to the buffered body. Then
+        skip the stub — the worker's ``CancelledError`` handler posts a "(user cancelled)"
+        system message which is the appropriate visible trace; doubling up with "(no response)"
+        is noise. Closed-but-still-draining previous segments aren't signalled here: by
+        construction they were sealed when the next segment opened, so their drain budgets are
+        the snappy 200ms tail and they finish within a few ticks regardless.
         """
+        if cancelled and self._current_agent_message is not None:
+            self._current_agent_message.mark_cancelled()
+
         self.pause()
         self._hide_thinking()
 

@@ -35,6 +35,7 @@ class AgentMessageViewModel(ViewModelBase):
         super().__init__()
         self.body: str = ""
         self.streaming: bool = True
+        self.cancelled: bool = False
         self.mode: Mode = mode
 
         # Commit-mode decoration. Set by the chat-pane VM while in COMMIT state; the view paints
@@ -58,6 +59,23 @@ class AgentMessageViewModel(ViewModelBase):
         if not self.streaming:
             return
         self.streaming = False
+        self.emit(self.dirty)
+
+    def mark_cancelled(self) -> None:
+        """Signal the view's drain loop to exit immediately instead of catching up.
+
+        The drain loop normally pulls budget-sized slices off ``body`` until rendered catches up,
+        even after ``close()`` flips ``streaming`` to False. When the user cancels mid-stream we
+        don't want the buffered text to keep painting — flipping this flag and emitting dirty
+        (which sets the view's wakeup event) causes the loop to short-circuit on its next
+        iteration and exit, leaving the partially-rendered slice frozen as-is.
+
+        Idempotent. Doesn't touch ``body`` or ``streaming`` — callers typically follow with
+        ``close()`` so the segment is also formally sealed.
+        """
+        if self.cancelled:
+            return
+        self.cancelled = True
         self.emit(self.dirty)
 
     def set_selectable(self, selectable: bool) -> None:
@@ -216,6 +234,14 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
                 if self._vm.streaming and self._rendered >= len(self._vm.body):
                     await self._wakeup.wait()
                 self._wakeup.clear()
+
+                # User-cancelled mid-stream: stop painting immediately. ``mark_cancelled`` emits
+                # dirty (which sets ``_wakeup``) so a sleeping loop wakes up here, sees the flag,
+                # and exits without draining the remaining buffer. The partial rendered slice
+                # stays as-is — the chat-pane appends a "(user cancelled)" system message right
+                # below it so the cut-off is intentional-looking, not orphaned.
+                if self._vm.cancelled:
+                    return
 
                 await self._drain_tick()
 
