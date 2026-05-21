@@ -149,29 +149,43 @@ class ConversationGraph[Item]:
         continuation_name: str | None = None,
         branch_name: str | None = None,
     ) -> tuple[ConversationGraphCursor, NodeId]:
-        """Close the cursor's leaf and open two children: continuation (left) + new branch (right).
+        """Add a new branch child to the cursor's node and descend into it.
 
-        Returns ``(descended_cursor, branch_node_id)`` where ``descended_cursor`` selects the
-        continuation child.  The continuation inherits the parent's name by default; the new
-        branch starts unnamed unless ``branch_name`` is given.
+        Two cases, unified under one method:
+
+        - **First branch from an open leaf**: closes the parent and adds *two* children — a
+          continuation (leftmost, inheriting the parent's name by default) and the new branch
+          (rightmost). The cursor descends into the new branch.
+        - **Subsequent branch from a closed parent that already has children**: just adds
+          another child to the right of the existing ones. No continuation is created (the
+          parent already paid that cost on the first branch). The cursor descends into the
+          new branch.
+
+        ``continuation_name`` only applies to the first-branch case; passing it when the parent
+        is already closed is rejected to surface caller confusion.
+
+        Returns ``(descended_cursor, new_branch_id)``.
         """
         parent_id = cursor.head
         parent = self._nodes[parent_id]
-        if not parent.is_open:
-            raise ValueError(f"Cannot branch from closed node {parent_id}")
-        if self._children[parent_id]:
-            raise ValueError(
-                f"Cannot branch from {parent_id}: already has children; branch is only valid at "
-                "an open leaf",
-            )
-        parent.is_open = False
 
-        cont_id = self._new_node(name=continuation_name if continuation_name is not None else parent.name)
+        if parent.is_open:
+            # First-branch case: close the parent and create the continuation.
+            parent.is_open = False
+            cont_id = self._new_node(
+                name=continuation_name if continuation_name is not None else parent.name
+            )
+            self._add_edge(parent_id, cont_id)
+        elif continuation_name is not None:
+            raise ValueError(
+                f"continuation_name only applies to the first branch from a node; "
+                f"node {parent_id} already has children",
+            )
+
         new_id = self._new_node(name=branch_name)
-        self._add_edge(parent_id, cont_id)
         self._add_edge(parent_id, new_id)
 
-        return ConversationGraphCursor(cursor.path + (cont_id,)), new_id
+        return ConversationGraphCursor(cursor.path + (new_id,)), new_id
 
     def merge(
         self,

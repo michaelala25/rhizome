@@ -638,6 +638,11 @@ class ChatPaneViewModel(ViewModelBase):
         pinned_node = self._node(self._cursor.head)
         if pinned_node.agent_session is None:
             return
+        # Closed branch points (re-visited via ascend / non-leaf navigation) carry a frozen
+        # snapshot session as a fork source — they are not streamable. Streaming one would
+        # mutate it and break its role as the immutable seed for future ``/branch`` calls.
+        if not self._conversation.node(self._cursor.head).is_open:
+            return
         router = AgentStreamRouter(self)
         pinned_node.current_router = router
         pinned_node.agent_task = self._schedule_worker(self._run_agent_turn(pinned_node, router))
@@ -840,18 +845,25 @@ class ChatPaneViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def branch(self, *, branch_name: str | None = None) -> NodeId:
-        """Branch from the cursor's current leaf and return the new branch's NodeId.
+        """Branch from the cursor's current node and descend into the new branch.
 
-        Closes the current leaf and opens two children: a continuation (leftmost, inherits the
-        parent's name) and a fresh branch (rightmost, named per ``branch_name`` if given). The
-        cursor descends into the continuation — same logical line of conversation continuing.
+        Two cases, both end with the cursor on the new branch:
 
-        AgentSession bookkeeping: the parent leaf's session is re-keyed under the continuation
-        (same instance, same thread_id — the active conversation literally continues unchanged) and
-        a fresh AgentSession is built for the new branch, seeded with a snapshot of the parent's
-        full message history so the new branch's first stream sees the same prior context the
-        parent had. Pre-bootstrap (no session at the parent yet) the dict stays empty under the
-        new keys; ``bootstrap_agent_session`` will fill the cursor's leaf on its next call.
+        - **First branch at this node** (cursor on an open leaf): closes the leaf and creates a
+          continuation child (inheriting the parent's name) plus the new branch. A new
+          ``BranchIndicatorViewModel`` is mounted on the parent's feed.
+        - **Subsequent branch at a closed branch point** (cursor on a non-leaf): just adds
+          another sibling to the existing children. The existing indicator is nudged dirty so
+          it picks up the new child.
+
+        AgentSession bookkeeping: the parent's session is kept as a *frozen snapshot* —
+        never streamed again, but available as a fork source for additional siblings later.
+        The continuation (if newly created) and the new branch each get their own fresh forks
+        so they evolve independently without mutating the parent's snapshot.
+
+        Invariant: open leaves hold streamable sessions; closed nodes may hold frozen snapshots
+        (one per branch point) used as fork sources. ``_start_agent_turn`` and friends guard
+        against trying to stream a snapshot via ``ConversationNode.is_open`` checks.
 
         Gated on ``not agent_busy`` (also enforced via ``_AGENT_GATED_COMMANDS`` for the slash-command
         path); asserted here to guard direct programmatic callers.
@@ -859,38 +871,64 @@ class ChatPaneViewModel(ViewModelBase):
         assert self.state == ChatPaneViewModel.State.CONVERSATION
         assert not self.agent_busy
 
-        parent_id = self._cursor.head
+        # Walk-up case: if the cursor sits on an open leaf with an empty feed and has a parent,
+        # treat the /branch as "give me another sibling at the parent's level" instead of
+        # "branch within this empty leaf". The natural UX when the user descended into a fresh
+        # branch and changed their mind before typing anything: don't bury the new branch
+        # one level deeper, hoist it up to the parent. The abandoned empty leaf stays in the
+        # graph and remains reachable via the parent's indicator. Mutate the cursor in place
+        # (no ``ascend`` call) so the view doesn't render an intermediate "at parent" state
+        # before the descent into the new branch.
+        if (
+            len(self._cursor.path) >= 2
+            and self._conversation.node(self._cursor.head).is_open
+            and not self._node(self._cursor.head).feed
+        ):
+            self._cursor = ConversationGraphCursor(self._cursor.path[:-1])
 
-        # Mount the indicator into the parent's feed *before* graph.branch() closes the parent —
-        # otherwise ``self.feed`` would resolve to the continuation's empty feed by the time we
-        # appended. The indicator's ``children`` property is lazy, so reading it at compose time
-        # (post-branch) returns the freshly-opened children.
-        indicator = BranchIndicatorViewModel(self._conversation, parent_id, self)
-        self._append_feed(indicator)
+        parent_id = self._cursor.head
+        parent_node = self._node(parent_id)
+        parent_was_leaf = self._conversation.node(parent_id).is_open
+        parent_session = parent_node.agent_session
+
+        if parent_was_leaf:
+            # Mount the indicator into the parent's feed *before* graph.branch() closes the
+            # parent — otherwise ``self.feed`` would resolve to the new branch's empty feed by
+            # the time we appended. The indicator's ``children`` property is lazy, so reading
+            # it at compose time (post-branch) returns the freshly-opened children.
+            indicator = BranchIndicatorViewModel(self._conversation, parent_id, self)
+            self._append_feed(indicator)
 
         new_cursor, new_branch_id = self._conversation.branch(self._cursor, branch_name=branch_name)
         self._cursor = new_cursor
-        continuation_id = new_cursor.head
 
-        parent_node = self._node(parent_id)
-        parent_session = parent_node.agent_session
-        # Clear the closed parent's slot — the session has moved to the continuation and the
-        # parent is no longer streamable. Keeps ``_all_sessions`` from listing the same instance
-        # twice and matches the invariant that ``agent_session != None`` implies an open leaf.
-        parent_node.agent_session = None
         if parent_session is not None:
-            self._node(continuation_id).agent_session = parent_session
+            if parent_was_leaf:
+                # Continuation was just created; give it its own fork so the parent's session
+                # stays frozen.
+                continuation_id = self._conversation.children(parent_id)[0]
+                self._node(continuation_id).agent_session = parent_session.fork()
             self._node(new_branch_id).agent_session = parent_session.fork()
 
-        # Push the new indicator's selected_child (and any prior ones on the path, defensively).
-        # No ``feed_replaced`` here: the visible feed grew by exactly the indicator we just
-        # appended via ``feed_append`` — no other widgets need mount/unmount.
+        if not parent_was_leaf:
+            # Existing indicator on the closed parent's feed needs a nudge so the new child
+            # name shows up. ``_sync_navigation_state`` below will also push the updated
+            # selected_child, but that's equality-guarded against no-op moves, so the dirty
+            # nudge here is what triggers the re-render for the children-list change.
+            for item in self._conversation.node(parent_id).feed:
+                if isinstance(item.entry, BranchIndicatorViewModel):
+                    item.entry.emit(item.entry.dirty)
+                    break
+
+        # Cursor moved (descended into the new branch). The visible-feed delta is at most the
+        # newly-mounted indicator (already handled by feed_append in the leaf case) plus the
+        # new branch's empty feed — no other widgets need mount/unmount, so no feed_replaced.
         self._sync_navigation_state()
         return new_branch_id
 
     def branch_and_send(self, prompt: str) -> None:
-        """Branch from the current leaf, jump into the new branch, and send ``prompt`` as the
-        first user message.
+        """Branch from the current node and send ``prompt`` as the first user message on the
+        new branch.
 
         Used by ``/branch <prompt>``: the dispatch in ``_on_input_submitted`` peels off the raw
         post-name string and forwards it here, bypassing the click/shlex pipeline so the prompt
@@ -899,12 +937,10 @@ class ChatPaneViewModel(ViewModelBase):
         ``branch-{id}`` until the agent calls ``update_app_state(current_branch_name=...)``
         (prompted by the queued system notification below) to set a meaningful one.
 
-        ``self.branch()`` leaves the cursor on the continuation (leftmost sibling, inheriting
-        the parent's name); we flip to the new (rightmost) sibling via ``swap_sibling(1)`` so
-        the prompt and the resulting agent turn land on the new branch where the user expects.
+        ``self.branch()`` already lands the cursor on the new branch (both leaf and non-leaf
+        cases), so no extra navigation is needed before ``start_agent_run``.
         """
         self.branch()
-        self.swap_sibling(1)
 
         # Queue the UI-hidden rename instruction *before* ``start_agent_run`` so it's
         # guaranteed to be in the message queue by the time the worker drains it. (Doing it
@@ -1427,6 +1463,15 @@ class ChatPaneViewModel(ViewModelBase):
             # prompt never reaches click/shlex tokenization. By the time we get here, the rest
             # of the line is empty — this handler covers only the bare ``/branch`` case.
             self.branch()
+
+        @reg.command(name="rename-branch", help="Rename the current branch.")
+        @click.argument("words", nargs=-1, required=True)
+        def _rename_branch(words: tuple[str, ...]) -> None:
+            # No /branch-style intercept: branch names are short enough that shlex
+            # tokenization is fine, and ``nargs=-1`` + ``" ".join(...)`` recovers the spacing
+            # for typical names. Quotes/apostrophes would still get mangled by shlex, but
+            # branch names rarely need them.
+            self.set_branch_name(" ".join(words))
 
         @reg.command(name="idle", help="Switch to idle mode.")
         async def _idle() -> None:
