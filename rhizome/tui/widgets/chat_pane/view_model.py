@@ -80,6 +80,12 @@ class ChatPaneConversationNode(ConversationNode[FeedItem]):
     - ``current_router``: ``AgentStreamRouter`` for the in-flight turn, mirroring ``agent_task``.
     - ``pending_interrupt``: interrupt VM awaiting user input on this branch, if any. Derives
       the chat input's enabled/hint state when the cursor sits on this branch.
+    - ``last_visited_child``: most-recently-traversed child of this node. Recorded every time the
+      cursor moves through the node and used by ``swap_sibling`` / ``descend_into`` to restore
+      the previously-visited descendant chain — e.g. after swapping away from branch B (where
+      the cursor was at (A, B, E)) and back again, the cursor lands on (A, B, E) rather than
+      stopping at (A, B). ``None`` until the node has been traversed; chasing terminates at
+      ``None`` or when the recorded child is no longer a valid child of this node.
 
     All fields default-initialize; the graph constructs nodes via ``cls(id=..., name=...)`` and
     leaves every subclass-specific field at its default, populated lazily by the chat pane as
@@ -89,6 +95,7 @@ class ChatPaneConversationNode(ConversationNode[FeedItem]):
     agent_task: object | None = None
     current_router: AgentStreamRouter | None = None
     pending_interrupt: InterruptViewModelBase | None = None
+    last_visited_child: NodeId | None = None
 
 
 _DEFAULT_HINT = "Type a message or /command ..."
@@ -972,6 +979,7 @@ class ChatPaneViewModel(ViewModelBase):
         # Cursor moved (descended into the new branch). The visible-feed delta is at most the
         # newly-mounted indicator (already handled by feed_append in the leaf case) plus the
         # new branch's empty feed — no other widgets need mount/unmount, so no feed_replaced.
+        self._record_visit(self._cursor)
         self._sync_navigation_state()
         return new_branch_id
 
@@ -1030,9 +1038,50 @@ class ChatPaneViewModel(ViewModelBase):
                     item.entry.emit(item.entry.dirty)
                     break
 
+    def _record_visit(self, cursor: ConversationGraphCursor) -> None:
+        """Record the cursor path in each node's ``last_visited_child`` cache.
+
+        For every consecutive ``(parent, child)`` pair in the path, set the parent's
+        ``last_visited_child`` to that child. Called from every cursor-mutating method so the cache
+        always reflects the freshest descent below each node the cursor has ever crossed.
+        """
+        path = cursor.path
+        for parent_id, child_id in zip(path, path[1:]):
+            self._node(parent_id).last_visited_child = child_id
+
+    def _deepen_via_last_visited(self, path: tuple[NodeId, ...]) -> tuple[NodeId, ...]:
+        """Extend ``path`` by chasing ``last_visited_child`` from the tail.
+
+        Walks down through the cache until the current tail has no recorded child or the recorded
+        child is no longer a valid child of the tail (defensive — the graph is append-only so
+        children don't disappear, but the cache predates a hypothetical future detach). The
+        returned tuple always starts with ``path`` unchanged; only the suffix is new.
+
+        Used by ``swap_sibling`` and ``descend_into`` so that re-entering a previously-visited
+        subtree lands on the deepest previously-seen leaf rather than stopping at the swap/descent
+        point.
+        """
+        extended = list(path)
+        while True:
+            tail = extended[-1]
+            recorded = self._node(tail).last_visited_child
+            if recorded is None:
+                break
+            if recorded not in self._conversation.children(tail):
+                break
+            extended.append(recorded)
+        return tuple(extended)
+
     def descend_into(self, child_id: NodeId) -> None:
-        """Descend the cursor into one of the leaf's children. View receives ``feed_replaced``."""
-        self._cursor = self._conversation.descend(self._cursor, child_id)
+        """Descend the cursor into one of the leaf's children, then deepen via the
+        ``last_visited_child`` cache so re-entry restores the most-recently-visited descendant
+        rather than stopping at the explicitly-named child. View receives ``feed_replaced``.
+        """
+        new_path = self._deepen_via_last_visited(
+            self._conversation.descend(self._cursor, child_id).path
+        )
+        self._cursor = ConversationGraphCursor(new_path)
+        self._record_visit(self._cursor)
         self._sync_navigation_state()
         self.emit(self.feed_replaced)
 
@@ -1045,6 +1094,10 @@ class ChatPaneViewModel(ViewModelBase):
         truncates to that node as its new leaf (i.e. "un-descend out of *this* branch point",
         regardless of how many levels deeper the cursor currently sits). No-op if the node isn't
         on the path or is already the leaf.
+
+        Ascending does not chase ``last_visited_child`` — the user explicitly asked to truncate
+        upward, so re-deepening would defeat the request. The cache stays warm for the next
+        ``descend_into`` / ``swap_sibling``.
         """
         path = self._cursor.path
         if parent_node_id is None:
@@ -1060,6 +1113,7 @@ class ChatPaneViewModel(ViewModelBase):
                 return
             new_path = path[: i + 1]
         self._cursor = ConversationGraphCursor(new_path)
+        self._record_visit(self._cursor)
         self._sync_navigation_state()
         self.emit(self.feed_replaced)
 
@@ -1068,9 +1122,12 @@ class ChatPaneViewModel(ViewModelBase):
 
         Default (``parent_node_id=None``) swaps the leaf's sibling — the cursor's penultimate
         node decides the swap point. When called from a focused ``BranchIndicatorViewModel``, the
-        indicator passes its ``parent_node_id`` so the swap happens *there* and the cursor is
-        truncated to the new sibling (we have no good policy for re-descending deeper, since
-        nested branch points would force arbitrary picks).
+        indicator passes its ``parent_node_id`` so the swap happens there.
+
+        After the swap, the cursor is deepened via ``last_visited_child`` so re-entering a
+        subtree the user has visited before restores them to the previously-seen leaf (e.g. the
+        cursor was at (A, B, E), user swaps to C and back, lands on (A, B, E) again). New
+        siblings with no recorded descent terminate the chain at the swap point.
 
         No-op if the node isn't on the path, has no children in the requested direction, or is
         already the cursor's leaf (no descended child to swap from).
@@ -1099,7 +1156,9 @@ class ChatPaneViewModel(ViewModelBase):
         if not 0 <= new_idx < len(children):
             return
 
-        self._cursor = ConversationGraphCursor(path[:truncate_at] + (children[new_idx],))
+        new_path = self._deepen_via_last_visited(path[:truncate_at] + (children[new_idx],))
+        self._cursor = ConversationGraphCursor(new_path)
+        self._record_visit(self._cursor)
         self._sync_navigation_state()
         self.emit(self.feed_replaced)
 
