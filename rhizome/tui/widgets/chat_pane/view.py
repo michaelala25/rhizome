@@ -22,8 +22,12 @@ from .agent_message import AgentMessageView, AgentMessageViewModel
 from .branch_indicator import BranchIndicatorView, BranchIndicatorViewModel
 from .chat_input import ChatInputView
 from .chat_message import ChatMessageView
+from .choices import ChoicesView, ChoicesViewModel
 from .command_palette import CommandPalette
 from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
+from .multiple_choices import MultipleChoicesView, MultipleChoicesViewModel
+from .sql_confirmation import SqlConfirmationView, SqlConfirmationViewModel
+from .warning_choices import WarningChoicesView, WarningChoicesViewModel
 from .shell_command import ShellCommandView, ShellCommandViewModel
 from .status_bar import StatusBarView
 from .thinking_indicator import ThinkingIndicatorView, ThinkingIndicatorViewModel
@@ -58,7 +62,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # ctrl+c dispatches by state: copy selection → exit commit (in COMMIT) → abandon turn
         # (CONVERSATION + current branch busy). Lives on the pane, not commit-prefixed, so it
         # bypasses ``check_action``'s commit-only gate.
-        Binding("ctrl+c", "cancel", "Cancel", show=False, priority=True),
+        Binding("ctrl+c", "cancel", "Cancel", show=False, priority=False),
         Binding("ctrl+up", "commit_focus_cursor", "Commit: focus cursor", show=False, priority=True),
         Binding("ctrl+down", "commit_focus_input", "Commit: focus input", show=False, priority=True),
     ]
@@ -180,6 +184,14 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             return BranchIndicatorView(entry)
         if isinstance(entry, TestInterruptViewModel):
             return TestInterruptView(entry)
+        if isinstance(entry, ChoicesViewModel):
+            return ChoicesView(entry)
+        if isinstance(entry, WarningChoicesViewModel):
+            return WarningChoicesView(entry)
+        if isinstance(entry, MultipleChoicesViewModel):
+            return MultipleChoicesView(entry)
+        if isinstance(entry, SqlConfirmationViewModel):
+            return SqlConfirmationView(entry)
         if isinstance(entry, InterruptViewModelBase):
             raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
         raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")

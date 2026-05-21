@@ -34,14 +34,29 @@ mounted-widgets index is a dict, not a list.)
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from langchain_core.messages import AIMessageChunk
 
 from .agent_message import AgentMessageViewModel
-from .interrupt import TestInterruptViewModel
+from .choices import ChoicesViewModel
+from .interrupt import InterruptViewModelBase
+from .multiple_choices import MultipleChoicesViewModel
+from .sql_confirmation import SqlConfirmationViewModel
 from .thinking_indicator import ThinkingIndicatorViewModel
 from .tool_message import ToolMessageViewModel
+from .warning_choices import WarningChoicesViewModel
+
+
+# Maps the ``"type"`` key on a graph interrupt-value dict to the VM factory that builds the matching
+# feed entry. Keys mirror the legacy ``agent_message_harness`` dispatch table verbatim — the agent
+# graph emits these strings, so we follow rather than rename them. New interrupt VMs hook in here.
+_INTERRUPT_VM_FACTORIES: dict[str, Callable[[dict[str, Any]], InterruptViewModelBase]] = {
+    "choices": ChoicesViewModel.from_interrupt,
+    "warning": WarningChoicesViewModel.from_interrupt,
+    "multiple_choice": MultipleChoicesViewModel.from_interrupt,
+    "sql_confirmation": SqlConfirmationViewModel.from_interrupt,
+}
 
 
 if TYPE_CHECKING:
@@ -180,12 +195,30 @@ class AgentStreamRouter:
     async def on_interrupt(self, value: Any, context: Any) -> Any:
         self.pause()
         self._hide_thinking()
-        # TODO: this is a test interrupt, we need to dispatch on type properly
-        interrupt = TestInterruptViewModel(prompt=f"(interrupt) {value!r}", options=["continue"])
         try:
-            return await self._pane.present_interrupt(interrupt, cursor=self._cursor)
+            return await self._pane.present_interrupt(
+                self._build_interrupt_vm(value), cursor=self._cursor,
+            )
         finally:
             self._show_thinking()
+
+    @staticmethod
+    def _build_interrupt_vm(value: Any) -> InterruptViewModelBase:
+        """Translate a graph interrupt-value dict into the matching feed-resident VM.
+
+        Raises on a missing/unknown ``"type"`` rather than falling back silently — a typo in the
+        graph or a not-yet-ported interrupt should surface as an explicit error, not a generic
+        placeholder.
+        """
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"Interrupt value must be a dict with a 'type' key, got {type(value).__name__}"
+            )
+        itype = value.get("type")
+        factory = _INTERRUPT_VM_FACTORIES.get(itype)
+        if factory is None:
+            raise ValueError(f"Unknown interrupt type: {itype!r}")
+        return factory(value)
 
     # ------------------------------------------------------------------
     # Routing primitives (also called by synthetic test commands)

@@ -31,9 +31,13 @@ from .agent_message import AgentMessageViewModel
 from .agent_stream_router import AgentStreamRouter
 from .branch_indicator import BranchIndicatorViewModel
 from .chat_input import ChatInputViewModel
+from .choices import ChoicesViewModel
 from .command_palette import CommandPaletteViewModel
 from .conversation_graph import ConversationGraph, ConversationGraphCursor, ConversationNode, NodeId
 from .interrupt import InterruptViewModelBase, TestInterruptViewModel
+from .multiple_choices import MultipleChoicesViewModel
+from .sql_confirmation import SqlConfirmationViewModel
+from .warning_choices import WarningChoicesViewModel
 from .shell_command import ShellCommandViewModel
 from .status_bar import StatusBarViewModel
 from .thinking_indicator import ThinkingIndicatorViewModel
@@ -1521,6 +1525,98 @@ class ChatPaneViewModel(ViewModelBase):
                     ChatMessageData(role=Role.SYSTEM, content=f"interrupt resolved: {result!r}"),
                     include_in_agent_context=False,
                 )
+
+        @reg.command(name="test-choices", help="Spawn a Choices interrupt with sample options.")
+        async def _test_choices() -> None:
+            interrupt = ChoicesViewModel.from_interrupt({
+                "message": "Which fruit do you prefer?",
+                "options": ["Apple", "Banana", "Cherry", "Durian"],
+            })
+            result = await self.present_interrupt(interrupt)
+            content = "choices cancelled" if result is None else f"choices resolved: {result!r}"
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
+
+        @reg.command(name="test-warning-choices", help="Spawn a WarningChoices interrupt.")
+        async def _test_warning_choices() -> None:
+            interrupt = WarningChoicesViewModel.from_interrupt({
+                "message": "The agent wants to delete 42 files from the working tree.",
+                "options": ["Approve once", "Always approve in this session"],
+            })
+            result = await self.present_interrupt(interrupt)
+            content = (
+                "warning-choices cancelled"
+                if result is None
+                else f"warning-choices resolved: {result!r}"
+            )
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
+
+        @reg.command(name="test-multiple-choices", help="Spawn a MultipleChoices interrupt with 3 questions.")
+        async def _test_multiple_choices() -> None:
+            interrupt = MultipleChoicesViewModel.from_interrupt({
+                "questions": [
+                    {
+                        "name": "Theme",
+                        "prompt": "Which theme should the app use?",
+                        "options": ["Light", "Dark", "Solarized"],
+                    },
+                    {
+                        "name": "Editor",
+                        "prompt": "Which editor binding feels right?",
+                        "options": ["vim", "emacs", "default"],
+                    },
+                    {
+                        "name": "Density",
+                        "prompt": "How dense should the layout be?",
+                        "options": ["compact", "comfortable", "spacious"],
+                    },
+                ],
+            })
+            result = await self.present_interrupt(interrupt)
+            content = (
+                "multiple-choices cancelled"
+                if result is None
+                else f"multiple-choices resolved: {result!r}"
+            )
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
+
+        @reg.command(name="test-sql-confirmation", help="Spawn a SqlConfirmation interrupt with sample preview.")
+        async def _test_sql_confirmation() -> None:
+            interrupt = SqlConfirmationViewModel.from_interrupt({
+                "sql": (
+                    "UPDATE knowledge_entries\n"
+                    "SET title = 'Renamed entry'\n"
+                    "WHERE topic_id IN (SELECT id FROM topics WHERE name LIKE 'draft%');"
+                ),
+                "preview": {
+                    "columns": ["id", "title", "topic_id"],
+                    "rows": [
+                        [1, "Old title one", 7],
+                        [2, "Old title two", 7],
+                        [3, "Something longer that should get truncated past the cell width limit", 8],
+                        [4, "Old title four", 9],
+                    ],
+                },
+                "row_count": 12,
+            })
+            result = await self.present_interrupt(interrupt)
+            content = (
+                "sql-confirmation cancelled"
+                if result is None
+                else f"sql-confirmation resolved: {result!r}"
+            )
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
 
     async def _run_synthetic_turn(self) -> None:
         """Drive the router without invoking the real agent.
