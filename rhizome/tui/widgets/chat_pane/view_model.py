@@ -462,36 +462,54 @@ class ChatPaneViewModel(ViewModelBase):
         if not self.feed and current.current_router is None:
             return
 
-        self._abandon_agent_turn()
+        self.cancel_agent_turn()
 
         if self.feed:
             self.feed.clear()
             self.emit(self.feed_clear)
 
-        # The pane state may have changed (agent_busy flipped to False if we abandoned a turn);
+        # The pane state may have changed (agent_busy flipped to False if we cancelled a turn);
         # repaint so the input reflects that.
         self.emit(self.dirty)
 
-    def _abandon_agent_turn(self, node_id: NodeId | None = None) -> None:
-        """Forcefully tear down the in-flight agent turn on a branch (current branch by default).
+    def cancel_agent_turn(self, node_id: NodeId | None = None) -> None:
+        """Tear down the in-flight agent turn on a branch (current branch by default).
 
-        Clears the branch's ``current_router`` + ``agent_task`` on the node and cancels the task
-        synchronously. The task's finally block also clears these but only if it ran to
-        completion; pre-emptive cancellation here ensures ``agent_busy`` flips to False before
-        the cancelled coroutine has finished unwinding.
+        Public entry point for user-initiated cancellation (ctrl+c from the view) and the
+        internal cleanup path from ``clear_feed``. Routes through the branch's
+        ``AgentStreamRouter.close(cancelled=True)`` before cancelling the worker task — the
+        router is the only thing that knows the thinking indicator's feed id and holds the
+        open segment references, so cleanup has to go through it. Cancelling the task without
+        closing the router first orphans the indicator: the task's own ``finally`` block bails
+        out (it guards on ``current_router is router``, which we've cleared synchronously by
+        then) so cleanup never runs.
+
+        Order:
+          1. ``router.close(cancelled=True)`` — pause + remove the thinking indicator. Skips
+             the "(no response)" stub since the worker's ``CancelledError`` handler will post
+             "(user cancelled)" once the coroutine unwinds.
+          2. ``task.cancel()`` — kick the worker so it unwinds and posts its system message.
+
+        ``agent_busy`` flips to False synchronously here (``agent_task`` cleared before the
+        cancel reaches the worker) so the input re-enables on the same tick.
         """
         target_id = node_id if node_id is not None else self._cursor.head
         node = self._node(target_id)
         if node.current_router is None:
             return
 
+        router = node.current_router
         node.current_router = None
+        router.close(cancelled=True)
+
         if node.agent_task is not None:
             task = node.agent_task
             node.agent_task = None
             # ``agent_task`` is typed ``object`` to keep Textual's Worker out of this VM's surface,
             # but at runtime it's always cancellable (asyncio.Task or Textual Worker).
             task.cancel()  # type: ignore[attr-defined]
+
+        self.emit(self.dirty)
 
     # ------------------------------------------------------------------
     # Feed ordering rules

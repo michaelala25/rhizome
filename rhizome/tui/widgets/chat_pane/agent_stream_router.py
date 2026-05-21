@@ -98,12 +98,22 @@ class AgentStreamRouter:
             self._current_agent_message = None
         self._current_tool_message = None
 
-    def close(self) -> None:
-        """Finalize the turn: pause + remove the thinking indicator + synthesize a stub if no
-        visible output was produced. Safe to call multiple times.
+    def close(self, *, cancelled: bool = False) -> None:
+        """Finalize the turn: pause + remove the thinking indicator. Safe to call multiple times.
+
+        ``cancelled=False`` (the default — natural end of stream): if no visible output was
+        produced, append a "(no response)" stub so empty turns leave a trace.
+
+        ``cancelled=True`` (user-initiated cancel, via ``ChatPaneViewModel.cancel_agent_turn``):
+        skip the stub. The worker's ``CancelledError`` handler posts a "(user cancelled)" system
+        message which is the appropriate visible trace; doubling up with "(no response)" is
+        noise.
         """
         self.pause()
         self._hide_thinking()
+
+        if cancelled:
+            return
 
         if not self._had_output:
             stub = AgentMessageViewModel(mode=self._pane.session_mode)

@@ -284,7 +284,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         1. If there's selected text on screen, copy it (standard terminal behavior — most
            important for the user, do this first).
         2. In commit mode: exit commit mode.
-        3. In conversation mode with the current branch's agent busy: abandon that turn.
+        3. In conversation mode with the current branch's agent busy: cancel that turn.
         4. Otherwise: no-op.
         """
         selected = self.screen.get_selected_text()
@@ -295,7 +295,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             self._vm.exit_commit_mode()
             return
         if self._vm.agent_busy:
-            self._vm._abandon_agent_turn()
+            self._vm.cancel_agent_turn()
 
     def action_commit_focus_cursor(self) -> None:
         self._vm.request_focus()
