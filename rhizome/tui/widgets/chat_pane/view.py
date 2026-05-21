@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 
 from textual.widget import Widget
 
@@ -24,6 +24,7 @@ from .chat_input import ChatInputView
 from .chat_message import ChatMessageView
 from .choices import ChoicesView, ChoicesViewModel
 from .command_palette import CommandPalette
+from .conversation_graph import NodeId
 from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
 from .multiple_choices import MultipleChoicesView, MultipleChoicesViewModel
 from .sql_confirmation import SqlConfirmationView, SqlConfirmationViewModel
@@ -37,6 +38,20 @@ from rhizome.tui.types import ChatMessageData
 
 
 FeedEntryWidget = Widget
+
+
+class DepthWrapper(Vertical):
+    """Per-node container for feed entries belonging to one conversation-graph node.
+
+    Each wrapper draws a single ``│`` rule on its left side (via ``border-left``); nesting a
+    depth-``D`` wrapper inside a depth-``D-1`` wrapper gives the y-position-aware indentation
+    guides — the rule for depth ``D`` spans exactly the y-range occupied by that node's content,
+    no post-layout coordinate math needed.
+
+    Critically uses ``border-left`` only and zero padding/margin/``border-right`` so the right
+    edge of content stays flush with the parent's right edge regardless of nesting depth. Adding
+    any of those would push content inward from the right on every nested level.
+    """
 
 
 class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
@@ -100,6 +115,17 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     ChatPaneMVVM CommandPalette {
         background: rgb(12, 12, 12);
     }
+    /* Per-depth wrapper. ``border-left`` only — no padding, margin, or border-right — so the
+     * content area at every depth extends flush to the right edge of #message-area. Each nested
+     * level consumes exactly 1 cell on the LEFT for the rule; right-side geometry is untouched.
+     */
+    ChatPaneMVVM DepthWrapper {
+        height: auto;
+        width: 100%;
+        padding: 0;
+        margin: 0;
+        border-left: solid rgb(60, 60, 60);
+    }
     """
 
     def __init__(self, *, session_factory=None, **kwargs) -> None:
@@ -110,6 +136,13 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # segment, and later in the refactor the router will remove items (e.g. the thinking
         # indicator) without disturbing surrounding positions.
         self._mounted: dict[int, FeedEntryWidget] = {}
+
+        # Per-node depth wrappers keyed by NodeId. Each wrapper holds the feed widgets for one node
+        # on the cursor path; nesting matches the cursor's root-to-leaf order so the left-side
+        # rules naturally span the y-range of their subtree. The root's "wrapper" is the
+        # #message-area VerticalScroll itself (not a DepthWrapper) — we don't want a rule on the
+        # outermost level. Populated lazily on first feed_append/feed_replaced.
+        self._depth_wrappers: dict[NodeId, Widget] = {}
 
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.subscribe(self._vm.feed_remove, self._on_feed_remove)
@@ -202,15 +235,73 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
         raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
 
+    def _container_for_node(self, node_id: NodeId) -> Widget:
+        """Return the widget that owns feed entries for ``node_id``.
+
+        Depth-0 (the root) lives directly in ``#message-area`` so the outermost level has no rule.
+        Deeper nodes live in their own ``DepthWrapper`` (created on demand by
+        ``_ensure_wrapper_chain``).
+        """
+        cursor_path = self._vm._cursor.path
+        if node_id == cursor_path[0]:
+            return self.query_one("#message-area", VerticalScroll)
+        return self._depth_wrappers[node_id]
+
+    def _ensure_wrapper_chain(self, path: tuple[NodeId, ...]) -> None:
+        """Make sure a DepthWrapper exists for each non-root node in ``path``, nested correctly.
+
+        Each wrapper is mounted as the *last* child of its parent's container so that it visually
+        appears below any feed items the parent already holds (including the branch indicator
+        that introduced this depth). The "no items above the wrapper, all items below" structure
+        is what the user picked when we discussed where the rule starts.
+        """
+        # path[0] = root; its container is #message-area, no DepthWrapper needed.
+        for i in range(1, len(path)):
+            node_id = path[i]
+            if node_id in self._depth_wrappers:
+                continue
+            wrapper = DepthWrapper()
+            self._depth_wrappers[node_id] = wrapper
+            parent_container = self._container_for_node(path[i - 1])
+            parent_container.mount(wrapper)
+
+    def _find_item_node(self, item_id: int) -> NodeId | None:
+        """Return the node id whose feed contains ``item_id``, or ``None`` if the item isn't on
+        the cursor path (e.g. a pinned agent stream appending into a non-visible branch).
+        """
+        for node_id, items in self._vm.visible_feed_by_depth():
+            if any(it.id == item_id for it in items):
+                return node_id
+        return None
+
     def _on_feed_append(self, item_id: int) -> None:
-        item = next((it for it in self._vm.visible_feed if it.id == item_id), None)
-        if item is None:
-            return
-        area = self.query_one("#message-area", VerticalScroll)
+        node_id = self._find_item_node(item_id)
+        if node_id is None:
+            return  # appended to a pinned non-visible branch; surface on next cursor move
+        # Ensure wrappers exist up to and including this item's depth.
+        path = self._vm._cursor.path
+        self._ensure_wrapper_chain(path)
+
+        item = next(it for _, items in self._vm.visible_feed_by_depth() for it in items if it.id == item_id)
         widget = self._build_entry_widget(item.entry)
-        area.mount(widget)
+        container = self._container_for_node(node_id)
+
+        # Items in a non-leaf node's feed (e.g. a branch indicator appended just before the cursor
+        # descends) must mount *before* any deeper wrapper that's already a child of this
+        # container — otherwise the new item would visually land beneath its own subtree's rule.
+        # On the leaf node there's no deeper wrapper, so the plain append below is correct.
+        cursor_path = path
+        node_index = cursor_path.index(node_id)
+        deeper_wrapper: Widget | None = None
+        if node_index + 1 < len(cursor_path):
+            deeper_wrapper = self._depth_wrappers.get(cursor_path[node_index + 1])
+
+        if deeper_wrapper is not None and deeper_wrapper in container.children:
+            container.mount(widget, before=deeper_wrapper)
+        else:
+            container.mount(widget)
         self._mounted[item_id] = widget
-        area.scroll_end(animate=False)
+        self.query_one("#message-area", VerticalScroll).scroll_end(animate=False)
 
     def _on_feed_remove(self, item_id: int) -> None:
         widget = self._mounted.pop(item_id, None)
@@ -220,29 +311,57 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     def _on_feed_clear(self) -> None:
         for widget in self._mounted.values():
             widget.remove()
+        for wrapper in self._depth_wrappers.values():
+            wrapper.remove()
 
         self._mounted.clear()
+        self._depth_wrappers.clear()
 
     def _on_feed_replaced(self) -> None:
-        """Reconcile the mounted widget set against ``self._vm.visible_feed`` after a cursor move.
+        """Reconcile mounted widgets + depth wrappers against the new cursor path.
 
-        Diff is by ``FeedItem.id``: drop widgets whose ids aren't in the new visible feed, then
-        mount any new ids in feed order. The structural guarantee that any two cursor paths share
-        a common prefix means the delta is always a tail change, so plain ``area.mount(widget)``
-        (which appends) preserves the correct visual order without ``before=``/``after=``.
+        Diff is by ``FeedItem.id`` for entries and by ``NodeId`` for wrappers. Stale wrappers
+        (nodes no longer on the cursor path) are removed wholesale; their child widgets cascade
+        off the tree, so we also evict those ids from ``self._mounted``. Surviving wrappers stay
+        put — common-prefix guarantee means the wrappers for the longest shared ancestor chain
+        don't move, preserving any streaming view state (e.g. ``AgentMessageView`` drain tasks)
+        inside them.
         """
-        new_ids = {item.id for item in self._vm.visible_feed}
+        new_path = self._vm._cursor.path
+        new_path_set = set(new_path)
+        new_ids = {item.id for _, items in self._vm.visible_feed_by_depth() for item in items}
+
+        # Drop stale wrappers (and the items they contain).
+        for stale_node in [nid for nid in self._depth_wrappers if nid not in new_path_set]:
+            self._depth_wrappers.pop(stale_node).remove()
+        # Drop stale items (those whose wrappers survived but whose item id is gone).
         for stale_id in [mid for mid in self._mounted if mid not in new_ids]:
             self._mounted.pop(stale_id).remove()
 
-        area = self.query_one("#message-area", VerticalScroll)
-        for item in self._vm.visible_feed:
-            if item.id in self._mounted:
-                continue
-            widget = self._build_entry_widget(item.entry)
-            area.mount(widget)
-            self._mounted[item.id] = widget
-        area.scroll_end(animate=False)
+        # Make sure wrappers exist for every node on the new path.
+        self._ensure_wrapper_chain(new_path)
+
+        # Mount any newly-visible items into their correct depth's container.
+        for node_id, items in self._vm.visible_feed_by_depth():
+            container = self._container_for_node(node_id)
+            for item in items:
+                if item.id in self._mounted:
+                    continue
+                widget = self._build_entry_widget(item.entry)
+                # See _on_feed_append for the before= rationale; same reason here.
+                node_index = new_path.index(node_id)
+                deeper_wrapper = (
+                    self._depth_wrappers.get(new_path[node_index + 1])
+                    if node_index + 1 < len(new_path)
+                    else None
+                )
+                if deeper_wrapper is not None and deeper_wrapper in container.children:
+                    container.mount(widget, before=deeper_wrapper)
+                else:
+                    container.mount(widget)
+                self._mounted[item.id] = widget
+
+        self.query_one("#message-area", VerticalScroll).scroll_end(animate=False)
 
     # ------------------------------------------------------------------
     # Compatibility shims for the --new-chat-pane integration. These let

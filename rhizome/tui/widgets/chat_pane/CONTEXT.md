@@ -112,6 +112,28 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
   unchanged because legacy and the commit-instructions input both still
   depend on it.
 
+## Depth wrappers (left-side rules per branch depth)
+
+Feed items are mounted into per-node ``DepthWrapper`` containers — one per node on the cursor
+path, nested root-to-leaf so the y-range each wrapper occupies matches that node's contribution
+to ``visible_feed``. Each wrapper draws a single ``│`` rule on its left side via
+``border-left``; the depth-N rule spans exactly the rows that depth-N content occupies, no
+post-layout coordinate math required. The root node's "wrapper" is ``#message-area`` itself
+(no rule on the outermost level).
+
+CSS keeps the right edge flush at every depth: ``border-left`` only, zero ``padding`` / ``margin``
+/ ``border-right``. Adding any of those would push content inward from the right on each
+nesting level.
+
+VM contract: ``ChatPaneViewModel.visible_feed_by_depth()`` returns the visible feed grouped as
+``[(node_id, items)]`` in cursor-path order. The view uses this to decide which wrapper to mount
+each item into and to diff wrappers against the new cursor path on ``feed_replaced`` (drop
+stale-node wrappers, create wrappers for newly-on-path nodes, keep the common-prefix wrappers
+so any streaming state inside them survives the cursor move). Items appended to a non-leaf
+node's feed (e.g. a branch indicator added just before the cursor descends) mount with
+``before=`` the next-deeper wrapper so they sit at the outer depth's tail rather than below
+their own subtree's rule.
+
 ## Feed navigation (ctrl+up / ctrl+down)
 
 The pane VM exposes `navigate_feed(direction, current_id)` which walks the

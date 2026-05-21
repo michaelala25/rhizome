@@ -301,6 +301,20 @@ class ChatPaneViewModel(ViewModelBase):
         """
         return self._conversation.visible_feed(self._cursor)
 
+    def visible_feed_by_depth(self) -> list[tuple[NodeId, list[FeedItem]]]:
+        """Visible feed grouped by depth — one ``(node_id, items)`` entry per node on the cursor
+        path, in root-to-leaf order. Index ``i`` is the depth-``i`` group (root is depth 0).
+
+        The flat concatenation of all groups' items equals :attr:`visible_feed`. The view uses
+        this to mount each item into a per-depth container (one nested wrapper per level), which
+        is how the left-side depth rules get their per-y-position depth without any post-layout
+        coordinate gymnastics.
+        """
+        return [
+            (node_id, list(self._conversation.node(node_id).feed))
+            for node_id in self._cursor.path
+        ]
+
     # ------------------------------------------------------------------
     # Feed-wide navigation (ctrl+up / ctrl+down)
     # ------------------------------------------------------------------

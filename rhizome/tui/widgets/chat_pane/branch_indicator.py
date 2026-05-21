@@ -165,13 +165,13 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
         height: auto;
         padding: 0 1;
         margin: 1 0;
-        border-top: heavy rgb(120, 120, 120);
-        border-bottom: heavy rgb(120, 120, 120);
+        border-top: rgb(120, 120, 120);
+        border-bottom: rgb(120, 120, 120);
         color: rgb(180, 180, 180);
     }
     BranchIndicatorView:focus {
-        border-top: heavy rgb(220, 220, 220);
-        border-bottom: heavy rgb(220, 220, 220);
+        border-top: rgb(220, 220, 220);
+        border-bottom: rgb(220, 220, 220);
         color: rgb(220, 220, 220);
     }
     BranchIndicatorView Horizontal {
