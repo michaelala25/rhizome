@@ -193,10 +193,23 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
 
     def on_mount(self) -> None:
         self._markdown = self.query_one(".agent-body", Markdown)
-        # The MarkdownStream isn't writable until Textual finishes mounting the inner Markdown —
-        # mirror the call_after_refresh dance from the legacy AgentMessage view.
-        self.call_after_refresh(self._open_stream)
-        self._refresh()
+        if self._vm.streaming:
+            # Live segment at mount: open the MarkdownStream after Textual finishes mounting
+            # the inner Markdown, then wire up the drain task. Tokens arriving via
+            # ``append_token`` dirty the VM, which pokes ``_wakeup`` and drives ``_drain_loop``.
+            self.call_after_refresh(self._open_stream)
+            self._refresh()
+        else:
+            # Sealed at mount — typically a remount from branch navigation. Paint the full body
+            # in one shot rather than routing it through the drain pipeline. This fixes two
+            # bugs: (1) when the VM was cancelled mid-stream, the drain loop's cancelled check
+            # short-circuits before any tick runs, leaving the message blank on revisit; and
+            # (2) the one-tick lag that made branch swaps feel sluggish even for fully-rendered
+            # bodies. We keep ``_stream`` as ``None`` here since a sealed VM accepts no further
+            # tokens, so the stream API is never needed.
+            self._markdown.update(self._vm.body)
+            self._rendered = len(self._vm.body)
+            self._apply_commit_decoration()
 
     def _apply_commit_decoration(self) -> None:
         self.set_class(self._vm.is_selectable and not self._vm.is_selected, "--commit-selectable")
