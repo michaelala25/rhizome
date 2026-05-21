@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import Static
 
 from ..view_base import ViewBase
@@ -48,6 +49,12 @@ class BranchIndicatorViewModel(ViewModelBase):
         self._parent_node_id = parent_node_id
         self._chat_pane = chat_pane
         self._selected_child: NodeId | None = None
+        # Focus state mirrored from the view. The view-side ``has_focus`` is set asynchronously
+        # by Textual relative to the focus/blur event dispatch, so reading it inside the
+        # ensuing ``_refresh`` can return stale values. We snapshot focus into the VM
+        # *synchronously* inside ``notify_focused`` / ``notify_blurred`` (before the dirty
+        # emit), so the view reads a consistent value.
+        self.is_focused: bool = False
 
     # ------------------------------------------------------------------
     # Derived state (read by the view)
@@ -82,6 +89,22 @@ class BranchIndicatorViewModel(ViewModelBase):
         if child_id == self._selected_child:
             return
         self._selected_child = child_id
+        self.emit(self.dirty)
+
+    def notify_focused(self) -> None:
+        """View-side focus arrival. Mirror to ``is_focused`` *before* the dirty emit so the
+        ensuing ``_refresh`` reads a consistent state — Textual's ``has_focus`` is updated
+        asynchronously relative to the focus event dispatch and can lag behind the refresh.
+        """
+        if self.is_focused:
+            return
+        self.is_focused = True
+        self.emit(self.dirty)
+
+    def notify_blurred(self) -> None:
+        if not self.is_focused:
+            return
+        self.is_focused = False
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
@@ -147,30 +170,59 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
         border-bottom: heavy rgb(220, 220, 220);
         color: rgb(220, 220, 220);
     }
+    BranchIndicatorView Horizontal {
+        height: auto;
+        width: 1fr;
+    }
+    BranchIndicatorView .branches {
+        width: auto;
+        height: auto;
+    }
+    BranchIndicatorView .hint {
+        width: 1fr;
+        height: auto;
+        content-align-horizontal: right;
+    }
     """
+
+    # Number of siblings shown on each side of the selected branch. Remaining siblings on
+    # either side collapse into a "+N more" marker so a branch point with many children
+    # doesn't blow out the indicator's width.
+    _VISIBLE_SIBLINGS_PER_SIDE = 2
 
     def __init__(self, vm: BranchIndicatorViewModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
-        self._static: Static | None = None
+        self._branches_static: Static | None = None
+        self._hint_static: Static | None = None
 
     def compose(self) -> ComposeResult:
-        self._static = Static(self._render_text(), markup=True)
-        yield self._static
+        # Split into two Statics inside a Horizontal so the hint can sit flush right (via
+        # ``content-align-horizontal: right`` on the .hint static taking the remaining 1fr).
+        # Both render paths are independent, but we drive them from a single ``_refresh`` for
+        # simplicity — the strings are short, repaint cost is negligible.
+        self._branches_static = Static(self._render_branches(), markup=True, classes="branches")
+        self._hint_static = Static(self._render_hint(), markup=True, classes="hint")
+        with Horizontal():
+            yield self._branches_static
+            yield self._hint_static
 
     def _refresh(self) -> None:
-        # Pre-compose dirties (fired by set_selected_child before mount finishes) are no-ops by
-        # design — compose will read the current VM state when it eventually runs.
-        if self._static is not None:
-            self._static.update(self._render_text())
+        # Pre-compose dirties (fired by set_selected_child / notify_focused before mount
+        # finishes) are no-ops by design — compose will read the current VM state when it
+        # eventually runs.
+        if self._branches_static is not None:
+            self._branches_static.update(self._render_branches())
+        if self._hint_static is not None:
+            self._hint_static.update(self._render_hint())
 
-    def _render_text(self) -> str:
+    def _render_branches(self) -> str:
         children = self._vm.children
         selected = self._vm.selected_child
 
         if selected is None:
             n = len(children)
             suffix = "es" if n != 1 else ""
-            return f"▼ {n} branch{suffix} below — click + ctrl+↓ to descend"
+            return f"▼ {n} branch{suffix} below"
 
         try:
             idx = children.index(selected)
@@ -179,17 +231,32 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
             # under normal operation but render something readable instead of crashing.
             return f"(detached selection: {self._vm.child_name(selected)})"
 
+        # Window the displayed siblings around the selected one so wide branch points stay
+        # readable. Anything outside the window collapses to a "+N more" marker on that side.
+        lo = max(0, idx - self._VISIBLE_SIBLINGS_PER_SIDE)
+        hi = min(len(children), idx + self._VISIBLE_SIBLINGS_PER_SIDE + 1)
+
         parts: list[str] = []
-        for i, cid in enumerate(children):
-            name = self._vm.child_name(cid)
+        if lo > 0:
+            parts.append(f"[dim]+{lo} more[/]")
+        for i in range(lo, hi):
+            name = self._vm.child_name(children[i])
             if i == idx:
                 parts.append(f"[bold]● {name}[/]")
             else:
                 parts.append(f"[dim]{name}[/]")
-        body = "   ".join(parts)
-        left_hint = "" if idx == 0 else "◀ "
-        right_hint = "" if idx == len(children) - 1 else " ▶"
-        return f"{left_hint}{body}{right_hint}"
+        if hi < len(children):
+            parts.append(f"[dim]+{len(children) - hi} more[/]")
+
+        return " [dim]/[/] ".join(parts)
+
+    def _render_hint(self) -> str:
+        focused = self._vm.is_focused
+        if self._vm.selected_child is None:
+            action_hint = "ctrl+↓ to descend"
+        else:
+            action_hint = "ctrl+←/→ to navigate"
+        return f"[dim]{action_hint if focused else 'click to focus'}[/]"
 
     # ------------------------------------------------------------------
     # Action handlers (forward to the VM)
