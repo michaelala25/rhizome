@@ -117,12 +117,13 @@ class AgentSession:
             provider: str = "anthropic",
             model_name: str | None = None,
             agent_kwargs: dict[str, Any] | None = None,
-            on_token_usage_changed: Callable[[], Any] | None = None,
+            on_token_usage_changed: Callable[["AgentSession"], Any] | None = None,
             on_rebuild_agent: Callable[[str, str], Any] | None = None,
             thread_id: str | None = None,
             debug: bool = False,
         ):
         self._session_factory = session_factory
+        self._chat_pane = chat_pane
         self._resource_manager = resource_manager
         self._provider = provider
         self._model_name = model_name
@@ -233,6 +234,41 @@ class AgentSession:
         self._token_usage.max_tokens = compute_chat_model_max_tokens(self._model)
         if self.on_rebuild_agent is not None:
             self.on_rebuild_agent(old_model, model_name)
+
+    def fork(self) -> "AgentSession":
+        """Build a fresh session seeded with this one's full message history.
+
+        Use case: a conversation branch wants to start from this session's exact point in time but
+        proceed independently. The fork inherits the same configuration (model, provider,
+        agent_kwargs, callbacks, debug) but gets its own ``thread_id`` so its checkpointer slot
+        is independent — no shared graph state, no shared message queue, no shared subagents.
+
+        Seeding is the same snapshot/reseed mechanic ``rebuild_agent`` uses internally: the parent's
+        ``_get_graph_messages()`` plus anything still pending in its outbound queue are prepended to
+        the new session's queue. The fork's own ``SystemMessage`` (added at construction with
+        ``SYSTEM_PROMPT_MESSAGE_ID``) sits at the tail of the prepended block; on the new session's
+        first ``stream()`` drain, ``add_messages`` dedupes by id so the fork's system prompt is the
+        one that ends up active in the new graph — content carries forward, identity stays fresh.
+
+        Including the queue in the snapshot matters: messages already queued on the parent but not
+        yet drained (e.g. a fan-out from a user mode change) would otherwise be lost in the fork.
+        The fork sees the same context the parent would see on *its* next stream.
+        """
+        new_session = AgentSession(
+            self._session_factory,
+            chat_pane=self._chat_pane,
+            resource_manager=self._resource_manager,
+            provider=self._provider,
+            model_name=self._model_name,
+            agent_kwargs=dict(self._agent_kwargs),
+            on_token_usage_changed=self.on_token_usage_changed,
+            on_rebuild_agent=self.on_rebuild_agent,
+            debug=self._debug,
+        )
+        seed = self._get_graph_messages() + list(self._message_queue)
+        if seed:
+            new_session._message_queue = seed + new_session._message_queue
+        return new_session
 
     async def on_options_post_update(self, options: Options) -> None:
         """Called by Options.post_update(); rebuilds agent if provider/model/kwargs changed."""
@@ -546,7 +582,11 @@ class AgentSession:
     def _notify_token_usage(self) -> None:
         self._compute_overhead_tokens()
         if self.on_token_usage_changed is not None:
-            self.on_token_usage_changed()
+            # Callback receives the firing session so the consumer (chat-pane VM) can route only
+            # the updates that came from the *currently-displayed* branch to the status bar —
+            # concurrent turns on background branches would otherwise overwrite the visible
+            # token count.
+            self.on_token_usage_changed(self)
 
     def _compute_overhead_tokens(self) -> None:
         """Estimate overhead tokens (system prompt + tool messages) from graph state."""

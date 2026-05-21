@@ -233,6 +233,19 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         if pending <= 0:
             return
 
+        # First write to this widget instance: dump whatever body exists in one shot. For a
+        # freshly-constructed VM this is typically the first token or two, so the visual difference
+        # vs. the slicing path is negligible. The case this really fixes is *remount* — cursor
+        # navigation brings a previously-displayed AgentMessageViewModel back into view with its
+        # full body already populated, and without this branch the catch-up logic would slow-stream
+        # the existing content back in like a fake re-stream. New tokens that arrive after this
+        # initial dump (i.e. the VM is still streaming) fall through to the budgeted-slice path
+        # below and animate at the usual cadence.
+        if self._rendered == 0:
+            await self._stream.write(self._vm.body)
+            self._rendered = len(self._vm.body)
+            return
+
         budget_ms = self._TAIL_BUDGET_MS if not self._vm.streaming else self._CATCHUP_BUDGET_MS
         budget_ticks = max(1, budget_ms // self._TICK_MS)
         slice_size = max(self._MIN_SLICE_CHARS, math.ceil(pending / budget_ticks))

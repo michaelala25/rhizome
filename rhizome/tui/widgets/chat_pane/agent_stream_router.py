@@ -45,6 +45,7 @@ from .tool_message import ToolMessageViewModel
 
 
 if TYPE_CHECKING:
+    from .conversation_graph import ConversationGraphCursor
     from .view_model import ChatPaneViewModel
 
 
@@ -52,6 +53,15 @@ class AgentStreamRouter:
 
     def __init__(self, pane: "ChatPaneViewModel") -> None:
         self._pane = pane
+
+        # Cursor snapshot at turn start. All feed mutations made by this router (append agent
+        # message, append tool list, append/remove thinking indicator, present interrupt) target
+        # this cursor's leaf rather than ``pane._cursor``, so mid-turn navigation by the user
+        # cannot redirect agent output into the wrong branch. Cursors are frozen tuples, so
+        # holding the reference is safe — the pane reassigns the *attribute* when navigating, our
+        # captured snapshot is unaffected. The pinned leaf stays open throughout the turn because
+        # ``/branch`` is gated on ``agent_busy``.
+        self._cursor: "ConversationGraphCursor" = pane._cursor
 
         # The currently-open agent chat segment, if any. Cleared on tool-call transition or by
         # ``pause`` / ``close``.
@@ -99,7 +109,7 @@ class AgentStreamRouter:
             stub = AgentMessageViewModel(mode=self._pane.session_mode)
             stub.body = "(no response)"
             stub.streaming = False
-            self._pane._append_feed(stub)
+            self._pane._append_feed(stub, cursor=self._cursor)
             self._had_output = True
 
     # ------------------------------------------------------------------
@@ -156,7 +166,7 @@ class AgentStreamRouter:
         # TODO: this is a test interrupt, we need to dispatch on type properly
         interrupt = TestInterruptViewModel(prompt=f"(interrupt) {value!r}", options=["continue"])
         try:
-            return await self._pane.present_interrupt(interrupt)
+            return await self._pane.present_interrupt(interrupt, cursor=self._cursor)
         finally:
             self._show_thinking()
 
@@ -174,7 +184,7 @@ class AgentStreamRouter:
         if self._current_agent_message is None or not self._current_agent_message.streaming:
             vm = AgentMessageViewModel(mode=self._pane.session_mode)
             self._current_agent_message = vm
-            self._pane._append_feed(vm)
+            self._pane._append_feed(vm, cursor=self._cursor)
             self._repin_thinking()
             self._had_output = True
 
@@ -191,7 +201,7 @@ class AgentStreamRouter:
         if self._current_tool_message is None:
             vm = ToolMessageViewModel()
             self._current_tool_message = vm
-            self._pane._append_feed(vm)
+            self._pane._append_feed(vm, cursor=self._cursor)
             self._repin_thinking()
             self._had_output = True
 
@@ -204,13 +214,13 @@ class AgentStreamRouter:
     def _show_thinking(self) -> None:
         if self._thinking_id is not None:
             return
-        item = self._pane._append_feed(ThinkingIndicatorViewModel())
+        item = self._pane._append_feed(ThinkingIndicatorViewModel(), cursor=self._cursor)
         self._thinking_id = item.id
 
     def _hide_thinking(self) -> None:
         if self._thinking_id is None:
             return
-        self._pane._remove_feed(self._thinking_id)
+        self._pane._remove_feed(self._thinking_id, cursor=self._cursor)
         self._thinking_id = None
 
     def _repin_thinking(self) -> None:

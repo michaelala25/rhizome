@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 
 import rich_click as click
 from langchain_core.messages import HumanMessage
@@ -29,8 +29,10 @@ from rhizome.tui.types import ChatMessageData, Mode, Role
 from ..view_model_base import ViewModelBase
 from .agent_message import AgentMessageViewModel
 from .agent_stream_router import AgentStreamRouter
+from .branch_indicator import BranchIndicatorViewModel
 from .chat_input import ChatInputViewModel
 from .command_palette import CommandPaletteViewModel
+from .conversation_graph import ConversationGraph, ConversationGraphCursor, ConversationNode, NodeId
 from .interrupt import InterruptViewModelBase, TestInterruptViewModel
 from .shell_command import ShellCommandViewModel
 from .status_bar import StatusBarViewModel
@@ -45,6 +47,7 @@ FeedEntry = (
     | ThinkingIndicatorViewModel
     | InterruptViewModelBase
     | ShellCommandViewModel
+    | BranchIndicatorViewModel
 )
 
 
@@ -60,6 +63,30 @@ class FeedItem:
     entry: FeedEntry
 
 
+@dataclass
+class ChatPaneConversationNode(ConversationNode[FeedItem]):
+    """ConversationNode subclass attaching chat-pane-specific per-branch state.
+
+    Beyond the generic feed/name/is_open, each branch carries the runtime objects that drive
+    streaming on that branch:
+
+    - ``agent_session``: the LangGraph-backed session for this branch (one per open leaf).
+    - ``agent_task``: handle for the worker running ``_run_agent_turn`` against this branch.
+      ``None`` ⟺ no in-flight turn on this branch. Drives ``agent_busy`` for the branch.
+    - ``current_router``: ``AgentStreamRouter`` for the in-flight turn, mirroring ``agent_task``.
+    - ``pending_interrupt``: interrupt VM awaiting user input on this branch, if any. Derives
+      the chat input's enabled/hint state when the cursor sits on this branch.
+
+    All fields default-initialize; the graph constructs nodes via ``cls(id=..., name=...)`` and
+    leaves every subclass-specific field at its default, populated lazily by the chat pane as
+    the branch transitions through bootstrap / fork / turn / interrupt / etc.
+    """
+    agent_session: AgentSession | None = None
+    agent_task: object | None = None
+    current_router: AgentStreamRouter | None = None
+    pending_interrupt: InterruptViewModelBase | None = None
+
+
 _DEFAULT_HINT = "Type a message or /command ..."
 _INTERRUPT_HINT = "Resolve the prompt above to continue..."
 
@@ -69,7 +96,7 @@ class ChatPaneViewModel(ViewModelBase):
     # Slash commands that must wait for the agent to be idle. Anything not in this set is allowed to
     # dispatch mid-stream (mode toggles, echo, test-* helpers, etc.). Shell `!` commands and free-text
     # chat are gated separately in ``_on_input_submitted``.
-    _AGENT_GATED_COMMANDS: frozenset[str] = frozenset({"commit"})
+    _AGENT_GATED_COMMANDS: frozenset[str] = frozenset({"commit", "branch"})
 
     class State(Enum):
         """Coarse VM state. Most of the public API asserts ``state == CONVERSATION``; the COMMIT
@@ -83,6 +110,7 @@ class ChatPaneViewModel(ViewModelBase):
         FEED_APPEND = "feed_append"
         FEED_REMOVE = "feed_remove"
         FEED_CLEAR = "feed_clear"
+        FEED_REPLACED = "feed_replaced"
         TAB_RENAME = "tab_rename"
         NOTIFY = "notify"
 
@@ -94,6 +122,7 @@ class ChatPaneViewModel(ViewModelBase):
         """
         HINT_HIGHER_VERBOSITY = "hint_higher_verbosity"
         AGENT_BUSY = "agent_busy"
+        DESCEND_REQUIRED = "descend_required"
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
         super().__init__()
@@ -101,10 +130,20 @@ class ChatPaneViewModel(ViewModelBase):
         self._feed_append = self._make_group(ChatPaneViewModel.Callbacks.FEED_APPEND)
         self._feed_remove = self._make_group(ChatPaneViewModel.Callbacks.FEED_REMOVE)
         self._feed_clear = self._make_group(ChatPaneViewModel.Callbacks.FEED_CLEAR)
+        self._feed_replaced = self._make_group(ChatPaneViewModel.Callbacks.FEED_REPLACED)
         self._tab_rename = self._make_group(ChatPaneViewModel.Callbacks.TAB_RENAME)
         self._notify = self._make_group(ChatPaneViewModel.Callbacks.NOTIFY)
 
-        self.feed: list[FeedItem] = []
+        # Conversation feed lives in a ConversationGraph parameterized over ``ChatPaneConversationNode``
+        # so every node carries chat-pane-specific per-branch state (``agent_session`` for now;
+        # task/router/interrupt to follow). ``self.feed`` continues to expose the current cursor
+        # leaf's feed list directly. The ``node_cls`` lets ``_new_node`` construct the right
+        # subclass without the graph itself knowing chat-pane concerns.
+        self._conversation: ConversationGraph[FeedItem] = ConversationGraph(
+            root_name="main",
+            node_cls=ChatPaneConversationNode,
+        )
+        self._cursor: ConversationGraphCursor = self._conversation.cursor_at_root()
         self._next_feed_id: int = 0
 
         self.state: ChatPaneViewModel.State = ChatPaneViewModel.State.CONVERSATION
@@ -146,23 +185,15 @@ class ChatPaneViewModel(ViewModelBase):
         self.resource_manager: ResourceManager | None = (
             ResourceManager(session_factory=session_factory) if session_factory else None
         )
-        self.agent_session: AgentSession | None = None
+        # AgentSession now lives on the ChatPaneConversationNode itself — one per open leaf,
+        # populated by ``bootstrap_agent_session`` (root leaf) and ``branch()`` (continuation + new
+        # branch via fork). The ``agent_session`` property resolves to the session at the current
+        # cursor's head, so call sites that say ``self.agent_session`` always reach the session for
+        # whichever branch is currently displayed.
 
-        # Agent stream router (transient): constructed at the start of each turn by
-        # ``_run_agent_turn`` (or a synthetic-test driver) and discarded in the same finally block
-        # that closes it. The pane holds this slot during the turn so the interrupt path can reach
-        # the in-flight router; ``None`` between turns. ``agent_busy`` (worker task aliveness) is
-        # the single source of truth for "is the agent running".
-        self._current_router: AgentStreamRouter | None = None
-
-        # The interrupt VM currently awaiting user input, if any. Tracked so external callers
-        # (eventually: a cancel-during-agent-run path) can resolve it from outside the awaiting
-        # coroutine.
-        self._pending_interrupt: InterruptViewModelBase | None = None
-
-        # A non-None worker means an agent turn is in flight. Cleared by the worker's own finally
-        # block, so cancellation is effectively synchronous from the caller's perspective.
-        self._agent_task: object | None = None
+        # Per-branch agent runtime — ``agent_task``, ``current_router``, ``pending_interrupt``
+        # live on each ``ChatPaneConversationNode``. ``agent_busy`` reads the current cursor's
+        # node, so multiple branches can stream concurrently without blocking each other.
 
         # Scheduler hook: the View overrides this on mount to use Textual's ``run_worker`` (lifecycle
         # binds to the widget, errors surface via the app, DevTools sees the worker). Default plain
@@ -186,6 +217,18 @@ class ChatPaneViewModel(ViewModelBase):
         return self._feed_clear
 
     @property
+    def feed_replaced(self):
+        """Fired when the cursor moves and the visible feed is wholesale replaced.
+
+        The view diffs ``self.feed`` (the new visible projection) against its currently-mounted
+        widget id set, unmounts what's no longer visible, and mounts what's newly visible. Because
+        any two cursor paths share a prefix corresponding to their longest common ancestor chain,
+        the delta is always a tail change — new mounts append at the end, no positional insertion
+        needed.
+        """
+        return self._feed_replaced
+
+    @property
     def tab_rename(self):
         return self._tab_rename
 
@@ -196,6 +239,56 @@ class ChatPaneViewModel(ViewModelBase):
     @property
     def command_registry(self) -> CommandRegistry:
         return self._command_registry
+
+    @property
+    def agent_session(self) -> AgentSession | None:
+        """The AgentSession bound to the cursor's current leaf, or ``None`` before bootstrap.
+
+        Reading is cursor-keyed: navigating to a different leaf changes which session this resolves
+        to without moving any state around. Writes happen directly on the node (see
+        ``bootstrap_agent_session`` and ``branch()``).
+        """
+        return self._node(self._cursor.head).agent_session
+
+    def _node(self, node_id: NodeId) -> ChatPaneConversationNode:
+        """Typed accessor for a chat-pane node. The graph is constructed with
+        ``node_cls=ChatPaneConversationNode`` so every node is one at runtime; this just narrows
+        the type so callers can access pane-specific attributes without scattering ``cast()``.
+        """
+        return cast(ChatPaneConversationNode, self._conversation.node(node_id))
+
+    def _all_sessions(self) -> list[AgentSession]:
+        """Every AgentSession currently attached to a node in the graph.
+
+        Used by mode/options fan-out paths to propagate shared state to all branches. Closed nodes
+        whose sessions have been forwarded to a continuation/new branch have their slot cleared by
+        ``branch()``, so each session appears here at most once.
+        """
+        return [
+            s for nid in self._conversation
+            if (s := self._node(nid).agent_session) is not None
+        ]
+
+    @property
+    def feed(self) -> list[FeedItem]:
+        """The current cursor leaf's feed list — the live underlying list, not a copy.
+
+        Returning the actual list (rather than a snapshot) preserves the in-place mutation
+        patterns (``feed.append``, ``feed.clear``, ``del feed[i]``) used by ``_append_feed``,
+        ``_remove_feed``, and ``clear_feed``. Reads that semantically want "everything visible to
+        the user across the current cursor path" should use :attr:`visible_feed` instead.
+        """
+        return self._conversation.node(self._cursor.head).feed
+
+    @property
+    def visible_feed(self) -> list[FeedItem]:
+        """Fresh list of every FeedItem on the cursor path, in render order.
+
+        This is what the view renders — concat of node feeds along the cursor path, which after a
+        /branch includes the parent's feed plus the descended child's feed. Re-computed on each
+        access; not stable across cursor moves.
+        """
+        return self._conversation.visible_feed(self._cursor)
 
     # ------------------------------------------------------------------
     # Bootstrap
@@ -224,7 +317,7 @@ class ChatPaneViewModel(ViewModelBase):
         model_name = app_options.get(Options.Agent.Model)
         agent_kwargs = get_agent_kwargs(app_options)
 
-        self.agent_session = AgentSession(
+        self._node(self._cursor.head).agent_session = AgentSession(
             self._session_factory,
             chat_pane=self,
             resource_manager=self.resource_manager,
@@ -239,37 +332,80 @@ class ChatPaneViewModel(ViewModelBase):
         self.status_bar.set_model_name(self.agent_session._model_name or "")
         self.status_bar.set_verbosity(app_options.get(Options.Agent.AnswerVerbosity))
         app_options.subscribe(Options.Agent.AnswerVerbosity, self._on_verbosity_changed)
+        # Options changes (provider/model/agent_kwargs) are shared across all branches: fan out
+        # post-update to every per-leaf AgentSession so each one rebuilds in lockstep. Bootstrap is
+        # idempotent (early-returns above) so this subscription is wired exactly once.
+        app_options.subscribe_post_update(self._on_options_post_update)
 
-    def _on_token_usage_changed(self) -> None:
-        if self.agent_session is not None:
-            self.status_bar.set_token_usage(self.agent_session.token_usage)
+    def _on_token_usage_changed(self, session: AgentSession) -> None:
+        """Route a session's token-usage update to the status bar only if that session is the
+        one currently displayed. Background-branch streams update their own sessions' counters
+        without disturbing the visible status bar; navigation to a different branch is what
+        triggers the visible refresh, via ``_sync_navigation_state``.
+        """
+        if session is self.agent_session:
+            self.status_bar.set_token_usage(session.token_usage)
 
     async def _on_verbosity_changed(self, _old, new) -> None:
         self.status_bar.set_verbosity(new)
+
+    async def _on_options_post_update(self, options: Options) -> None:
+        """Fan options changes out to every per-leaf AgentSession.
+
+        Each session decides for itself whether the change warrants a rebuild (provider/model/kwargs
+        diff). Sessions that don't need to rebuild are no-ops, so an empty broadcast is harmless.
+        """
+        for session in self._all_sessions():
+            await session.on_options_post_update(options)
 
     # ------------------------------------------------------------------
     # Feed
     # ------------------------------------------------------------------
 
-    def _append_feed(self, entry: FeedEntry) -> FeedItem:
-        """Wrap ``entry`` in a ``FeedItem`` with a fresh id, append it, and emit ``feed_append`` with
-        the new id. Returns the wrapper so callers can hold the id for later mutations.
+    def _append_feed(
+        self,
+        entry: FeedEntry,
+        *,
+        cursor: ConversationGraphCursor | None = None,
+    ) -> FeedItem:
+        """Wrap ``entry`` in a ``FeedItem`` with a fresh id, append it, and emit ``feed_append``.
+
+        By default appends to the *current* cursor's leaf feed. Callers that need to pin a target
+        branch — most notably ``AgentStreamRouter``, which is constructed at the start of a turn
+        and must keep routing into that branch even if the user navigates away mid-stream — pass
+        an explicit ``cursor``. Item ids are assigned from a single VM-wide counter so they stay
+        globally unique regardless of which node holds the item; the view's ``visible_feed``
+        lookup will simply miss off-path items until the user navigates back to that branch.
         """
         item = FeedItem(id=self._next_feed_id, entry=entry)
         self._next_feed_id += 1
-        self.feed.append(item)
+        target = cursor if cursor is not None else self._cursor
+        self._conversation.node(target.head).feed.append(item)
         self.emit(self.feed_append, item.id)
         return item
 
-    def _remove_feed(self, item_id: int) -> None:
-        """Remove the feed item with the given id, emitting ``feed_remove``. No-op if not found."""
-        for i, item in enumerate(self.feed):
+    def _remove_feed(self, item_id: int, *, cursor: ConversationGraphCursor | None = None) -> None:
+        """Remove a feed item by id from a target node's feed. No-op if not found.
+
+        Mirrors :meth:`_append_feed`'s cursor parameter — pinned callers pass the cursor they
+        appended through, so removal looks in the right place regardless of where the user has
+        navigated.
+        """
+        target = cursor if cursor is not None else self._cursor
+        feed = self._conversation.node(target.head).feed
+        for i, item in enumerate(feed):
             if item.id == item_id:
-                del self.feed[i]
+                del feed[i]
                 self.emit(self.feed_remove, item_id)
                 return
 
-    def append_message(self, msg: ChatMessageData, *, include_in_agent_context: bool = True) -> None:
+    def append_message(
+        self,
+        msg: ChatMessageData,
+        *,
+        include_in_agent_context: bool = True,
+        cursor: ConversationGraphCursor | None = None,
+    ) -> None:
         """Append a message to the feed, applying the consecutive-system dedup rule.
 
         If the previous feed entry is a system message with identical content, we suppress the append;
@@ -281,9 +417,20 @@ class ChatPaneViewModel(ViewModelBase):
         the conversation history on the next stream. Other roles (ERROR, etc.) are never forwarded —
         they're UI-side noise the agent shouldn't react to. Callers wanting feed-only mutation (test
         commands, UI echoes, legacy ``ui_only=True`` cases) pass ``include_in_agent_context=False``.
+
+        ``cursor``: optional target branch, matching :meth:`_append_feed`'s semantics. The dedup
+        peek uses *that* cursor's visible feed; the agent-context forwarding goes to *that* branch's
+        session. Used by ``_run_agent_turn`` to route cancelled/error messages into the pinned
+        branch even if the user has navigated away.
         """
         assert self.state == ChatPaneViewModel.State.CONVERSATION
-        tail_entry = self.feed[-1].entry if self.feed else None
+        target = cursor if cursor is not None else self._cursor
+
+        # Dedup peek uses the full visible feed of the target branch so a system message that
+        # just arrived in a freshly descended branch can be suppressed against a tail-of-parent
+        # identical message.
+        visible = self._conversation.visible_feed(target)
+        tail_entry = visible[-1].entry if visible else None
         if (
             msg.role == Role.SYSTEM
             and isinstance(tail_entry, ChatMessageData)
@@ -294,17 +441,25 @@ class ChatPaneViewModel(ViewModelBase):
             # ChatMessageData (or a wrapping sub-VM) owns its own emit channel.
             return
 
-        self._append_feed(msg)
+        self._append_feed(msg, cursor=target)
 
-        if include_in_agent_context and self.agent_session is not None:
-            if msg.role == Role.USER:
-                self.agent_session.add_human_message(msg.content)
-            elif msg.role == Role.SYSTEM:
-                self.agent_session.add_system_notification(msg.content)
+        if include_in_agent_context:
+            target_session = self._node(target.head).agent_session
+            if target_session is not None:
+                if msg.role == Role.USER:
+                    target_session.add_human_message(msg.content)
+                elif msg.role == Role.SYSTEM:
+                    target_session.add_system_notification(msg.content)
 
     def clear_feed(self) -> None:
+        # TODO: with per-branch agent state, ``/clear`` only inspects/abandons the *current* branch.
+        # It should also check whether any *other* branch has active work (an in-flight turn or a
+        # pending interrupt) and either refuse or confirm with the user before proceeding — leaving
+        # the cleared current branch sitting next to a running other-branch task would be confusing
+        # and could lose context the user didn't mean to drop.
         assert self.state == ChatPaneViewModel.State.CONVERSATION
-        if not self.feed and self._current_router is None:
+        current = self._node(self._cursor.head)
+        if not self.feed and current.current_router is None:
             return
 
         self._abandon_agent_turn()
@@ -317,17 +472,25 @@ class ChatPaneViewModel(ViewModelBase):
         # repaint so the input reflects that.
         self.emit(self.dirty)
 
-    def _abandon_agent_turn(self) -> None:
-        """Forcefully tear down the in-flight agent turn without posting user-facing artifacts."""
-        if self._current_router is None:
+    def _abandon_agent_turn(self, node_id: NodeId | None = None) -> None:
+        """Forcefully tear down the in-flight agent turn on a branch (current branch by default).
+
+        Clears the branch's ``current_router`` + ``agent_task`` on the node and cancels the task
+        synchronously. The task's finally block also clears these but only if it ran to
+        completion; pre-emptive cancellation here ensures ``agent_busy`` flips to False before
+        the cancelled coroutine has finished unwinding.
+        """
+        target_id = node_id if node_id is not None else self._cursor.head
+        node = self._node(target_id)
+        if node.current_router is None:
             return
 
-        self._current_router = None
-        if self._agent_task is not None:
-            task = self._agent_task
-            self._agent_task = None
-            # ``_agent_task`` is typed ``object`` to keep Textual's Worker out of this VM's
-            # surface, but at runtime it's always cancellable (asyncio.Task or Textual Worker).
+        node.current_router = None
+        if node.agent_task is not None:
+            task = node.agent_task
+            node.agent_task = None
+            # ``agent_task`` is typed ``object`` to keep Textual's Worker out of this VM's surface,
+            # but at runtime it's always cancellable (asyncio.Task or Textual Worker).
             task.cancel()  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
@@ -349,7 +512,12 @@ class ChatPaneViewModel(ViewModelBase):
     # Interrupts
     # ------------------------------------------------------------------
 
-    async def present_interrupt(self, vm: InterruptViewModelBase) -> Any:
+    async def present_interrupt(
+        self,
+        vm: InterruptViewModelBase,
+        *,
+        cursor: ConversationGraphCursor | None = None,
+    ) -> Any:
         """Append an interrupt VM to the feed and await its resolution.
 
         Closes any currently-open agent turn (peek-tail). Disables the chat input + swaps in a
@@ -358,6 +526,12 @@ class ChatPaneViewModel(ViewModelBase):
 
         The interrupt VM stays in the feed after resolution as an inert record — the View dims it but
         doesn't remove it, so the conversation history reflects what was chosen.
+
+        ``cursor``: optional pinned target for the append, matching :meth:`_append_feed`'s
+        semantics. Router-driven interrupts pass the turn's pinned cursor so the interrupt widget
+        lands in the branch where the turn was launched even if the user has navigated away
+        mid-stream; if the user is elsewhere they won't see it until they navigate back, at which
+        point the view's diff mounts it and the future awaits user input as usual.
         """
         assert self.state == ChatPaneViewModel.State.CONVERSATION
 
@@ -370,25 +544,28 @@ class ChatPaneViewModel(ViewModelBase):
         # the interrupt. In other words, calling .pause() here means exogenous interrupts "break agent messages
         # in half".
 
-        # if self._current_router is not None:
-        #     self._current_router.pause()
+        # router = self._node(target_cursor.head).current_router
+        # if router is not None:
+        #     router.pause()
 
-        self._pending_interrupt = vm
-        self._append_feed(vm)
+        target_cursor = cursor if cursor is not None else self._cursor
+        target_node = self._node(target_cursor.head)
+        target_node.pending_interrupt = vm
+        self._append_feed(vm, cursor=target_cursor)
 
-        prev_enabled = self.chat_input.enabled
-        prev_hint = self.chat_input.hint
-        self.chat_input.set_enabled(False)
-        self.chat_input.set_hint(_INTERRUPT_HINT)
+        # Chat-input state is fully derived from the *current* branch's pending interrupt — no
+        # snapshot-and-restore needed. The sync helper checks ``self._cursor.head`` (not the
+        # pinned target), so an interrupt on a background branch leaves the visible input alone
+        # and the user only sees the lockout if/when they navigate to that branch.
+        self._sync_chat_input_to_cursor()
 
         try:
             return await vm.future()
         except asyncio.CancelledError:
             return None
         finally:
-            self._pending_interrupt = None
-            self.chat_input.set_enabled(prev_enabled)
-            self.chat_input.set_hint(prev_hint)
+            target_node.pending_interrupt = None
+            self._sync_chat_input_to_cursor()
 
     # ------------------------------------------------------------------
     # Agent run lifecycle
@@ -401,8 +578,16 @@ class ChatPaneViewModel(ViewModelBase):
 
     @property
     def agent_busy(self) -> bool:
-        """An agent turn is in flight whenever the worker task is alive."""
-        return self._agent_task is not None
+        """An agent turn is in flight on the *current branch* (cursor-keyed).
+
+        Concurrent turns on other branches don't make the current branch busy. Use
+        :meth:`is_branch_busy` for an arbitrary node.
+        """
+        return self._node(self._cursor.head).agent_task is not None
+
+    def is_branch_busy(self, node_id: NodeId) -> bool:
+        """True iff the branch at ``node_id`` has an in-flight agent turn."""
+        return self._node(node_id).agent_task is not None
 
     def start_agent_run(self, user_text: str) -> None:
         """Append the user message and kick off an agent turn. No-op if a run is already in flight
@@ -423,23 +608,42 @@ class ChatPaneViewModel(ViewModelBase):
         prefixes a USER message) and by ``submit_commit_payload`` (which kicks off agent-only,
         driven by an injected commit payload + system notification, with no USER message).
 
-        Caller preconditions: ``state == CONVERSATION``, ``agent_session`` non-None, not
-        ``agent_busy``. No-op if already busy (defensive).
+        Caller preconditions: ``state == CONVERSATION``, current branch's ``agent_session``
+        non-None, current branch not busy. The turn pins itself to the cursor's leaf at start
+        time: the router (and its cursor snapshot) is constructed synchronously here, then both
+        the router and the scheduled task are stored on the pinned ``ChatPaneConversationNode``.
+        Mid-turn navigation can't redirect output, and concurrent turns on other branches each
+        live on their own node.
         """
         if self.agent_busy:
             return
-        self._agent_task = self._schedule_worker(self._run_agent_turn())
+        pinned_node = self._node(self._cursor.head)
+        if pinned_node.agent_session is None:
+            return
+        router = AgentStreamRouter(self)
+        pinned_node.current_router = router
+        pinned_node.agent_task = self._schedule_worker(self._run_agent_turn(pinned_node, router))
         self.emit(self.dirty)
 
 
-    async def _run_agent_turn(self) -> None:
-        assert self.agent_session is not None
+    async def _run_agent_turn(
+        self,
+        pinned_node: ChatPaneConversationNode,
+        router: AgentStreamRouter,
+    ) -> None:
+        """Run an agent turn pinned to ``pinned_node``.
 
-        router = AgentStreamRouter(self)
-        self._current_router = router
+        ``router`` was constructed synchronously in ``_start_agent_turn`` so its cursor pin
+        matches the launch leaf. All feed mutations (chat segments, tool calls, thinking
+        indicator, the cancelled/error system message below) target that pinned cursor; the
+        user can navigate to other branches mid-turn without redirecting output.
+        """
+        session = pinned_node.agent_session
+        assert session is not None
+        pinned_cursor = router._cursor
 
         try:
-            await self.agent_session.stream(
+            await session.stream(
                 mode=self.session_mode.value,
                 on_message=router.on_message,
                 on_update=router.on_update,
@@ -447,18 +651,24 @@ class ChatPaneViewModel(ViewModelBase):
             )
 
         except asyncio.CancelledError:
-            self.append_message(ChatMessageData(role=Role.SYSTEM, content="(user cancelled)"))
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content="(user cancelled)"),
+                cursor=pinned_cursor,
+            )
             raise
 
         except Exception as exc:  # noqa: BLE001 — surface stream errors as ERROR messages
-            if self._current_router is router:
-                self.append_message(ChatMessageData(role=Role.ERROR, content=f"Agent error: {exc}"))
+            if pinned_node.current_router is router:
+                self.append_message(
+                    ChatMessageData(role=Role.ERROR, content=f"Agent error: {exc}"),
+                    cursor=pinned_cursor,
+                )
 
         finally:
-            if self._current_router is router:
+            if pinned_node.current_router is router:
                 router.close()
-                self._current_router = None
-                self._agent_task = None
+                pinned_node.current_router = None
+                pinned_node.agent_task = None
                 self.emit(self.dirty)
 
 
@@ -518,6 +728,8 @@ class ChatPaneViewModel(ViewModelBase):
 
         message = "Returned to idle mode." if mode == Mode.IDLE else f"Entered {mode.value} mode."
 
+        # TODO: We really need to clean this up now that we have multiple agent sessions
+
         if source == "agent":
             self._set_session_mode(mode)
             self.emit(self.dirty)
@@ -527,11 +739,13 @@ class ChatPaneViewModel(ViewModelBase):
                 await self.agent_session._mode_middleware.clear_pending_user_mode()
             return
 
-        # source == "user"
+        # source == "user". Mode is shared state across all branches, so the queued change and the
+        # accompanying notification fan out to every per-leaf AgentSession — each branch's history
+        # records the same shift the moment it next streams.
         if self.agent_busy:
             self._set_session_mode(mode)
-            if self.agent_session is not None:
-                await self.agent_session.set_pending_user_mode(mode.value)
+            for session in self._all_sessions():
+                await session.set_pending_user_mode(mode.value)
             if not silent:
                 # Feed-only: set_pending_user_mode handles the agent side when the queue drains.
                 self.append_message(
@@ -541,8 +755,8 @@ class ChatPaneViewModel(ViewModelBase):
         else:
             self._set_session_mode(mode)
             if silent:
-                if self.agent_session is not None:
-                    self.agent_session.add_system_notification(message)
+                for session in self._all_sessions():
+                    session.add_system_notification(message)
             else:
                 self.append_message(ChatMessageData(role=Role.SYSTEM, content=message, mode=mode))
 
@@ -603,6 +817,180 @@ class ChatPaneViewModel(ViewModelBase):
         self.emit(self.notify, ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY)
 
     # ------------------------------------------------------------------
+    # Branching and navigation
+    # ------------------------------------------------------------------
+
+    def branch(self, *, branch_name: str | None = None) -> NodeId:
+        """Branch from the cursor's current leaf and return the new branch's NodeId.
+
+        Closes the current leaf and opens two children: a continuation (leftmost, inherits the
+        parent's name) and a fresh branch (rightmost, named per ``branch_name`` if given). The
+        cursor descends into the continuation — same logical line of conversation continuing.
+
+        AgentSession bookkeeping: the parent leaf's session is re-keyed under the continuation
+        (same instance, same thread_id — the active conversation literally continues unchanged) and
+        a fresh AgentSession is built for the new branch, seeded with a snapshot of the parent's
+        full message history so the new branch's first stream sees the same prior context the
+        parent had. Pre-bootstrap (no session at the parent yet) the dict stays empty under the
+        new keys; ``bootstrap_agent_session`` will fill the cursor's leaf on its next call.
+
+        Gated on ``not agent_busy`` (also enforced via ``_AGENT_GATED_COMMANDS`` for the slash-command
+        path); asserted here to guard direct programmatic callers.
+        """
+        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert not self.agent_busy
+
+        parent_id = self._cursor.head
+
+        # Mount the indicator into the parent's feed *before* graph.branch() closes the parent —
+        # otherwise ``self.feed`` would resolve to the continuation's empty feed by the time we
+        # appended. The indicator's ``children`` property is lazy, so reading it at compose time
+        # (post-branch) returns the freshly-opened children.
+        indicator = BranchIndicatorViewModel(self._conversation, parent_id, self)
+        self._append_feed(indicator)
+
+        new_cursor, new_branch_id = self._conversation.branch(self._cursor, branch_name=branch_name)
+        self._cursor = new_cursor
+        continuation_id = new_cursor.head
+
+        parent_node = self._node(parent_id)
+        parent_session = parent_node.agent_session
+        # Clear the closed parent's slot — the session has moved to the continuation and the
+        # parent is no longer streamable. Keeps ``_all_sessions`` from listing the same instance
+        # twice and matches the invariant that ``agent_session != None`` implies an open leaf.
+        parent_node.agent_session = None
+        if parent_session is not None:
+            self._node(continuation_id).agent_session = parent_session
+            self._node(new_branch_id).agent_session = parent_session.fork()
+
+        # Push the new indicator's selected_child (and any prior ones on the path, defensively).
+        # No ``feed_replaced`` here: the visible feed grew by exactly the indicator we just
+        # appended via ``feed_append`` — no other widgets need mount/unmount.
+        self._sync_navigation_state()
+        return new_branch_id
+
+    def descend_into(self, child_id: NodeId) -> None:
+        """Descend the cursor into one of the leaf's children. View receives ``feed_replaced``."""
+        self._cursor = self._conversation.descend(self._cursor, child_id)
+        self._sync_navigation_state()
+        self.emit(self.feed_replaced)
+
+    def ascend(self, *, parent_node_id: NodeId | None = None) -> None:
+        """Truncate the cursor past a branch point.
+
+        Default (``parent_node_id=None``) is the legacy "pop one level" semantics — useful from
+        keystrokes that don't know which indicator they're under. When called from a focused
+        ``BranchIndicatorViewModel``, the indicator passes its ``parent_node_id`` so the cursor
+        truncates to that node as its new leaf (i.e. "un-descend out of *this* branch point",
+        regardless of how many levels deeper the cursor currently sits). No-op if the node isn't
+        on the path or is already the leaf.
+        """
+        path = self._cursor.path
+        if parent_node_id is None:
+            if len(path) < 2:
+                return
+            new_path = path[:-1]
+        else:
+            try:
+                i = path.index(parent_node_id)
+            except ValueError:
+                return
+            if i + 1 >= len(path):
+                return
+            new_path = path[: i + 1]
+        self._cursor = ConversationGraphCursor(new_path)
+        self._sync_navigation_state()
+        self.emit(self.feed_replaced)
+
+    def swap_sibling(self, direction: int, *, parent_node_id: NodeId | None = None) -> None:
+        """Swap a horizontal sibling at a specific branch point in the cursor path.
+
+        Default (``parent_node_id=None``) swaps the leaf's sibling — the cursor's penultimate
+        node decides the swap point. When called from a focused ``BranchIndicatorViewModel``, the
+        indicator passes its ``parent_node_id`` so the swap happens *there* and the cursor is
+        truncated to the new sibling (we have no good policy for re-descending deeper, since
+        nested branch points would force arbitrary picks).
+
+        No-op if the node isn't on the path, has no children in the requested direction, or is
+        already the cursor's leaf (no descended child to swap from).
+        """
+        path = self._cursor.path
+        if parent_node_id is None:
+            if len(path) < 2:
+                return
+            parent_node_id = path[-2]
+            truncate_at = len(path) - 1
+        else:
+            try:
+                truncate_at = path.index(parent_node_id) + 1
+            except ValueError:
+                return
+            if truncate_at >= len(path):
+                return
+
+        current_child = path[truncate_at]
+        children = self._conversation.children(parent_node_id)
+        try:
+            idx = children.index(current_child)
+        except ValueError:
+            return
+        new_idx = idx + direction
+        if not 0 <= new_idx < len(children):
+            return
+
+        self._cursor = ConversationGraphCursor(path[:truncate_at] + (children[new_idx],))
+        self._sync_navigation_state()
+        self.emit(self.feed_replaced)
+
+    def _sync_navigation_state(self) -> None:
+        """Push cursor-derived state to sub-VMs after any cursor mutation.
+
+        Two distinct concerns, both keyed off the current cursor:
+
+        - **Branch indicators.** Walk the cursor path; for each node, find branch-indicator feed
+          items (whose owning node is the indicator's ``parent_node_id``) and push their new
+          ``selected_child`` (the path element immediately *after* that node, or ``None`` when
+          the indicator's parent is the cursor's leaf). The setter is equality-guarded.
+        - **Chat input + status bar.** Derive ``chat_input.enabled`` / ``chat_input.hint`` from
+          the current branch's ``pending_interrupt``, and push the current branch's session
+          token usage to the status bar. See :meth:`_sync_chat_input_to_cursor`.
+
+        Called before ``feed_replaced`` is emitted so any indicator widgets the view is about to
+        mount read up-to-date VM state during ``compose``.
+        """
+        path = self._cursor.path
+        for i, nid in enumerate(path):
+            for item in self._conversation.node(nid).feed:
+                if isinstance(item.entry, BranchIndicatorViewModel):
+                    selected = path[i + 1] if i + 1 < len(path) else None
+                    item.entry.set_selected_child(selected)
+
+        self._sync_chat_input_to_cursor()
+
+        # Status bar reflects the *current* branch's token usage. Background-branch streams that
+        # fire ``on_token_usage_changed`` are filtered out in ``_on_token_usage_changed`` by
+        # checking the firing session against ``self.agent_session``.
+        current_session = self._node(self._cursor.head).agent_session
+        if current_session is not None:
+            self.status_bar.set_token_usage(current_session.token_usage)
+
+    def _sync_chat_input_to_cursor(self) -> None:
+        """Derive chat-input enabled/hint from the current branch's pending interrupt.
+
+        Skipped in COMMIT mode — commit owns its own chat-input semantics (hint = COMMIT_HINT
+        with its own enabled lifecycle), and the state machine forbids commit + interrupt
+        coexistence.
+        """
+        if self.state != ChatPaneViewModel.State.CONVERSATION:
+            return
+        if self._node(self._cursor.head).pending_interrupt is not None:
+            self.chat_input.set_enabled(False)
+            self.chat_input.set_hint(_INTERRUPT_HINT)
+        else:
+            self.chat_input.set_enabled(True)
+            self.chat_input.set_hint(_DEFAULT_HINT)
+
+    # ------------------------------------------------------------------
     # Input dispatch
     # ------------------------------------------------------------------
 
@@ -647,6 +1035,14 @@ class ChatPaneViewModel(ViewModelBase):
             self.emit(self.notify, ChatPaneViewModel.NotifyAction.AGENT_BUSY)
             return
 
+        # Sitting on a non-leaf cursor (branch point) means there's no AgentSession at the current
+        # leaf — it was popped when this node was branched. Plain chat text has nowhere to go;
+        # prompt the user to descend into one of the branches first. ``/branch`` and other slash
+        # commands aren't gated here — eventually /branch from a non-leaf will create a sibling.
+        if self._conversation.children(self._cursor.head):
+            self.emit(self.notify, ChatPaneViewModel.NotifyAction.DESCEND_REQUIRED)
+            return
+
         self.chat_input.accept_submission(text)
         self.start_agent_run(text)
 
@@ -684,8 +1080,12 @@ class ChatPaneViewModel(ViewModelBase):
         assert self.state == ChatPaneViewModel.State.CONVERSATION
         assert not self.agent_busy
 
+        # Commit selects across the full visible conversation (including ancestor branches), not
+        # just the current leaf's feed. Multi-branch commit (selecting across *all* branches per
+        # the original spec) is a follow-up; for now this matches pre-branch behavior of "every
+        # learn-mode message in this conversation".
         selectable = [
-            item.entry for item in self.feed
+            item.entry for item in self.visible_feed
             if isinstance(item.entry, AgentMessageViewModel) and item.entry.mode == Mode.LEARN
         ]
         if not selectable:
@@ -817,11 +1217,15 @@ class ChatPaneViewModel(ViewModelBase):
         """Scan backwards in the feed from ``vm``'s position for the nearest USER ChatMessageData.
         Stop and return None if we hit an earlier AgentMessageViewModel first — that means the
         prompt for this segment is somewhere upstream we shouldn't conflate.
+
+        Scans the full visible feed so that an agent message in the current leaf can correctly
+        pick up the user prompt that lives in an ancestor branch's feed.
         """
-        feed_pos = next((i for i, item in enumerate(self.feed) if item.entry is vm), None)
+        visible = self.visible_feed
+        feed_pos = next((i for i, item in enumerate(visible) if item.entry is vm), None)
         if feed_pos is None:
             return None
-        for item in reversed(self.feed[:feed_pos]):
+        for item in reversed(visible[:feed_pos]):
             entry = item.entry
             if isinstance(entry, AgentMessageViewModel):
                 return None
@@ -927,6 +1331,11 @@ class ChatPaneViewModel(ViewModelBase):
         def _commit() -> None:
             self.enter_commit_mode()
 
+        @reg.command(name="branch", help="Fork a new conversation branch from the current point.")
+        @click.argument("name", required=False)
+        def _branch(name: str | None = None) -> None:
+            self.branch(branch_name=name)
+
         @reg.command(name="idle", help="Switch to idle mode.")
         async def _idle() -> None:
             await self.set_mode(Mode.IDLE)
@@ -983,8 +1392,9 @@ class ChatPaneViewModel(ViewModelBase):
         synthetic tool call, streams more, then closes. Useful as an eyeball test of the
         per-segment routing + delta-streaming.
         """
+        pinned_node = self._node(self._cursor.head)
         router = AgentStreamRouter(self)
-        self._current_router = router
+        pinned_node.current_router = router
 
         try:
             await asyncio.sleep(2)
@@ -1004,7 +1414,8 @@ class ChatPaneViewModel(ViewModelBase):
 
         finally:
             router.close()
-            self._current_router = None
+            if pinned_node.current_router is router:
+                pinned_node.current_router = None
 
     async def _run_synthetic_flow(self) -> None:
         """End-to-end flow exerciser: streams, pauses long enough for the user to submit something
@@ -1012,8 +1423,9 @@ class ChatPaneViewModel(ViewModelBase):
         the reference-only routing — anything submitted during the pause should land between the
         two segments, while the first stays "open" and keeps receiving chunks.
         """
+        pinned_node = self._node(self._cursor.head)
         router = AgentStreamRouter(self)
-        self._current_router = router
+        pinned_node.current_router = router
 
         try:
             for chunk in ("Starting a longer turn — ", "I'll pause in a moment ", "so you can chime in.\n\n"):
@@ -1045,4 +1457,5 @@ class ChatPaneViewModel(ViewModelBase):
 
         finally:
             router.close()
-            self._current_router = None
+            if pinned_node.current_router is router:
+                pinned_node.current_router = None

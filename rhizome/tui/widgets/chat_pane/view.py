@@ -19,6 +19,7 @@ from textual.widget import Widget
 
 from ..view_base import ViewBase
 from .agent_message import AgentMessageView, AgentMessageViewModel
+from .branch_indicator import BranchIndicatorView, BranchIndicatorViewModel
 from .chat_input import ChatInputView
 from .chat_message import ChatMessageView
 from .command_palette import CommandPalette
@@ -54,7 +55,10 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         Binding("space", "commit_toggle", "Commit: toggle", show=False),
         Binding("enter", "commit_toggle", "Commit: toggle", show=False),
         Binding("ctrl+j", "commit_submit", "Commit: submit", show=False),
-        Binding("ctrl+c", "commit_cancel", "Commit: cancel", show=False, priority=True),
+        # ctrl+c dispatches by state: copy selection → exit commit (in COMMIT) → abandon turn
+        # (CONVERSATION + current branch busy). Lives on the pane, not commit-prefixed, so it
+        # bypasses ``check_action``'s commit-only gate.
+        Binding("ctrl+c", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+up", "commit_focus_cursor", "Commit: focus cursor", show=False, priority=True),
         Binding("ctrl+down", "commit_focus_input", "Commit: focus input", show=False, priority=True),
     ]
@@ -100,6 +104,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.subscribe(self._vm.feed_remove, self._on_feed_remove)
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
+        self._vm.subscribe(self._vm.feed_replaced, self._on_feed_replaced)
         self._vm.subscribe(self._vm.notify, self._on_notify)
 
     def on_unmount(self) -> None:
@@ -107,6 +112,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         self._vm.unsubscribe(self._vm.feed_append, self._on_feed_append)
         self._vm.unsubscribe(self._vm.feed_remove, self._on_feed_remove)
         self._vm.unsubscribe(self._vm.feed_clear, self._on_feed_clear)
+        self._vm.unsubscribe(self._vm.feed_replaced, self._on_feed_replaced)
         self._vm.unsubscribe(self._vm.notify, self._on_notify)
 
     def _on_notify(self, action: ChatPaneViewModel.NotifyAction) -> None:
@@ -126,9 +132,16 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             "may be required to properly answer your query."
         )
 
+    def _notify_descend_required(self) -> None:
+        self.app.notify(
+            "You're sitting on a branch point. Click a branch indicator and descend "
+            "(ctrl+↓) into one of the branches to continue."
+        )
+
     _NOTIFY_HANDLERS = {
         ChatPaneViewModel.NotifyAction.AGENT_BUSY: _notify_agent_busy,
         ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
+        ChatPaneViewModel.NotifyAction.DESCEND_REQUIRED: _notify_descend_required,
     }
 
     def compose(self) -> ComposeResult:
@@ -149,34 +162,34 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     # VM → view callbacks
     # ------------------------------------------------------------------
 
-    def _on_feed_append(self, item_id: int) -> None:
-        item = next((it for it in self._vm.feed if it.id == item_id), None)
-        if item is None:
-            return
-        entry = item.entry
-        area = self.query_one("#message-area", VerticalScroll)
-
+    def _build_entry_widget(self, entry) -> FeedEntryWidget:
+        """Dispatch a feed entry's runtime type to its concrete view widget."""
         if isinstance(entry, ChatMessageData):
-            widget: FeedEntryWidget = ChatMessageView(
+            return ChatMessageView(
                 role=entry.role, content=entry.content, mode=entry.mode, rich=entry.rich,
             )
-        elif isinstance(entry, AgentMessageViewModel):
-            widget = AgentMessageView(entry)
-        elif isinstance(entry, ToolMessageViewModel):
-            widget = ToolMessageView(entry)
-        elif isinstance(entry, ThinkingIndicatorViewModel):
-            widget = ThinkingIndicatorView(entry)
-        elif isinstance(entry, ShellCommandViewModel):
-            widget = ShellCommandView(entry)
-        elif isinstance(entry, TestInterruptViewModel):
-            widget = TestInterruptView(entry)
-        elif isinstance(entry, InterruptViewModelBase):
-            raise TypeError(
-                f"No view registered for interrupt type: {type(entry).__name__}"
-            )
-        else:
-            raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
+        if isinstance(entry, AgentMessageViewModel):
+            return AgentMessageView(entry)
+        if isinstance(entry, ToolMessageViewModel):
+            return ToolMessageView(entry)
+        if isinstance(entry, ThinkingIndicatorViewModel):
+            return ThinkingIndicatorView(entry)
+        if isinstance(entry, ShellCommandViewModel):
+            return ShellCommandView(entry)
+        if isinstance(entry, BranchIndicatorViewModel):
+            return BranchIndicatorView(entry)
+        if isinstance(entry, TestInterruptViewModel):
+            return TestInterruptView(entry)
+        if isinstance(entry, InterruptViewModelBase):
+            raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
+        raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
 
+    def _on_feed_append(self, item_id: int) -> None:
+        item = next((it for it in self._vm.visible_feed if it.id == item_id), None)
+        if item is None:
+            return
+        area = self.query_one("#message-area", VerticalScroll)
+        widget = self._build_entry_widget(item.entry)
         area.mount(widget)
         self._mounted[item_id] = widget
         area.scroll_end(animate=False)
@@ -191,6 +204,27 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             widget.remove()
 
         self._mounted.clear()
+
+    def _on_feed_replaced(self) -> None:
+        """Reconcile the mounted widget set against ``self._vm.visible_feed`` after a cursor move.
+
+        Diff is by ``FeedItem.id``: drop widgets whose ids aren't in the new visible feed, then
+        mount any new ids in feed order. The structural guarantee that any two cursor paths share
+        a common prefix means the delta is always a tail change, so plain ``area.mount(widget)``
+        (which appends) preserves the correct visual order without ``before=``/``after=``.
+        """
+        new_ids = {item.id for item in self._vm.visible_feed}
+        for stale_id in [mid for mid in self._mounted if mid not in new_ids]:
+            self._mounted.pop(stale_id).remove()
+
+        area = self.query_one("#message-area", VerticalScroll)
+        for item in self._vm.visible_feed:
+            if item.id in self._mounted:
+                continue
+            widget = self._build_entry_widget(item.entry)
+            area.mount(widget)
+            self._mounted[item.id] = widget
+        area.scroll_end(animate=False)
 
     # ------------------------------------------------------------------
     # Compatibility shims for the --new-chat-pane integration. These let
@@ -244,14 +278,24 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         # from the input is intercepted there as "insert newline" before this binding sees it.
         self._vm.submit_commit_payload("")
 
-    def action_commit_cancel(self) -> None:
-        # If the user has a text selection on the screen, ctrl+c should copy it (standard terminal
-        # behavior) rather than exit commit mode. Mirrors the legacy chat pane's cancel-or-copy.
+    def action_cancel(self) -> None:
+        """ctrl+c dispatch — order matters:
+
+        1. If there's selected text on screen, copy it (standard terminal behavior — most
+           important for the user, do this first).
+        2. In commit mode: exit commit mode.
+        3. In conversation mode with the current branch's agent busy: abandon that turn.
+        4. Otherwise: no-op.
+        """
         selected = self.screen.get_selected_text()
         if selected:
             self.app.copy_to_clipboard(selected)
             return
-        self._vm.exit_commit_mode()
+        if self._vm.state == ChatPaneViewModel.State.COMMIT:
+            self._vm.exit_commit_mode()
+            return
+        if self._vm.agent_busy:
+            self._vm._abandon_agent_turn()
 
     def action_commit_focus_cursor(self) -> None:
         self._vm.request_focus()
