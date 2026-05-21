@@ -887,6 +887,42 @@ class ChatPaneViewModel(ViewModelBase):
         self._sync_navigation_state()
         return new_branch_id
 
+    _BRANCH_NAME_MAX_WORDS = 5
+    _BRANCH_NAME_MAX_CHARS = 40
+
+    def branch_and_send(self, prompt: str) -> None:
+        """Branch from the current leaf, jump into the new branch, and send ``prompt`` as the
+        first user message.
+
+        Used by ``/branch <prompt>``: the dispatch in ``_on_input_submitted`` peels off the raw
+        post-name string and forwards it here, bypassing the click/shlex pipeline so the prompt
+        can contain apostrophes, quotes, and other characters that would otherwise crash
+        tokenization. The new branch's name is derived from the first few words of the prompt
+        (see :meth:`_derive_branch_name`); the user gave us a prompt rather than an explicit
+        name, so deriving is the right default.
+
+        ``self.branch()`` leaves the cursor on the continuation (leftmost sibling, inheriting
+        the parent's name); we flip to the new (rightmost) sibling via ``swap_sibling(1)`` so
+        the prompt and the resulting agent turn land on the new branch where the user expects.
+        """
+        branch_name = self._derive_branch_name(prompt)
+        self.branch(branch_name=branch_name)
+        self.swap_sibling(1)
+        self.start_agent_run(prompt)
+
+    def _derive_branch_name(self, prompt: str) -> str:
+        """First few words of ``prompt`` (capped on words and chars), with ``...`` appended
+        when truncation happened. Used by :meth:`branch_and_send` to label a /branch <prompt>
+        invocation. A future iteration will likely replace this with an LLM-summarized name.
+        """
+        words = prompt.split()
+        truncated = len(words) > self._BRANCH_NAME_MAX_WORDS
+        head = " ".join(words[: self._BRANCH_NAME_MAX_WORDS])
+        if len(head) > self._BRANCH_NAME_MAX_CHARS:
+            head = head[: self._BRANCH_NAME_MAX_CHARS].rstrip()
+            truncated = True
+        return head + "..." if truncated else head
+
     def descend_into(self, child_id: NodeId) -> None:
         """Descend the cursor into one of the leaf's children. View receives ``feed_replaced``."""
         self._cursor = self._conversation.descend(self._cursor, child_id)
@@ -1044,6 +1080,17 @@ class ChatPaneViewModel(ViewModelBase):
             if self.agent_busy and name in self._AGENT_GATED_COMMANDS:
                 self.emit(self.notify, ChatPaneViewModel.NotifyAction.AGENT_BUSY)
                 return
+
+            # /branch <prompt> is intercepted here instead of going through the click registry:
+            # the registry tokenizes via ``shlex_split``, which mangles quotes and crashes on
+            # unbalanced apostrophes (``Can't`` → ValueError). Bare /branch (no rest after the
+            # name) still falls through to the registry to hit the no-arg ``_branch`` handler.
+            if name == "branch":
+                rest = stripped[len("/branch"):].strip()
+                if rest:
+                    self.chat_input.accept_submission(text)
+                    self.branch_and_send(rest)
+                    return
 
             self.chat_input.accept_submission(text)
             self._schedule_worker(self._execute_command(stripped))
@@ -1349,10 +1396,15 @@ class ChatPaneViewModel(ViewModelBase):
         def _commit() -> None:
             self.enter_commit_mode()
 
-        @reg.command(name="branch", help="Fork a new conversation branch from the current point.")
-        @click.argument("name", required=False)
-        def _branch(name: str | None = None) -> None:
-            self.branch(branch_name=name)
+        @reg.command(
+            name="branch",
+            help="Fork a new branch. Optionally provide a prompt to send.",
+        )
+        def _branch() -> None:
+            # The ``/branch <prompt>`` form is intercepted in ``_on_input_submitted`` so the
+            # prompt never reaches click/shlex tokenization. By the time we get here, the rest
+            # of the line is empty — this handler covers only the bare ``/branch`` case.
+            self.branch()
 
         @reg.command(name="idle", help="Switch to idle mode.")
         async def _idle() -> None:
