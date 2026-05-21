@@ -28,14 +28,19 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
         "- clear_topic: Clear the active topic (takes precedence over topic_id).\n"
         "- tab_name: Rename the active chat session tab. Keep it short — around "
         "20 characters, 2-3 words.\n"
+        "- current_branch_name: Rename the current conversation branch (i.e. the "
+        "branch this turn was launched from). Short and descriptive — a few words, "
+        "around 40 characters max.\n"
         "- hint_higher_verbosity: Hint to the user that a higher verbosity setting "
         "may be needed. Use ONLY in 'terse' verbosity mode."
     ))
     @tool_visibility(ToolVisibility.LOW)
     async def update_app_state_tool(
+        runtime: ToolRuntime,
         topic_id: int | None = None,
         clear_topic: bool = False,
         tab_name: str | None = None,
+        current_branch_name: str | None = None,
         hint_higher_verbosity: bool = False,
     ) -> str:
         if chat_pane is None:
@@ -56,6 +61,14 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
         if tab_name is not None:
             await chat_pane.set_tab_name(tab_name)
             results.append(f"Tab renamed to: {tab_name}")
+
+        if current_branch_name is not None:
+            # ``conversation_cursor`` is pinned at turn start by ``AgentSession.stream``;
+            # forward it explicitly so mid-turn navigation doesn't redirect the rename to
+            # whichever branch the user happens to be looking at.
+            cursor = getattr(runtime.context, "conversation_cursor", None)
+            chat_pane.set_branch_name(current_branch_name, cursor=cursor)
+            results.append(f"Branch renamed to: {current_branch_name}")
 
         if hint_higher_verbosity:
             chat_pane.hint_higher_verbosity()

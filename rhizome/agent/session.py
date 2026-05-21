@@ -333,6 +333,7 @@ class AgentSession:
         on_update: Callable[[str, Any], Awaitable[None]] | None = None,
         on_interrupt: Callable[[Any, AgentContext], Awaitable[Any]] | None = None,
         post_chunk_handler: Callable[[], Any] | None = None,
+        cursor: Any = None,
     ) -> None:
         """Stream agent output using callbacks, with interrupt/resume support.
 
@@ -405,6 +406,7 @@ class AgentSession:
 
             context = AgentContext(
                 user_settings=user_settings,
+                conversation_cursor=cursor,
                 answerer_subagent=self._answerer_subagent,
                 comparator_subagent=self._comparator_subagent,
                 scorer_subagent=self._scorer_subagent,

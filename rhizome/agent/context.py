@@ -25,3 +25,11 @@ class AgentContext:
     """DB session factory — widgets that write to the DB (e.g. the
     flashcard review widget invoking ``apply_rating``) pull this off the
     context when constructed from an interrupt."""
+
+    conversation_cursor: Any = None
+    """ConversationGraphCursor pinned at turn start, identifying the chat-pane branch
+    this turn was launched from. Tools that mutate per-branch state (currently
+    ``update_app_state(current_branch_name=...)``) read this and forward it to the
+    chat pane so the mutation addresses the launching branch even if the user has
+    navigated elsewhere mid-stream. Typed ``Any`` to keep tui types out of this
+    module — the value is opaque to the agent layer."""

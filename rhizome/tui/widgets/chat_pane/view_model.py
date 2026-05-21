@@ -666,6 +666,7 @@ class ChatPaneViewModel(ViewModelBase):
                 on_message=router.on_message,
                 on_update=router.on_update,
                 on_interrupt=router.on_interrupt,
+                cursor=pinned_cursor,
             )
 
         except asyncio.CancelledError:
@@ -887,9 +888,6 @@ class ChatPaneViewModel(ViewModelBase):
         self._sync_navigation_state()
         return new_branch_id
 
-    _BRANCH_NAME_MAX_WORDS = 5
-    _BRANCH_NAME_MAX_CHARS = 40
-
     def branch_and_send(self, prompt: str) -> None:
         """Branch from the current leaf, jump into the new branch, and send ``prompt`` as the
         first user message.
@@ -897,31 +895,55 @@ class ChatPaneViewModel(ViewModelBase):
         Used by ``/branch <prompt>``: the dispatch in ``_on_input_submitted`` peels off the raw
         post-name string and forwards it here, bypassing the click/shlex pipeline so the prompt
         can contain apostrophes, quotes, and other characters that would otherwise crash
-        tokenization. The new branch's name is derived from the first few words of the prompt
-        (see :meth:`_derive_branch_name`); the user gave us a prompt rather than an explicit
-        name, so deriving is the right default.
+        tokenization. The new branch is left unnamed — the indicator falls back to
+        ``branch-{id}`` until the agent calls ``update_app_state(current_branch_name=...)``
+        (prompted by the queued system notification below) to set a meaningful one.
 
         ``self.branch()`` leaves the cursor on the continuation (leftmost sibling, inheriting
         the parent's name); we flip to the new (rightmost) sibling via ``swap_sibling(1)`` so
         the prompt and the resulting agent turn land on the new branch where the user expects.
         """
-        branch_name = self._derive_branch_name(prompt)
-        self.branch(branch_name=branch_name)
+        self.branch()
         self.swap_sibling(1)
+
+        # Queue the UI-hidden rename instruction *before* ``start_agent_run`` so it's
+        # guaranteed to be in the message queue by the time the worker drains it. (Doing it
+        # after relies on ``start_agent_run`` being synchronous all the way through, which is
+        # fragile — any future await between the worker spawn and the drain would race.) The
+        # agent sees the instruction first, then the user prompt — which reads naturally as
+        # "here's a side-channel directive, here's the actual user message".
+        if self.agent_session is not None:
+            self.agent_session.add_system_notification(
+                "Call `update_app_state(current_branch_name=...)` to set a short "
+                "descriptive name for this branch."
+            )
+
         self.start_agent_run(prompt)
 
-    def _derive_branch_name(self, prompt: str) -> str:
-        """First few words of ``prompt`` (capped on words and chars), with ``...`` appended
-        when truncation happened. Used by :meth:`branch_and_send` to label a /branch <prompt>
-        invocation. A future iteration will likely replace this with an LLM-summarized name.
+    def set_branch_name(self, name: str, *, cursor: ConversationGraphCursor | None = None) -> None:
+        """Rename the branch at ``cursor``'s leaf (the current cursor if omitted).
+
+        Agent-facing API exposed via the ``update_app_state(current_branch_name=...)`` tool.
+        The tool pulls the pinned cursor from ``AgentContext.conversation_cursor`` (captured
+        at turn start) and passes it explicitly so a tool call mid-turn renames the *launching*
+        branch — not wherever the user happens to be looking. Mirrors the cursor-pin trick the
+        ``AgentStreamRouter`` uses for feed mutations.
+
+        Renaming a node mutates ``ConversationNode.name``; branch indicators read that lazily
+        on each render, but their VMs only fire ``dirty`` on selection changes — so we nudge
+        the indicator on the parent's feed manually here to make the new name show up without
+        waiting for an unrelated event.
         """
-        words = prompt.split()
-        truncated = len(words) > self._BRANCH_NAME_MAX_WORDS
-        head = " ".join(words[: self._BRANCH_NAME_MAX_WORDS])
-        if len(head) > self._BRANCH_NAME_MAX_CHARS:
-            head = head[: self._BRANCH_NAME_MAX_CHARS].rstrip()
-            truncated = True
-        return head + "..." if truncated else head
+        target = cursor if cursor is not None else self._cursor
+        node_id = target.head
+        self._conversation.rename(node_id, name)
+
+        if len(target.path) >= 2:
+            parent_id = target.path[-2]
+            for item in self._conversation.node(parent_id).feed:
+                if isinstance(item.entry, BranchIndicatorViewModel):
+                    item.entry.emit(item.entry.dirty)
+                    break
 
     def descend_into(self, child_id: NodeId) -> None:
         """Descend the cursor into one of the leaf's children. View receives ``feed_replaced``."""
