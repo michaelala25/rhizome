@@ -4,6 +4,7 @@ from typing import Iterable, Literal
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from rhizome.db import KnowledgeEntry
 from rhizome.db.models import EntryType
@@ -203,7 +204,7 @@ async def list_entries_paginated(
     # Stable tiebreaker on id so pagination doesn't shuffle rows with equal sort keys.
     tiebreaker = KnowledgeEntry.id.asc() if sort_dir == "asc" else KnowledgeEntry.id.desc()
 
-    stmt = select(KnowledgeEntry)
+    stmt = select(KnowledgeEntry).options(selectinload(KnowledgeEntry.topic))
     stmt = _apply_entry_filters(stmt, topic_ids=topic_ids, search=search)
     stmt = stmt.order_by(direction, tiebreaker).limit(limit).offset(offset)
     result = await session.execute(stmt)

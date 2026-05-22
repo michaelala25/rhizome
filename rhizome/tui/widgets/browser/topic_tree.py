@@ -72,6 +72,10 @@ _CHECKED_STYLE = Style(color="rgb(100,200,100)")
 _UNCHECKED_STYLE = Style(color="rgb(80,80,80)")
 _CURSOR_FOCUSED = Style(color="rgb(255,80,80)", bold=True)
 _CURSOR_UNFOCUSED = Style(color="rgb(255,80,80)")
+# Trailing " [{id}]" hint after each topic name. Constant dim grey
+# regardless of cursor / focus / selection state — it's metadata, not
+# part of the topic label.
+_ID_SUFFIX_STYLE = Style(color="rgb(120,120,120)")
 
 
 @dataclass(frozen=True)
@@ -450,8 +454,18 @@ class BrowserTopicTreeView(Tree[Topic]):
         node_label = node._label.copy()
         node_label.stylize(label_style)
 
+        # Trailing " [{id}]" — kept in a fixed dim grey so it reads as
+        # metadata rather than part of the topic name. Skipped when
+        # ``node.data`` is None (the synthetic root we hide via
+        # ``show_root = False``, plus any defensive fallback nodes).
+        if node.data is not None:
+            id_suffix = Text(f" [{node.data.id}]", style=_ID_SUFFIX_STYLE)
+        else:
+            id_suffix = Text("")
+
         return Text.assemble(
             (icon, icon_style),
             (checkbox, base_style + checkbox_style),
             node_label,
+            id_suffix,
         )

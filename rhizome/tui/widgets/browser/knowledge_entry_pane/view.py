@@ -315,12 +315,23 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             else:
                 style = "#a0a0a0" if i % 2 else ""
             marker = ("[x]" if selected else "[ ]") if mode else ""
+            # Topic column shows the topic name followed by " [{id}]"
+            # in a fixed dim grey — matches the topic tree's hint style.
+            # ``selectinload`` on ``list_entries_paginated`` ensures
+            # ``entry.topic`` is populated before the session closes;
+            # the defensive fallback to ``topic_id`` is here in case
+            # something ever lands an entry whose topic FK isn't loaded.
+            topic_name = entry.topic.name if entry.topic is not None else "?"
+            topic_cell = Text.assemble(
+                (topic_name, style),
+                (f" [{entry.topic_id}]", "#787878"),
+            )
             cells = (
                 Text(marker, style=style),
                 Text(str(entry.id), style=style),
                 Text(entry.title, style=style),
                 Text(type_str, style=style),
-                Text(str(entry.topic_id), style=style),
+                topic_cell,
             )
             if rebuild:
                 table.add_row(*cells, key=str(entry.id))
