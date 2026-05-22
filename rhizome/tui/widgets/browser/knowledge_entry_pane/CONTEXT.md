@@ -54,6 +54,46 @@ list — the title/content of the cursor's entry stay visible (the
 cursor still drives `set_entry`) but the user can't make edits until
 they exit multi-select.
 
+### Filter
+
+Pressing `f` while the entries table is focused opens a per-axis
+filter picker (`_FilterDialog`) in the same screen slot as
+`_SortBar` / `_DeleteConfirm`. The three dialogs are mutually
+exclusive at the VM level (`request_filter` / `request_sort` /
+`request_delete` each clear the others), and the view's `_refresh`
+resolves focus once across all three after toggling visibility so
+swaps like `f`-from-sort don't let the closing dialog's "restore
+focus to table" overwrite the opening dialog's focus grab.
+
+The dialog is built around an extensible list of `FilterCategoryViewModel`
+subclasses. Today there's only one — a `MultiSelectFilterViewModel`
+seeded with the three `EntryType` values — but the widget's
+rendering and key dispatch both branch on `isinstance(category, …)`
+so adding a new shape (e.g. a text-CONTAINS filter or a numeric
+range) is a localized change: a new VM subclass plus one new branch
+in `_FilterDialog._render_active_category` and the action handlers.
+The top line of the dialog shows the category tabs (active one
+bracketed, non-default categories tinted green); the second line
+hosts whatever input shape the active category needs.
+
+Keys: `tab` / `shift+tab` cycle categories (no-op with one); `←` /
+`→` move the cursor within the active category; `space` toggles the
+cursor's option (multi-select); `r` resets every category to
+default; `s` swaps to the sort dialog; `f` / `escape` dismiss.
+Pressing `f` from `_SortBar` or `_DeleteConfirm` swaps to the
+filter dialog in one step — same priority pattern as the existing
+`s` swap.
+
+**Toggling clears any active selection** (same rationale as the sort
+dialog — a different filter is a different `LIMIT 500` window). The
+toggle itself triggers a refetch and a count update via the same
+`_request_fetch` path the sort + topic-tree filters use; the active
+type filter is projected to the DB op's new `entry_types` parameter
+(`None` when at default = all selected, list of `EntryType` enums
+otherwise; the DB op treats an empty iterable as "no rows" same as
+`topic_ids`). Filter state persists across dialog open/close cycles
+— the user can dismiss with `f` and reopen later to fine-tune.
+
 ### Sort
 
 Pressing `s` while the entries table is focused opens a horizontal

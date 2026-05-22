@@ -16,9 +16,11 @@ window without touching the cursor.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any, Literal
 
 from rhizome.db import KnowledgeEntry
+from rhizome.db.models import EntryType
 from rhizome.db.operations import (
     EntrySortKey,
     count_entries_filtered,
@@ -44,6 +46,102 @@ DEFAULT_PAGE_LIMIT = 500
 # ``updated_at``) for backward compat; the dialog deliberately surfaces
 # only the four most useful axes.
 SORT_OPTIONS: tuple[EntrySortKey, ...] = ("id", "title", "type", "topic")
+
+
+# ----------------------------------------------------------------------
+# Filter category VMs
+# ----------------------------------------------------------------------
+#
+# The filter dialog is structured around an extensible list of "filter
+# categories" — each one carries its own state shape and input style.
+# Concretely today there's only one (a multi-select for entry type),
+# but the abstraction is here for the next browser pane that wants
+# something like "field CONTAINS …" or a numeric range. The dialog
+# widget dispatches rendering + input on the concrete subclass via
+# ``isinstance``; adding a new category means a new subclass plus one
+# new branch in ``_FilterDialog._render_category`` / ``action_toggle``.
+#
+# Categories don't emit ``dirty`` themselves — the pane VM emits one
+# after mutating the active category and (when the filter actually
+# changed) triggers a refetch. Keeping categories as plain holders
+# avoids a second tier of subscription wiring.
+
+
+class FilterCategoryViewModel(ABC):
+    """Per-axis filter state. Subclasses choose their own data shape
+    (a selection set, an input string, a numeric range, …); the
+    pane VM only needs to know the ``name``, whether the category is
+    at its "no filter" default (so the dialog can highlight active
+    filters), and how to ``reset`` it."""
+
+    name: str
+
+    @property
+    @abstractmethod
+    def is_default(self) -> bool:
+        """True when the category contributes no filter — applying it
+        would not narrow the result set."""
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Restore the category to its default (no-filter) state."""
+
+
+class MultiSelectFilterViewModel(FilterCategoryViewModel):
+    """Filter category where the user picks any subset of a fixed set
+    of string options. Default = every option selected (equivalent to
+    no filter). Deselecting any option activates the filter; selecting
+    none yields an explicit "no rows" — same semantics as the DB op's
+    empty-iterable handling for ``topic_ids``."""
+
+    def __init__(self, name: str, options: list[str]) -> None:
+        self.name = name
+        self._options = list(options)
+        self._selected: set[str] = set(self._options)
+        self._cursor: int = 0
+
+    @property
+    def options(self) -> list[str]:
+        return self._options
+
+    @property
+    def cursor(self) -> int:
+        return self._cursor
+
+    def is_selected(self, option: str) -> bool:
+        return option in self._selected
+
+    @property
+    def selected(self) -> set[str]:
+        return set(self._selected)
+
+    @property
+    def is_default(self) -> bool:
+        return self._selected == set(self._options)
+
+    def move_cursor(self, direction: int) -> None:
+        """Move the option cursor with wrap. No-op when the option
+        list is empty."""
+        if not self._options:
+            return
+        self._cursor = (self._cursor + direction) % len(self._options)
+
+    def toggle_cursor(self) -> bool:
+        """Toggle the option under the cursor. Returns True (the
+        filter state always changes here unless the cursor is out of
+        bounds) so the pane VM can decide whether to refetch."""
+        if not self._options or self._cursor >= len(self._options):
+            return False
+        opt = self._options[self._cursor]
+        if opt in self._selected:
+            self._selected.discard(opt)
+        else:
+            self._selected.add(opt)
+        return True
+
+    def reset(self) -> None:
+        self._selected = set(self._options)
+        self._cursor = 0
 
 
 class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
@@ -103,6 +201,20 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # currently-active sort key.
         self._sort_pending: bool = False
         self._sort_cursor: int = 0
+
+        # Filter dialog state. The category list is fixed at construction
+        # for now (just the type filter); future panes can add more
+        # ``FilterCategoryViewModel`` subclasses to the list and the
+        # dialog widget will dispatch on type. ``_type_filter`` is also
+        # held as a direct attr so ``_fetch`` can pull the type filter
+        # without a name lookup.
+        self._type_filter = MultiSelectFilterViewModel(
+            name="type",
+            options=[t.value for t in EntryType],
+        )
+        self._filter_categories: list[FilterCategoryViewModel] = [self._type_filter]
+        self._filter_active_idx: int = 0
+        self._filter_pending: bool = False
 
         # The detail panel's VM. We push it the cursor's entry via
         # ``_sync_details`` whenever the cursor moves or the window
@@ -183,6 +295,24 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     @property
     def sort_cursor(self) -> int:
         return self._sort_cursor
+
+    @property
+    def filter_pending(self) -> bool:
+        return self._filter_pending
+
+    @property
+    def filter_categories(self) -> list[FilterCategoryViewModel]:
+        return self._filter_categories
+
+    @property
+    def filter_active_category(self) -> FilterCategoryViewModel | None:
+        if not self._filter_categories:
+            return None
+        return self._filter_categories[self._filter_active_idx]
+
+    @property
+    def filter_active_idx(self) -> int:
+        return self._filter_active_idx
 
     # ------------------------------------------------------------------
     # Mutators
@@ -351,14 +481,14 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self.emit(self.dirty)
 
     def request_sort(self) -> None:
-        """Open the sort dialog. Sort takes priority over delete — any
-        pending delete-confirm is dismissed first so the user doesn't end
-        up with both dialogs jockeying for the same screen slot. The
-        cursor lands on the currently-active sort axis so the most common
-        action (toggle direction of the active sort) is a single ``enter``
-        away. Idempotent when the dialog is already open."""
+        """Open the sort dialog. Cancels any pending filter / delete so
+        the three dialogs never co-exist. The cursor lands on the
+        currently-active sort axis so the most common action (toggle
+        direction of the active sort) is a single ``enter`` away.
+        Idempotent when the dialog is already open."""
         if self._sort_pending:
             return
+        self._filter_pending = False
         self._delete_pending = False
         self._delete_choice_cursor = 0
         self._sort_pending = True
@@ -420,6 +550,111 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # toggles still go through the refetch path.
         self.set_sort(chosen, new_dir)
 
+    # ------------------------------------------------------------------
+    # Filter dialog
+    # ------------------------------------------------------------------
+    #
+    # The three dialogs (sort, filter, delete) are mutually exclusive —
+    # ``request_filter`` and ``request_sort`` both dismiss whichever
+    # other one is open. ``s`` / ``f`` keybindings on each dialog wire
+    # the user-visible side of that swap. ``d`` is one-way — it
+    # requires a non-empty selection and so doesn't make sense to
+    # invoke from inside another dialog.
+
+    def request_filter(self) -> None:
+        """Open the filter dialog. Cancels any pending sort or delete
+        confirm so the three dialogs never co-exist. Idempotent when
+        the dialog is already open."""
+        if self._filter_pending:
+            return
+        self._sort_pending = False
+        self._delete_pending = False
+        self._delete_choice_cursor = 0
+        self._filter_pending = True
+        self.emit(self.dirty)
+
+    def cancel_filter(self) -> None:
+        """Dismiss the filter dialog without applying anything beyond
+        the toggles the user already made (those land immediately —
+        see ``filter_toggle_current``). State on each category persists
+        across open/close cycles."""
+        if not self._filter_pending:
+            return
+        self._filter_pending = False
+        self.emit(self.dirty)
+
+    def filter_tab(self, direction: int = 1) -> None:
+        """Cycle the active category. Only useful when more than one
+        category exists; with the current single-category lineup this
+        is a no-op."""
+        if not self._filter_pending or len(self._filter_categories) <= 1:
+            return
+        new = (self._filter_active_idx + direction) % len(self._filter_categories)
+        if new == self._filter_active_idx:
+            return
+        self._filter_active_idx = new
+        self.emit(self.dirty)
+
+    def filter_move_cursor(self, direction: int) -> None:
+        """Move the cursor within the active category. The action is
+        delegated to the category VM, so future non-MultiSelect
+        categories can interpret it differently (or ignore it)."""
+        if not self._filter_pending:
+            return
+        category = self.filter_active_category
+        if isinstance(category, MultiSelectFilterViewModel):
+            category.move_cursor(direction)
+            self.emit(self.dirty)
+
+    def filter_toggle_current(self) -> None:
+        """Toggle the cursor's option in the active category. When the
+        toggle actually changes filter state we drop any selection and
+        refetch — the new window may not contain the same rows the
+        user had picked. Other category types (text, range, …) would
+        wire their own equivalent here."""
+        if not self._filter_pending:
+            return
+        category = self.filter_active_category
+        if isinstance(category, MultiSelectFilterViewModel):
+            if category.toggle_cursor():
+                self._on_filter_changed()
+            else:
+                self.emit(self.dirty)
+
+    def filter_reset(self) -> None:
+        """Restore every category to its default (no-filter) state. If
+        any category was already non-default the dialog refetches and
+        clears selections; otherwise it's a cheap repaint."""
+        if not self._filter_pending:
+            return
+        any_dirty = any(not c.is_default for c in self._filter_categories)
+        for c in self._filter_categories:
+            c.reset()
+        if any_dirty:
+            self._on_filter_changed()
+        else:
+            self.emit(self.dirty)
+
+    def _on_filter_changed(self) -> None:
+        """Drop the selection set, push the new count to the details VM,
+        and trigger a refetch. Used by every filter mutator that
+        actually shifts the predicate."""
+        if self._selected_ids:
+            self._selected_ids.clear()
+            if self._multi_select_active:
+                self._details.set_multi_select(True, 0)
+        # The fetch emits its own dirty (via ``_request_fetch``), which
+        # also paints the toggled marker — no extra emit needed here.
+        self._request_fetch()
+
+    def _entry_type_filter(self) -> list[EntryType] | None:
+        """Project the type-filter category onto the DB op's
+        ``entry_types`` parameter. ``None`` when the category is at
+        default (all types selected)."""
+        if self._type_filter.is_default:
+            return None
+        return [EntryType(v) for v in self._type_filter.selected]
+
     def _sync_details(self) -> None:
         """Push the cursor's entry (or ``None``) into the detail sub-VM.
 
@@ -464,6 +699,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
                 session,
                 topic_ids=self._filter_ids,
                 search=self._search or None,
+                entry_types=self._entry_type_filter(),
                 sort_by=self._sort_by,
                 sort_dir=self._sort_dir,
                 limit=self._limit,
@@ -498,6 +734,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
                 session,
                 topic_ids=self._filter_ids,
                 search=self._search or None,
+                entry_types=self._entry_type_filter(),
                 sort_by=self._sort_by,
                 sort_dir=self._sort_dir,
                 limit=self._limit,
@@ -520,6 +757,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
                 session,
                 topic_ids=self._filter_ids,
                 search=self._search or None,
+                entry_types=self._entry_type_filter(),
             )
         # Reconcile has_more against the authoritative count.
         self._has_more = len(self._entries) < self._total

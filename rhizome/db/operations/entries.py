@@ -188,8 +188,12 @@ def _apply_entry_filters(
     *,
     topic_ids: Iterable[int] | None,
     search: str | None,
+    entry_types: Iterable[EntryType] | None,
 ):
-    """Apply the shared (topic_ids, search) filter to a SELECT on KnowledgeEntry."""
+    """Apply the shared (topic_ids, search, entry_types) filter to a SELECT
+    on KnowledgeEntry. ``None`` means "no filter on this axis"; an empty
+    iterable means "explicitly nothing matches" (consistent across
+    topic_ids and entry_types)."""
     if topic_ids is not None:
         ids = list(topic_ids)
         if not ids:
@@ -206,6 +210,14 @@ def _apply_entry_filters(
                 KnowledgeEntry.content.ilike(pattern),
             )
         )
+    if entry_types is not None:
+        types = list(entry_types)
+        if not types:
+            # Same empty-iterable contradiction as topic_ids: explicitly
+            # "no types selected" means no rows.
+            stmt = stmt.where(KnowledgeEntry.id.is_(None))
+        else:
+            stmt = stmt.where(KnowledgeEntry.entry_type.in_(types))
     return stmt
 
 
@@ -214,6 +226,7 @@ async def list_entries_paginated(
     *,
     topic_ids: Iterable[int] | None = None,
     search: str | None = None,
+    entry_types: Iterable[EntryType] | None = None,
     sort_by: EntrySortKey = "created_at",
     sort_dir: Literal["asc", "desc"] = "asc",
     limit: int = 500,
@@ -227,6 +240,9 @@ async def list_entries_paginated(
         Callers that want a subtree filter should expand their selection via
         ``topics.expand_subtrees`` first.
       - ``search`` runs case-insensitive LIKE against ``title`` and ``content``.
+      - ``entry_types=None`` means "no type filter" (every type). An empty
+        iterable means "explicitly nothing matches" (same convention as
+        ``topic_ids``).
       - Results are ordered by ``sort_by`` then by ``id`` to keep ordering stable
         across pages when the primary key has ties (e.g. multiple rows with the
         same ``created_at`` at second granularity).
@@ -239,7 +255,9 @@ async def list_entries_paginated(
     stmt = select(KnowledgeEntry).options(selectinload(KnowledgeEntry.topic))
     if needs_topic_join:
         stmt = stmt.join(Topic, KnowledgeEntry.topic_id == Topic.id)
-    stmt = _apply_entry_filters(stmt, topic_ids=topic_ids, search=search)
+    stmt = _apply_entry_filters(
+        stmt, topic_ids=topic_ids, search=search, entry_types=entry_types,
+    )
     stmt = stmt.order_by(direction, tiebreaker).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -250,6 +268,7 @@ async def count_entries_filtered(
     *,
     topic_ids: Iterable[int] | None = None,
     search: str | None = None,
+    entry_types: Iterable[EntryType] | None = None,
 ) -> int:
     """Return the count of entries matching the same filter as ``list_entries_paginated``.
 
@@ -257,6 +276,8 @@ async def count_entries_filtered(
     whether the count is worth paying for (it scans the whole filtered set).
     """
     stmt = select(func.count()).select_from(KnowledgeEntry)
-    stmt = _apply_entry_filters(stmt, topic_ids=topic_ids, search=search)
+    stmt = _apply_entry_filters(
+        stmt, topic_ids=topic_ids, search=search, entry_types=entry_types,
+    )
     result = await session.execute(stmt)
     return result.scalar_one()

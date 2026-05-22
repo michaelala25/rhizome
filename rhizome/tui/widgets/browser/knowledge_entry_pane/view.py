@@ -15,7 +15,11 @@ from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Static
 
 from .entry_details import EntryDetailsView
-from .view_model import SORT_OPTIONS, KnowledgeEntryBrowserPaneViewModel
+from .view_model import (
+    SORT_OPTIONS,
+    KnowledgeEntryBrowserPaneViewModel,
+    MultiSelectFilterViewModel,
+)
 
 
 class _EntriesTable(DataTable):
@@ -39,6 +43,9 @@ class _EntriesTable(DataTable):
         # multi-select mode (the VM clears any selection when the sort
         # is applied — see the dialog warning).
         Binding("s", "request_sort", show=False),
+        # ``f`` opens the filter dialog. Mutually exclusive with sort /
+        # delete (the VM cancels whichever is open when ``f`` lands).
+        Binding("f", "request_filter", show=False),
     ]
 
     def __init__(
@@ -60,6 +67,9 @@ class _EntriesTable(DataTable):
 
     def action_request_sort(self) -> None:
         self._vm.request_sort()
+
+    def action_request_filter(self) -> None:
+        self._vm.request_filter()
 
 
 class _DeleteConfirm(Static, can_focus=True):
@@ -83,6 +93,8 @@ class _DeleteConfirm(Static, can_focus=True):
         # step. ``vm.request_sort`` is the path that enforces the
         # priority (it cancels any pending delete before opening sort).
         Binding("s", "request_sort", show=False),
+        # Same shape for the filter dialog.
+        Binding("f", "request_filter", show=False),
     ]
 
     def __init__(
@@ -157,6 +169,9 @@ class _DeleteConfirm(Static, can_focus=True):
     def action_request_sort(self) -> None:
         self._vm.request_sort()
 
+    def action_request_filter(self) -> None:
+        self._vm.request_filter()
+
 
 class _SortBar(Static, can_focus=True):
     """Sort-axis picker dialog. Sits in the same screen slot as
@@ -184,6 +199,9 @@ class _SortBar(Static, can_focus=True):
         # ``s`` toggles the dialog closed — symmetric with the
         # ``s``-opens-it binding on ``_EntriesTable``.
         Binding("s", "cancel", show=False),
+        # ``f`` swaps to the filter dialog. ``request_filter`` on the
+        # VM dismisses sort first so the two never co-exist.
+        Binding("f", "request_filter", show=False),
         Binding("escape", "cancel", show=False),
     ]
 
@@ -265,6 +283,173 @@ class _SortBar(Static, can_focus=True):
     def action_cancel(self) -> None:
         self._vm.cancel_sort()
 
+    def action_request_filter(self) -> None:
+        self._vm.request_filter()
+
+
+class _FilterDialog(Static, can_focus=True):
+    """Per-axis filter picker. Shares the same screen slot as
+    ``_SortBar`` and ``_DeleteConfirm`` (the three are mutually
+    exclusive at the VM level).
+
+    The widget is built to accept multiple filter "categories" — each a
+    ``FilterCategoryViewModel`` subclass — even though the pane currently
+    only carries one (type). The top line shows the category tabs;
+    underneath sits whatever input shape the active category needs.
+    Rendering and key handling dispatch on the concrete category type
+    (currently just ``MultiSelectFilterViewModel``): adding a new
+    category type means a new subclass plus one new branch in both
+    ``_render_active_category`` and the keystroke handlers.
+
+    Keys:
+      * ``tab`` / ``shift+tab`` — cycle categories (no-op with one)
+      * ``left`` / ``right`` — move the cursor within the active category
+      * ``space`` — toggle the cursor's option (MultiSelect)
+      * ``r`` — reset every category to default
+      * ``s`` — swap to the sort dialog
+      * ``f`` / ``escape`` — dismiss
+    """
+
+    BINDINGS = [
+        Binding("tab", "cycle_category(1)", show=False),
+        Binding("shift+tab", "cycle_category(-1)", show=False),
+        Binding("left", "cursor_left", show=False),
+        Binding("right", "cursor_right", show=False),
+        Binding("space", "toggle", show=False),
+        Binding("r", "reset", show=False),
+        Binding("s", "request_sort", show=False),
+        # ``f`` toggles the dialog closed (symmetric with the
+        # ``f``-opens-it binding on ``_EntriesTable``).
+        Binding("f", "cancel", show=False),
+        Binding("escape", "cancel", show=False),
+    ]
+
+    def __init__(
+        self,
+        view_model: KnowledgeEntryBrowserPaneViewModel,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._vm = view_model
+
+    def on_mount(self) -> None:
+        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._refresh()
+
+    def on_unmount(self) -> None:
+        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+
+    def on_focus(self) -> None:
+        # Cursor colours brighten on focus, matching the other dialogs.
+        self.call_after_refresh(self._refresh)
+
+    def on_blur(self) -> None:
+        self.call_after_refresh(self._refresh)
+
+    def _refresh(self) -> None:
+        self.update(self._render_dialog())
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _render_dialog(self) -> Text:
+        categories = self._vm.filter_categories
+        active = self._vm.filter_active_category
+
+        text = Text()
+        # Line 1 — category tabs. The active tab gets brackets; non-
+        # default categories pick up a green tint so the user can see
+        # at a glance which filters are currently narrowing the view.
+        text.append("filter by:  ", style="dim")
+        for i, cat in enumerate(categories):
+            is_active = active is cat
+            colour = "#5fd75f" if not cat.is_default else ""
+            if is_active:
+                text.append("[", style=colour or "")
+                text.append(cat.name, style=("bold " + colour).strip())
+                text.append("]", style=colour or "")
+            else:
+                text.append(cat.name, style=colour or "#787878")
+            if i < len(categories) - 1:
+                text.append("   ")
+        text.append("\n")
+
+        # Line 2 — active category body. Dispatch on category type.
+        if active is not None:
+            text.append_text(self._render_active_category(active))
+        text.append("\n")
+
+        # Line 3 — hint, extended with the selection-clearing warning
+        # while multi-select is on (mirrors ``_SortBar``'s pattern).
+        hint = Text()
+        bits = []
+        if len(categories) > 1:
+            bits.append("tab switch")
+        bits.append("← / → move")
+        if isinstance(active, MultiSelectFilterViewModel):
+            bits.append("space toggle")
+        bits.append("r reset")
+        bits.append("s sort")
+        bits.append("f/esc dismiss")
+        hint.append(" • ".join(bits), style="dim")
+        if self._vm.multi_select_active:
+            hint.append("   ", style="dim")
+            hint.append("Toggling clears your selection.", style="#ff8787")
+        text.append(hint)
+        return text
+
+    def _render_active_category(self, category) -> Text:
+        if isinstance(category, MultiSelectFilterViewModel):
+            return self._render_multiselect(category)
+        # Defensive: unknown category type — paint a placeholder so we
+        # don't blow up rendering. Concrete handling lands when a new
+        # subclass is added.
+        return Text(f"(no renderer for {type(category).__name__})", style="dim")
+
+    def _render_multiselect(self, category: MultiSelectFilterViewModel) -> Text:
+        # Cursor colour: bright gold on focus, dim otherwise. Same
+        # convention as ``_SortBar``.
+        cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
+        text = Text()
+        for i, option in enumerate(category.options):
+            is_cursor = i == category.cursor
+            is_sel = category.is_selected(option)
+            marker = "[x]" if is_sel else "[ ]"
+            marker_style = "#5fd75f" if is_sel else "#787878"
+            label_style = cursor_color if is_cursor else ""
+            text.append(marker, style=marker_style)
+            text.append(" ")
+            text.append(option, style=label_style)
+            if i < len(category.options) - 1:
+                text.append("    ")
+        return text
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def action_cycle_category(self, direction: int) -> None:
+        self._vm.filter_tab(direction)
+
+    def action_cursor_left(self) -> None:
+        self._vm.filter_move_cursor(-1)
+
+    def action_cursor_right(self) -> None:
+        self._vm.filter_move_cursor(1)
+
+    def action_toggle(self) -> None:
+        self._vm.filter_toggle_current()
+
+    def action_reset(self) -> None:
+        self._vm.filter_reset()
+
+    def action_cancel(self) -> None:
+        self._vm.cancel_filter()
+
+    def action_request_sort(self) -> None:
+        self._vm.request_sort()
+
 
 class KnowledgeEntryBrowserPaneView(Vertical):
     """Minimal view for ``KnowledgeEntryBrowserPaneViewModel``: a DataTable
@@ -344,6 +529,22 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     KnowledgeEntryBrowserPaneView #sort-bar:focus {
         border-top: solid $accent;
     }
+    KnowledgeEntryBrowserPaneView #filter-dialog {
+        /* 3 lines of content (tabs + body + hint) plus the
+           ``border-top``. */
+        height: 4;
+        margin: 1 0 0 0;
+        padding: 0 1;
+        border-top: solid #3a3a3a;
+        color: rgb(200,200,200);
+        display: none;
+    }
+    KnowledgeEntryBrowserPaneView #filter-dialog.-visible {
+        display: block;
+    }
+    KnowledgeEntryBrowserPaneView #filter-dialog:focus {
+        border-top: solid $accent;
+    }
     """
 
     def __init__(
@@ -362,6 +563,8 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         # Same edge-detection pattern for the sort dialog. See the
         # ``_was_delete_pending`` note above for the rationale.
         self._was_sort_pending: bool = False
+        # And the filter dialog.
+        self._was_filter_pending: bool = False
         # Signature of the entries list at the last refresh — a tuple
         # of entry ids in display order. Used by ``_refresh`` to decide
         # between a full ``clear()`` + rebuild (when row identity has
@@ -409,6 +612,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             yield EntryDetailsView(self._vm.details)
         yield _DeleteConfirm(self._vm, id="delete-confirm")
         yield _SortBar(self._vm, id="sort-bar")
+        yield _FilterDialog(self._vm, id="filter-dialog")
         yield Static("", id="pane-status")
 
     def on_mount(self) -> None:
@@ -502,43 +706,59 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         status = self.query_one("#pane-status", Static)
         status.update(self._format_status())
 
-        # Delete-confirm dialog: visibility + focus rescue. Mirrors the
-        # ``_was_dirty`` pattern in ``EntryDetailsView`` — we need the
-        # previous state to detect the open/close edges. On open, grab
-        # focus to the dialog so the user can press enter immediately;
-        # on close, return focus to the table so they're not stranded
-        # on a ``display: none`` widget. The repeat-while-pending branch
-        # is a no-op.
-        dialog = self.query_one("#delete-confirm", _DeleteConfirm)
-        pending = self._vm.delete_pending
-        dialog.set_class(pending, "-visible")
-        if pending and not self._was_delete_pending:
-            dialog.focus()
-        elif self._was_delete_pending and not pending:
-            try:
-                self.query_one("#entries-table", DataTable).focus()
-            except Exception:
-                # Table may have been unmounted (e.g. pane swap mid-close);
-                # nothing useful to do, just let the focus settle wherever.
-                pass
-        self._was_delete_pending = pending
-
-        # Same shape for the sort bar. Because ``request_sort`` is the
-        # only path that opens it (and that path explicitly cancels any
-        # pending delete first), the two dialogs are guaranteed
-        # mutually exclusive — we don't have to coordinate their
-        # focus-grab races here.
+        # Three-dialog visibility + coordinated focus rescue. The
+        # ``_was_*`` edge detectors mirror the ``_was_dirty`` pattern in
+        # ``EntryDetailsView``; the open/close logic has to coordinate
+        # across all three because a swap (e.g. ``s`` pressed while the
+        # filter dialog is open) closes one and opens another in the
+        # *same* refresh — running each dialog's focus rescue
+        # independently lets the closing one's "restore focus to
+        # table" overwrite the opening one's "focus dialog" grab.
+        delete_dialog = self.query_one("#delete-confirm", _DeleteConfirm)
         sort_bar = self.query_one("#sort-bar", _SortBar)
+        filter_dialog = self.query_one("#filter-dialog", _FilterDialog)
+
+        delete_pending = self._vm.delete_pending
         sort_pending = self._vm.sort_pending
+        filter_pending = self._vm.filter_pending
+
+        delete_dialog.set_class(delete_pending, "-visible")
         sort_bar.set_class(sort_pending, "-visible")
-        if sort_pending and not self._was_sort_pending:
+        filter_dialog.set_class(filter_pending, "-visible")
+
+        # Resolve focus once after all visibility flips are queued.
+        # Opens beat closes — if any dialog just opened, grab focus to
+        # it (priority order: filter, sort, delete, matching the VM's
+        # mutual-exclusion preference). Otherwise, if at least one
+        # dialog just closed *and* nothing is currently open, restore
+        # focus to the table.
+        just_opened_filter = filter_pending and not self._was_filter_pending
+        just_opened_sort = sort_pending and not self._was_sort_pending
+        just_opened_delete = delete_pending and not self._was_delete_pending
+        just_closed_any = (
+            (self._was_delete_pending and not delete_pending)
+            or (self._was_sort_pending and not sort_pending)
+            or (self._was_filter_pending and not filter_pending)
+        )
+        any_pending = delete_pending or sort_pending or filter_pending
+
+        if just_opened_filter:
+            filter_dialog.focus()
+        elif just_opened_sort:
             sort_bar.focus()
-        elif self._was_sort_pending and not sort_pending:
+        elif just_opened_delete:
+            delete_dialog.focus()
+        elif just_closed_any and not any_pending:
             try:
                 self.query_one("#entries-table", DataTable).focus()
             except Exception:
+                # Table may have been unmounted (e.g. pane swap
+                # mid-close); let focus settle wherever Textual puts it.
                 pass
+
+        self._was_delete_pending = delete_pending
         self._was_sort_pending = sort_pending
+        self._was_filter_pending = filter_pending
 
     # ------------------------------------------------------------------
     # Cross-region focus (driven by ``BrowserView``'s alt+left/right)
@@ -555,10 +775,15 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         tree. Land on the leftmost focusable sub-region — normally the
         table, but if a dialog is open we re-focus it instead so the
         user picks up where they left off after a tree side-trip
-        (alt+left from a dialog hops back to the tree). ``sort_pending``
-        and ``delete_pending`` are mutually exclusive (``request_sort``
-        cancels any pending delete), so the order of checks here only
-        matters as documentation of priority."""
+        (alt+left from a dialog hops back to the tree). The three
+        dialogs are mutually exclusive at the VM level so this order
+        of checks only documents priority."""
+        if self._vm.filter_pending:
+            try:
+                self.query_one("#filter-dialog", _FilterDialog).focus()
+                return
+            except Exception:
+                pass
         if self._vm.sort_pending:
             try:
                 self.query_one("#sort-bar", _SortBar).focus()
