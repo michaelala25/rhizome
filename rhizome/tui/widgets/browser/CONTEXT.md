@@ -128,8 +128,10 @@ This matches `docs/design-principles.md` and the established
   `is_loading` back off. `topic_ids=None` is "no filter" — distinct from an
   empty iterable, which means "selection expanded to zero rows".
 
-- **knowledge_entry_pane.py — `KnowledgeEntryBrowserPaneViewModel` +
-  `KnowledgeEntryBrowserPaneView`**: the first concrete pane. VM window
+- **knowledge_entry_pane/ — `KnowledgeEntryBrowserPaneViewModel` +
+  `KnowledgeEntryBrowserPaneView`** (split across `view_model.py` and
+  `view.py`; see the subdir's own `CONTEXT.md` for the layout): the first
+  concrete pane. VM window
   size is capped at `DEFAULT_PAGE_LIMIT` (500), with `load_more` appending
   the next page. `_fetch` runs the windowed SELECT first (so rows can
   paint before the total lands), then a separate COUNT for the "showing N
@@ -159,7 +161,8 @@ This matches `docs/design-principles.md` and the established
   for adding it is `set_search` on the VM and a `_search-bar` Static
   above the body.
 
-- **entry_details.py — `EntryDetailsViewModel` + `EntryDetailsView`**:
+- **knowledge_entry_pane/entry_details/ — `EntryDetailsViewModel` +
+  `EntryDetailsView`** (split across `view_model.py` and `view.py`):
   the title/content panel to the right of the entry table.
   **Buffered-edit model.** The VM holds per-field buffers
   (`_title_buffer`, `_content_buffer`) seeded from the entry on
