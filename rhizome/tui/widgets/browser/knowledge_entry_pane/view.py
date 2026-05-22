@@ -935,8 +935,11 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     KnowledgeEntryBrowserPaneView.-state-linked-flashcards EntryDetailsView {
         display: none;
     }
+    /* Status row lives at the bottom of ``#table-column`` (not docked to the pane itself) so it
+       aligns with ``LinkedFlashcardsPaneView``'s own docked status row — both sit at the bottom of
+       their respective columns inside ``#pane-body``. Docking it to the pane would push it one
+       extra line below ``#pane-body``, leaving the flashcards status visibly higher. */
     KnowledgeEntryBrowserPaneView #pane-status {
-        dock: bottom;
         height: 1;
         color: $foreground-muted;
         text-style: dim;
@@ -1060,9 +1063,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table.add_column("topic")
         table.add_column("flashcards")
         with Horizontal(id="pane-body"):
-
             with Vertical(id="table-column"):
-                
                 yield _SearchInput(self._vm, id="search-input")
                 yield table
                 # Preview only renders in ``LINKED_FLASHCARDS`` — CSS toggles ``display`` based on
@@ -1070,6 +1071,10 @@ class KnowledgeEntryBrowserPaneView(Vertical):
                 # already shows the entry content (in an editable form), so a second preview here
                 # would just duplicate.
                 yield _EntryContentPreview(self._vm, id="entry-content-preview")
+                # Status sits at the bottom of this column rather than docked to the pane, so it
+                # aligns with the linked-flashcards status row (which is docked to the bottom of
+                # its own column inside ``#pane-body``).
+                yield Static("", id="pane-status")
 
             # Both right-hand views are mounted up front and shown / hidden via the ``-state-*``
             # class on the parent. Mounting them once avoids the cost of re-subscribing each child
@@ -1081,7 +1086,6 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         yield _SortBar(self._vm, id="sort-bar")
         yield _FilterDialog(self._vm, id="filter-dialog")
         yield _EditBar(self._vm, id="edit-bar")
-        yield Static("", id="pane-status")
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
