@@ -210,14 +210,31 @@ class EntryDetailsView(Vertical):
         if content_area.text != target_content:
             content_area.text = target_content
 
-        is_dirty_now = self._vm.is_dirty
+        # Freeze the edit surfaces while the pane is in multi-select
+        # mode. The cursor still moves through entries so we keep the
+        # text current, but ``read_only=True`` blocks user keystrokes
+        # and we hide the Accept/Cancel choices entirely. ``is_dirty``
+        # is treated as effectively False from the view's perspective —
+        # there's no way to act on the buffers — so any stale buffer
+        # divergence carried into multi-select mode is invisible to the
+        # user. (It'll be reseeded on the next ``set_entry`` from the
+        # pane VM's normal cursor sync.)
+        frozen = self._vm.multi_select_active
+        if title_area.read_only != frozen:
+            title_area.read_only = frozen
+        if content_area.read_only != frozen:
+            content_area.read_only = frozen
+
+        is_dirty_now = self._vm.is_dirty and not frozen
         if is_dirty_now:
             choices.add_class("-visible")
         else:
-            # On the dirty→clean transition (Accept/Cancel just landed),
-            # if focus was on the choices widget it's about to be
-            # display:none'd — move it back to the content area first so
-            # the user lands somewhere sensible.
+            # On the dirty→clean (or dirty→frozen) transition, if focus
+            # was on the choices widget it's about to be display:none'd
+            # — move it back to the content area first so the user
+            # lands somewhere sensible. Frozen also lands here, but the
+            # parent pane's focus guard generally keeps focus on the
+            # table while frozen, so this branch is belt-and-braces.
             if (
                 self._was_dirty
                 and self.screen is not None

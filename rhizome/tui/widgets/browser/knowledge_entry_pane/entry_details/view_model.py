@@ -75,6 +75,15 @@ class EntryDetailsViewModel(ViewModelBase):
         # accept/cancel completion. Modulo-2 wrap on arrow nav.
         self._choice_cursor: int = 0
 
+        # Freeze flag pushed by the pane VM when the user enters
+        # multi-select mode. Title/content remain visible (they still
+        # track the cursor row) but the view switches the ``TextArea``s
+        # to read-only and hides the Accept/Cancel choices. ``_count``
+        # is the size of the pane VM's selection set; the view can
+        # surface it once it grows beyond a placeholder.
+        self._multi_select_active: bool = False
+        self._multi_select_count: int = 0
+
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
@@ -121,6 +130,14 @@ class EntryDetailsViewModel(ViewModelBase):
     def choice_cursor(self) -> int:
         return self._choice_cursor
 
+    @property
+    def multi_select_active(self) -> bool:
+        return self._multi_select_active
+
+    @property
+    def multi_select_count(self) -> int:
+        return self._multi_select_count
+
     # ------------------------------------------------------------------
     # Mutators (display side — called by the pane VM)
     # ------------------------------------------------------------------
@@ -137,6 +154,16 @@ class EntryDetailsViewModel(ViewModelBase):
         self._title_buffer = "" if entry is None else entry.title
         self._content_buffer = "" if entry is None else entry.content
         self._choice_cursor = 0
+        self.emit(self.dirty)
+
+    def set_multi_select(self, active: bool, count: int) -> None:
+        """Push from the pane VM whenever it toggles multi-select mode
+        or the selection set grows/shrinks. Equality-guarded so this is
+        safe to call on every selection toggle."""
+        if (active, count) == (self._multi_select_active, self._multi_select_count):
+            return
+        self._multi_select_active = active
+        self._multi_select_count = count
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------

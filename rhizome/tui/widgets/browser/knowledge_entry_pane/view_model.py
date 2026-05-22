@@ -22,6 +22,7 @@ from rhizome.db import KnowledgeEntry
 from rhizome.db.operations import (
     EntrySortKey,
     count_entries_filtered,
+    delete_entry,
     list_entries_paginated,
 )
 from rhizome.logs import get_logger
@@ -70,6 +71,23 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # navigation; the VM owns the persisted position so it survives
         # repaints. Reset to 0 on any "reset" operation.
         self._cursor: int = 0
+
+        # Multi-select state. When ``_multi_select_active`` is True the
+        # view paints a leading marker column ("[x]"/"[ ]") and the user
+        # can toggle selection of the cursor's row with ``space``.
+        # ``_selected_ids`` is keyed by entry id (not row index) so the
+        # selection survives ``load_more`` and refetches. Turning the
+        # mode off clears the set ("abandons the selection").
+        self._multi_select_active: bool = False
+        self._selected_ids: set[int] = set()
+
+        # Pending bulk-delete confirmation. Flipped on by ``request_delete``
+        # (the user pressed ``d`` with a non-empty selection); the view
+        # reveals a confirm dialog whose Confirm/Cancel cursor lives in
+        # ``_delete_choice_cursor`` (0 = Confirm, 1 = Cancel). ``confirm_delete``
+        # / ``cancel_delete`` are the only exits.
+        self._delete_pending: bool = False
+        self._delete_choice_cursor: int = 0
 
         # The detail panel's VM. We push it the cursor's entry via
         # ``_sync_details`` whenever the cursor moves or the window
@@ -120,6 +138,29 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         the view picks it up to construct the companion view."""
         return self._details
 
+    @property
+    def multi_select_active(self) -> bool:
+        return self._multi_select_active
+
+    @property
+    def selected_ids(self) -> set[int]:
+        """Live reference to the selected-id set. Callers must not
+        mutate it — use ``toggle_current_selection`` /
+        ``toggle_multi_select`` instead. Matches the trust convention
+        used by ``entries`` (also returned by reference)."""
+        return self._selected_ids
+
+    def is_selected(self, entry_id: int) -> bool:
+        return entry_id in self._selected_ids
+
+    @property
+    def delete_pending(self) -> bool:
+        return self._delete_pending
+
+    @property
+    def delete_choice_cursor(self) -> int:
+        return self._delete_choice_cursor
+
     # ------------------------------------------------------------------
     # Mutators
     # ------------------------------------------------------------------
@@ -168,6 +209,123 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
             return
         self._cursor = new
         self._sync_details()
+
+    def toggle_multi_select(self) -> None:
+        """Flip multi-select mode. Turning the mode **off** abandons the
+        current selection (clears ``_selected_ids``) and dismisses any
+        open delete-confirm dialog (it'd be operating on a now-empty set);
+        turning it on starts with an empty set. Pushes the resulting
+        state into the details VM so the side panel can freeze its
+        edits."""
+        self._multi_select_active = not self._multi_select_active
+        if not self._multi_select_active:
+            self._selected_ids.clear()
+            self._delete_pending = False
+            self._delete_choice_cursor = 0
+        self._details.set_multi_select(
+            self._multi_select_active,
+            len(self._selected_ids),
+        )
+        self.emit(self.dirty)
+
+    def toggle_current_selection(self) -> None:
+        """Toggle membership of the cursor's entry in the selection set.
+        No-op when multi-select is off or the window is empty — those
+        are the cases where the action has no meaning."""
+        if not self._multi_select_active or not self._entries:
+            return
+        entry_id = self._entries[self._cursor].id
+        if entry_id in self._selected_ids:
+            self._selected_ids.remove(entry_id)
+        else:
+            self._selected_ids.add(entry_id)
+        self._details.set_multi_select(True, len(self._selected_ids))
+        self.emit(self.dirty)
+
+    def request_delete(self) -> None:
+        """Open the bulk-delete confirmation. No-op unless multi-select is
+        active and the selection set is non-empty — pressing ``d`` with
+        nothing selected (or outside multi-select) is meaningless. Idempotent
+        when the dialog is already open."""
+        if not self._multi_select_active or not self._selected_ids:
+            return
+        if self._delete_pending:
+            return
+        self._delete_pending = True
+        self._delete_choice_cursor = 0
+        self.emit(self.dirty)
+
+    def move_delete_cursor(self, direction: int) -> None:
+        """Move the Confirm/Cancel cursor in the dialog. Mod-2 wrap; no-op
+        when the dialog isn't open."""
+        if not self._delete_pending:
+            return
+        new = (self._delete_choice_cursor + direction) % 2
+        if new == self._delete_choice_cursor:
+            return
+        self._delete_choice_cursor = new
+        self.emit(self.dirty)
+
+    def cancel_delete(self) -> None:
+        """Dismiss the dialog without deleting anything. Multi-select state
+        and the selection set are untouched."""
+        if not self._delete_pending:
+            return
+        self._delete_pending = False
+        self._delete_choice_cursor = 0
+        self.emit(self.dirty)
+
+    async def confirm_delete(self) -> None:
+        """Bulk-delete the currently-selected entries from the DB, prune
+        them from the loaded window, and dismiss the dialog.
+
+        Each ``KnowledgeEntry`` row is removed via ``delete_entry`` inside
+        a single session + commit so partial-failure leaves an atomic
+        DB state. The FK on ``flashcard_entry.entry_id`` cascades, so
+        any flashcard-to-entry links pointing at deleted entries are
+        cleaned up automatically; the flashcards themselves are
+        unaffected (which is what the dialog promises the user).
+
+        After the commit we update local state in place: filter
+        ``self._entries``, decrement ``self._total``, clamp the cursor,
+        clear ``self._selected_ids``, and reconcile ``_has_more``. No
+        refetch — we know exactly which rows went away.
+
+        Multi-select mode stays on so the visual context is preserved;
+        the user can hit ``m`` to exit when they're done.
+        """
+        if not self._delete_pending or not self._selected_ids:
+            # Defensive: the dialog shouldn't be visible without a non-empty
+            # selection, but a stray callback could still fire here.
+            self._delete_pending = False
+            self.emit(self.dirty)
+            return
+
+        to_delete = set(self._selected_ids)
+        async with self._session_factory() as session:
+            for entry_id in to_delete:
+                await delete_entry(session, entry_id)
+            await session.commit()
+        _logger.info("Bulk deleted %d entries", len(to_delete))
+
+        # Prune local state. Filter the window in-place to preserve order.
+        self._entries = [e for e in self._entries if e.id not in to_delete]
+        if self._total is not None:
+            self._total = max(0, self._total - len(to_delete))
+        self._selected_ids.clear()
+        if self._cursor >= len(self._entries):
+            self._cursor = max(0, len(self._entries) - 1)
+        if self._total is not None:
+            self._has_more = len(self._entries) < self._total
+
+        self._delete_pending = False
+        self._delete_choice_cursor = 0
+
+        # Re-point the detail panel and tell it the new (zero) selection
+        # count, then emit one dirty for the table repaint.
+        self._sync_details()
+        self._details.set_multi_select(self._multi_select_active, 0)
+        self.emit(self.dirty)
 
     def _sync_details(self) -> None:
         """Push the cursor's entry (or ``None``) into the detail sub-VM.
