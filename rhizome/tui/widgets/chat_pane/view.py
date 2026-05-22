@@ -150,6 +150,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
         self._vm.subscribe(self._vm.feed_replaced, self._on_feed_replaced)
         self._vm.subscribe(self._vm.notify, self._on_notify)
+        self._vm.subscribe(self._vm.tab_rename, self._on_tab_rename)
 
     def on_unmount(self) -> None:
         super().on_unmount()
@@ -158,6 +159,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         self._vm.unsubscribe(self._vm.feed_clear, self._on_feed_clear)
         self._vm.unsubscribe(self._vm.feed_replaced, self._on_feed_replaced)
         self._vm.unsubscribe(self._vm.notify, self._on_notify)
+        self._vm.unsubscribe(self._vm.tab_rename, self._on_tab_rename)
 
     def _on_notify(self, action: ChatPaneViewModel.NotifyAction) -> None:
         handler = self._NOTIFY_HANDLERS.get(action)
@@ -182,10 +184,54 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             "(alt+↓) into one of the branches to continue."
         )
 
+    def _notify_quit(self) -> None:
+        self.app.exit()
+
+    def _notify_new_tab(self) -> None:
+        screen = self._main_screen()
+        if screen is not None:
+            self.run_worker(screen._add_tab())
+
+    def _notify_close_tab(self) -> None:
+        screen = self._main_screen()
+        if screen is not None:
+            self.run_worker(screen._close_active_tab())
+
+    def _notify_open_logs(self) -> None:
+        screen = self._main_screen()
+        if screen is not None:
+            self.run_worker(screen._add_log_tab())
+
+    def _main_screen(self):
+        from rhizome.tui.screens.main import MainScreen
+        screen = self.app.screen
+        return screen if isinstance(screen, MainScreen) else None
+
+    def _on_tab_rename(self, name: str) -> None:
+        from rhizome.tui.screens.main import ChatTabPane
+        pane = self._enclosing_tab_pane()
+        if pane is None:
+            return
+        pane.full_name = name
+        pane._update_tab_label()
+
+    def _enclosing_tab_pane(self):
+        from rhizome.tui.screens.main import ChatTabPane
+        node = self.parent
+        while node is not None:
+            if isinstance(node, ChatTabPane):
+                return node
+            node = node.parent
+        return None
+
     _NOTIFY_HANDLERS = {
         ChatPaneViewModel.NotifyAction.AGENT_BUSY: _notify_agent_busy,
         ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
         ChatPaneViewModel.NotifyAction.DESCEND_REQUIRED: _notify_descend_required,
+        ChatPaneViewModel.NotifyAction.QUIT: _notify_quit,
+        ChatPaneViewModel.NotifyAction.NEW_TAB: _notify_new_tab,
+        ChatPaneViewModel.NotifyAction.CLOSE_TAB: _notify_close_tab,
+        ChatPaneViewModel.NotifyAction.OPEN_LOGS: _notify_open_logs,
     }
 
     def compose(self) -> ComposeResult:

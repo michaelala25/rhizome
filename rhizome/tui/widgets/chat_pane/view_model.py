@@ -136,6 +136,10 @@ class ChatPaneViewModel(ViewModelBase):
         HINT_HIGHER_VERBOSITY = "hint_higher_verbosity"
         AGENT_BUSY = "agent_busy"
         DESCEND_REQUIRED = "descend_required"
+        QUIT = "quit"
+        NEW_TAB = "new_tab"
+        CLOSE_TAB = "close_tab"
+        OPEN_LOGS = "open_logs"
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
         super().__init__()
@@ -1574,8 +1578,54 @@ class ChatPaneViewModel(ViewModelBase):
         def _clear() -> None:
             self.clear_feed()
 
+        @reg.command(name="quit", help="Quit the application.")
+        def _quit() -> None:
+            self.emit(self.notify, ChatPaneViewModel.NotifyAction.QUIT)
+
+        @reg.command(name="new", help="Open a new chat session tab.")
+        def _new() -> None:
+            self.emit(self.notify, ChatPaneViewModel.NotifyAction.NEW_TAB)
+
+        @reg.command(name="close", help="Close the current chat session tab.")
+        def _close() -> None:
+            self.emit(self.notify, ChatPaneViewModel.NotifyAction.CLOSE_TAB)
+
+        @reg.command(name="logs", help="Open the logs viewer tab.")
+        def _logs() -> None:
+            self.emit(self.notify, ChatPaneViewModel.NotifyAction.OPEN_LOGS)
+
+        @reg.command(name="rename", help="Rename the current tab.")
+        @click.argument("words", nargs=-1, required=True)
+        async def _rename(words: tuple[str, ...]) -> None:
+            await self.set_tab_name(" ".join(words))
+
+        @reg.command(name="help", help="Show available commands, or details for a specific command.")
+        @click.argument("command_name", default="", required=False)
+        def _help(command_name: str) -> str:
+            if command_name:
+                name = command_name.strip().lstrip("/")
+                cmd = reg.commands.get(name)
+                if cmd is None:
+                    return f"Unknown command: /{name}\nType /help to see available commands."
+                with cmd.make_context(
+                    name, [], max_content_width=reg.max_content_width, resilient_parsing=True
+                ) as ctx:
+                    return ctx.get_help()
+            lines = ["**Available commands:**", ""]
+            for cmd_name in sorted(reg.commands):
+                cmd = reg.commands[cmd_name]
+                desc = cmd.help or (cmd.callback.__doc__ if cmd.callback else "") or ""
+                desc = desc.strip().split("\n")[0] if desc else ""
+                lines.append(f"  /{cmd_name} — {desc}")
+            lines.append("")
+            lines.append("Commands support standard CLI syntax (options, flags, --help).")
+            return "\n".join(lines)
+
         @reg.command(name="commit", help="Enter commit mode to select learn-mode messages.")
         def _commit() -> None:
+            # TODO: port legacy ``/commit --auto [instructions]``. Needs rethinking under the
+            # conversation graph — auto-commit drafts from "the conversation", but which branch's
+            # feed counts as the conversation now isn't obvious.
             self.enter_commit_mode()
 
         @reg.command(
