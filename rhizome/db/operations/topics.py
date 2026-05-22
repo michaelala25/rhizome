@@ -1,6 +1,8 @@
 """CRUD operations for Topic objects (tree structure via adjacency list)."""
 
-from sqlalchemy import select, text
+from typing import Iterable
+
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rhizome.db import Topic
@@ -51,6 +53,25 @@ async def list_children(
     return list(result.scalars().all())
 
 
+async def find_parent_topic_ids(
+    session: AsyncSession,
+    candidate_ids: Iterable[int],
+) -> set[int]:
+    """Return the subset of ``candidate_ids`` that have at least one child topic.
+
+    Used by the browser topic tree to populate "is this node expandable?"
+    hints for a batch of just-loaded topics in a single query, instead of an
+    N+1 ``list_children`` per node.
+    """
+    ids = list(candidate_ids)
+    if not ids:
+        return set()
+    result = await session.execute(
+        select(Topic.parent_id).where(Topic.parent_id.in_(ids)).distinct()
+    )
+    return {row[0] for row in result}
+
+
 async def get_subtree(
     session: AsyncSession,
     root_topic_id: int,
@@ -83,6 +104,47 @@ async def get_subtree(
         topic = await session.get(Topic, row.topic_id)
         results.append({"topic": topic, "depth": row.depth})
     return results
+
+
+async def expand_subtrees(
+    session: AsyncSession,
+    root_ids: Iterable[int],
+    *,
+    max_depth: int = 10,
+) -> set[int]:
+    """Return the union of the subtrees rooted at each id in ``root_ids``.
+
+    Includes the roots themselves. Returns a flat ``set[int]`` (just IDs — no
+    ORM hydration), suitable for feeding into a downstream ``topic_id IN (...)``
+    filter. Empty input returns an empty set.
+
+    Used by the browser topic tree to translate a multi-selection into the
+    actual set of topics that should pass the filter, on the assumption that
+    selecting a topic means "this topic and everything under it."
+    """
+    ids = list(root_ids)
+    if not ids:
+        return set()
+
+    # Expanding bind param: SQLAlchemy fans this out to the right number of
+    # placeholders at execute time, which keeps the statement cacheable across
+    # different selection sizes without us assembling SQL by string formatting.
+    stmt = text(
+        """
+        WITH RECURSIVE subtree(topic_id, depth) AS (
+            SELECT id, 0 FROM topic WHERE id IN :root_ids
+            UNION ALL
+            SELECT t.id, subtree.depth + 1
+            FROM topic t
+            JOIN subtree ON t.parent_id = subtree.topic_id
+            WHERE subtree.depth < :max_depth
+        )
+        SELECT DISTINCT topic_id FROM subtree
+        """
+    ).bindparams(bindparam("root_ids", expanding=True))
+
+    result = await session.execute(stmt, {"root_ids": ids, "max_depth": max_depth})
+    return {row.topic_id for row in result}
 
 
 async def update_topic(

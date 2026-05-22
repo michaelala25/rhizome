@@ -26,6 +26,7 @@ from rhizome.tui.commands import CommandRegistry
 from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 
+from ..browser import BrowserViewModel
 from ..view_model_base import ViewModelBase
 from .agent_message import AgentMessageViewModel
 from .agent_stream_router import AgentStreamRouter
@@ -52,6 +53,7 @@ FeedEntry = (
     | InterruptViewModelBase
     | ShellCommandViewModel
     | BranchIndicatorViewModel
+    | BrowserViewModel
 )
 
 
@@ -1606,6 +1608,22 @@ class ChatPaneViewModel(ViewModelBase):
         @reg.command(name="review", help="Switch to review mode.")
         async def _review() -> None:
             await self.set_mode(Mode.REVIEW)
+
+        @reg.command(name="browse", help="Open the data browser inline in the feed.")
+        def _browse() -> None:
+            # The browser is DB-backed end-to-end. Without a session factory
+            # (test harnesses, headless invocations) we surface a system
+            # message instead of mounting a non-functional widget.
+            if self._session_factory is None:
+                self.append_message(
+                    ChatMessageData(
+                        role=Role.SYSTEM,
+                        content="/browse requires a session factory; none is configured.",
+                    ),
+                    include_in_agent_context=False,
+                )
+                return
+            self._append_feed(BrowserViewModel(self._session_factory))
 
         @reg.command(name="echo", help="Echo arguments back as a system message.")
         @click.argument("words", nargs=-1)

@@ -29,6 +29,9 @@ convention — see `command_palette.py`, `agent_message.py`, `chat_input.py`).
   to the shared `vm.command_palette`). Subscribes to `vm.feed_append` /
   `vm.feed_remove` / `vm.feed_clear` to mount/dismount per-entry widgets,
   keyed by `FeedItem.id`; no input-area keystroke handling lives here.
+  `_build_entry_widget` dispatches each `FeedEntry` runtime type to its
+  view widget — including `BrowserViewModel → BrowserView` for the
+  `/browse` command (browser package lives in `widgets/browser/`).
 - **chat_input.py** — `ChatInputViewModel` + `ChatInputView`. The VM owns
   `buffer`, `enabled`, `hint`, and per-session history (`_history`,
   `_history_index`, `_draft`), plus a reference to the shared palette VM.

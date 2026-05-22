@@ -1,11 +1,14 @@
 """Database operations for the rhizome knowledge base."""
 
 from .entries import (
+    EntrySortKey,
     count_entries,
+    count_entries_filtered,
     create_entry,
     delete_entry,
     get_entry,
     list_entries,
+    list_entries_paginated,
     search_entries,
     update_entry,
 )
@@ -80,6 +83,8 @@ from .resources import (
 from .topics import (
     create_topic,
     delete_topic,
+    expand_subtrees,
+    find_parent_topic_ids,
     get_subtree,
     get_topic,
     list_children,
@@ -94,13 +99,18 @@ __all__ = [
     "list_root_topics",
     "list_children",
     "get_subtree",
+    "expand_subtrees",
+    "find_parent_topic_ids",
     "update_topic",
     "delete_topic",
     # entries
+    "EntrySortKey",
     "count_entries",
+    "count_entries_filtered",
     "create_entry",
     "get_entry",
     "list_entries",
+    "list_entries_paginated",
     "update_entry",
     "delete_entry",
     "search_entries",

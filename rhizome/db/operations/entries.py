@@ -1,6 +1,8 @@
 """CRUD + search operations for KnowledgeEntry objects."""
 
-from sqlalchemy import func, select
+from typing import Iterable, Literal
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rhizome.db import KnowledgeEntry
@@ -8,6 +10,18 @@ from rhizome.db.models import EntryType
 from rhizome.logs import get_logger
 
 _logger = get_logger("tools.entries")
+
+
+# Columns the browser pane is allowed to sort by. Keep this tight rather than
+# accepting arbitrary strings — it makes the SQL untrusted-input-proof and
+# documents the supported axes in one place.
+EntrySortKey = Literal["id", "title", "created_at", "updated_at"]
+_SORT_COLUMNS = {
+    "id": KnowledgeEntry.id,
+    "title": KnowledgeEntry.title,
+    "created_at": KnowledgeEntry.created_at,
+    "updated_at": KnowledgeEntry.updated_at,
+}
 
 
 async def create_entry(
@@ -134,3 +148,80 @@ async def search_entries(
     entries = list(result.scalars().all())
     _logger.debug("Search: query=%r, results=%d", query, len(entries))
     return entries
+
+
+def _apply_entry_filters(
+    stmt,
+    *,
+    topic_ids: Iterable[int] | None,
+    search: str | None,
+):
+    """Apply the shared (topic_ids, search) filter to a SELECT on KnowledgeEntry."""
+    if topic_ids is not None:
+        ids = list(topic_ids)
+        if not ids:
+            # Empty filter set: caller explicitly asked for "no topics", so no rows match.
+            # Force-empty via a contradiction rather than skipping the predicate.
+            stmt = stmt.where(KnowledgeEntry.id.is_(None))
+        else:
+            stmt = stmt.where(KnowledgeEntry.topic_id.in_(ids))
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                KnowledgeEntry.title.ilike(pattern),
+                KnowledgeEntry.content.ilike(pattern),
+            )
+        )
+    return stmt
+
+
+async def list_entries_paginated(
+    session: AsyncSession,
+    *,
+    topic_ids: Iterable[int] | None = None,
+    search: str | None = None,
+    sort_by: EntrySortKey = "created_at",
+    sort_dir: Literal["asc", "desc"] = "asc",
+    limit: int = 500,
+    offset: int = 0,
+) -> list[KnowledgeEntry]:
+    """Return a window of entries matching the given filters.
+
+    Semantics:
+      - ``topic_ids=None`` means "no topic filter" (every topic). An empty iterable
+        means "no topics selected → no rows", which is distinct from ``None``.
+        Callers that want a subtree filter should expand their selection via
+        ``topics.expand_subtrees`` first.
+      - ``search`` runs case-insensitive LIKE against ``title`` and ``content``.
+      - Results are ordered by ``sort_by`` then by ``id`` to keep ordering stable
+        across pages when the primary key has ties (e.g. multiple rows with the
+        same ``created_at`` at second granularity).
+    """
+    column = _SORT_COLUMNS[sort_by]
+    direction = column.asc() if sort_dir == "asc" else column.desc()
+    # Stable tiebreaker on id so pagination doesn't shuffle rows with equal sort keys.
+    tiebreaker = KnowledgeEntry.id.asc() if sort_dir == "asc" else KnowledgeEntry.id.desc()
+
+    stmt = select(KnowledgeEntry)
+    stmt = _apply_entry_filters(stmt, topic_ids=topic_ids, search=search)
+    stmt = stmt.order_by(direction, tiebreaker).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def count_entries_filtered(
+    session: AsyncSession,
+    *,
+    topic_ids: Iterable[int] | None = None,
+    search: str | None = None,
+) -> int:
+    """Return the count of entries matching the same filter as ``list_entries_paginated``.
+
+    Split from the windowed fetch so the browser pane can decide independently
+    whether the count is worth paying for (it scans the whole filtered set).
+    """
+    stmt = select(func.count()).select_from(KnowledgeEntry)
+    stmt = _apply_entry_filters(stmt, topic_ids=topic_ids, search=search)
+    result = await session.execute(stmt)
+    return result.scalar_one()
