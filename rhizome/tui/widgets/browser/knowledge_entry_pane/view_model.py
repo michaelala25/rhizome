@@ -395,6 +395,21 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._details.set_multi_select(True, len(self._selected_ids))
         self.emit(self.dirty)
 
+    def add_current_to_selection(self) -> None:
+        """Idempotent add of the cursor's entry to the selection set —
+        the half of ``toggle_current_selection`` that ``shift+up``/
+        ``shift+down`` uses for range-select. Held-key repeat across
+        already-selected rows is a no-op, which is the right behaviour
+        for sweeping the cursor through an extending range."""
+        if not self._multi_select_active or not self._entries:
+            return
+        entry_id = self._entries[self._cursor].id
+        if entry_id in self._selected_ids:
+            return
+        self._selected_ids.add(entry_id)
+        self._details.set_multi_select(True, len(self._selected_ids))
+        self.emit(self.dirty)
+
     def request_delete(self) -> None:
         """Open the bulk-delete confirmation. No-op unless multi-select is
         active and the selection set is non-empty — pressing ``d`` with

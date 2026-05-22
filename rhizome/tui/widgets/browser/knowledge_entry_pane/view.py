@@ -35,6 +35,15 @@ class _EntriesTable(DataTable):
     BINDINGS = [
         Binding("m", "toggle_multi_select", show=False),
         Binding("space", "toggle_selection", show=False),
+        # ``shift+up`` / ``shift+down`` are range-select sugar: add the
+        # cursor row to the selection (idempotent) and step the cursor
+        # in one keystroke. Held-key terminal repeat makes
+        # "hold shift, hold down" sweep a contiguous block. No-op
+        # outside multi-select (the VM guards). Bound here rather than
+        # as ``"shift+up,shift+down"`` action pairs because each
+        # direction needs its own cursor step.
+        Binding("shift+down", "select_down", show=False),
+        Binding("shift+up", "select_up", show=False),
         # ``d`` only does something meaningful while multi-select is on
         # with a non-empty selection; the VM guards both, so we can fire
         # it unconditionally.
@@ -61,6 +70,18 @@ class _EntriesTable(DataTable):
 
     def action_toggle_selection(self) -> None:
         self._vm.toggle_current_selection()
+
+    def action_select_down(self) -> None:
+        """Add the current row to the selection, then step the cursor
+        down. Cursor step uses ``DataTable.action_cursor_down`` so the
+        usual ``RowHighlighted`` event fires and the VM cursor stays
+        in sync."""
+        self._vm.add_current_to_selection()
+        self.action_cursor_down()
+
+    def action_select_up(self) -> None:
+        self._vm.add_current_to_selection()
+        self.action_cursor_up()
 
     def action_request_delete(self) -> None:
         self._vm.request_delete()
