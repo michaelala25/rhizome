@@ -949,6 +949,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table.add_column("title", width=self._TITLE_COLUMN_WIDTH)
         table.add_column("type")
         table.add_column("topic")
+        table.add_column("flashcards")
         with Horizontal(id="pane-body"):
             with Vertical(id="table-column"):
                 yield _SearchInput(self._vm, id="search-input")
@@ -1029,12 +1030,18 @@ class KnowledgeEntryBrowserPaneView(Vertical):
                 (topic_name, style),
                 (f" [{entry.topic_id}]", "#787878"),
             )
+            # Flashcard ids are sorted for stable display order — the ``flashcard_entries`` collection
+            # is loaded via ``selectinload``, which doesn't promise any particular order. Empty case
+            # renders as the same em-dash placeholder the type column uses for nulls.
+            fc_ids = sorted(fe.flashcard_id for fe in entry.flashcard_entries)
+            fc_str = ", ".join(str(i) for i in fc_ids) if fc_ids else "—"
             cells = (
                 Text(marker, style=style),
                 Text(str(entry.id), style=style),
                 Text(entry.title, style=style),
                 Text(type_str, style=style),
                 topic_cell,
+                Text(fc_str, style=style),
             )
             if path == "inplace":
                 # Overwrite each cell in row ``i``. Style is carried inside each ``Text`` value so this

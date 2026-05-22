@@ -125,6 +125,11 @@ class KnowledgeEntry(Base):
         back_populates="target_entry",
         cascade="all, delete-orphan",
     )
+    # Reverse side of the flashcard ↔ entry M:N join. Used by the browser pane to bulk-load linked
+    # flashcards alongside an entry page via ``selectinload``. No cascade — the FK on ``FlashcardEntry``
+    # already cascades on either side's delete, and we don't want to imply ownership of flashcards
+    # from this side.
+    flashcard_entries: Mapped[list["FlashcardEntry"]] = relationship()
 
     def __repr__(self) -> str:
         return f"<KnowledgeEntry id={self.id} title={self.title!r}>"
@@ -283,8 +288,12 @@ class FlashcardEntry(Base):
     flashcard_id: Mapped[int] = mapped_column(
         ForeignKey("flashcard.id", ondelete="CASCADE"), primary_key=True
     )
+    # ``index=True`` matters here: the composite PK indexes ``(flashcard_id, entry_id)`` so SQLite can
+    # only use it for queries whose leading column is ``flashcard_id``. Queries that filter by
+    # ``entry_id`` alone — including the M:N reverse load (``selectinload(KnowledgeEntry.flashcard_entries)``
+    # → ``WHERE entry_id IN (...)``) — would otherwise fall back to a table scan.
     entry_id: Mapped[int] = mapped_column(
-        ForeignKey("knowledge_entry.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("knowledge_entry.id", ondelete="CASCADE"), primary_key=True, index=True
     )
 
     def __repr__(self) -> str:

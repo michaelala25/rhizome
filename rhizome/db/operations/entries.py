@@ -259,7 +259,13 @@ async def list_entries_paginated(
     # Stable tiebreaker on id so pagination doesn't shuffle rows with equal sort keys.
     tiebreaker = KnowledgeEntry.id.asc() if sort_dir == "asc" else KnowledgeEntry.id.desc()
 
-    stmt = select(KnowledgeEntry).options(selectinload(KnowledgeEntry.topic))
+    # ``flashcard_entries`` is eagerly loaded so the browser pane can render the linked-flashcard ids
+    # column without an N+1 round-trip per row. With the index on ``flashcard_entry.entry_id`` added
+    # alongside this load, the secondary IN-query is a single seek per matching join row.
+    stmt = select(KnowledgeEntry).options(
+        selectinload(KnowledgeEntry.topic),
+        selectinload(KnowledgeEntry.flashcard_entries),
+    )
     if needs_topic_join:
         stmt = stmt.join(Topic, KnowledgeEntry.topic_id == Topic.id)
     stmt = _apply_entry_filters(

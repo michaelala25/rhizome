@@ -3,13 +3,14 @@
 from datetime import datetime, timezone
 
 from fsrs import Card, Rating, Scheduler, State
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from rhizome.db import (
     Flashcard,
     FlashcardEntry,
+    ReviewSession,
 )
 from rhizome.logs import get_logger
 
@@ -56,8 +57,6 @@ async def list_flashcards_by_entries(
 
     Excludes flashcards belonging to ephemeral sessions.
     """
-    from rhizome.db import ReviewSession
-
     result = await session.execute(
         select(Flashcard)
         .options(
@@ -74,6 +73,65 @@ async def list_flashcards_by_entries(
         .distinct()
     )
     return list(result.scalars().unique().all())
+
+
+def _apply_linked_flashcard_filters(stmt, *, entry_id: int, search: str | None):
+    """Shared filter for the windowed + count variants of ``list_flashcards_for_entry``. ``entry_id``
+    pins the join; ``search`` runs case-insensitive LIKE against question + answer text (no testing
+    notes — they're authoring metadata, not user-facing content). Ephemeral-session flashcards are
+    excluded the same way ``list_flashcards_by_entries`` excludes them."""
+    stmt = (
+        stmt.join(FlashcardEntry, Flashcard.id == FlashcardEntry.flashcard_id)
+        .outerjoin(ReviewSession, Flashcard.session_id == ReviewSession.id)
+        .where(
+            FlashcardEntry.entry_id == entry_id,
+            (ReviewSession.id.is_(None)) | (ReviewSession.ephemeral == False),  # noqa: E712
+        )
+    )
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                Flashcard.question_text.ilike(pattern),
+                Flashcard.answer_text.ilike(pattern),
+            )
+        )
+    return stmt
+
+
+async def list_flashcards_for_entry(
+    session: AsyncSession,
+    entry_id: int,
+    *,
+    search: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[Flashcard]:
+    """Windowed flashcards linked to a single entry, optionally narrowed by a question/answer search.
+
+    Mirrors the shape of ``entries.list_entries_paginated`` so the browser pane's flashcard sub-VM can
+    reuse the same page-then-count pattern. Stable order by ``id`` (no user-pickable sort axis yet —
+    add one alongside the eventual flashcard-sort dialog).
+    """
+    stmt = select(Flashcard).options(selectinload(Flashcard.session))
+    stmt = _apply_linked_flashcard_filters(stmt, entry_id=entry_id, search=search)
+    stmt = stmt.order_by(Flashcard.id.asc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def count_flashcards_for_entry(
+    session: AsyncSession,
+    entry_id: int,
+    *,
+    search: str | None = None,
+) -> int:
+    """Count companion to ``list_flashcards_for_entry``. Shares the filter helper so the count matches
+    the window exactly."""
+    stmt = select(func.count(func.distinct(Flashcard.id))).select_from(Flashcard)
+    stmt = _apply_linked_flashcard_filters(stmt, entry_id=entry_id, search=search)
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def get_flashcards_by_ids(
