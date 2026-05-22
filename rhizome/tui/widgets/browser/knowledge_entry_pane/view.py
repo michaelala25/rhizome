@@ -17,6 +17,7 @@ from textual.widgets import DataTable, Input, Static, TextArea
 from rhizome.db.models import EntryType
 
 from .entry_details import EntryDetailsView
+from .linked_flashcards import LinkedFlashcardsPaneView
 from .view_model import (
     SORT_OPTIONS,
     KnowledgeEntryBrowserPaneViewModel,
@@ -53,6 +54,10 @@ class _EntriesTable(DataTable):
         Binding("f", "request_filter", show=False),
         # ``e`` opens the edit dialog. Same mutex membership as the others.
         Binding("e", "request_edit", show=False),
+        # ``ctrl+f`` flips the pane between ``ENTRIES`` (default) and ``LINKED_FLASHCARDS`` views.
+        # First-pass binding — the user can refine the keystroke later. Lives on the table (not
+        # the parent pane with priority) so it doesn't compete with ``ctrl+f`` in editing surfaces.
+        Binding("ctrl+f", "toggle_state", show=False),
     ]
 
     def __init__(
@@ -108,6 +113,16 @@ class _EntriesTable(DataTable):
 
     def action_request_edit(self) -> None:
         self._vm.request_edit()
+
+    def action_toggle_state(self) -> None:
+        # Two-state toggle for now; if a third state lands, replace this with an explicit picker.
+        current = self._vm.state
+        target = (
+            self._vm.State.LINKED_FLASHCARDS
+            if current is self._vm.State.ENTRIES
+            else self._vm.State.ENTRIES
+        )
+        self._vm.transition_to(target)
 
 
 class _SearchInput(Input):
@@ -799,10 +814,9 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         height: 1fr;
     }
     /* Left column of the pane body: search bar over the entries
-       table. The 60% width that used to live on ``#entries-table``
-       moved up to this container, so the table fills its parent.  */
+       table. Width is set per-state below (60% in ENTRIES, 50% in
+       LINKED_FLASHCARDS); the table fills its parent column. */
     KnowledgeEntryBrowserPaneView #table-column {
-        width: 60%;
         height: 1fr;
         layout: vertical;
     }
@@ -822,9 +836,32 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     KnowledgeEntryBrowserPaneView #entries-table.-multi-select > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
-    KnowledgeEntryBrowserPaneView EntryDetailsView {
+    /* State-driven layout swap. We mount both ``EntryDetailsView`` and
+       ``LinkedFlashcardsPaneView`` up front; the ``-state-*`` class on
+       the pane toggles which one is visible and the corresponding
+       widths. ``display: none`` removes the hidden one from layout so
+       it doesn't claim flex space. */
+    KnowledgeEntryBrowserPaneView.-state-entries #table-column {
+        width: 60%;
+    }
+    KnowledgeEntryBrowserPaneView.-state-entries EntryDetailsView {
         width: 40%;
         height: 1fr;
+        display: block;
+    }
+    KnowledgeEntryBrowserPaneView.-state-entries LinkedFlashcardsPaneView {
+        display: none;
+    }
+    KnowledgeEntryBrowserPaneView.-state-linked-flashcards #table-column {
+        width: 50%;
+    }
+    KnowledgeEntryBrowserPaneView.-state-linked-flashcards LinkedFlashcardsPaneView {
+        width: 50%;
+        height: 1fr;
+        display: block;
+    }
+    KnowledgeEntryBrowserPaneView.-state-linked-flashcards EntryDetailsView {
+        display: none;
     }
     KnowledgeEntryBrowserPaneView #pane-status {
         dock: bottom;
@@ -954,7 +991,12 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             with Vertical(id="table-column"):
                 yield _SearchInput(self._vm, id="search-input")
                 yield table
+            # Both right-hand views are mounted up front and shown / hidden via the ``-state-*``
+            # class on the parent. Mounting them once avoids the cost of re-subscribing each child
+            # view's ``vm.dirty`` callback on every state flip, and lets the hidden view's table
+            # cursor + scroll position survive a round-trip.
             yield EntryDetailsView(self._vm.details)
+            yield LinkedFlashcardsPaneView(self._vm.linked_flashcards)
         yield _DeleteConfirm(self._vm, id="delete-confirm")
         yield _SortBar(self._vm, id="sort-bar")
         yield _FilterDialog(self._vm, id="filter-dialog")
@@ -976,6 +1018,14 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         # ``-multi-select`` triggers the CSS that darkens the zebra-row palette while the user is
         # picking.
         table.set_class(mode, "-multi-select")
+
+        # Apply the state class. ``set_class(bool, name)`` is idempotent, so this is safe to call
+        # every refresh regardless of whether the state actually changed. The CSS rules keyed off
+        # ``.-state-entries`` / ``.-state-linked-flashcards`` swap which right-hand view is visible
+        # and the corresponding left-column width (60/40 vs 50/50).
+        state = self._vm.state
+        self.set_class(state is self._vm.State.ENTRIES, "-state-entries")
+        self.set_class(state is self._vm.State.LINKED_FLASHCARDS, "-state-linked-flashcards")
 
         # Three refresh paths, picked by comparing the new id-tuple to the previously-rendered one:
         #
@@ -1171,18 +1221,31 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         focused = self.screen.focused if self.screen else None
         table = self.query_one("#entries-table", DataTable)
         details = self.query_one(EntryDetailsView)
+        linked = self.query_one(LinkedFlashcardsPaneView)
+        # The right-hand region depends on state: details in ENTRIES, linked-flashcards table in
+        # LINKED_FLASHCARDS. The hidden one is ``display: none`` so focusing it would be invisible;
+        # the state dispatch keeps focus on the actually-rendered widget.
+        right = (
+            linked
+            if self._vm.state is self._vm.State.LINKED_FLASHCARDS
+            else details
+        )
         if focused is table:
-            # While multi-select is on, the details panel is frozen and has no useful edit affordances —
-            # short-circuit the transition so ``alt+right`` keeps the user on the table. Returning False
-            # here lets ``BrowserView.action_focus_right`` treat the table as the rightmost edge.
-            if self._vm.multi_select_active:
+            # In ``ENTRIES`` + multi-select, the details panel is frozen and has no useful edit
+            # affordances — short-circuit so ``alt+right`` keeps the user on the table. The
+            # linked-flashcards table in ``LINKED_FLASHCARDS`` is always navigable (read-only for
+            # this iteration but the cursor still moves), so we don't short-circuit there.
+            if (
+                self._vm.state is self._vm.State.ENTRIES
+                and self._vm.multi_select_active
+            ):
                 return False
-            details.focus_first()
+            right.focus_first()
             return True
-        if focused is not None and details in focused.ancestors_with_self:
-            return details.focus_next_region()
-        # Defensive fallback: focus was somewhere unexpected inside the pane. Start the cycle from the
-        # leftmost region.
+        if focused is not None and right in focused.ancestors_with_self:
+            return right.focus_next_region()
+        # Defensive fallback: focus was somewhere unexpected inside the pane (e.g. on the hidden
+        # right widget after a rapid state flip). Start the cycle from the leftmost region.
         self.focus_first()
         return True
 
@@ -1190,11 +1253,17 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         focused = self.screen.focused if self.screen else None
         table = self.query_one("#entries-table", DataTable)
         details = self.query_one(EntryDetailsView)
+        linked = self.query_one(LinkedFlashcardsPaneView)
+        right = (
+            linked
+            if self._vm.state is self._vm.State.LINKED_FLASHCARDS
+            else details
+        )
         if focused is table:
             # Pane's leftmost edge — let ``BrowserView`` hand focus to the tree.
             return False
-        if focused is not None and details in focused.ancestors_with_self:
-            moved = details.focus_prev_region()
+        if focused is not None and right in focused.ancestors_with_self:
+            moved = right.focus_prev_region()
             if not moved:
                 table.focus()
             return True

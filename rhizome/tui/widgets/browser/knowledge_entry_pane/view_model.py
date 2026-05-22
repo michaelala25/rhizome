@@ -13,6 +13,7 @@ existing window without touching the cursor.
 
 from __future__ import annotations
 
+import enum
 from abc import ABC, abstractmethod
 from typing import Any, Literal
 
@@ -29,6 +30,7 @@ from rhizome.logs import get_logger
 
 from ..pane_base import BrowserPaneViewModel
 from .entry_details import EntryDetailsViewModel
+from .linked_flashcards import LinkedFlashcardsPaneViewModel
 
 _logger = get_logger("browser.knowledge_entry_pane")
 
@@ -58,6 +60,8 @@ EDIT_OPTIONS_MULTI: tuple[str, ...] = (
     "change type",
     "delete",
 )
+
+
 
 
 # ----------------------------------------------------------------------
@@ -152,6 +156,21 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
 
     TITLE = "Knowledge Entries"
 
+    class State(enum.Enum):
+        """Top-level layout state for the pane.
+
+        Two states for now — the default ``ENTRIES`` view (entries table + details panel) and
+        ``LINKED_FLASHCARDS`` (entries table + per-cursor flashcard table; details panel hidden).
+        The view branches its layout on ``vm.state``; the VM owns the transition policy and exposes
+        ``transition_to`` as the only mutator.
+
+        Extra states (e.g. an entry-graph view, a topic-resources view) would slot in here and the
+        view's layout dispatch without changing the transition contract.
+        """
+
+        ENTRIES = "entries"
+        LINKED_FLASHCARDS = "linked_flashcards"
+
     def __init__(
         self,
         session_factory: Any,
@@ -160,6 +179,11 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     ) -> None:
         super().__init__(session_factory)
         self._limit = limit
+
+        # Top-level layout state. Boot is always ``ENTRIES``; ``transition_to`` is the only mutator.
+        # See the nested ``State`` enum for the docs and the transition policy comment on
+        # ``transition_to`` itself for what's preserved vs. dropped on a state change.
+        self._state: State = self.State.ENTRIES
 
         # Result window state. ``_entries`` is the currently-loaded rows; ``_total`` is the count of rows
         # matching the filter (None until the first count-query lands). ``_has_more`` is true when the
@@ -235,9 +259,20 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._details = EntryDetailsViewModel(session_factory)
         self._details.subscribe(self._details.saved, self._on_details_saved)
 
+        # Sub-VM driving the linked-flashcards right-hand table (only rendered in
+        # ``State.LINKED_FLASHCARDS``). We feed it the cursor entry id via ``_sync_linked_flashcards``
+        # but only while we're actually in that state — see ``_sync_linked_flashcards``'s guard.
+        # The view picks the sub-VM up via ``self.linked_flashcards`` to construct its companion
+        # ``LinkedFlashcardsPaneView`` (not yet implemented).
+        self._linked_flashcards = LinkedFlashcardsPaneViewModel(session_factory)
+
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> State:
+        return self._state
 
     @property
     def entries(self) -> list[KnowledgeEntry]:
@@ -272,6 +307,13 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         """Sub-VM driving the entry detail panel. Owned by this pane VM; the view picks it up to construct
         the companion view."""
         return self._details
+
+    @property
+    def linked_flashcards(self) -> LinkedFlashcardsPaneViewModel:
+        """Sub-VM driving the linked-flashcards table (rendered only in ``State.LINKED_FLASHCARDS``).
+        Owned by this pane VM. The pane VM feeds it the cursor entry id via
+        ``_sync_linked_flashcards``."""
+        return self._linked_flashcards
 
     @property
     def session_factory(self) -> Any:
@@ -358,6 +400,57 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     # Mutators
     # ------------------------------------------------------------------
 
+    def transition_to(self, new_state: State) -> None:
+        """Transition the pane to a new top-level layout state.
+
+        Idempotent: a transition to the current state is a no-op (no dialog cancellation, no detail-
+        buffer reset, no dirty emit). Otherwise the transition is "soft" — pending fetches and the
+        multi-select selection survive, but anything mid-edit gets dropped because the new state may
+        not surface the affordance the user was using:
+
+          * **Pending dialogs** (sort/filter/edit/delete) — cancelled. Cheap to reopen if the user
+            still wants them; better than carrying a dialog into a state that may not render it.
+          * **Dirty details buffers** — discarded via ``details.cancel()``. Matches the silent-
+            discard policy already used for cursor-move-while-dirty; the user has to Accept before
+            navigating away if they want the edit to land.
+          * **Multi-select state** — preserved. The selection set is keyed by entry id, has no
+            visual coupling to the state, and there's nothing in the planned ``LINKED_FLASHCARDS``
+            view that would invalidate it.
+          * **In-flight fetches** — preserved. ``_run_fetch`` is task-identity gated and the entries
+            list is owned by this VM, not the layout.
+
+        Emits a single ``dirty`` at the end so the view re-renders against the new state. The view
+        is expected to branch its layout on ``vm.state``; this method does not touch the view side.
+        """
+        if new_state is self._state:
+            return
+        _logger.info("Pane state transition: %s -> %s", self._state.value, new_state.value)
+
+        # Drop dialogs first. We use the cancel_* mutators (rather than just resetting flags) so any
+        # bookkeeping each cancel does — clearing dialog-local cursors, frozen target ids — runs.
+        # Each ``cancel_*`` no-ops when its dialog isn't open, so this fan-out is cheap.
+        self.cancel_sort()
+        self.cancel_filter()
+        self.cancel_edit()
+        self.cancel_delete()
+
+        # Discard any unsaved title/content edits in the details panel. ``cancel`` no-ops when the
+        # buffers are clean.
+        self._details.cancel()
+
+        self._state = new_state
+
+        # Seed / wipe the linked-flashcards sub-VM. ``_sync_linked_flashcards`` is state-gated, so
+        # we set ``_state`` first and let the sync helper do the right thing: in ``LINKED_FLASHCARDS``
+        # it pushes the cursor entry id; back in ``ENTRIES`` we explicitly call ``set_entry_id(None)``
+        # to cancel any in-flight fetch and free the loaded window.
+        if new_state is self.State.LINKED_FLASHCARDS:
+            self._sync_linked_flashcards()
+        else:
+            self._linked_flashcards.set_entry_id(None)
+
+        self.emit(self.dirty)
+
     def set_search(self, query: str) -> None:
         """Replace the active search query. Empty string clears the search."""
         new = query or ""
@@ -399,6 +492,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
             return
         self._cursor = new
         self._sync_details()
+        self._sync_linked_flashcards()
 
     def toggle_multi_select(self) -> None:
         """Flip multi-select mode. Turning the mode **off** abandons the current selection (clears
@@ -545,6 +639,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # Re-point the detail panel and tell it the new (zero) selection count, then emit one dirty for
         # the table repaint.
         self._sync_details()
+        self._sync_linked_flashcards()
         self._details.set_multi_select(self._multi_select_active, 0)
         self.emit(self.dirty)
 
@@ -864,6 +959,22 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
             return
         self._details.set_entry(self._entries[self._cursor])
 
+    def _sync_linked_flashcards(self) -> None:
+        """Push the cursor's entry id (or ``None``) into the linked-flashcards sub-VM — but only
+        while we're actually in ``State.LINKED_FLASHCARDS``. The sub-VM does no work when the
+        pane isn't rendering it, so skipping the call in ``ENTRIES`` avoids spurious fetches.
+
+        The transition into ``LINKED_FLASHCARDS`` calls this directly (``transition_to``) so the
+        right-hand table seeds itself with the current cursor entry on entry. The transition out
+        pushes ``None`` to wipe the window and cancel any in-flight fetch.
+        """
+        if self._state is not self.State.LINKED_FLASHCARDS:
+            return
+        if not self._entries or self._cursor >= len(self._entries):
+            self._linked_flashcards.set_entry_id(None)
+            return
+        self._linked_flashcards.set_entry_id(self._entries[self._cursor].id)
+
     def _on_details_saved(self) -> None:
         """Detail panel just persisted a buffered edit. The in-memory ``KnowledgeEntry`` at the cursor
         was mutated in place, so the cached row in this pane VM's ``self._entries`` already sees the new
@@ -938,6 +1049,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # Re-point the detail panel at the (possibly different) entry now under the cursor. Done before
         # the dirty emit so the table rebuild and the detail repaint happen in the same Textual frame.
         self._sync_details()
+        self._sync_linked_flashcards()
         self.emit(self.dirty)
 
         async with self._session_factory() as session:
