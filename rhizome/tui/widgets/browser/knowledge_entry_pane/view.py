@@ -71,17 +71,38 @@ class _EntriesTable(DataTable):
     def action_toggle_selection(self) -> None:
         self._vm.toggle_current_selection()
 
-    def action_select_down(self) -> None:
+    async def action_select_down(self) -> None:
         """Add the current row to the selection, then step the cursor
-        down. Cursor step uses ``DataTable.action_cursor_down`` so the
-        usual ``RowHighlighted`` event fires and the VM cursor stays
-        in sync."""
+        down. Cursor step uses ``action_cursor_down`` (our overridden
+        async version, which also handles the load-more-at-bottom
+        case) so the usual ``RowHighlighted`` event fires and the VM
+        cursor stays in sync."""
         self._vm.add_current_to_selection()
-        self.action_cursor_down()
+        await self.action_cursor_down()
 
     def action_select_up(self) -> None:
         self._vm.add_current_to_selection()
         self.action_cursor_up()
+
+    async def action_cursor_down(self) -> None:
+        """Cursor-down with auto-load at the bottom edge: if the user
+        is on the last loaded row and the VM still has more to fetch,
+        await ``load_more`` first so the next ``super().action_cursor_down``
+        has somewhere to land. ``load_more`` is a no-op when nothing
+        further is available or a fetch is already in flight, so this
+        is safe to call without re-checking those conditions.
+
+        The cursor advance happens *after* the await — by then the
+        VM has appended rows + emitted dirty, ``_refresh`` ran in
+        ``extend`` mode, and the table has the new rows mounted.
+        """
+        if (
+            self._vm.has_more
+            and self.row_count > 0
+            and self.cursor_row >= self.row_count - 1
+        ):
+            await self._vm.load_more()
+        super().action_cursor_down()
 
     def action_request_delete(self) -> None:
         self._vm.request_delete()
@@ -757,18 +778,38 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         # palette while the user is picking.
         table.set_class(mode, "-multi-select")
 
-        # Decide between a full rebuild and in-place cell updates by
-        # comparing the row identity. Anything that actually shuffles
-        # the entries list (refetch, bulk-delete, load_more) gets a
-        # ``clear()`` + ``add_row`` pass; pure style/marker changes
-        # (mode toggle, selection toggle, post-edit content mutation)
-        # ride the ``update_cell_at`` path and inherit ``DataTable``'s
-        # existing scroll + cursor state.
+        # Three refresh paths, picked by comparing the new id-tuple to
+        # the previously-rendered one:
+        #
+        #   * ``extend`` — old tuple is a prefix of the new one, length
+        #     grew. ``load_more`` appends rows; we ``add_row`` only the
+        #     new tail. No ``clear``, no cursor restore, scroll stays
+        #     where the user left it.
+        #   * ``in-place`` — same tuple. Pure style/marker churn
+        #     (multi-select toggle, selection toggle, post-edit content
+        #     mutation). ``update_cell_at`` per cell preserves scroll +
+        #     cursor.
+        #   * ``rebuild`` — anything else (refetch, delete, reorder).
+        #     ``clear`` + ``add_row``, restore cursor.
         new_signature = tuple(e.id for e in self._vm.entries)
-        rebuild = new_signature != self._last_row_signature
-        if rebuild:
+        old_signature = self._last_row_signature
+        if new_signature == old_signature:
+            path = "inplace"
+            start = 0
+        elif (
+            old_signature is not None
+            and len(new_signature) > len(old_signature)
+            and new_signature[: len(old_signature)] == old_signature
+        ):
+            path = "extend"
+            start = len(old_signature)
+        else:
+            path = "rebuild"
+            start = 0
             table.clear()
-        for i, entry in enumerate(self._vm.entries):
+
+        for i in range(start, len(self._vm.entries)):
+            entry = self._vm.entries[i]
             type_str = entry.entry_type.value if entry.entry_type is not None else "—"
             # Three colouring regimes:
             #   * not multi-select: zebra-pair text (odd rows dim) so the
@@ -804,14 +845,16 @@ class KnowledgeEntryBrowserPaneView(Vertical):
                 Text(type_str, style=style),
                 topic_cell,
             )
-            if rebuild:
-                table.add_row(*cells, key=str(entry.id))
-            else:
-                # In-place: overwrite each cell in row ``i``. Style is
-                # carried inside each ``Text`` value so this picks up
-                # the new colours/bold for free.
+            if path == "inplace":
+                # Overwrite each cell in row ``i``. Style is carried
+                # inside each ``Text`` value so this picks up the new
+                # colours/bold for free.
                 for col, value in enumerate(cells):
                     table.update_cell_at(Coordinate(i, col), value)
+            else:
+                # ``rebuild`` and ``extend`` both append via ``add_row``.
+                # The difference is whether ``clear()`` ran above.
+                table.add_row(*cells, key=str(entry.id))
         self._last_row_signature = new_signature
 
         # After a rebuild, ``table.clear()`` reset the table cursor to
@@ -819,10 +862,10 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         # highlight lands on the row the VM expects. ``move_cursor``
         # fires ``RowHighlighted``, which round-trips into
         # ``vm.set_cursor`` — the early-return-on-equality there keeps
-        # this from looping. On the in-place path the cursor was never
-        # disturbed, so we skip this entirely.
+        # this from looping. On the ``extend`` and ``inplace`` paths
+        # the cursor was never disturbed, so we skip this entirely.
         if (
-            rebuild
+            path == "rebuild"
             and self._vm.entries
             and 0 <= self._vm.cursor < len(self._vm.entries)
         ):
