@@ -1,22 +1,17 @@
 """BrowserView — top-level view for the new browser widget.
 
-Horizontal layout: topic tree on the left, tab bar + active pane on the
-right. Bootstraps the ``BrowserViewModel`` on mount and lets the VM drive
-which pane is visible.
+Horizontal layout: topic tree on the left, tab bar + active pane on the right. Bootstraps the
+``BrowserViewModel`` on mount and lets the VM drive which pane is visible.
 
-Pane visibility is delegated to Textual's ``ContentSwitcher``: every pane
-view is mounted up front (so first-visit latency is just the pane's own
-fetch, not widget construction), and switching tabs flips the switcher's
-``current`` to the right id. Combined with the VM's lazy filter
-propagation, switching to a previously-visited pane that already matches
-the current filter is instantaneous; switching to a stale or never-visited
-pane shows a "loading…" status while the pane fetches.
+Pane visibility is delegated to Textual's ``ContentSwitcher``: every pane view is mounted up front (so
+first-visit latency is just the pane's own fetch, not widget construction), and switching tabs flips the
+switcher's ``current`` to the right id. Combined with the VM's lazy filter propagation, switching to a
+previously-visited pane that already matches the current filter is instantaneous; switching to a stale or
+never-visited pane shows a "loading…" status while the pane fetches.
 
-Pane-VM → pane-view mapping lives in ``_view_for_pane``: it's a flat
-dispatch on type, which is fine while we have one concrete pane. When we
-add more, we'll either extend the dispatch table or have each pane VM
-expose a ``make_view()`` factory — depends on whether the view ever needs
-construction params beyond the VM.
+Pane-VM → pane-view mapping lives in ``_view_for_pane``: it's a flat dispatch on type, which is fine while
+we have one concrete pane. When we add more, we'll either extend the dispatch table or have each pane VM
+expose a ``make_view()`` factory — depends on whether the view ever needs construction params beyond the VM.
 """
 
 from __future__ import annotations
@@ -45,10 +40,8 @@ _logger = get_logger("browser.view")
 def _view_for_pane(pane_vm: BrowserPaneViewModel):
     """Return a freshly-constructed view widget for ``pane_vm``.
 
-    Dispatches on the VM's concrete type. Raises if the VM type has no
-    registered view — that's a programmer error (we added a new pane VM
-    without adding a view), and silently rendering a blank pane would
-    hide it.
+    Dispatches on the VM's concrete type. Raises if the VM type has no registered view — that's a programmer
+    error (we added a new pane VM without adding a view), and silently rendering a blank pane would hide it.
     """
     if isinstance(pane_vm, KnowledgeEntryBrowserPaneViewModel):
         return KnowledgeEntryBrowserPaneView(pane_vm)
@@ -59,15 +52,13 @@ def _view_for_pane(pane_vm: BrowserPaneViewModel):
 
 
 class BrowserView(Horizontal):
-    """Top-level browser widget. Takes an externally-constructed
-    ``BrowserViewModel`` and drives it through its mount lifecycle.
+    """Top-level browser widget. Takes an externally-constructed ``BrowserViewModel`` and drives it through
+    its mount lifecycle.
 
-    The VM is owned by the caller (typically the chat pane appends a fresh
-    ``BrowserViewModel`` to its feed; this view is built against that
-    instance). ``await self._vm.start()`` runs from ``on_mount`` to do the
-    actual DB work after Textual has finished mounting child widgets — by
-    then everyone is subscribed to their VM's ``dirty`` and will repaint
-    on first data arrival.
+    The VM is owned by the caller (typically the chat pane appends a fresh ``BrowserViewModel`` to its feed;
+    this view is built against that instance). ``await self._vm.start()`` runs from ``on_mount`` to do the
+    actual DB work after Textual has finished mounting child widgets — by then everyone is subscribed to
+    their VM's ``dirty`` and will repaint on first data arrival.
 
     Construction example::
 
@@ -76,12 +67,10 @@ class BrowserView(Horizontal):
         await container.mount(view)
     """
 
-    # ``height: 24`` is a deliberate fixed height for embedded use — when
-    # mounted inside a ``VerticalScroll`` feed, ``1fr`` resolves to 0 (the
-    # scroll container derives its content height from children, so a child
-    # asking for "remaining" space has none to claim). 24 is the rough
-    # height of the legacy ``/explore`` pane; the user can tweak per-mount
-    # via CSS if a different surface needs another size.
+    # ``height: 24`` is a deliberate fixed height for embedded use — when mounted inside a ``VerticalScroll``
+    # feed, ``1fr`` resolves to 0 (the scroll container derives its content height from children, so a child
+    # asking for "remaining" space has none to claim). 24 is the rough height of the legacy ``/explore``
+    # pane; the user can tweak per-mount via CSS if a different surface needs another size.
     DEFAULT_CSS = """
     BrowserView {
         height: 40;
@@ -123,11 +112,10 @@ class BrowserView(Horizontal):
     BINDINGS = [
         Binding("ctrl+right", "next_pane", show=False),
         Binding("ctrl+left", "prev_pane", show=False),
-        # ``priority=True`` so these fire even when a deep descendant
-        # (e.g. a ``TextArea`` inside the details panel) is focused —
-        # otherwise ``TextArea``'s own ``alt+left``/``alt+right`` word-
-        # navigation bindings would swallow the event and our region
-        # cycle would only work when focus was on a non-editor widget.
+        # ``priority=True`` so these fire even when a deep descendant (e.g. a ``TextArea`` inside the details
+        # panel) is focused — otherwise ``TextArea``'s own ``alt+left``/``alt+right`` word-navigation
+        # bindings would swallow the event and our region cycle would only work when focus was on a
+        # non-editor widget.
         Binding("alt+right", "focus_right", priority=True, show=False),
         Binding("alt+left", "focus_left", priority=True, show=False),
     ]
@@ -141,16 +129,15 @@ class BrowserView(Horizontal):
         return self._vm
 
     def compose(self):
-        # Left: topic tree. The tree view subscribes to the tree VM in its
-        # own on_mount, so all we do here is hand it the VM.
+        # Left: topic tree. The tree view subscribes to the tree VM in its own on_mount, so all we do here
+        # is hand it the VM.
         with Vertical(id="browser-tree-pane"):
             yield Static("Topics", id="browser-tree-title")
             yield BrowserTopicTreeView(self._vm.tree)
 
-        # Right: tab bar over a ContentSwitcher that holds every pane view.
-        # The pane lineup is fixed at ctor time (see BrowserViewModel), so
-        # we can mount every pane view up front and just toggle which one
-        # is current.
+        # Right: tab bar over a ContentSwitcher that holds every pane view. The pane lineup is fixed at ctor
+        # time (see BrowserViewModel), so we can mount every pane view up front and just toggle which one is
+        # current.
         with Vertical(id="browser-right-pane"):
             yield Static("", id="browser-tab-bar")
             initial_id = self._pane_widget_id(self._vm.active_index)
@@ -163,12 +150,10 @@ class BrowserView(Horizontal):
     async def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
         self._vm.subscribe(self._vm.focus, self.focus)
-        # Initial paint of the tab bar — the VM hasn't emitted dirty yet, so
-        # do it ourselves.
+        # Initial paint of the tab bar — the VM hasn't emitted dirty yet, so do it ourselves.
         self._refresh()
-        # Now that all child widgets have mounted and subscribed to their
-        # respective VMs, kick off the data load. start() triggers the tree's
-        # root load and the active pane's first fetch.
+        # Now that all child widgets have mounted and subscribed to their respective VMs, kick off the data
+        # load. start() triggers the tree's root load and the active pane's first fetch.
         await self._vm.start()
         # Give the tree focus by default so arrow keys work out of the gate.
         try:
@@ -180,8 +165,8 @@ class BrowserView(Horizontal):
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
         self._vm.unsubscribe(self._vm.focus, self.focus)
 
-    # Horizontal isn't focusable; route ``vm.request_focus()`` (fired by chat-pane
-    # feed nav) to the tree, which is.
+    # Horizontal isn't focusable; route ``vm.request_focus()`` (fired by chat-pane feed nav) to the tree,
+    # which is.
     def focus(self, scroll_visible: bool = True) -> "BrowserView":
         try:
             self.query_one(BrowserTopicTreeView).focus(scroll_visible=scroll_visible)
@@ -198,9 +183,8 @@ class BrowserView(Horizontal):
         self._update_visible_pane()
 
     def _update_tab_bar(self) -> None:
-        """Render the tab bar as a Rich-styled text run: active tab is
-        reverse-video, inactives are plain. Cheap and avoids needing a real
-        tab widget while we have only one pane."""
+        """Render the tab bar as a Rich-styled text run: active tab is reverse-video, inactives are plain.
+        Cheap and avoids needing a real tab widget while we have only one pane."""
         tab_bar = self.query_one("#browser-tab-bar", Static)
         text = Text()
         for i, pane in enumerate(self._vm.panes):
@@ -240,11 +224,9 @@ class BrowserView(Horizontal):
     #
     #   [Topic tree]  <->  [Active pane's internal cycle]
     #
-    # ``alt+right`` advances; ``alt+left`` retreats. The browser view
-    # only knows about the two top-level regions (tree, pane) — each
-    # pane view is responsible for its own internal sub-region cycle
-    # and signals "I'm at my edge" back to us by returning False from
-    # ``focus_next_region`` / ``focus_prev_region``.
+    # ``alt+right`` advances; ``alt+left`` retreats. The browser view only knows about the two top-level
+    # regions (tree, pane) — each pane view is responsible for its own internal sub-region cycle and signals
+    # "I'm at my edge" back to us by returning False from ``focus_next_region`` / ``focus_prev_region``.
 
     def action_focus_right(self) -> None:
         if self._focus_is_in_tree():
@@ -255,8 +237,8 @@ class BrowserView(Horizontal):
         pane = self._active_pane_view()
         if pane is not None and hasattr(pane, "focus_next_region"):
             pane.focus_next_region()
-        # If the pane returns False we're at the rightmost edge of the
-        # browser — there's nowhere further to go, so do nothing.
+        # If the pane returns False we're at the rightmost edge of the browser — there's nowhere further to
+        # go, so do nothing.
 
     def action_focus_left(self) -> None:
         if self._focus_is_in_tree():
@@ -286,9 +268,8 @@ class BrowserView(Horizontal):
         return focused is tree or tree in focused.ancestors_with_self
 
     def _active_pane_view(self):
-        """Return the currently-visible pane view widget, or ``None`` if
-        the active index is out of range. Each pane view is mounted with
-        id ``browser-pane-{i}`` so we look it up by id."""
+        """Return the currently-visible pane view widget, or ``None`` if the active index is out of range.
+        Each pane view is mounted with id ``browser-pane-{i}`` so we look it up by id."""
         target_id = self._pane_widget_id(self._vm.active_index)
         try:
             return self.query_one(f"#{target_id}")

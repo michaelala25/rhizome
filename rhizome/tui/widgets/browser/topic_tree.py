@@ -2,43 +2,33 @@
 
 Responsibility split between View and VM in this module:
 
-  * **VM owns persistent state**: the selection set, the cursor topic id
-    (as an authoritative external reference other code can read without
-    poking the widget), and the DB-facing operations (``fetch_children``,
-    ``expanded_filter_ids``). The orchestrator subscribes to
-    ``SELECTION_CHANGED`` to re-fan the filter.
-  * **View owns the tree structure**: which TreeNodes exist, which are
-    expanded, and the cursor *position* within the widget. This is purely
-    visual state — Textual's ``Tree`` is excellent at it and there's no
+  * **VM owns persistent state**: the selection set, the cursor topic id (as an authoritative external
+    reference other code can read without poking the widget), and the DB-facing operations
+    (``fetch_children``, ``expanded_filter_ids``). The orchestrator subscribes to ``SELECTION_CHANGED`` to
+    re-fan the filter.
+  * **View owns the tree structure**: which TreeNodes exist, which are expanded, and the cursor *position*
+    within the widget. This is purely visual state — Textual's ``Tree`` is excellent at it and there's no
     reason to mirror it onto the VM.
 
-This split was deliberate: the original cut had the VM mirroring the tree
-shape (a ``_roots`` list and a ``_children`` dict) in parallel with the
-``Tree``'s own ``TreeNode`` structure, with constant sync work between
-them. That duplication was a recurring source of bugs; collapsing it to
-"VM is a DB facade + selection store, View owns the visual tree" removed
-roughly a quarter of the file with no behavior change.
+This split was deliberate: the original cut had the VM mirroring the tree shape (a ``_roots`` list and a
+``_children`` dict) in parallel with the ``Tree``'s own ``TreeNode`` structure, with constant sync work
+between them. That duplication was a recurring source of bugs; collapsing it to "VM is a DB facade +
+selection store, View owns the visual tree" removed roughly a quarter of the file with no behavior change.
 
-One consequence: the VM doesn't cache loaded children, so re-fetching the
-same level after a collapse/re-expand cycle costs another query. For
-SQLite + an indexed ``parent_id`` this is sub-millisecond; we'll add a
-cache if it ever shows up in a profile.
+One consequence: the VM doesn't cache loaded children, so re-fetching the same level after a
+collapse/re-expand cycle costs another query. For SQLite + an indexed ``parent_id`` this is sub-
+millisecond; we'll add a cache if it ever shows up in a profile.
 
-Selection semantics: multi-select with **cascade-on-toggle**. Toggling a
-topic expands its subtree via the recursive CTE and either adds the whole
-subtree to the selection (if any descendant was missing — tri-state
-"partial" counts as not-selected) or removes the whole subtree (if it was
-already fully covered). The consequence is that ``_selected_ids`` *is*
-the expanded filter set: there's no second-stage expansion at
-filter-propagation time, every visible checkbox corresponds to an entry
-that actually passes the filter, and the orchestrator's
-selection-handler becomes a synchronous read.
+Selection semantics: multi-select with **cascade-on-toggle**. Toggling a topic expands its subtree via the
+recursive CTE and either adds the whole subtree to the selection (if any descendant was missing — tri-state
+"partial" counts as not-selected) or removes the whole subtree (if it was already fully covered). The
+consequence is that ``_selected_ids`` *is* the expanded filter set: there's no second-stage expansion at
+filter-propagation time, every visible checkbox corresponds to an entry that actually passes the filter,
+and the orchestrator's selection-handler becomes a synchronous read.
 
-Edge case: if you cascade-select A then explicitly uncheck a descendant
-Y, A stays in ``_selected_ids`` but its subtree is no longer fully
-covered. A subsequent toggle of A is treated as "not fully selected →
-re-add the whole subtree" (standard tri-state file-picker behaviour),
-which restores Y too.
+Edge case: if you cascade-select A then explicitly uncheck a descendant Y, A stays in ``_selected_ids`` but
+its subtree is no longer fully covered. A subsequent toggle of A is treated as "not fully selected → re-add
+the whole subtree" (standard tri-state file-picker behaviour), which restores Y too.
 """
 
 from __future__ import annotations
@@ -72,9 +62,8 @@ _CHECKED_STYLE = Style(color="rgb(100,200,100)")
 _UNCHECKED_STYLE = Style(color="rgb(80,80,80)")
 _CURSOR_FOCUSED = Style(color="rgb(255,80,80)", bold=True)
 _CURSOR_UNFOCUSED = Style(color="rgb(255,80,80)")
-# Trailing " [{id}]" hint after each topic name. Constant dim grey
-# regardless of cursor / focus / selection state — it's metadata, not
-# part of the topic label.
+# Trailing " [{id}]" hint after each topic name. Constant dim grey regardless of cursor / focus / selection
+# state — it's metadata, not part of the topic label.
 _ID_SUFFIX_STYLE = Style(color="rgb(120,120,120)")
 
 
@@ -83,11 +72,10 @@ class LoadedTopic:
     """A topic plus a precomputed "has children?" hint, returned by
     ``BrowserTopicTreeViewModel.fetch_children``.
 
-    The hint is the result of a single batched query against the just-loaded
-    peer cohort (see ``find_parent_topic_ids``); the view uses it to decide
-    whether each ``TreeNode`` should be added with ``allow_expand=True`` or
-    as a leaf. Coupling the hint to the topic in the return value spares
-    the view from making its own follow-up query.
+    The hint is the result of a single batched query against the just-loaded peer cohort (see
+    ``find_parent_topic_ids``); the view uses it to decide whether each ``TreeNode`` should be added with
+    ``allow_expand=True`` or as a leaf. Coupling the hint to the topic in the return value spares the view
+    from making its own follow-up query.
     """
     topic: Topic
     has_children: bool
@@ -96,16 +84,15 @@ class LoadedTopic:
 class BrowserTopicTreeViewModel(ViewModelBase):
     """View-model for the browser's multi-select topic tree.
 
-    State here is intentionally minimal — see the module docstring for the
-    rationale. The VM exposes selection / cursor state and two async DB
-    methods (``fetch_children``, ``expanded_filter_ids``); everything else
-    that *looks* like tree state (which nodes exist, which are expanded)
-    lives on the view's ``TreeNode`` structure.
+    State here is intentionally minimal — see the module docstring for the rationale. The VM exposes
+    selection / cursor state and two async DB methods (``fetch_children``, ``expanded_filter_ids``);
+    everything else that *looks* like tree state (which nodes exist, which are expanded) lives on the
+    view's ``TreeNode`` structure.
     """
 
     class Callbacks(Enum):
-        # Standard dirty + focus are inherited; this one is browser-specific.
-        # No payload — listeners re-query state via the public accessors.
+        # Standard dirty + focus are inherited; this one is browser-specific. No payload — listeners
+        # re-query state via the public accessors.
         SELECTION_CHANGED = "selection_changed"
 
     def __init__(self, session_factory: Any) -> None:
@@ -115,11 +102,9 @@ class BrowserTopicTreeViewModel(ViewModelBase):
             BrowserTopicTreeViewModel.Callbacks.SELECTION_CHANGED
         )
         self._selected_ids: set[int] = set()
-        # Cursor topic id is the *authoritative external reference* — kept
-        # here so other code can ask "what topic is the user looking at?"
-        # without poking the widget. The widget's own cursor position is
-        # the source of truth for rendering; this mirrors it whenever the
-        # view pushes a ``set_cursor`` update.
+        # Cursor topic id is the *authoritative external reference* — kept here so other code can ask "what
+        # topic is the user looking at?" without poking the widget. The widget's own cursor position is the
+        # source of truth for rendering; this mirrors it whenever the view pushes a ``set_cursor`` update.
         self._cursor_topic_id: int | None = None
 
     # ------------------------------------------------------------------
@@ -149,14 +134,13 @@ class BrowserTopicTreeViewModel(ViewModelBase):
         self,
         parent_id: int | None,
     ) -> list[LoadedTopic]:
-        """Fetch the direct children of ``parent_id`` (or the roots when
-        ``parent_id is None``), each paired with a ``has_children`` hint.
+        """Fetch the direct children of ``parent_id`` (or the roots when ``parent_id is None``), each paired
+        with a ``has_children`` hint.
 
-        Stateless from the VM's perspective: callers get the data back as
-        the return value and are responsible for holding onto it as they
-        see fit (the view stashes them inside ``TreeNode``s). Each call
-        runs two queries: the list itself + a batched
-        ``find_parent_topic_ids`` to populate the hints in one shot.
+        Stateless from the VM's perspective: callers get the data back as the return value and are
+        responsible for holding onto it as they see fit (the view stashes them inside ``TreeNode``s). Each
+        call runs two queries: the list itself + a batched ``find_parent_topic_ids`` to populate the hints
+        in one shot.
         """
         async with self._session_factory() as session:
             if parent_id is None:
@@ -178,19 +162,15 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     async def toggle_selection(self, topic_id: int) -> None:
         """Toggle ``topic_id`` with subtree cascade.
 
-        Awaits a single recursive-CTE expansion to grab the full subtree
-        rooted at ``topic_id``, then:
+        Awaits a single recursive-CTE expansion to grab the full subtree rooted at ``topic_id``, then:
 
-          * if every member of that subtree is already selected → remove
-            them all (cascade-deselect);
-          * otherwise → add them all (cascade-select; tri-state "partial"
-            counts as not-fully-selected and re-adds everything,
-            including any descendant the user previously unchecked).
+          * if every member of that subtree is already selected → remove them all (cascade-deselect);
+          * otherwise → add them all (cascade-select; tri-state "partial" counts as not-fully-selected and
+            re-adds everything, including any descendant the user previously unchecked).
 
-        Emits ``dirty`` (the tree repaints every affected checkbox) and
-        ``SELECTION_CHANGED`` (the orchestrator hands the new filter to
-        the active pane). Both fire exactly once per toggle even though
-        the cascade may move many ids.
+        Emits ``dirty`` (the tree repaints every affected checkbox) and ``SELECTION_CHANGED`` (the
+        orchestrator hands the new filter to the active pane). Both fire exactly once per toggle even
+        though the cascade may move many ids.
         """
         async with self._session_factory() as session:
             subtree = await expand_subtrees(session, [topic_id])
@@ -214,9 +194,8 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def set_cursor(self, topic_id: int | None) -> None:
-        """Move the cursor to ``topic_id`` (or clear it). Emits ``dirty`` on
-        actual change. Does not fire ``SELECTION_CHANGED`` — cursor and
-        selection are independent."""
+        """Move the cursor to ``topic_id`` (or clear it). Emits ``dirty`` on actual change. Does not fire
+        ``SELECTION_CHANGED`` — cursor and selection are independent."""
         if self._cursor_topic_id == topic_id:
             return
         self._cursor_topic_id = topic_id
@@ -229,12 +208,11 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     def expanded_filter_ids(self) -> frozenset[int] | None:
         """Return the topic-id filter the panes should apply.
 
-        ``None`` means "no filter — show everything" (the empty-selection
-        state). Otherwise returns ``_selected_ids`` as a frozenset.
+        ``None`` means "no filter — show everything" (the empty-selection state). Otherwise returns
+        ``_selected_ids`` as a frozenset.
 
-        With cascade-on-toggle, the selection set is *already* the full
-        subtree expansion, so this is a synchronous read — no CTE roundtrip
-        at filter-propagation time.
+        With cascade-on-toggle, the selection set is *already* the full subtree expansion, so this is a
+        synchronous read — no CTE roundtrip at filter-propagation time.
         """
         if not self._selected_ids:
             return None
@@ -244,30 +222,25 @@ class BrowserTopicTreeViewModel(ViewModelBase):
 class BrowserTopicTreeView(Tree[Topic]):
     """View for ``BrowserTopicTreeViewModel``.
 
-    Subclasses Textual's ``Tree`` to inherit node rendering, keyboard
-    navigation, scrolling, expand/collapse, and cursor handling. The view
-    owns the visual tree structure (``TreeNode``s, which are expanded,
-    cursor position); the VM owns selection + the authoritative cursor id
-    + DB operations. There is no duplicate tree state to keep in sync.
+    Subclasses Textual's ``Tree`` to inherit node rendering, keyboard navigation, scrolling,
+    expand/collapse, and cursor handling. The view owns the visual tree structure (``TreeNode``s, which are
+    expanded, cursor position); the VM owns selection + the authoritative cursor id + DB operations. There
+    is no duplicate tree state to keep in sync.
 
     Hooks added on top of ``Tree``:
 
-      * **Multi-select checkboxes** drawn in ``render_label`` against the
-        VM's ``is_selected``. ``Space`` toggles the VM's selection set.
-      * **Lazy children load via the VM**: ``NodeExpanded`` fires the
-        widget's natural event; our handler awaits
-        ``vm.fetch_children(node.data.id)`` and stuffs the result into
-        ``TreeNode``s. Re-expansion of an already-populated node is a
-        no-op (we check ``node.children``).
-      * **VM cursor sync**: ``NodeHighlighted`` forwards the cursor id back
-        to the VM so other code can read it without poking the widget.
-      * **Enter is suppressed**: selection happens via ``Space``;
-        ``Tree.NodeSelected`` (Enter's default) isn't useful for this widget
-        and would otherwise post a misleading message up the DOM.
+      * **Multi-select checkboxes** drawn in ``render_label`` against the VM's ``is_selected``. ``Space``
+        toggles the VM's selection set.
+      * **Lazy children load via the VM**: ``NodeExpanded`` fires the widget's natural event; our handler
+        awaits ``vm.fetch_children(node.data.id)`` and stuffs the result into ``TreeNode``s. Re-expansion
+        of an already-populated node is a no-op (we check ``node.children``).
+      * **VM cursor sync**: ``NodeHighlighted`` forwards the cursor id back to the VM so other code can
+        read it without poking the widget.
+      * **Enter is suppressed**: selection happens via ``Space``; ``Tree.NodeSelected`` (Enter's default)
+        isn't useful for this widget and would otherwise post a misleading message up the DOM.
 
-    VM → View is only via ``dirty`` triggering a label-cache invalidation
-    (selection / cursor styling repaints). Structural changes never come
-    from the VM — they come from the user, via event handlers.
+    VM → View is only via ``dirty`` triggering a label-cache invalidation (selection / cursor styling
+    repaints). Structural changes never come from the VM — they come from the user, via event handlers.
     """
 
     BINDINGS = [
@@ -298,9 +271,8 @@ class BrowserTopicTreeView(Tree[Topic]):
     # ------------------------------------------------------------------
 
     async def on_mount(self) -> None:
-        # Subscribe AFTER mount so ``_refresh`` can safely touch widget
-        # internals (the Textual tree's line cache) without checking
-        # ``is_mounted`` everywhere.
+        # Subscribe AFTER mount so ``_refresh`` can safely touch widget internals (the Textual tree's line
+        # cache) without checking ``is_mounted`` everywhere.
         self._vm.subscribe(self._vm.dirty, self._refresh)
         # Load the roots ourselves — VM no longer caches tree shape.
         await self._populate_roots()
@@ -316,9 +288,8 @@ class BrowserTopicTreeView(Tree[Topic]):
     def _refresh(self) -> None:
         """Repaint labels when the VM's selection or cursor id changes.
 
-        No structural sync — the tree shape lives entirely on ``TreeNode``s
-        and only mutates through user actions handled in our own event
-        handlers.
+        No structural sync — the tree shape lives entirely on ``TreeNode``s and only mutates through user
+        actions handled in our own event handlers.
         """
         self._invalidate_label_cache()
 
@@ -328,9 +299,8 @@ class BrowserTopicTreeView(Tree[Topic]):
                 self.root.add(lt.topic.name, data=lt.topic, allow_expand=True)
             else:
                 self.root.add_leaf(lt.topic.name, data=lt.topic)
-        # Park the cursor on whichever root matches the VM's last-known
-        # cursor; fall back to the first root. ``move_cursor`` will fire
-        # ``NodeHighlighted`` which feeds back to the VM, but
+        # Park the cursor on whichever root matches the VM's last-known cursor; fall back to the first
+        # root. ``move_cursor`` will fire ``NodeHighlighted`` which feeds back to the VM, but
         # ``vm.set_cursor`` is a no-op when the id is unchanged.
         target_id = self._vm.cursor_topic_id
         if target_id is not None:
@@ -344,9 +314,8 @@ class BrowserTopicTreeView(Tree[Topic]):
     def _invalidate_label_cache(self) -> None:
         """Bust Textual's tree-line render cache so ``render_label`` re-runs.
 
-        Textual caches rendered lines keyed by ``_updates``; a bare
-        ``refresh()`` schedules a repaint but doesn't invalidate the cache.
-        Bumping ``_updates`` ensures the new checkbox / cursor style lands.
+        Textual caches rendered lines keyed by ``_updates``; a bare ``refresh()`` schedules a repaint but
+        doesn't invalidate the cache. Bumping ``_updates`` ensures the new checkbox / cursor style lands.
         Mirrors the trick from the legacy ``TopicTree``.
         """
         self._updates += 1
@@ -360,9 +329,8 @@ class BrowserTopicTreeView(Tree[Topic]):
         node = event.node
         if node.data is None:
             return
-        # Already populated from a prior expand → no work to do. Textual
-        # toggles the expand state on its own; we only fetch on first
-        # expansion per node lifetime.
+        # Already populated from a prior expand → no work to do. Textual toggles the expand state on its
+        # own; we only fetch on first expansion per node lifetime.
         if node.children:
             return
         for lt in await self._vm.fetch_children(node.data.id):
@@ -383,9 +351,8 @@ class BrowserTopicTreeView(Tree[Topic]):
         await self._vm.toggle_selection(node.data.id)
 
     def _on_key(self, event) -> None:
-        # Custom right/left handling. Textual's default ``cursor_right`` /
-        # ``cursor_left`` bindings work in some terminals but proved
-        # unreliable under ``run_test`` (and arguably the legacy ``TopicTree``
+        # Custom right/left handling. Textual's default ``cursor_right`` / ``cursor_left`` bindings work in
+        # some terminals but proved unreliable under ``run_test`` (and arguably the legacy ``TopicTree``
         # pattern is what users have learned to expect). Mirror that:
         #   right: collapsed → expand; expanded → step into first child.
         #   left:  expanded → collapse; collapsed → step to parent.
@@ -409,8 +376,8 @@ class BrowserTopicTreeView(Tree[Topic]):
             event.stop()
             event.prevent_default()
             return
-        # Suppress Enter — selection is via Space, and the default
-        # ``NodeSelected`` post would be misleading to any DOM ancestor.
+        # Suppress Enter — selection is via Space, and the default ``NodeSelected`` post would be
+        # misleading to any DOM ancestor.
         if event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -443,8 +410,7 @@ class BrowserTopicTreeView(Tree[Topic]):
             checkbox = ""
             checkbox_style = base_style
 
-        # Cursor label tinting — focused vs. unfocused so the user can tell
-        # whether keystrokes route here.
+        # Cursor label tinting — focused vs. unfocused so the user can tell whether keystrokes route here.
         is_cursor = node is self.cursor_node
         if is_cursor:
             label_style = _CURSOR_FOCUSED if self.has_focus else _CURSOR_UNFOCUSED
@@ -454,9 +420,8 @@ class BrowserTopicTreeView(Tree[Topic]):
         node_label = node._label.copy()
         node_label.stylize(label_style)
 
-        # Trailing " [{id}]" — kept in a fixed dim grey so it reads as
-        # metadata rather than part of the topic name. Skipped when
-        # ``node.data`` is None (the synthetic root we hide via
+        # Trailing " [{id}]" — kept in a fixed dim grey so it reads as metadata rather than part of the
+        # topic name. Skipped when ``node.data`` is None (the synthetic root we hide via
         # ``show_root = False``, plus any defensive fallback nodes).
         if node.data is not None:
             id_suffix = Text(f" [{node.data.id}]", style=_ID_SUFFIX_STYLE)

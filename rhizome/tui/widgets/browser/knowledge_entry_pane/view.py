@@ -1,7 +1,6 @@
 """KnowledgeEntryBrowserPaneView — DataTable + details + status row.
 
-See ``view_model.py`` for the VM contract and ``entry_details/`` for the
-side panel.
+See ``view_model.py`` for the VM contract and ``entry_details/`` for the side panel.
 """
 
 from __future__ import annotations
@@ -25,35 +24,29 @@ from .view_model import (
 class _EntriesTable(DataTable):
     """``DataTable`` subclass that owns the multi-select keybindings.
 
-    Lives here rather than as standalone bindings on the parent view so
-    the keys only fire when the table is focused — ``m`` and ``space``
-    on the details panel's ``TextArea``s would otherwise have to be
-    suppressed. Both actions delegate straight to the pane VM; the
-    table widget holds no state of its own.
+    Lives here rather than as standalone bindings on the parent view so the keys only fire when the table
+    is focused — ``m`` and ``space`` on the details panel's ``TextArea``s would otherwise have to be
+    suppressed. Both actions delegate straight to the pane VM; the table widget holds no state of its own.
     """
 
     BINDINGS = [
         Binding("m", "toggle_multi_select", show=False),
         Binding("space", "toggle_selection", show=False),
-        # ``shift+up`` / ``shift+down`` are range-select sugar: add the
-        # cursor row to the selection (idempotent) and step the cursor
-        # in one keystroke. Held-key terminal repeat makes
-        # "hold shift, hold down" sweep a contiguous block. No-op
-        # outside multi-select (the VM guards). Bound here rather than
-        # as ``"shift+up,shift+down"`` action pairs because each
-        # direction needs its own cursor step.
+        # ``shift+up`` / ``shift+down`` are range-select sugar: add the cursor row to the selection
+        # (idempotent) and step the cursor in one keystroke. Held-key terminal repeat makes "hold shift,
+        # hold down" sweep a contiguous block. No-op outside multi-select (the VM guards). Bound here
+        # rather than as ``"shift+up,shift+down"`` action pairs because each direction needs its own
+        # cursor step.
         Binding("shift+down", "select_down", show=False),
         Binding("shift+up", "select_up", show=False),
-        # ``d`` only does something meaningful while multi-select is on
-        # with a non-empty selection; the VM guards both, so we can fire
-        # it unconditionally.
+        # ``d`` only does something meaningful while multi-select is on with a non-empty selection; the
+        # VM guards both, so we can fire it unconditionally.
         Binding("d", "request_delete", show=False),
-        # ``s`` opens the sort dialog. Available in both regular and
-        # multi-select mode (the VM clears any selection when the sort
-        # is applied — see the dialog warning).
+        # ``s`` opens the sort dialog. Available in both regular and multi-select mode (the VM clears any
+        # selection when the sort is applied — see the dialog warning).
         Binding("s", "request_sort", show=False),
-        # ``f`` opens the filter dialog. Mutually exclusive with sort /
-        # delete (the VM cancels whichever is open when ``f`` lands).
+        # ``f`` opens the filter dialog. Mutually exclusive with sort / delete (the VM cancels whichever
+        # is open when ``f`` lands).
         Binding("f", "request_filter", show=False),
     ]
 
@@ -72,11 +65,9 @@ class _EntriesTable(DataTable):
         self._vm.toggle_current_selection()
 
     async def action_select_down(self) -> None:
-        """Add the current row to the selection, then step the cursor
-        down. Cursor step uses ``action_cursor_down`` (our overridden
-        async version, which also handles the load-more-at-bottom
-        case) so the usual ``RowHighlighted`` event fires and the VM
-        cursor stays in sync."""
+        """Add the current row to the selection, then step the cursor down. Cursor step uses
+        ``action_cursor_down`` (our overridden async version, which also handles the load-more-at-bottom
+        case) so the usual ``RowHighlighted`` event fires and the VM cursor stays in sync."""
         self._vm.add_current_to_selection()
         await self.action_cursor_down()
 
@@ -85,16 +76,13 @@ class _EntriesTable(DataTable):
         self.action_cursor_up()
 
     async def action_cursor_down(self) -> None:
-        """Cursor-down with auto-load at the bottom edge: if the user
-        is on the last loaded row and the VM still has more to fetch,
-        await ``load_more`` first so the next ``super().action_cursor_down``
-        has somewhere to land. ``load_more`` is a no-op when nothing
-        further is available or a fetch is already in flight, so this
-        is safe to call without re-checking those conditions.
+        """Cursor-down with auto-load at the bottom edge: if the user is on the last loaded row and the VM
+        still has more to fetch, await ``load_more`` first so the next ``super().action_cursor_down`` has
+        somewhere to land. ``load_more`` is a no-op when nothing further is available or a fetch is
+        already in flight, so this is safe to call without re-checking those conditions.
 
-        The cursor advance happens *after* the await — by then the
-        VM has appended rows + emitted dirty, ``_refresh`` ran in
-        ``extend`` mode, and the table has the new rows mounted.
+        The cursor advance happens *after* the await — by then the VM has appended rows + emitted dirty,
+        ``_refresh`` ran in ``extend`` mode, and the table has the new rows mounted.
         """
         if (
             self._vm.has_more
@@ -117,24 +105,20 @@ class _EntriesTable(DataTable):
 class _SearchInput(Input):
     """Search box mounted above the entries table.
 
-    Visually mirrors the entry-detail title field: 3-row tight box,
-    transparent background, ``#3a3a3a`` border that flips accent on
-    focus. The keybinding hint rides the top border on the right
-    (``border_title`` + ``border_title_align = "right"``) — same
-    space the dialogs use for their hint lines, but here we save a
-    full row by fusing it into the border.
+    Visually mirrors the entry-detail title field: 3-row tight box, transparent background, ``#3a3a3a``
+    border that flips accent on focus. The keybinding hint rides the top border on the right
+    (``border_title`` + ``border_title_align = "right"``) — same space the dialogs use for their hint
+    lines, but here we save a full row by fusing it into the border.
 
     Input state:
       * ``enter`` — submit current buffer to ``vm.set_search``.
-      * ``esc`` × 2 — clear buffer + submit empty query (reset). The
-        first esc arms; the second clears. Any non-``esc`` key
-        disarms, so a stray esc followed by editing doesn't leave
-        the next esc as a surprise nuke.
+      * ``esc`` × 2 — clear buffer + submit empty query (reset). The first esc arms; the second clears.
+        Any non-``esc`` key disarms, so a stray esc followed by editing doesn't leave the next esc as a
+        surprise nuke.
 
-    The state machine lives here (rather than on a parent wrapper)
-    because ``Input`` consumes character keystrokes before they
-    bubble, so a parent ``on_key`` would never see "user typed
-    something" — the signal we need to disarm.
+    The state machine lives here (rather than on a parent wrapper) because ``Input`` consumes character
+    keystrokes before they bubble, so a parent ``on_key`` would never see "user typed something" — the
+    signal we need to disarm.
     """
 
     DEFAULT_CSS = """
@@ -161,16 +145,14 @@ class _SearchInput(Input):
         super().__init__(**kwargs)
         self._vm = view_model
         self.armed_for_clear: bool = False
-        # Border-title hint mounted to the right of the top border,
-        # mirroring how IDE search boxes surface their keyboard hints
-        # at the edge of the box rather than in a separate row.
+        # Border-title hint mounted to the right of the top border, mirroring how IDE search boxes
+        # surface their keyboard hints at the edge of the box rather than in a separate row.
         self.border_title_align = "right"
         self._refresh_title()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Submit handler lives on the input itself rather than the
-        # pane view so the search bar is self-contained — the only
-        # outward coupling is the ``vm.set_search`` call.
+        # Submit handler lives on the input itself rather than the pane view so the search bar is
+        # self-contained — the only outward coupling is the ``vm.set_search`` call.
         if event.input is not self:
             return
         self._vm.set_search(event.value)
@@ -185,10 +167,9 @@ class _SearchInput(Input):
         self._refresh_title()
 
     def on_key(self, event) -> None:
-        """Disarm on any non-escape key. Runs before the binding
-        dispatch (so escape's own action still fires) and before
-        ``Input``'s default character-insertion handling (so editing
-        still works untouched)."""
+        """Disarm on any non-escape key. Runs before the binding dispatch (so escape's own action still
+        fires) and before ``Input``'s default character-insertion handling (so editing still works
+        untouched)."""
         if event.key != "escape" and self.armed_for_clear:
             self.armed_for_clear = False
             self._refresh_title()
@@ -201,13 +182,12 @@ class _SearchInput(Input):
 
 
 class _DeleteConfirm(Static, can_focus=True):
-    """Bulk-delete confirmation dialog. Mirrors ``_ChoicesList`` from
-    ``entry_details/view.py`` — a focusable ``Static`` with up/down/enter
-    bindings dispatching to the VM, plus ``escape`` for quick dismissal.
+    """Bulk-delete confirmation dialog. Mirrors ``_ChoicesList`` from ``entry_details/view.py`` — a
+    focusable ``Static`` with up/down/enter bindings dispatching to the VM, plus ``escape`` for quick
+    dismissal.
 
-    Renders three lines: a header explaining the action (entry count +
-    the no-flashcards-harmed promise), then two indented choice rows
-    (Confirm / Cancel). Cursor brightness tracks focus, same as
+    Renders three lines: a header explaining the action (entry count + the no-flashcards-harmed promise),
+    then two indented choice rows (Confirm / Cancel). Cursor brightness tracks focus, same as
     ``_ChoicesList``.
     """
 
@@ -216,10 +196,9 @@ class _DeleteConfirm(Static, can_focus=True):
         Binding("down", "choice_down", show=False),
         Binding("enter", "choice_confirm", show=False),
         Binding("escape", "cancel", show=False),
-        # Sort takes priority over delete — pressing ``s`` from inside
-        # the delete dialog dismisses it and opens the sort bar in one
-        # step. ``vm.request_sort`` is the path that enforces the
-        # priority (it cancels any pending delete before opening sort).
+        # Sort takes priority over delete — pressing ``s`` from inside the delete dialog dismisses it
+        # and opens the sort bar in one step. ``vm.request_sort`` is the path that enforces the priority
+        # (it cancels any pending delete before opening sort).
         Binding("s", "request_sort", show=False),
         # Same shape for the filter dialog.
         Binding("f", "request_filter", show=False),
@@ -241,19 +220,17 @@ class _DeleteConfirm(Static, can_focus=True):
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
 
     def on_focus(self) -> None:
-        # Cursor brightness tracks focus — re-render on focus changes for
-        # the same reason ``_ChoicesList`` does.
+        # Cursor brightness tracks focus — re-render on focus changes for the same reason
+        # ``_ChoicesList`` does.
         self.call_after_refresh(self._refresh)
 
     def on_blur(self) -> None:
         self.call_after_refresh(self._refresh)
 
     def _refresh(self) -> None:
-        # Note: not ``_render`` — that's a Textual-internal name (the
-        # widget's own ``_render`` returns the cached Visual). Naming
-        # this method ``_render`` shadows the framework hook and
-        # Textual tries to use the returned ``rich.text.Text`` as a
-        # ``Visual``, blowing up in ``to_strips``.
+        # Note: not ``_render`` — that's a Textual-internal name (the widget's own ``_render`` returns
+        # the cached Visual). Naming this method ``_render`` shadows the framework hook and Textual
+        # tries to use the returned ``rich.text.Text`` as a ``Visual``, blowing up in ``to_strips``.
         self.update(self._render_dialog())
 
     def _render_dialog(self) -> Text:
@@ -302,36 +279,31 @@ class _DeleteConfirm(Static, can_focus=True):
 
 
 class _SortBar(Static, can_focus=True):
-    """Sort-axis picker dialog. Sits in the same screen slot as
-    ``_DeleteConfirm`` — only one is ever visible at a time, and the
-    VM enforces priority (``request_sort`` cancels any pending delete).
+    """Sort-axis picker dialog. Sits in the same screen slot as ``_DeleteConfirm`` — only one is ever
+    visible at a time, and the VM enforces priority (``request_sort`` cancels any pending delete).
 
-    Renders horizontally, mirroring the data table's column order:
-    ``id   title   type   topic``. The active sort is decorated with
-    an arrow (``↑`` / ``↓``) and brackets; the cursor option is shown
-    in a bold accent colour (no ``►`` prefix — keeping the row at a
-    fixed width avoids the option labels jumping around as the cursor
-    moves). A second line carries a help hint, extended with a
+    Renders horizontally, mirroring the data table's column order: ``id   title   type   topic``. The
+    active sort is decorated with an arrow (``↑`` / ``↓``) and brackets; the cursor option is shown in a
+    bold accent colour (no ``►`` prefix — keeping the row at a fixed width avoids the option labels
+    jumping around as the cursor moves). A second line carries a help hint, extended with a
     selection-clearing warning while multi-select is on.
 
-    Keys: ``left`` / ``right`` move the cursor (with wrap); ``enter``
-    applies (toggles direction when on the active axis, otherwise
-    switches to that axis ascending); ``s`` and ``escape`` dismiss
-    without applying.
+    Keys: ``left`` / ``right`` move the cursor (with wrap); ``enter`` applies (toggles direction when on
+    the active axis, otherwise switches to that axis ascending); ``s`` and ``escape`` dismiss without
+    applying.
     """
 
     BINDINGS = [
         Binding("left", "cursor_left", show=False),
         Binding("right", "cursor_right", show=False),
         Binding("enter", "apply", show=False),
-        # ``r`` resets to the default sort (``id`` ascending). Mirrors
-        # the same key in the filter dialog.
+        # ``r`` resets to the default sort (``id`` ascending). Mirrors the same key in the filter dialog.
         Binding("r", "reset", show=False),
-        # ``s`` toggles the dialog closed — symmetric with the
-        # ``s``-opens-it binding on ``_EntriesTable``.
+        # ``s`` toggles the dialog closed — symmetric with the ``s``-opens-it binding on
+        # ``_EntriesTable``.
         Binding("s", "cancel", show=False),
-        # ``f`` swaps to the filter dialog. ``request_filter`` on the
-        # VM dismisses sort first so the two never co-exist.
+        # ``f`` swaps to the filter dialog. ``request_filter`` on the VM dismisses sort first so the two
+        # never co-exist.
         Binding("f", "request_filter", show=False),
         Binding("escape", "cancel", show=False),
     ]
@@ -352,8 +324,8 @@ class _SortBar(Static, can_focus=True):
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
 
     def on_focus(self) -> None:
-        # Cursor colour brightens on focus, same convention as the
-        # ``_ChoicesList`` / ``_DeleteConfirm`` widgets.
+        # Cursor colour brightens on focus, same convention as the ``_ChoicesList`` / ``_DeleteConfirm``
+        # widgets.
         self.call_after_refresh(self._refresh)
 
     def on_blur(self) -> None:
@@ -369,9 +341,8 @@ class _SortBar(Static, can_focus=True):
             else -1
         )
         arrow = "↑" if self._vm.sort_dir == "asc" else "↓"
-        # Cursor colour: bright gold on focus, dim grey otherwise. The
-        # active axis itself always renders in the default fg so the
-        # arrow + brackets carry the "this is the live sort" signal.
+        # Cursor colour: bright gold on focus, dim grey otherwise. The active axis itself always renders
+        # in the default fg so the arrow + brackets carry the "this is the live sort" signal.
         cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
 
         text = Text()
@@ -390,9 +361,8 @@ class _SortBar(Static, can_focus=True):
                 text.append("   ")
         text.append("\n")
 
-        # Help line — extended with the selection-clearing warning when
-        # in multi-select. The warning sits inline rather than on a third
-        # line so the dialog can stay at a fixed 4-line height across
+        # Help line — extended with the selection-clearing warning when in multi-select. The warning
+        # sits inline rather than on a third line so the dialog can stay at a fixed 4-line height across
         # both modes.
         hint = Text()
         hint.append(
@@ -424,18 +394,15 @@ class _SortBar(Static, can_focus=True):
 
 
 class _FilterDialog(Static, can_focus=True):
-    """Per-axis filter picker. Shares the same screen slot as
-    ``_SortBar`` and ``_DeleteConfirm`` (the three are mutually
-    exclusive at the VM level).
+    """Per-axis filter picker. Shares the same screen slot as ``_SortBar`` and ``_DeleteConfirm`` (the
+    three are mutually exclusive at the VM level).
 
-    The widget is built to accept multiple filter "categories" — each a
-    ``FilterCategoryViewModel`` subclass — even though the pane currently
-    only carries one (type). The top line shows the category tabs;
-    underneath sits whatever input shape the active category needs.
-    Rendering and key handling dispatch on the concrete category type
-    (currently just ``MultiSelectFilterViewModel``): adding a new
-    category type means a new subclass plus one new branch in both
-    ``_render_active_category`` and the keystroke handlers.
+    The widget is built to accept multiple filter "categories" — each a ``FilterCategoryViewModel``
+    subclass — even though the pane currently only carries one (type). The top line shows the category
+    tabs; underneath sits whatever input shape the active category needs. Rendering and key handling
+    dispatch on the concrete category type (currently just ``MultiSelectFilterViewModel``): adding a new
+    category type means a new subclass plus one new branch in both ``_render_active_category`` and the
+    keystroke handlers.
 
     Keys:
       * ``tab`` / ``shift+tab`` — cycle categories (no-op with one)
@@ -454,8 +421,8 @@ class _FilterDialog(Static, can_focus=True):
         Binding("space", "toggle", show=False),
         Binding("r", "reset", show=False),
         Binding("s", "request_sort", show=False),
-        # ``f`` toggles the dialog closed (symmetric with the
-        # ``f``-opens-it binding on ``_EntriesTable``).
+        # ``f`` toggles the dialog closed (symmetric with the ``f``-opens-it binding on
+        # ``_EntriesTable``).
         Binding("f", "cancel", show=False),
         Binding("escape", "cancel", show=False),
     ]
@@ -494,9 +461,8 @@ class _FilterDialog(Static, can_focus=True):
         active = self._vm.filter_active_category
 
         text = Text()
-        # Line 1 — category tabs. The active tab gets brackets; non-
-        # default categories pick up a green tint so the user can see
-        # at a glance which filters are currently narrowing the view.
+        # Line 1 — category tabs. The active tab gets brackets; non-default categories pick up a green
+        # tint so the user can see at a glance which filters are currently narrowing the view.
         text.append("filter by:  ", style="dim")
         for i, cat in enumerate(categories):
             is_active = active is cat
@@ -516,8 +482,8 @@ class _FilterDialog(Static, can_focus=True):
             text.append_text(self._render_active_category(active))
         text.append("\n")
 
-        # Line 3 — hint, extended with the selection-clearing warning
-        # while multi-select is on (mirrors ``_SortBar``'s pattern).
+        # Line 3 — hint, extended with the selection-clearing warning while multi-select is on (mirrors
+        # ``_SortBar``'s pattern).
         hint = Text()
         bits = []
         if len(categories) > 1:
@@ -538,14 +504,12 @@ class _FilterDialog(Static, can_focus=True):
     def _render_active_category(self, category) -> Text:
         if isinstance(category, MultiSelectFilterViewModel):
             return self._render_multiselect(category)
-        # Defensive: unknown category type — paint a placeholder so we
-        # don't blow up rendering. Concrete handling lands when a new
-        # subclass is added.
+        # Defensive: unknown category type — paint a placeholder so we don't blow up rendering. Concrete
+        # handling lands when a new subclass is added.
         return Text(f"(no renderer for {type(category).__name__})", style="dim")
 
     def _render_multiselect(self, category: MultiSelectFilterViewModel) -> Text:
-        # Cursor colour: bright gold on focus, dim otherwise. Same
-        # convention as ``_SortBar``.
+        # Cursor colour: bright gold on focus, dim otherwise. Same convention as ``_SortBar``.
         cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
         text = Text()
         for i, option in enumerate(category.options):
@@ -588,14 +552,13 @@ class _FilterDialog(Static, can_focus=True):
 
 
 class KnowledgeEntryBrowserPaneView(Vertical):
-    """Minimal view for ``KnowledgeEntryBrowserPaneViewModel``: a DataTable
-    plus a one-line status row beneath. No detail panel, no search bar —
-    those are explicitly out of scope for the first cut (see the braindump
-    and the agreed iteration plan).
+    """Minimal view for ``KnowledgeEntryBrowserPaneViewModel``: a DataTable plus a one-line status row
+    beneath. No detail panel, no search bar — those are explicitly out of scope for the first cut (see
+    the braindump and the agreed iteration plan).
 
-    Columns: id / title / type / topic_id. Title is truncated at render time
-    (column width is bounded by the DataTable's auto-layout). Type renders
-    as the enum value string, or ``—`` for entries with no type set.
+    Columns: id / title / type / topic_id. Title is truncated at render time (column width is bounded by
+    the DataTable's auto-layout). Type renders as the enum value string, or ``—`` for entries with no
+    type set.
     """
 
     DEFAULT_CSS = """
@@ -699,54 +662,44 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        # Tracks the previous ``delete_pending`` so ``_refresh`` can
-        # detect the open / close transition and grab / restore focus.
-        # Without this, opening the dialog wouldn't auto-focus it
-        # (forcing the user to alt-tab around), and closing it would
-        # leave focus on a ``display: none`` widget.
+        # Tracks the previous ``delete_pending`` so ``_refresh`` can detect the open / close transition
+        # and grab / restore focus. Without this, opening the dialog wouldn't auto-focus it (forcing the
+        # user to alt-tab around), and closing it would leave focus on a ``display: none`` widget.
         self._was_delete_pending: bool = False
-        # Same edge-detection pattern for the sort dialog. See the
-        # ``_was_delete_pending`` note above for the rationale.
+        # Same edge-detection pattern for the sort dialog. See the ``_was_delete_pending`` note above
+        # for the rationale.
         self._was_sort_pending: bool = False
         # And the filter dialog.
         self._was_filter_pending: bool = False
-        # Signature of the entries list at the last refresh — a tuple
-        # of entry ids in display order. Used by ``_refresh`` to decide
-        # between a full ``clear()`` + rebuild (when row identity has
-        # actually changed: refetch, delete, load_more) and a cheap
-        # in-place ``update_cell_at`` pass (when only styles or markers
-        # changed: mode toggle, selection toggle, post-edit content
-        # mutation). The in-place path preserves ``DataTable``'s
-        # scroll position and cursor — without it, every selection
-        # toggle resets scroll to 0 and the auto-re-scroll lands the
-        # cursor row at the bottom of the viewport instead of leaving
-        # it where the user had it. ``None`` forces the first refresh
-        # through the rebuild path (the table is empty then anyway).
+        # Signature of the entries list at the last refresh — a tuple of entry ids in display order.
+        # Used by ``_refresh`` to decide between a full ``clear()`` + rebuild (when row identity has
+        # actually changed: refetch, delete, load_more) and a cheap in-place ``update_cell_at`` pass
+        # (when only styles or markers changed: mode toggle, selection toggle, post-edit content
+        # mutation). The in-place path preserves ``DataTable``'s scroll position and cursor — without
+        # it, every selection toggle resets scroll to 0 and the auto-re-scroll lands the cursor row at
+        # the bottom of the viewport instead of leaving it where the user had it. ``None`` forces the
+        # first refresh through the rebuild path (the table is empty then anyway).
         self._last_row_signature: tuple[int, ...] | None = None
 
-    # Max display width for the title column. Anything longer is truncated
-    # by ``DataTable`` (with an ellipsis). 50 is an arbitrary first-cut
-    # tuned against the current sample data; lift if it ever bites.
+    # Max display width for the title column. Anything longer is truncated by ``DataTable`` (with an
+    # ellipsis). 50 is an arbitrary first-cut tuned against the current sample data; lift if it ever
+    # bites.
     _TITLE_COLUMN_WIDTH = 50
 
     def compose(self):
         table = _EntriesTable(
             self._vm, id="entries-table", cursor_type="row", zebra_stripes=True,
         )
-        # ``key`` strings give us a stable per-row id so cursor restoration
-        # across reloads is possible later if we want it. They're not used
-        # by the view today.
-        # ``title`` is the only column with a fixed width — the rest
-        # auto-size to their content. Without the cap, titles like the
-        # 67-character "Linear Algebra: Vector Spaces …" expand the
-        # column to the full width of the longest title, squeezing
-        # everything else.
+        # ``key`` strings give us a stable per-row id so cursor restoration across reloads is possible
+        # later if we want it. They're not used by the view today.
+        # ``title`` is the only column with a fixed width — the rest auto-size to their content. Without
+        # the cap, titles like the 67-character "Linear Algebra: Vector Spaces …" expand the column to
+        # the full width of the longest title, squeezing everything else.
         #
-        # The leading "sel" column is always present (we can't add or
-        # drop columns cleanly after construction). When multi-select
-        # is off the column renders empty; when on, each row shows
-        # ``[ ]`` or ``[x]``. Width 3 fits the marker glyph; DataTable's
-        # default cell padding takes care of the breathing room.
+        # The leading "sel" column is always present (we can't add or drop columns cleanly after
+        # construction). When multi-select is off the column renders empty; when on, each row shows
+        # ``[ ]`` or ``[x]``. Width 3 fits the marker glyph; DataTable's default cell padding takes care
+        # of the breathing room.
         table.add_column("sel", width=3)
         table.add_column("id")
         table.add_column("title", width=self._TITLE_COLUMN_WIDTH)
@@ -764,9 +717,8 @@ class KnowledgeEntryBrowserPaneView(Vertical):
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
-        # If the VM already has data (it was bootstrapped before the view
-        # mounted), paint it on first frame instead of waiting for the next
-        # dirty.
+        # If the VM already has data (it was bootstrapped before the view mounted), paint it on first
+        # frame instead of waiting for the next dirty.
         self._refresh()
 
     def on_unmount(self) -> None:
@@ -775,23 +727,19 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     def _refresh(self) -> None:
         table = self.query_one("#entries-table", DataTable)
         mode = self._vm.multi_select_active
-        # ``-multi-select`` triggers the CSS that darkens the zebra-row
-        # palette while the user is picking.
+        # ``-multi-select`` triggers the CSS that darkens the zebra-row palette while the user is
+        # picking.
         table.set_class(mode, "-multi-select")
 
-        # Three refresh paths, picked by comparing the new id-tuple to
-        # the previously-rendered one:
+        # Three refresh paths, picked by comparing the new id-tuple to the previously-rendered one:
         #
-        #   * ``extend`` — old tuple is a prefix of the new one, length
-        #     grew. ``load_more`` appends rows; we ``add_row`` only the
-        #     new tail. No ``clear``, no cursor restore, scroll stays
+        #   * ``extend`` — old tuple is a prefix of the new one, length grew. ``load_more`` appends
+        #     rows; we ``add_row`` only the new tail. No ``clear``, no cursor restore, scroll stays
         #     where the user left it.
-        #   * ``in-place`` — same tuple. Pure style/marker churn
-        #     (multi-select toggle, selection toggle, post-edit content
-        #     mutation). ``update_cell_at`` per cell preserves scroll +
+        #   * ``in-place`` — same tuple. Pure style/marker churn (multi-select toggle, selection toggle,
+        #     post-edit content mutation). ``update_cell_at`` per cell preserves scroll + cursor.
+        #   * ``rebuild`` — anything else (refetch, delete, reorder). ``clear`` + ``add_row``, restore
         #     cursor.
-        #   * ``rebuild`` — anything else (refetch, delete, reorder).
-        #     ``clear`` + ``add_row``, restore cursor.
         new_signature = tuple(e.id for e in self._vm.entries)
         old_signature = self._last_row_signature
         if new_signature == old_signature:
@@ -813,13 +761,12 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             entry = self._vm.entries[i]
             type_str = entry.entry_type.value if entry.entry_type is not None else "—"
             # Three colouring regimes:
-            #   * not multi-select: zebra-pair text (odd rows dim) so the
-            #     stripe background shows through evenly.
-            #   * multi-select, not selected: same zebra-pair pattern but
-            #     with both colours shifted darker — so the whole table
-            #     reads as muted-but-structured.
-            #   * multi-select, selected: bright green + bold to pop
-            #     against the dimmed sea around them.
+            #   * not multi-select: zebra-pair text (odd rows dim) so the stripe background shows
+            #     through evenly.
+            #   * multi-select, not selected: same zebra-pair pattern but with both colours shifted
+            #     darker — so the whole table reads as muted-but-structured.
+            #   * multi-select, selected: bright green + bold to pop against the dimmed sea around
+            #     them.
             selected = mode and entry.id in self._vm.selected_ids
             if selected:
                 style = "bold #5fd75f"
@@ -828,12 +775,10 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             else:
                 style = "#a0a0a0" if i % 2 else ""
             marker = ("[x]" if selected else "[ ]") if mode else ""
-            # Topic column shows the topic name followed by " [{id}]"
-            # in a fixed dim grey — matches the topic tree's hint style.
-            # ``selectinload`` on ``list_entries_paginated`` ensures
-            # ``entry.topic`` is populated before the session closes;
-            # the defensive fallback to ``topic_id`` is here in case
-            # something ever lands an entry whose topic FK isn't loaded.
+            # Topic column shows the topic name followed by " [{id}]" in a fixed dim grey — matches the
+            # topic tree's hint style. ``selectinload`` on ``list_entries_paginated`` ensures
+            # ``entry.topic`` is populated before the session closes; the defensive fallback to
+            # ``topic_id`` is here in case something ever lands an entry whose topic FK isn't loaded.
             topic_name = entry.topic.name if entry.topic is not None else "?"
             topic_cell = Text.assemble(
                 (topic_name, style),
@@ -847,24 +792,21 @@ class KnowledgeEntryBrowserPaneView(Vertical):
                 topic_cell,
             )
             if path == "inplace":
-                # Overwrite each cell in row ``i``. Style is carried
-                # inside each ``Text`` value so this picks up the new
-                # colours/bold for free.
+                # Overwrite each cell in row ``i``. Style is carried inside each ``Text`` value so this
+                # picks up the new colours/bold for free.
                 for col, value in enumerate(cells):
                     table.update_cell_at(Coordinate(i, col), value)
             else:
-                # ``rebuild`` and ``extend`` both append via ``add_row``.
-                # The difference is whether ``clear()`` ran above.
+                # ``rebuild`` and ``extend`` both append via ``add_row``. The difference is whether
+                # ``clear()`` ran above.
                 table.add_row(*cells, key=str(entry.id))
         self._last_row_signature = new_signature
 
-        # After a rebuild, ``table.clear()`` reset the table cursor to
-        # row 0. Push the VM's cursor back into the table so the
-        # highlight lands on the row the VM expects. ``move_cursor``
-        # fires ``RowHighlighted``, which round-trips into
-        # ``vm.set_cursor`` — the early-return-on-equality there keeps
-        # this from looping. On the ``extend`` and ``inplace`` paths
-        # the cursor was never disturbed, so we skip this entirely.
+        # After a rebuild, ``table.clear()`` reset the table cursor to row 0. Push the VM's cursor back
+        # into the table so the highlight lands on the row the VM expects. ``move_cursor`` fires
+        # ``RowHighlighted``, which round-trips into ``vm.set_cursor`` — the early-return-on-equality
+        # there keeps this from looping. On the ``extend`` and ``inplace`` paths the cursor was never
+        # disturbed, so we skip this entirely.
         if (
             path == "rebuild"
             and self._vm.entries
@@ -875,14 +817,11 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         status = self.query_one("#pane-status", Static)
         status.update(self._format_status())
 
-        # Three-dialog visibility + coordinated focus rescue. The
-        # ``_was_*`` edge detectors mirror the ``_was_dirty`` pattern in
-        # ``EntryDetailsView``; the open/close logic has to coordinate
-        # across all three because a swap (e.g. ``s`` pressed while the
-        # filter dialog is open) closes one and opens another in the
-        # *same* refresh — running each dialog's focus rescue
-        # independently lets the closing one's "restore focus to
-        # table" overwrite the opening one's "focus dialog" grab.
+        # Three-dialog visibility + coordinated focus rescue. The ``_was_*`` edge detectors mirror the
+        # ``_was_dirty`` pattern in ``EntryDetailsView``; the open/close logic has to coordinate across
+        # all three because a swap (e.g. ``s`` pressed while the filter dialog is open) closes one and
+        # opens another in the *same* refresh — running each dialog's focus rescue independently lets
+        # the closing one's "restore focus to table" overwrite the opening one's "focus dialog" grab.
         delete_dialog = self.query_one("#delete-confirm", _DeleteConfirm)
         sort_bar = self.query_one("#sort-bar", _SortBar)
         filter_dialog = self.query_one("#filter-dialog", _FilterDialog)
@@ -895,12 +834,10 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         sort_bar.set_class(sort_pending, "-visible")
         filter_dialog.set_class(filter_pending, "-visible")
 
-        # Resolve focus once after all visibility flips are queued.
-        # Opens beat closes — if any dialog just opened, grab focus to
-        # it (priority order: filter, sort, delete, matching the VM's
-        # mutual-exclusion preference). Otherwise, if at least one
-        # dialog just closed *and* nothing is currently open, restore
-        # focus to the table.
+        # Resolve focus once after all visibility flips are queued. Opens beat closes — if any dialog
+        # just opened, grab focus to it (priority order: filter, sort, delete, matching the VM's
+        # mutual-exclusion preference). Otherwise, if at least one dialog just closed *and* nothing is
+        # currently open, restore focus to the table.
         just_opened_filter = filter_pending and not self._was_filter_pending
         just_opened_sort = sort_pending and not self._was_sort_pending
         just_opened_delete = delete_pending and not self._was_delete_pending
@@ -921,8 +858,8 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             try:
                 self.query_one("#entries-table", DataTable).focus()
             except Exception:
-                # Table may have been unmounted (e.g. pane swap
-                # mid-close); let focus settle wherever Textual puts it.
+                # Table may have been unmounted (e.g. pane swap mid-close); let focus settle wherever
+                # Textual puts it.
                 pass
 
         self._was_delete_pending = delete_pending
@@ -933,20 +870,17 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     # Cross-region focus (driven by ``BrowserView``'s alt+left/right)
     # ------------------------------------------------------------------
     #
-    # Two regions at this level: the entries table and the details
-    # panel. The details panel has its own internal cycle (title →
-    # content → choices) which we delegate to ``EntryDetailsView``. The
-    # bool returns let the ``BrowserView`` know when the pane is at its
-    # leftmost edge so it can roll focus back to the tree.
+    # Two regions at this level: the entries table and the details panel. The details panel has its own
+    # internal cycle (title → content → choices) which we delegate to ``EntryDetailsView``. The bool
+    # returns let the ``BrowserView`` know when the pane is at its leftmost edge so it can roll focus
+    # back to the tree.
 
     def focus_first(self) -> None:
-        """Entry point when ``BrowserView`` enters the pane from the
-        tree. Land on the leftmost focusable sub-region — normally the
-        table, but if a dialog is open we re-focus it instead so the
-        user picks up where they left off after a tree side-trip
-        (alt+left from a dialog hops back to the tree). The three
-        dialogs are mutually exclusive at the VM level so this order
-        of checks only documents priority."""
+        """Entry point when ``BrowserView`` enters the pane from the tree. Land on the leftmost
+        focusable sub-region — normally the table, but if a dialog is open we re-focus it instead so the
+        user picks up where they left off after a tree side-trip (alt+left from a dialog hops back to
+        the tree). The three dialogs are mutually exclusive at the VM level so this order of checks only
+        documents priority."""
         if self._vm.filter_pending:
             try:
                 self.query_one("#filter-dialog", _FilterDialog).focus()
@@ -972,19 +906,17 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table = self.query_one("#entries-table", DataTable)
         details = self.query_one(EntryDetailsView)
         if focused is table:
-            # While multi-select is on, the details panel is frozen and
-            # has no useful edit affordances — short-circuit the
-            # transition so ``alt+right`` keeps the user on the table.
-            # Returning False here lets ``BrowserView.action_focus_right``
-            # treat the table as the rightmost edge.
+            # While multi-select is on, the details panel is frozen and has no useful edit affordances —
+            # short-circuit the transition so ``alt+right`` keeps the user on the table. Returning False
+            # here lets ``BrowserView.action_focus_right`` treat the table as the rightmost edge.
             if self._vm.multi_select_active:
                 return False
             details.focus_first()
             return True
         if focused is not None and details in focused.ancestors_with_self:
             return details.focus_next_region()
-        # Defensive fallback: focus was somewhere unexpected inside the
-        # pane. Start the cycle from the leftmost region.
+        # Defensive fallback: focus was somewhere unexpected inside the pane. Start the cycle from the
+        # leftmost region.
         self.focus_first()
         return True
 
@@ -993,8 +925,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table = self.query_one("#entries-table", DataTable)
         details = self.query_one(EntryDetailsView)
         if focused is table:
-            # Pane's leftmost edge — let ``BrowserView`` hand focus to
-            # the tree.
+            # Pane's leftmost edge — let ``BrowserView`` hand focus to the tree.
             return False
         if focused is not None and details in focused.ancestors_with_self:
             moved = details.focus_prev_region()
@@ -1013,10 +944,9 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     ) -> None:
         """Table cursor moved — push the row index into the VM.
 
-        The VM's ``set_cursor`` no-ops if the index is unchanged, so this
-        is safe to fire from programmatic ``move_cursor`` calls during
-        ``_refresh`` (and from the initial mount, where the table seeds
-        its cursor to row 0).
+        The VM's ``set_cursor`` no-ops if the index is unchanged, so this is safe to fire from
+        programmatic ``move_cursor`` calls during ``_refresh`` (and from the initial mount, where the
+        table seeds its cursor to row 0).
         """
         if event.data_table.id != "entries-table":
             return
@@ -1026,17 +956,16 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         if self._vm.is_loading:
             return "loading…"
         if self._vm.multi_select_active:
-            # Multi-select takes over the status line — the "N of M"
-            # hint is still useful but secondary, so we lead with the
-            # selection count.
+            # Multi-select takes over the status line — the "N of M" hint is still useful but
+            # secondary, so we lead with the selection count.
             count = len(self._vm.selected_ids)
             noun = "entry" if count == 1 else "entries"
             return f"multi-select: {count} {noun} selected (m to exit, space to toggle)"
         total = self._vm.total
         loaded = len(self._vm.entries)
         if total is None:
-            # Window fetched but count not yet in — happens briefly between
-            # the two queries in ``_fetch``.
+            # Window fetched but count not yet in — happens briefly between the two queries in
+            # ``_fetch``.
             if loaded == 0:
                 return "no entries"
             return f"{loaded} loaded"
