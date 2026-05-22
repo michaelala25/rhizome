@@ -12,7 +12,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 
 from .entry_details import EntryDetailsView
 from .view_model import (
@@ -91,6 +91,92 @@ class _EntriesTable(DataTable):
 
     def action_request_filter(self) -> None:
         self._vm.request_filter()
+
+
+class _SearchInput(Input):
+    """Search box mounted above the entries table.
+
+    Visually mirrors the entry-detail title field: 3-row tight box,
+    transparent background, ``#3a3a3a`` border that flips accent on
+    focus. The keybinding hint rides the top border on the right
+    (``border_title`` + ``border_title_align = "right"``) — same
+    space the dialogs use for their hint lines, but here we save a
+    full row by fusing it into the border.
+
+    Input state:
+      * ``enter`` — submit current buffer to ``vm.set_search``.
+      * ``esc`` × 2 — clear buffer + submit empty query (reset). The
+        first esc arms; the second clears. Any non-``esc`` key
+        disarms, so a stray esc followed by editing doesn't leave
+        the next esc as a surprise nuke.
+
+    The state machine lives here (rather than on a parent wrapper)
+    because ``Input`` consumes character keystrokes before they
+    bubble, so a parent ``on_key`` would never see "user typed
+    something" — the signal we need to disarm.
+    """
+
+    DEFAULT_CSS = """
+    _SearchInput {
+        background: transparent;
+        border: solid #3a3a3a;
+        height: 3;
+        padding: 0 1;
+    }
+    _SearchInput:focus {
+        border: solid $accent;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "handle_escape", show=False),
+    ]
+
+    def __init__(
+        self,
+        view_model: KnowledgeEntryBrowserPaneViewModel,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._vm = view_model
+        self.armed_for_clear: bool = False
+        # Border-title hint mounted to the right of the top border,
+        # mirroring how IDE search boxes surface their keyboard hints
+        # at the edge of the box rather than in a separate row.
+        self.border_title_align = "right"
+        self._refresh_title()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Submit handler lives on the input itself rather than the
+        # pane view so the search bar is self-contained — the only
+        # outward coupling is the ``vm.set_search`` call.
+        if event.input is not self:
+            return
+        self._vm.set_search(event.value)
+
+    def action_handle_escape(self) -> None:
+        if self.armed_for_clear:
+            self.value = ""
+            self._vm.set_search("")
+            self.armed_for_clear = False
+        else:
+            self.armed_for_clear = True
+        self._refresh_title()
+
+    def on_key(self, event) -> None:
+        """Disarm on any non-escape key. Runs before the binding
+        dispatch (so escape's own action still fires) and before
+        ``Input``'s default character-insertion handling (so editing
+        still works untouched)."""
+        if event.key != "escape" and self.armed_for_clear:
+            self.armed_for_clear = False
+            self._refresh_title()
+
+    def _refresh_title(self) -> None:
+        if self.armed_for_clear:
+            self.border_title = "[bold #ff8787]press esc again to clear[/]"
+        else:
+            self.border_title = "[dim]enter to submit • esc × 2 to clear[/]"
 
 
 class _DeleteConfirm(Static, can_focus=True):
@@ -501,8 +587,16 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         layout: horizontal;
         height: 1fr;
     }
-    KnowledgeEntryBrowserPaneView #entries-table {
+    /* Left column of the pane body: search bar over the entries
+       table. The 60% width that used to live on ``#entries-table``
+       moved up to this container, so the table fills its parent.  */
+    KnowledgeEntryBrowserPaneView #table-column {
         width: 60%;
+        height: 1fr;
+        layout: vertical;
+    }
+    KnowledgeEntryBrowserPaneView #entries-table {
+        width: 1fr;
         height: 1fr;
     }
     /* Multi-select wash: keep the zebra alternation but shift both rows
@@ -637,7 +731,9 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table.add_column("type")
         table.add_column("topic")
         with Horizontal(id="pane-body"):
-            yield table
+            with Vertical(id="table-column"):
+                yield _SearchInput(self._vm, id="search-input")
+                yield table
             yield EntryDetailsView(self._vm.details)
         yield _DeleteConfirm(self._vm, id="delete-confirm")
         yield _SortBar(self._vm, id="sort-bar")

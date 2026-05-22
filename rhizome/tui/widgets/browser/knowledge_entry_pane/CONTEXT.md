@@ -21,14 +21,39 @@ components living in their own subdirectories.
   dirty, `_on_details_saved` repaint, etc.).
 
 - **view.py — `KnowledgeEntryBrowserPaneView`**: `Vertical` containing a
-  `Horizontal #pane-body` (table at 60%, `EntryDetailsView` at 40%) and a
-  docked one-line status row. The DataTable is a thin `_EntriesTable`
+  `Horizontal #pane-body` and a docked one-line status row. The body
+  splits into a 60% `#table-column` (a `Vertical` housing the
+  `_SearchInput` over the entries `DataTable`) and a 40%
+  `EntryDetailsView`. The DataTable is a thin `_EntriesTable`
   subclass that owns the `m` (toggle multi-select) / `space` (toggle
   current row) keybindings. Implements the pane-view focus contract
   (`focus_first` / `focus_next_region` / `focus_prev_region`) and
   delegates the details region's internal cycle to `EntryDetailsView`.
   `focus_next_region` short-circuits the table → details transition
   while multi-select is active so `alt+right` keeps focus on the table.
+
+## Search
+
+`_SearchInput` sits above the entries table inside `#table-column`.
+Visually mirrors the entry-detail title field — 3-row tight box,
+transparent background, `#3a3a3a` border that flips accent on focus.
+The keybinding hint rides the top border on the right
+(`border_title_align = "right"`): default state `enter to submit •
+esc × 2 to clear` in dim; armed-for-clear state `press esc again to
+clear` in bold red.
+
+State flow: typing buffers the query locally; `enter` propagates to
+`vm.set_search` which triggers a refetch via the existing
+search/sort plumbing. `esc` arms a clear, the second `esc` blanks
+the value and submits the empty query (the natural "no filter"
+state). Any non-`esc` key disarms — sits inside `_SearchInput`
+itself (rather than a parent wrapper) because Input consumes
+character keystrokes before they bubble, so only the focused widget
+sees the "user typed something" signal needed to disarm.
+
+Excluded from the pane's `alt+left/right` focus walk for now; the
+user engages the bar by clicking (or via Textual's default `tab`
+focus order).
 
 ## Multi-select
 
