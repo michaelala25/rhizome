@@ -2,11 +2,11 @@
 
 from typing import Iterable, Literal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from rhizome.db import KnowledgeEntry
+from rhizome.db import KnowledgeEntry, Topic
 from rhizome.db.models import EntryType
 from rhizome.logs import get_logger
 
@@ -15,14 +15,46 @@ _logger = get_logger("tools.entries")
 
 # Columns the browser pane is allowed to sort by. Keep this tight rather than
 # accepting arbitrary strings — it makes the SQL untrusted-input-proof and
-# documents the supported axes in one place.
-EntrySortKey = Literal["id", "title", "created_at", "updated_at"]
-_SORT_COLUMNS = {
+# documents the supported axes in one place. "type" and "topic" are
+# non-column sorts (CASE expression and joined column respectively); see
+# ``_sort_expression`` for the dispatch.
+EntrySortKey = Literal[
+    "id", "title", "type", "topic", "created_at", "updated_at",
+]
+_SIMPLE_SORT_COLUMNS = {
     "id": KnowledgeEntry.id,
     "title": KnowledgeEntry.title,
     "created_at": KnowledgeEntry.created_at,
     "updated_at": KnowledgeEntry.updated_at,
 }
+
+
+def _sort_expression(sort_by: EntrySortKey):
+    """Return ``(expr, requires_topic_join)`` for a sort key.
+
+    ``expr`` is the SQL expression to ``ORDER BY``; ``requires_topic_join``
+    is True for sort keys that need a JOIN onto the ``Topic`` table
+    (currently just ``"topic"``). Simple column sorts fall through the
+    lookup; ``"type"`` uses a ``CASE`` to lock the semantic order
+    ``fact → exposition → overview`` rather than the natural string sort
+    (which would put ``exposition`` first); ``"topic"`` joins ``Topic``
+    and sorts on a lowered name for case-insensitive comparison.
+    """
+    if sort_by in _SIMPLE_SORT_COLUMNS:
+        return _SIMPLE_SORT_COLUMNS[sort_by], False
+    if sort_by == "type":
+        return (
+            case(
+                (KnowledgeEntry.entry_type == EntryType.fact, 0),
+                (KnowledgeEntry.entry_type == EntryType.exposition, 1),
+                (KnowledgeEntry.entry_type == EntryType.overview, 2),
+                else_=3,
+            ),
+            False,
+        )
+    if sort_by == "topic":
+        return func.lower(Topic.name), True
+    raise ValueError(f"Unsupported sort key: {sort_by!r}")
 
 
 async def create_entry(
@@ -199,12 +231,14 @@ async def list_entries_paginated(
         across pages when the primary key has ties (e.g. multiple rows with the
         same ``created_at`` at second granularity).
     """
-    column = _SORT_COLUMNS[sort_by]
-    direction = column.asc() if sort_dir == "asc" else column.desc()
+    expr, needs_topic_join = _sort_expression(sort_by)
+    direction = expr.asc() if sort_dir == "asc" else expr.desc()
     # Stable tiebreaker on id so pagination doesn't shuffle rows with equal sort keys.
     tiebreaker = KnowledgeEntry.id.asc() if sort_dir == "asc" else KnowledgeEntry.id.desc()
 
     stmt = select(KnowledgeEntry).options(selectinload(KnowledgeEntry.topic))
+    if needs_topic_join:
+        stmt = stmt.join(Topic, KnowledgeEntry.topic_id == Topic.id)
     stmt = _apply_entry_filters(stmt, topic_ids=topic_ids, search=search)
     stmt = stmt.order_by(direction, tiebreaker).limit(limit).offset(offset)
     result = await session.execute(stmt)

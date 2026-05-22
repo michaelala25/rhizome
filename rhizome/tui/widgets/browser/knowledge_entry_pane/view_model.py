@@ -38,6 +38,13 @@ _logger = get_logger("browser.knowledge_entry_pane")
 # change; switching to keyset pagination is the longer-term migration.
 DEFAULT_PAGE_LIMIT = 500
 
+# The sort axes the UI lets the user pick from. Ordered left-to-right
+# the way they're laid out in the sort dialog (which mirrors the data
+# table's column order). The DB op accepts a wider set (``created_at`` /
+# ``updated_at``) for backward compat; the dialog deliberately surfaces
+# only the four most useful axes.
+SORT_OPTIONS: tuple[EntrySortKey, ...] = ("id", "title", "type", "topic")
+
 
 class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     """Concrete pane VM for browsing knowledge entries."""
@@ -62,9 +69,11 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._has_more: bool = False
 
         # Search/sort state. ``_search`` is an empty string when no search is
-        # active — the DB op treats falsy strings as "no filter".
+        # active — the DB op treats falsy strings as "no filter". Default
+        # sort is ``id`` (matches the UI's default position in the sort
+        # dialog and gives the user a stable, predictable initial view).
         self._search: str = ""
-        self._sort_by: EntrySortKey = "created_at"
+        self._sort_by: EntrySortKey = "id"
         self._sort_dir: Literal["asc", "desc"] = "asc"
 
         # Row cursor within the currently-loaded window. The view owns
@@ -88,6 +97,12 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # / ``cancel_delete`` are the only exits.
         self._delete_pending: bool = False
         self._delete_choice_cursor: int = 0
+
+        # Pending sort dialog. ``_sort_cursor`` indexes into ``SORT_OPTIONS``
+        # — initialized lazily by ``request_sort`` so it lands on the
+        # currently-active sort key.
+        self._sort_pending: bool = False
+        self._sort_cursor: int = 0
 
         # The detail panel's VM. We push it the cursor's entry via
         # ``_sync_details`` whenever the cursor moves or the window
@@ -160,6 +175,14 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     @property
     def delete_choice_cursor(self) -> int:
         return self._delete_choice_cursor
+
+    @property
+    def sort_pending(self) -> bool:
+        return self._sort_pending
+
+    @property
+    def sort_cursor(self) -> int:
+        return self._sort_cursor
 
     # ------------------------------------------------------------------
     # Mutators
@@ -326,6 +349,76 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._sync_details()
         self._details.set_multi_select(self._multi_select_active, 0)
         self.emit(self.dirty)
+
+    def request_sort(self) -> None:
+        """Open the sort dialog. Sort takes priority over delete — any
+        pending delete-confirm is dismissed first so the user doesn't end
+        up with both dialogs jockeying for the same screen slot. The
+        cursor lands on the currently-active sort axis so the most common
+        action (toggle direction of the active sort) is a single ``enter``
+        away. Idempotent when the dialog is already open."""
+        if self._sort_pending:
+            return
+        self._delete_pending = False
+        self._delete_choice_cursor = 0
+        self._sort_pending = True
+        try:
+            self._sort_cursor = SORT_OPTIONS.index(self._sort_by)
+        except ValueError:
+            # Active sort isn't in the UI's surfaced set (e.g. legacy
+            # ``created_at`` from an older session). Park on ``id``.
+            self._sort_cursor = 0
+        self.emit(self.dirty)
+
+    def cancel_sort(self) -> None:
+        """Dismiss the sort dialog without applying anything."""
+        if not self._sort_pending:
+            return
+        self._sort_pending = False
+        self.emit(self.dirty)
+
+    def move_sort_cursor(self, direction: int) -> None:
+        """Move the sort-axis cursor left (-1) or right (+1) with wrap.
+        No-op when the dialog isn't open."""
+        if not self._sort_pending:
+            return
+        new = (self._sort_cursor + direction) % len(SORT_OPTIONS)
+        if new == self._sort_cursor:
+            return
+        self._sort_cursor = new
+        self.emit(self.dirty)
+
+    def apply_sort(self) -> None:
+        """Confirm the highlighted axis. If it matches the current sort,
+        flip the direction; otherwise switch to that axis in ascending
+        order. Either way, **clears any active selection** — the
+        ``LIMIT 500`` window is reshuffled by a refetch, and tracking
+        selections across windows that don't necessarily include the
+        same rows is more trouble than it's worth (see the dialog hint).
+        Closes the dialog regardless of outcome."""
+        if not self._sort_pending:
+            return
+        chosen = SORT_OPTIONS[self._sort_cursor]
+        if chosen == self._sort_by:
+            new_dir: Literal["asc", "desc"] = (
+                "desc" if self._sort_dir == "asc" else "asc"
+            )
+        else:
+            new_dir = "asc"
+        self._sort_pending = False
+
+        # Drop selections before triggering the refetch. We do this even
+        # when the chosen sort matches the current one (direction-flip)
+        # because the row order — and thus what the user "selected by
+        # position" — has changed.
+        if self._selected_ids:
+            self._selected_ids.clear()
+            if self._multi_select_active:
+                self._details.set_multi_select(True, 0)
+
+        # ``set_sort`` short-circuits when nothing changed, so direction
+        # toggles still go through the refetch path.
+        self.set_sort(chosen, new_dir)
 
     def _sync_details(self) -> None:
         """Push the cursor's entry (or ``None``) into the detail sub-VM.

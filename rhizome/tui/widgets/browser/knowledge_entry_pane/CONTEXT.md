@@ -54,6 +54,37 @@ list — the title/content of the cursor's entry stay visible (the
 cursor still drives `set_entry`) but the user can't make edits until
 they exit multi-select.
 
+### Sort
+
+Pressing `s` while the entries table is focused opens a horizontal
+sort-axis picker (`_SortBar`) mounted in the same screen slot as the
+delete dialog (the VM enforces mutual exclusion — `request_sort`
+dismisses any pending delete first; pressing `s` from inside the
+delete dialog swaps dialogs in one step via a binding on
+`_DeleteConfirm`).
+
+The dialog surfaces four axes — `id`, `title`, `type`, `topic` —
+mirroring the data table's column order left-to-right. `left` / `right`
+move the cursor (with wrap); `enter` applies the highlighted axis,
+toggling direction when it matches the current sort and otherwise
+switching to that axis in ascending order; `s` / `escape` dismiss
+without applying. The active sort renders with an arrow + brackets
+(`↑[id]`); the cursor option is shown in bold gold on focus / bold
+grey otherwise.
+
+The DB op gets a small expansion to support the two non-column axes:
+`type` uses a `CASE` expression (locks the semantic order
+fact → exposition → overview rather than the natural string sort
+which puts exposition first), and `topic` joins onto the `Topic` table
+and orders on `lower(Topic.name)` for case-insensitive alpha.
+
+**Applying a sort clears any active selection.** A new sort means a
+new `LIMIT 500` window — different rows may end up in scope — and
+tracking selections across windows that don't necessarily contain the
+same entries is more complexity than the feature warrants. The
+multi-select dialog hint surfaces this in red while picking; the mode
+itself stays on, just with an empty set.
+
 ### Bulk delete
 
 While multi-select is on with a non-empty selection, pressing `d`

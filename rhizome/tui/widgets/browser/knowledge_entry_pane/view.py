@@ -15,7 +15,7 @@ from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Static
 
 from .entry_details import EntryDetailsView
-from .view_model import KnowledgeEntryBrowserPaneViewModel
+from .view_model import SORT_OPTIONS, KnowledgeEntryBrowserPaneViewModel
 
 
 class _EntriesTable(DataTable):
@@ -35,6 +35,10 @@ class _EntriesTable(DataTable):
         # with a non-empty selection; the VM guards both, so we can fire
         # it unconditionally.
         Binding("d", "request_delete", show=False),
+        # ``s`` opens the sort dialog. Available in both regular and
+        # multi-select mode (the VM clears any selection when the sort
+        # is applied — see the dialog warning).
+        Binding("s", "request_sort", show=False),
     ]
 
     def __init__(
@@ -54,6 +58,9 @@ class _EntriesTable(DataTable):
     def action_request_delete(self) -> None:
         self._vm.request_delete()
 
+    def action_request_sort(self) -> None:
+        self._vm.request_sort()
+
 
 class _DeleteConfirm(Static, can_focus=True):
     """Bulk-delete confirmation dialog. Mirrors ``_ChoicesList`` from
@@ -71,6 +78,11 @@ class _DeleteConfirm(Static, can_focus=True):
         Binding("down", "choice_down", show=False),
         Binding("enter", "choice_confirm", show=False),
         Binding("escape", "cancel", show=False),
+        # Sort takes priority over delete — pressing ``s`` from inside
+        # the delete dialog dismisses it and opens the sort bar in one
+        # step. ``vm.request_sort`` is the path that enforces the
+        # priority (it cancels any pending delete before opening sort).
+        Binding("s", "request_sort", show=False),
     ]
 
     def __init__(
@@ -142,6 +154,117 @@ class _DeleteConfirm(Static, can_focus=True):
     def action_cancel(self) -> None:
         self._vm.cancel_delete()
 
+    def action_request_sort(self) -> None:
+        self._vm.request_sort()
+
+
+class _SortBar(Static, can_focus=True):
+    """Sort-axis picker dialog. Sits in the same screen slot as
+    ``_DeleteConfirm`` — only one is ever visible at a time, and the
+    VM enforces priority (``request_sort`` cancels any pending delete).
+
+    Renders horizontally, mirroring the data table's column order:
+    ``id   title   type   topic``. The active sort is decorated with
+    an arrow (``↑`` / ``↓``) and brackets; the cursor option is shown
+    in a bold accent colour (no ``►`` prefix — keeping the row at a
+    fixed width avoids the option labels jumping around as the cursor
+    moves). A second line carries a help hint, extended with a
+    selection-clearing warning while multi-select is on.
+
+    Keys: ``left`` / ``right`` move the cursor (with wrap); ``enter``
+    applies (toggles direction when on the active axis, otherwise
+    switches to that axis ascending); ``s`` and ``escape`` dismiss
+    without applying.
+    """
+
+    BINDINGS = [
+        Binding("left", "cursor_left", show=False),
+        Binding("right", "cursor_right", show=False),
+        Binding("enter", "apply", show=False),
+        # ``s`` toggles the dialog closed — symmetric with the
+        # ``s``-opens-it binding on ``_EntriesTable``.
+        Binding("s", "cancel", show=False),
+        Binding("escape", "cancel", show=False),
+    ]
+
+    def __init__(
+        self,
+        view_model: KnowledgeEntryBrowserPaneViewModel,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._vm = view_model
+
+    def on_mount(self) -> None:
+        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._refresh()
+
+    def on_unmount(self) -> None:
+        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+
+    def on_focus(self) -> None:
+        # Cursor colour brightens on focus, same convention as the
+        # ``_ChoicesList`` / ``_DeleteConfirm`` widgets.
+        self.call_after_refresh(self._refresh)
+
+    def on_blur(self) -> None:
+        self.call_after_refresh(self._refresh)
+
+    def _refresh(self) -> None:
+        self.update(self._render_bar())
+
+    def _render_bar(self) -> Text:
+        active_idx = (
+            SORT_OPTIONS.index(self._vm.sort_by)
+            if self._vm.sort_by in SORT_OPTIONS
+            else -1
+        )
+        arrow = "↑" if self._vm.sort_dir == "asc" else "↓"
+        # Cursor colour: bright gold on focus, dim grey otherwise. The
+        # active axis itself always renders in the default fg so the
+        # arrow + brackets carry the "this is the live sort" signal.
+        cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
+
+        text = Text()
+        for i, option in enumerate(SORT_OPTIONS):
+            is_active = i == active_idx
+            is_cursor = i == self._vm.sort_cursor
+            label = f"{arrow}[{option}]" if is_active else option
+            if is_cursor:
+                style = cursor_color
+            elif is_active:
+                style = ""  # default fg
+            else:
+                style = "#787878"
+            text.append(label, style=style)
+            if i < len(SORT_OPTIONS) - 1:
+                text.append("   ")
+        text.append("\n")
+
+        # Help line — extended with the selection-clearing warning when
+        # in multi-select. The warning sits inline rather than on a third
+        # line so the dialog can stay at a fixed 4-line height across
+        # both modes.
+        hint = Text()
+        hint.append("← / → move • enter apply • s/esc dismiss", style="dim")
+        if self._vm.multi_select_active:
+            hint.append("   ", style="dim")
+            hint.append("Applying clears your selection.", style="#ff8787")
+        text.append(hint)
+        return text
+
+    def action_cursor_left(self) -> None:
+        self._vm.move_sort_cursor(-1)
+
+    def action_cursor_right(self) -> None:
+        self._vm.move_sort_cursor(1)
+
+    def action_apply(self) -> None:
+        self._vm.apply_sort()
+
+    def action_cancel(self) -> None:
+        self._vm.cancel_sort()
+
 
 class KnowledgeEntryBrowserPaneView(Vertical):
     """Minimal view for ``KnowledgeEntryBrowserPaneViewModel``: a DataTable
@@ -206,6 +329,21 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     KnowledgeEntryBrowserPaneView #delete-confirm:focus {
         border-top: solid $accent;
     }
+    KnowledgeEntryBrowserPaneView #sort-bar {
+        /* 2 lines of content (options + hint) plus the ``border-top``. */
+        height: 3;
+        margin: 1 0 0 0;
+        padding: 0 1;
+        border-top: solid #3a3a3a;
+        color: rgb(200,200,200);
+        display: none;
+    }
+    KnowledgeEntryBrowserPaneView #sort-bar.-visible {
+        display: block;
+    }
+    KnowledgeEntryBrowserPaneView #sort-bar:focus {
+        border-top: solid $accent;
+    }
     """
 
     def __init__(
@@ -221,6 +359,9 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         # (forcing the user to alt-tab around), and closing it would
         # leave focus on a ``display: none`` widget.
         self._was_delete_pending: bool = False
+        # Same edge-detection pattern for the sort dialog. See the
+        # ``_was_delete_pending`` note above for the rationale.
+        self._was_sort_pending: bool = False
         # Signature of the entries list at the last refresh — a tuple
         # of entry ids in display order. Used by ``_refresh`` to decide
         # between a full ``clear()`` + rebuild (when row identity has
@@ -267,6 +408,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             yield table
             yield EntryDetailsView(self._vm.details)
         yield _DeleteConfirm(self._vm, id="delete-confirm")
+        yield _SortBar(self._vm, id="sort-bar")
         yield Static("", id="pane-status")
 
     def on_mount(self) -> None:
@@ -381,6 +523,23 @@ class KnowledgeEntryBrowserPaneView(Vertical):
                 pass
         self._was_delete_pending = pending
 
+        # Same shape for the sort bar. Because ``request_sort`` is the
+        # only path that opens it (and that path explicitly cancels any
+        # pending delete first), the two dialogs are guaranteed
+        # mutually exclusive — we don't have to coordinate their
+        # focus-grab races here.
+        sort_bar = self.query_one("#sort-bar", _SortBar)
+        sort_pending = self._vm.sort_pending
+        sort_bar.set_class(sort_pending, "-visible")
+        if sort_pending and not self._was_sort_pending:
+            sort_bar.focus()
+        elif self._was_sort_pending and not sort_pending:
+            try:
+                self.query_one("#entries-table", DataTable).focus()
+            except Exception:
+                pass
+        self._was_sort_pending = sort_pending
+
     # ------------------------------------------------------------------
     # Cross-region focus (driven by ``BrowserView``'s alt+left/right)
     # ------------------------------------------------------------------
@@ -394,16 +553,23 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     def focus_first(self) -> None:
         """Entry point when ``BrowserView`` enters the pane from the
         tree. Land on the leftmost focusable sub-region — normally the
-        table, but if the delete-confirm dialog is open we re-focus it
-        instead so the user picks up where they left off after a tree
-        side-trip (alt+left from the dialog hops back to the tree)."""
+        table, but if a dialog is open we re-focus it instead so the
+        user picks up where they left off after a tree side-trip
+        (alt+left from a dialog hops back to the tree). ``sort_pending``
+        and ``delete_pending`` are mutually exclusive (``request_sort``
+        cancels any pending delete), so the order of checks here only
+        matters as documentation of priority."""
+        if self._vm.sort_pending:
+            try:
+                self.query_one("#sort-bar", _SortBar).focus()
+                return
+            except Exception:
+                pass
         if self._vm.delete_pending:
             try:
                 self.query_one("#delete-confirm", _DeleteConfirm).focus()
                 return
             except Exception:
-                # Fall through to the normal landing if the dialog
-                # isn't mounted yet.
                 pass
         self.query_one("#entries-table", DataTable).focus()
 
