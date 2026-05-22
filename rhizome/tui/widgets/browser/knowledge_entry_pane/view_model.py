@@ -474,12 +474,13 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._request_fetch()
 
     def set_cursor(self, index: int) -> None:
-        """Move the row cursor. Clamped to the loaded window.
+        """Move the row cursor. Clamped to the loaded window. Pushes the new cursor's entry into
+        ``self._details`` and emits ``dirty`` so the view repaints.
 
-        Pushes the new cursor's entry into ``self._details``; does **not** emit ``dirty`` itself, because
-        the pane view's ``_refresh`` does a full table rebuild and rebuilding while the cursor is mid-move
-        causes a feedback loop with ``DataTable``'s ``RowHighlighted`` event. Cursor moves are visible via
-        the ``DataTable``'s own cursor rendering and via the detail panel's dirty.
+        The repaint includes a programmatic ``move_cursor`` on the rebuild path, which fires another
+        ``DataTable.RowHighlighted`` and re-enters this method via ``on_data_table_row_highlighted``.
+        That second call is a no-op thanks to the index-equality guard below — the bounce dies in one
+        round-trip rather than looping.
 
         Note: the cursor is intentionally an index, not an entry id, because navigation is a window-local
         concern — after ``load_more`` extends the window, the same cursor position points at the same row.
@@ -493,6 +494,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._cursor = new
         self._sync_details()
         self._sync_linked_flashcards()
+        self.emit(self.dirty)
 
     def toggle_multi_select(self) -> None:
         """Flip multi-select mode. Turning the mode **off** abandons the current selection (clears

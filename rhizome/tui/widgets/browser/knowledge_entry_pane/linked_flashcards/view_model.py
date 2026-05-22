@@ -124,6 +124,15 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
     def is_loading(self) -> bool:
         return self._is_loading
 
+    @property
+    def cursor_flashcard(self) -> Flashcard | None:
+        """The flashcard currently under the cursor, or ``None`` when the window is empty / cursor is
+        out of bounds. Convenience for preview panes that need to read the current row without
+        recomputing the bounds-check."""
+        if not self._flashcards or self._cursor >= len(self._flashcards):
+            return None
+        return self._flashcards[self._cursor]
+
     # ------------------------------------------------------------------
     # Mutators
     # ------------------------------------------------------------------
@@ -168,12 +177,13 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         self._request_fetch()
 
     def set_cursor(self, index: int) -> None:
-        """Move the row cursor. Clamped to the loaded window.
+        """Move the row cursor. Clamped to the loaded window. Emits ``dirty`` so the table repaints
+        and the answer preview re-reads ``cursor_flashcard``.
 
-        Does **not** emit ``dirty`` — mirrors the entries pane's policy where the view's table
-        repaint would feedback-loop with ``DataTable.RowHighlighted``. Cursor moves are visible via
-        the table's own cursor render. (Switch to emitting dirty here if a future caller wants to
-        repaint something else off the cursor — e.g. a flashcard detail panel.)
+        The repaint includes a programmatic ``move_cursor`` on the rebuild path, which fires another
+        ``DataTable.RowHighlighted`` and re-enters this method via ``on_data_table_row_highlighted``.
+        That second call is a no-op thanks to the index-equality guard below — the bounce dies in one
+        round-trip rather than looping.
         """
         if not self._flashcards:
             new = 0
@@ -182,6 +192,7 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         if new == self._cursor:
             return
         self._cursor = new
+        self.emit(self.dirty)
 
     async def load_more(self) -> None:
         """Append the next page of flashcards to the current window. No-op if a fetch is in flight,

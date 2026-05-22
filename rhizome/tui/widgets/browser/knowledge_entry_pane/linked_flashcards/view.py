@@ -15,7 +15,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import DataTable, Input, Static, TextArea
 
 from .view_model import LinkedFlashcardsPaneViewModel
 
@@ -109,6 +109,60 @@ class _LinkedFlashcardsSearchInput(Input):
             self.border_title = "[dim]enter to submit • esc × 2 to clear[/]"
 
 
+class _FlashcardAnswerPreview(TextArea):
+    """Read-only scrollable preview of the cursor flashcard's answer + testing notes. Non-navigable
+    (``can_focus=False``) — mouse-wheel scroll works, keyboard nav doesn't land here.
+
+    Subscribes to the VM's ``dirty``, which now also fires on cursor moves. Re-reads the cursor
+    flashcard on each fire and rebuilds the text.
+    """
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _FlashcardAnswerPreview {
+        background: transparent;
+        border: solid #3a3a3a;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(
+        self,
+        view_model: LinkedFlashcardsPaneViewModel,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            read_only=True, show_line_numbers=False, soft_wrap=True, **kwargs,
+        )
+        self._vm = view_model
+        self.border_title = "[dim]answer + notes[/]"
+        self.border_title_align = "left"
+
+    def on_mount(self) -> None:
+        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._refresh()
+
+    def on_unmount(self) -> None:
+        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+
+    def _refresh(self) -> None:
+        fc = self._vm.cursor_flashcard
+        if fc is None:
+            target = ""
+        else:
+            parts = ["Answer:", fc.answer_text]
+            if fc.testing_notes:
+                # Trailing whitespace on the existing answer would push the notes header onto a
+                # weird line — strip before joining.
+                parts.extend(["", "Testing notes:", fc.testing_notes])
+            target = "\n".join(parts)
+        # Guard the assignment so we don't trigger a TextArea.Changed event for a no-op rewrite
+        # (read_only suppresses user edits, not programmatic ones).
+        if self.text != target:
+            self.text = target
+
+
 class LinkedFlashcardsPaneView(Vertical):
     """Right-hand companion to the entries table when the parent pane is in
     ``State.LINKED_FLASHCARDS``. Columns: id / question / answer.
@@ -125,7 +179,15 @@ class LinkedFlashcardsPaneView(Vertical):
         layout: vertical;
         padding: 0 1;
     }
+    /* Table + preview split the available column 2:1 vertically — table gets the larger share,
+       preview gets enough room (~1/3) to show a few lines of answer + notes without dwarfing the
+       table. The status row docks to the bottom and doesn't participate in the fr split. */
     LinkedFlashcardsPaneView #linked-flashcards-table {
+        width: 1fr;
+        height: 2fr;
+        margin: 1 0 0 0;
+    }
+    LinkedFlashcardsPaneView #linked-flashcards-answer-preview {
         width: 1fr;
         height: 1fr;
         margin: 1 0 0 0;
@@ -167,6 +229,7 @@ class LinkedFlashcardsPaneView(Vertical):
         table.add_column("answer", width=self._TEXT_COLUMN_WIDTH)
         yield _LinkedFlashcardsSearchInput(self._vm, id="linked-flashcards-search-input")
         yield table
+        yield _FlashcardAnswerPreview(self._vm, id="linked-flashcards-answer-preview")
         yield Static("", id="linked-flashcards-status")
 
     def on_mount(self) -> None:

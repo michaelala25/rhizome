@@ -793,6 +793,62 @@ class _EditBar(Static, can_focus=True):
         self._vm.request_delete()
 
 
+class _EntryContentPreview(TextArea):
+    """Read-only scrollable preview of the cursor entry's ``content`` field. Non-navigable
+    (``can_focus=False``) so the keyboard never lands here; mouse-wheel scroll still works.
+
+    Subscribes to the pane VM's ``dirty`` (refetches, post-save repaints) and the details VM's
+    ``dirty`` (cursor moves — ``set_cursor`` routes through ``details.set_entry`` which fires the
+    details dirty, but does **not** fire the pane dirty itself). Re-reads ``entries[cursor]`` on
+    each fire and rebuilds the text.
+
+    Only rendered when the parent pane is in ``State.LINKED_FLASHCARDS`` (CSS-driven via the
+    ``-state-*`` class on the pane); in ``ENTRIES`` the details panel covers the same job, so
+    showing both would be redundant.
+    """
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _EntryContentPreview {
+        background: transparent;
+        border: solid #3a3a3a;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(
+        self,
+        view_model: KnowledgeEntryBrowserPaneViewModel,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            read_only=True, show_line_numbers=False, soft_wrap=True, **kwargs,
+        )
+        self._vm = view_model
+        self.border_title = "[dim]entry content[/]"
+        self.border_title_align = "left"
+
+    def on_mount(self) -> None:
+        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.details.subscribe(self._vm.details.dirty, self._refresh)
+        self._refresh()
+
+    def on_unmount(self) -> None:
+        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.details.unsubscribe(self._vm.details.dirty, self._refresh)
+
+    def _refresh(self) -> None:
+        entries = self._vm.entries
+        cursor = self._vm.cursor
+        if not entries or cursor >= len(entries):
+            target = ""
+        else:
+            target = entries[cursor].content or ""
+        if self.text != target:
+            self.text = target
+
+
 class KnowledgeEntryBrowserPaneView(Vertical):
     """Minimal view for ``KnowledgeEntryBrowserPaneViewModel``: a DataTable plus a one-line status row
     beneath. No detail panel, no search bar — those are explicitly out of scope for the first cut (see
@@ -821,6 +877,22 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         layout: vertical;
     }
     KnowledgeEntryBrowserPaneView #entries-table {
+        width: 1fr;
+        height: 1fr;
+        margin: 1 0 0 0;
+    }
+    /* Entry-content preview sits below the entries table in the left column. Hidden by default
+       (the ``ENTRIES`` state has the editable details panel on the right doing the same job); the
+       ``-state-linked-flashcards`` rule below flips it on and rebalances the column to 2fr/1fr
+       table/preview. */
+    KnowledgeEntryBrowserPaneView #entry-content-preview {
+        display: none;
+    }
+    KnowledgeEntryBrowserPaneView.-state-linked-flashcards #entries-table {
+        height: 2fr;
+    }
+    KnowledgeEntryBrowserPaneView.-state-linked-flashcards #entry-content-preview {
+        display: block;
         width: 1fr;
         height: 1fr;
         margin: 1 0 0 0;
@@ -988,9 +1060,17 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table.add_column("topic")
         table.add_column("flashcards")
         with Horizontal(id="pane-body"):
+
             with Vertical(id="table-column"):
+                
                 yield _SearchInput(self._vm, id="search-input")
                 yield table
+                # Preview only renders in ``LINKED_FLASHCARDS`` — CSS toggles ``display`` based on
+                # the parent's ``-state-*`` class. In ``ENTRIES`` the details panel on the right
+                # already shows the entry content (in an editable form), so a second preview here
+                # would just duplicate.
+                yield _EntryContentPreview(self._vm, id="entry-content-preview")
+
             # Both right-hand views are mounted up front and shown / hidden via the ``-state-*``
             # class on the parent. Mounting them once avoids the cost of re-subscribing each child
             # view's ``vm.dirty`` callback on every state flip, and lets the hidden view's table
