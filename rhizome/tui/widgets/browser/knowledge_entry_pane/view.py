@@ -619,6 +619,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     KnowledgeEntryBrowserPaneView #entries-table {
         width: 1fr;
         height: 1fr;
+        margin: 1 0 0 0;
     }
     /* Multi-select wash: keep the zebra alternation but shift both rows
        darker, so the table reads as muted-but-structured and the bright-

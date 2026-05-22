@@ -84,7 +84,7 @@ class BrowserView(Horizontal):
     # via CSS if a different surface needs another size.
     DEFAULT_CSS = """
     BrowserView {
-        height: 30;
+        height: 40;
     }
     BrowserView #browser-tree-pane {
         width: 20%;
