@@ -11,7 +11,10 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Input, Static
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Input, Static, TextArea
+
+from rhizome.db.models import EntryType
 
 from .entry_details import EntryDetailsView
 from .view_model import (
@@ -39,15 +42,17 @@ class _EntriesTable(DataTable):
         # cursor step.
         Binding("shift+down", "select_down", show=False),
         Binding("shift+up", "select_up", show=False),
-        # ``d`` only does something meaningful while multi-select is on with a non-empty selection; the
-        # VM guards both, so we can fire it unconditionally.
+        # ``d`` requests the delete confirm. Targets the selection in multi-select mode and the cursor
+        # entry in single-select mode; the VM guards "nothing to delete" in both.
         Binding("d", "request_delete", show=False),
         # ``s`` opens the sort dialog. Available in both regular and multi-select mode (the VM clears any
         # selection when the sort is applied — see the dialog warning).
         Binding("s", "request_sort", show=False),
-        # ``f`` opens the filter dialog. Mutually exclusive with sort / delete (the VM cancels whichever
-        # is open when ``f`` lands).
+        # ``f`` opens the filter dialog. Mutually exclusive with sort / edit / delete (the VM cancels
+        # whichever is open when ``f`` lands).
         Binding("f", "request_filter", show=False),
+        # ``e`` opens the edit dialog. Same mutex membership as the others.
+        Binding("e", "request_edit", show=False),
     ]
 
     def __init__(
@@ -100,6 +105,9 @@ class _EntriesTable(DataTable):
 
     def action_request_filter(self) -> None:
         self._vm.request_filter()
+
+    def action_request_edit(self) -> None:
+        self._vm.request_edit()
 
 
 class _SearchInput(Input):
@@ -182,9 +190,11 @@ class _SearchInput(Input):
 
 
 class _DeleteConfirm(Static, can_focus=True):
-    """Bulk-delete confirmation dialog. Mirrors ``_ChoicesList`` from ``entry_details/view.py`` — a
-    focusable ``Static`` with up/down/enter bindings dispatching to the VM, plus ``escape`` for quick
-    dismissal.
+    """Delete confirmation dialog. Targets the multi-select selection or the single-select cursor entry
+    depending on mode (the VM resolves this via ``delete_target_ids``).
+
+    Mirrors ``_ChoicesList`` from ``entry_details/view.py`` — a focusable ``Static`` with up/down/enter
+    bindings dispatching to the VM, plus ``escape`` for quick dismissal.
 
     Renders three lines: a header explaining the action (entry count + the no-flashcards-harmed promise),
     then two indented choice rows (Confirm / Cancel). Cursor brightness tracks focus, same as
@@ -196,12 +206,12 @@ class _DeleteConfirm(Static, can_focus=True):
         Binding("down", "choice_down", show=False),
         Binding("enter", "choice_confirm", show=False),
         Binding("escape", "cancel", show=False),
-        # Sort takes priority over delete — pressing ``s`` from inside the delete dialog dismisses it
-        # and opens the sort bar in one step. ``vm.request_sort`` is the path that enforces the priority
-        # (it cancels any pending delete before opening sort).
+        # Mutex siblings: pressing one of these from inside the delete dialog dismisses delete and opens
+        # the other. ``vm.request_*`` enforces the priority (each cancels delete before flipping itself
+        # on).
         Binding("s", "request_sort", show=False),
-        # Same shape for the filter dialog.
         Binding("f", "request_filter", show=False),
+        Binding("e", "request_edit", show=False),
     ]
 
     def __init__(
@@ -234,11 +244,14 @@ class _DeleteConfirm(Static, can_focus=True):
         self.update(self._render_dialog())
 
     def _render_dialog(self) -> Text:
-        count = len(self._vm.selected_ids)
+        count = len(self._vm.delete_target_ids)
         noun = "entry" if count == 1 else "entries"
+        # In single-select mode the lead-in is just "Delete this entry?" — "selected" reads weird when
+        # there's no visible selection mark. Multi-select keeps the existing phrasing.
+        scope_word = "selected " if self._vm.multi_select_active else ""
         cursor_style = "bold" if self.has_focus else "#6a6a6a"
         text = Text()
-        text.append(f"Delete {count} selected {noun}? ", style="bold")
+        text.append(f"Delete {count} {scope_word}{noun}? ", style="bold")
         text.append(
             "Linked flashcards will not be affected.", style="dim",
         )
@@ -277,6 +290,9 @@ class _DeleteConfirm(Static, can_focus=True):
     def action_request_filter(self) -> None:
         self._vm.request_filter()
 
+    def action_request_edit(self) -> None:
+        self._vm.request_edit()
+
 
 class _SortBar(Static, can_focus=True):
     """Sort-axis picker dialog. Sits in the same screen slot as ``_DeleteConfirm`` — only one is ever
@@ -305,6 +321,8 @@ class _SortBar(Static, can_focus=True):
         # ``f`` swaps to the filter dialog. ``request_filter`` on the VM dismisses sort first so the two
         # never co-exist.
         Binding("f", "request_filter", show=False),
+        # ``e`` swaps to the edit dialog. Same mutex shape.
+        Binding("e", "request_edit", show=False),
         Binding("escape", "cancel", show=False),
     ]
 
@@ -392,6 +410,9 @@ class _SortBar(Static, can_focus=True):
     def action_request_filter(self) -> None:
         self._vm.request_filter()
 
+    def action_request_edit(self) -> None:
+        self._vm.request_edit()
+
 
 class _FilterDialog(Static, can_focus=True):
     """Per-axis filter picker. Shares the same screen slot as ``_SortBar`` and ``_DeleteConfirm`` (the
@@ -424,6 +445,8 @@ class _FilterDialog(Static, can_focus=True):
         # ``f`` toggles the dialog closed (symmetric with the ``f``-opens-it binding on
         # ``_EntriesTable``).
         Binding("f", "cancel", show=False),
+        # ``e`` swaps to the edit dialog.
+        Binding("e", "request_edit", show=False),
         Binding("escape", "cancel", show=False),
     ]
 
@@ -550,6 +573,210 @@ class _FilterDialog(Static, can_focus=True):
     def action_request_sort(self) -> None:
         self._vm.request_sort()
 
+    def action_request_edit(self) -> None:
+        self._vm.request_edit()
+
+
+class _TypePickerScreen(ModalScreen[EntryType | None]):
+    """Modal screen for picking an ``EntryType``. Three options laid out vertically; arrows / enter /
+    escape. Dismisses with the chosen ``EntryType`` (caller applies it) or ``None`` on cancel.
+
+    Deliberately co-located with the pane view rather than under ``tui/screens/`` — the picker is tiny
+    and only used here, so the extra indirection isn't worth it (matching the brief). If a second
+    consumer shows up, lift it out.
+    """
+
+    DEFAULT_CSS = """
+    _TypePickerScreen {
+        align: center middle;
+    }
+    _TypePickerScreen > Vertical {
+        width: 40;
+        height: auto;
+        border: solid $surface-lighten-2;
+        padding: 1 2;
+        background: $surface;
+    }
+    _TypePickerScreen Static {
+        color: rgb(150,150,150);
+    }
+    _TypePickerScreen #type-picker-header {
+        margin-bottom: 1;
+        color: rgb(100,100,100);
+    }
+    """
+
+    BINDINGS = [
+        Binding("up", "cursor_up", show=False),
+        Binding("down", "cursor_down", show=False),
+        Binding("enter", "select", show=False),
+        Binding("escape", "cancel", show=False),
+    ]
+
+    def __init__(self, *, current: EntryType | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._options: tuple[EntryType, ...] = tuple(EntryType)
+        # Land the cursor on the current type when there is one, so the most common "I want to change
+        # to something other than this" flow is one ``down`` away.
+        if current is not None and current in self._options:
+            self._cursor = self._options.index(current)
+        else:
+            self._cursor = 0
+
+    def compose(self):
+        with Vertical():
+            yield Static(
+                "Select entry type  (↑/↓ navigate, enter select, esc cancel)",
+                id="type-picker-header",
+            )
+            yield Static(self._render_options(), id="type-picker-options")
+
+    def _render_options(self) -> Text:
+        text = Text()
+        for i, opt in enumerate(self._options):
+            is_cursor = i == self._cursor
+            if is_cursor:
+                text.append("► ", style="bold #ffd700")
+                text.append(opt.value, style="bold")
+            else:
+                text.append("  ")
+                text.append(opt.value, style="dim")
+            if i < len(self._options) - 1:
+                text.append("\n")
+        return text
+
+    def _repaint(self) -> None:
+        self.query_one("#type-picker-options", Static).update(self._render_options())
+
+    def action_cursor_up(self) -> None:
+        self._cursor = (self._cursor - 1) % len(self._options)
+        self._repaint()
+
+    def action_cursor_down(self) -> None:
+        self._cursor = (self._cursor + 1) % len(self._options)
+        self._repaint()
+
+    def action_select(self) -> None:
+        self.dismiss(self._options[self._cursor])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class _EditBar(Static, can_focus=True):
+    """Edit-action picker. Sits in the same screen slot as the sort / filter / delete dialogs (mutually
+    exclusive at the VM level via the four-way mutex).
+
+    Renders horizontally: option list on one line, hint on the next. Options come from
+    ``vm.edit_options`` (mode-dependent — multi-select hides the per-entry edit shortcuts).
+
+    Keys: ``left`` / ``right`` move the cursor (wrap); ``enter`` dispatches the highlighted choice;
+    ``e`` / ``escape`` dismiss; ``s`` / ``f`` / ``d`` swap to the corresponding sibling dialog.
+
+    Dispatch sits here (not on the VM) because two of the choices — ``change topic`` and ``change
+    type`` — open modal screens, which is a view-side concern; and the other two (``edit title`` /
+    ``edit content``) are pure focus shortcuts to the details panel. Only the bookkeeping for which
+    choice was picked needs to round-trip through the VM, and that's already covered by the existing
+    ``edit_cursor`` state.
+    """
+
+    BINDINGS = [
+        Binding("left", "cursor_left", show=False),
+        Binding("right", "cursor_right", show=False),
+        Binding("enter", "select", show=False),
+        # ``e`` toggles the dialog closed (symmetric with ``e`` on ``_EntriesTable``).
+        Binding("e", "cancel", show=False),
+        Binding("escape", "cancel", show=False),
+        Binding("s", "request_sort", show=False),
+        Binding("f", "request_filter", show=False),
+        Binding("d", "request_delete", show=False),
+    ]
+
+    def __init__(
+        self,
+        view_model: KnowledgeEntryBrowserPaneViewModel,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._vm = view_model
+
+    def on_mount(self) -> None:
+        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._refresh()
+
+    def on_unmount(self) -> None:
+        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+
+    def on_focus(self) -> None:
+        # Cursor colour brightens on focus — same convention as the other dialogs.
+        self.call_after_refresh(self._refresh)
+
+    def on_blur(self) -> None:
+        self.call_after_refresh(self._refresh)
+
+    def _refresh(self) -> None:
+        self.update(self._render_bar())
+
+    def _render_bar(self) -> Text:
+        cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
+        text = Text()
+        # Lead-in: "edit N entries:" / "edit this entry:" — gives the user a clear scope reminder while
+        # they navigate.
+        targets = self._vm.edit_target_ids()
+        count = len(targets)
+        if self._vm.multi_select_active:
+            noun = "entry" if count == 1 else "entries"
+            text.append(f"edit {count} {noun}:  ", style="dim")
+        else:
+            text.append("edit this entry:  ", style="dim")
+        options = self._vm.edit_options
+        for i, opt in enumerate(options):
+            is_cursor = i == self._vm.edit_cursor
+            style = cursor_color if is_cursor else "#787878"
+            text.append(opt, style=style)
+            if i < len(options) - 1:
+                text.append("   ")
+        text.append("\n")
+        text.append("← / → move • enter select • e/esc dismiss", style="dim")
+        return text
+
+    def action_cursor_left(self) -> None:
+        self._vm.move_edit_cursor(-1)
+
+    def action_cursor_right(self) -> None:
+        self._vm.move_edit_cursor(1)
+
+    async def action_select(self) -> None:
+        """Dispatch the highlighted choice. The parent pane view exposes the high-level handlers
+        (``handle_edit_choice``) because two of them need access to the screen (push modal, refocus a
+        TextArea inside another sibling widget). The bar's only job is to forward the cursor index."""
+        pane = self._find_pane()
+        if pane is None:
+            return
+        await pane.handle_edit_choice(self._vm.edit_cursor)
+
+    def _find_pane(self) -> KnowledgeEntryBrowserPaneView | None:
+        """Walk up to the enclosing pane view. Done at action time (not on mount) so we don't take a
+        hard reference to the parent that would survive remount."""
+        node = self.parent
+        while node is not None:
+            if isinstance(node, KnowledgeEntryBrowserPaneView):
+                return node
+            node = node.parent
+        return None
+
+    def action_cancel(self) -> None:
+        self._vm.cancel_edit()
+
+    def action_request_sort(self) -> None:
+        self._vm.request_sort()
+
+    def action_request_filter(self) -> None:
+        self._vm.request_filter()
+
+    def action_request_delete(self) -> None:
+        self._vm.request_delete()
+
 
 class KnowledgeEntryBrowserPaneView(Vertical):
     """Minimal view for ``KnowledgeEntryBrowserPaneViewModel``: a DataTable plus a one-line status row
@@ -653,6 +880,21 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     KnowledgeEntryBrowserPaneView #filter-dialog:focus {
         border-top: solid $accent;
     }
+    KnowledgeEntryBrowserPaneView #edit-bar {
+        /* 2 lines of content (options + hint) plus the ``border-top``. */
+        height: 3;
+        margin: 1 0 0 0;
+        padding: 0 1;
+        border-top: solid #3a3a3a;
+        color: rgb(200,200,200);
+        display: none;
+    }
+    KnowledgeEntryBrowserPaneView #edit-bar.-visible {
+        display: block;
+    }
+    KnowledgeEntryBrowserPaneView #edit-bar:focus {
+        border-top: solid $accent;
+    }
     """
 
     def __init__(
@@ -671,6 +913,8 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         self._was_sort_pending: bool = False
         # And the filter dialog.
         self._was_filter_pending: bool = False
+        # And the edit bar.
+        self._was_edit_pending: bool = False
         # Signature of the entries list at the last refresh — a tuple of entry ids in display order.
         # Used by ``_refresh`` to decide between a full ``clear()`` + rebuild (when row identity has
         # actually changed: refetch, delete, load_more) and a cheap in-place ``update_cell_at`` pass
@@ -713,6 +957,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         yield _DeleteConfirm(self._vm, id="delete-confirm")
         yield _SortBar(self._vm, id="sort-bar")
         yield _FilterDialog(self._vm, id="filter-dialog")
+        yield _EditBar(self._vm, id="edit-bar")
         yield Static("", id="pane-status")
 
     def on_mount(self) -> None:
@@ -825,19 +1070,23 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         delete_dialog = self.query_one("#delete-confirm", _DeleteConfirm)
         sort_bar = self.query_one("#sort-bar", _SortBar)
         filter_dialog = self.query_one("#filter-dialog", _FilterDialog)
+        edit_bar = self.query_one("#edit-bar", _EditBar)
 
         delete_pending = self._vm.delete_pending
         sort_pending = self._vm.sort_pending
         filter_pending = self._vm.filter_pending
+        edit_pending = self._vm.edit_pending
 
         delete_dialog.set_class(delete_pending, "-visible")
         sort_bar.set_class(sort_pending, "-visible")
         filter_dialog.set_class(filter_pending, "-visible")
+        edit_bar.set_class(edit_pending, "-visible")
 
         # Resolve focus once after all visibility flips are queued. Opens beat closes — if any dialog
-        # just opened, grab focus to it (priority order: filter, sort, delete, matching the VM's
+        # just opened, grab focus to it (priority order: edit, filter, sort, delete, matching the VM's
         # mutual-exclusion preference). Otherwise, if at least one dialog just closed *and* nothing is
         # currently open, restore focus to the table.
+        just_opened_edit = edit_pending and not self._was_edit_pending
         just_opened_filter = filter_pending and not self._was_filter_pending
         just_opened_sort = sort_pending and not self._was_sort_pending
         just_opened_delete = delete_pending and not self._was_delete_pending
@@ -845,10 +1094,13 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             (self._was_delete_pending and not delete_pending)
             or (self._was_sort_pending and not sort_pending)
             or (self._was_filter_pending and not filter_pending)
+            or (self._was_edit_pending and not edit_pending)
         )
-        any_pending = delete_pending or sort_pending or filter_pending
+        any_pending = delete_pending or sort_pending or filter_pending or edit_pending
 
-        if just_opened_filter:
+        if just_opened_edit:
+            edit_bar.focus()
+        elif just_opened_filter:
             filter_dialog.focus()
         elif just_opened_sort:
             sort_bar.focus()
@@ -865,6 +1117,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         self._was_delete_pending = delete_pending
         self._was_sort_pending = sort_pending
         self._was_filter_pending = filter_pending
+        self._was_edit_pending = edit_pending
 
     # ------------------------------------------------------------------
     # Cross-region focus (driven by ``BrowserView``'s alt+left/right)
@@ -881,6 +1134,12 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         user picks up where they left off after a tree side-trip (alt+left from a dialog hops back to
         the tree). The three dialogs are mutually exclusive at the VM level so this order of checks only
         documents priority."""
+        if self._vm.edit_pending:
+            try:
+                self.query_one("#edit-bar", _EditBar).focus()
+                return
+            except Exception:
+                pass
         if self._vm.filter_pending:
             try:
                 self.query_one("#filter-dialog", _FilterDialog).focus()
@@ -933,6 +1192,92 @@ class KnowledgeEntryBrowserPaneView(Vertical):
                 table.focus()
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Edit-dialog choice dispatch
+    # ------------------------------------------------------------------
+    #
+    # Called from ``_EditBar.action_select``. The options list comes from ``vm.edit_options``; index 0
+    # is always ``change topic``, index 1 ``change type``, index 2 (single only) ``edit title``, index
+    # 3 (single only) ``edit content``, and the last entry is always ``delete``. We dispatch by the
+    # option string rather than the numeric index so the multi/single shape difference can't go wrong.
+
+    async def handle_edit_choice(self, cursor: int) -> None:
+        options = self._vm.edit_options
+        if cursor < 0 or cursor >= len(options):
+            return
+        choice = options[cursor]
+        if choice == "change topic":
+            await self._dispatch_change_topic()
+        elif choice == "change type":
+            await self._dispatch_change_type()
+        elif choice == "edit title":
+            self._dispatch_focus_details_field("details-title")
+        elif choice == "edit content":
+            self._dispatch_focus_details_field("details-content")
+        elif choice == "delete":
+            self._vm.request_delete()
+
+    async def _dispatch_change_topic(self) -> None:
+        """Open ``TopicSelectorScreen``; on dismiss apply the choice via the VM. ``edit_target_ids`` is
+        evaluated *before* the screen pushes so single-select mode reads the cursor entry at the moment
+        the user invoked the dialog (the VM has the same id frozen in
+        ``_edit_single_target_id``)."""
+        # Local import to avoid circulating tui.screens through the widget module at import time —
+        # matches the pattern already used in commit_proposal/view.py.
+        from rhizome.tui.screens.topic_selector import TopicSelectorScreen
+
+        if not self._vm.edit_target_ids():
+            return
+
+        def on_dismiss(result: tuple[int, str] | None) -> None:
+            if result is None:
+                # User cancelled — keep the edit bar open so they can pick a different action without
+                # re-pressing ``e``. Refocus the bar.
+                try:
+                    self.query_one("#edit-bar", _EditBar).focus()
+                except Exception:
+                    pass
+                return
+            topic_id, _ = result
+            self.run_worker(self._vm.apply_change_topic(topic_id), exclusive=False)
+
+        self.app.push_screen(
+            TopicSelectorScreen(session_factory=self._vm.session_factory),
+            callback=on_dismiss,
+        )
+
+    async def _dispatch_change_type(self) -> None:
+        """Open the inline ``_TypePickerScreen``; on dismiss apply via the VM. Lands the modal's cursor
+        on the cursor entry's current type (single-select only — multi-select has no single "current"
+        to land on)."""
+        if not self._vm.edit_target_ids():
+            return
+
+        current: EntryType | None = None
+        if not self._vm.multi_select_active and self._vm.entries:
+            current = self._vm.entries[self._vm.cursor].entry_type
+
+        def on_dismiss(result: EntryType | None) -> None:
+            if result is None:
+                try:
+                    self.query_one("#edit-bar", _EditBar).focus()
+                except Exception:
+                    pass
+                return
+            self.run_worker(self._vm.apply_change_type(result), exclusive=False)
+
+        self.app.push_screen(_TypePickerScreen(current=current), callback=on_dismiss)
+
+    def _dispatch_focus_details_field(self, widget_id: str) -> None:
+        """Edit title / edit content: dismiss the edit bar and focus the target TextArea in the details
+        panel. Single-select only — the VM's option list excludes these in multi-select mode."""
+        self._vm.cancel_edit()
+        try:
+            target = self.query_one(f"#{widget_id}", TextArea)
+        except Exception:
+            return
+        target.focus()
 
     # ------------------------------------------------------------------
     # View → VM

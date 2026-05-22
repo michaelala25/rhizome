@@ -124,11 +124,16 @@ async def update_entry(
     title: str | None = None,
     content: str | None = None,
     entry_type: EntryType | None = None,
+    topic_id: int | None = None,
     additional_notes: str | None = None,
     difficulty: int | None = None,
     speed_testable: bool | None = None,
 ) -> KnowledgeEntry:
-    """Update an entry's fields. Only provided (non-None) fields are changed."""
+    """Update an entry's fields. Only provided (non-None) fields are changed.
+
+    Note: ``topic_id`` is non-nullable on the model, so ``None`` here unambiguously means "skip" rather
+    than "clear the topic" — matching the semantics of every other field on this op.
+    """
     entry = await session.get(KnowledgeEntry, entry_id)
     if entry is None:
         raise ValueError(f"KnowledgeEntry {entry_id} not found")
@@ -138,6 +143,8 @@ async def update_entry(
         entry.content = content
     if entry_type is not None:
         entry.entry_type = entry_type
+    if topic_id is not None:
+        entry.topic_id = topic_id
     if additional_notes is not None:
         entry.additional_notes = additional_notes
     if difficulty is not None:

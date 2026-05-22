@@ -150,33 +150,102 @@ same entries is more complexity than the feature warrants. The
 multi-select dialog hint surfaces this in red while picking; the mode
 itself stays on, just with an empty set.
 
-### Bulk delete
+### Delete
 
-While multi-select is on with a non-empty selection, pressing `d`
-opens a confirm dialog mounted between the pane body and the docked
-status line (`_DeleteConfirm` widget; mirrors the design of
-`_ChoicesList` in the details panel). Up/down moves the
+Pressing `d` while the entries table is focused opens a confirm
+dialog mounted between the pane body and the docked status line
+(`_DeleteConfirm` widget; mirrors the design of `_ChoicesList` in
+the details panel). The target set comes from the VM's
+`delete_target_ids` computed property: the live `_selected_ids` in
+multi-select mode, or `{entries[cursor].id}` in single-select mode
+(frozen into `_delete_single_target_id` at `request_delete` time so
+cursor moves while the dialog is open don't repoint the target).
+Dialog copy adjusts: `Delete N selected entries?` in multi-select,
+`Delete 1 entry?` in single-select. Up/down moves the
 Confirm/Cancel cursor; enter dispatches; escape dismisses without
-deleting. The dialog grabs focus on appear and returns it to the
-table on dismiss (open/close transitions detected via
-`_was_delete_pending` in the pane view, mirroring `_was_dirty` in
-`EntryDetailsView`). `focus_first` also re-focuses the dialog when
-it's open, so a tree side-trip via alt+left then alt+right lands the
-user back on the dialog.
+deleting; `s` / `f` / `e` swap to the corresponding sibling dialog.
+The dialog grabs focus on appear and returns it to the table on
+dismiss; `focus_first` also re-focuses the dialog when it's open, so
+a tree side-trip via alt+left then alt+right lands the user back on
+the dialog.
 
-On confirm, the pane VM bulk-deletes each entry via `delete_entry`
+On confirm, the pane VM deletes each target entry via `delete_entry`
 inside a single session + commit. The FK on `flashcard_entry.entry_id`
 cascades, so flashcard-to-entry link rows are cleaned up automatically
 but the flashcards themselves are unaffected — which is what the
 dialog promises the user. After the commit, the VM prunes
-`self._entries`, decrements `self._total`, clears `_selected_ids`,
-and clamps the cursor; no refetch. Multi-select mode stays on so the
-visual context is preserved — the user hits `m` to exit when done.
+`self._entries`, decrements `self._total`, clears `_selected_ids`
+(multi-select only), and clamps the cursor; no refetch. Multi-select
+mode stays on so the visual context is preserved — the user hits `m`
+to exit when done.
 
-Pressing `d` is a no-op outside multi-select, with an empty
-selection, or when the dialog is already open. Toggling multi-select
-off while the dialog is open dismisses it (the selection is about to
-be cleared anyway).
+Pressing `d` is a no-op when nothing is targetable (empty window in
+single-select, empty selection in multi-select) or when the dialog
+is already open. Toggling multi-select off while the dialog is open
+dismisses it (the selection is about to be cleared anyway).
+
+### Edit
+
+Pressing `e` while the entries table is focused opens a horizontal
+edit-action picker (`_EditBar`) sharing the screen slot with the
+sort / filter / delete dialogs — the four are mutually exclusive at
+the VM level (`request_edit` / `request_sort` / `request_filter` /
+`request_delete` each clear the other three). Target resolution
+mirrors delete: live `_selected_ids` in multi-select mode, frozen
+`_edit_single_target_id` in single-select mode.
+
+Option set depends on mode (exposed by `vm.edit_options`):
+
+- **multi-select**: `change topic` · `change type` · `delete`
+- **single-select**: `change topic` · `change type` · `edit title` ·
+  `edit content` · `delete`
+
+`edit title` / `edit content` are excluded in multi-select because
+the details panel is frozen (read-only) and there's no single entry
+for them to refocus onto. `delete` always sits last so the cursor
+never lands on the destructive action without an explicit rightward
+step.
+
+Dispatch lives on the view side (`KnowledgeEntryBrowserPaneView.handle_edit_choice`)
+because two of the choices need view-level affordances (modal screen
+push for `change topic` / `change type`) and two are pure focus
+shortcuts onto sibling widgets (`edit title` / `edit content` focus
+the corresponding TextArea in the details panel and dismiss the
+bar). The VM is only consulted for the cursor index and for applying
+the chosen value (`apply_change_topic` / `apply_change_type`).
+
+`change topic` pushes the existing `TopicSelectorScreen` (same
+modal used by the commit-proposal widget); `change type` pushes a
+local `_TypePickerScreen` defined in the same `view.py` rather than
+under `tui/screens/` — it's tiny and only used here, so the extra
+indirection isn't worth it (lift it if a second consumer appears).
+Both screens dismiss with the picked value or `None`; on cancel,
+the edit bar refocuses so the user can pick a different action
+without re-pressing `e`. On apply, the change persists via
+`update_entry` per target inside a single session + commit, then
+the pane refetches.
+
+**Selection-preserving refetch.** `apply_change_topic` and
+`apply_change_type` go through `_post_change_refetch`, which awaits
+`_fetch()` directly (bypassing `_request_fetch`'s task-restart
+machinery) and then intersects `_selected_ids` against the new
+window's visible ids. Selections survive sort moves (entry still in
+window, just at a different row) but get dropped when an entry
+falls outside the active filter or gets pushed past the 500-row
+window by a reorder. Edge: an entry that still matches the filter
+but lands past the 500-row window is also dropped from the
+selection — matches `load_more`'s behaviour of not reaching back for
+selected-but-unloaded rows.
+
+`edit title` and `edit content` are sub-trivial: dismiss the edit
+bar (via `cancel_edit`) and focus `#details-title` /
+`#details-content` directly. The cancel triggers the pane's
+`_refresh` which would normally route focus back to the table, but
+the explicit `target.focus()` call afterwards wins.
+
+The pane VM's `update_entry` op gained a `topic_id` keyword argument
+to support the topic-change path (non-nullable on the model, so
+`None` unambiguously means "skip" — same as every other field).
 
 - **entry_details/ — `EntryDetailsView` + `EntryDetailsViewModel`**:
   buffered-edit side panel. Its own MVVM subdirectory; see its
