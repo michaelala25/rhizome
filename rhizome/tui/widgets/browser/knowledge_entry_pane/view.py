@@ -196,6 +196,9 @@ class _SortBar(Static, can_focus=True):
         Binding("left", "cursor_left", show=False),
         Binding("right", "cursor_right", show=False),
         Binding("enter", "apply", show=False),
+        # ``r`` resets to the default sort (``id`` ascending). Mirrors
+        # the same key in the filter dialog.
+        Binding("r", "reset", show=False),
         # ``s`` toggles the dialog closed — symmetric with the
         # ``s``-opens-it binding on ``_EntriesTable``.
         Binding("s", "cancel", show=False),
@@ -264,7 +267,9 @@ class _SortBar(Static, can_focus=True):
         # line so the dialog can stay at a fixed 4-line height across
         # both modes.
         hint = Text()
-        hint.append("← / → move • enter apply • s/esc dismiss", style="dim")
+        hint.append(
+            "← / → move • enter apply • r reset • s/esc dismiss", style="dim",
+        )
         if self._vm.multi_select_active:
             hint.append("   ", style="dim")
             hint.append("Applying clears your selection.", style="#ff8787")
@@ -279,6 +284,9 @@ class _SortBar(Static, can_focus=True):
 
     def action_apply(self) -> None:
         self._vm.apply_sort()
+
+    def action_reset(self) -> None:
+        self._vm.reset_sort()
 
     def action_cancel(self) -> None:
         self._vm.cancel_sort()

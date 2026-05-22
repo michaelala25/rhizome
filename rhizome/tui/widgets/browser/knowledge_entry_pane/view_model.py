@@ -521,11 +521,12 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     def apply_sort(self) -> None:
         """Confirm the highlighted axis. If it matches the current sort,
         flip the direction; otherwise switch to that axis in ascending
-        order. Either way, **clears any active selection** — the
-        ``LIMIT 500`` window is reshuffled by a refetch, and tracking
-        selections across windows that don't necessarily include the
-        same rows is more trouble than it's worth (see the dialog hint).
-        Closes the dialog regardless of outcome."""
+        order. **Clears any active selection** — the ``LIMIT 500``
+        window is reshuffled by a refetch, and tracking selections
+        across windows that don't necessarily include the same rows
+        is more trouble than it's worth (see the dialog hint). The
+        dialog stays open so the user can keep tweaking; ``s`` /
+        ``escape`` dismiss when they're done."""
         if not self._sort_pending:
             return
         chosen = SORT_OPTIONS[self._sort_cursor]
@@ -535,7 +536,6 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
             )
         else:
             new_dir = "asc"
-        self._sort_pending = False
 
         # Drop selections before triggering the refetch. We do this even
         # when the chosen sort matches the current one (direction-flip)
@@ -549,6 +549,24 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # ``set_sort`` short-circuits when nothing changed, so direction
         # toggles still go through the refetch path.
         self.set_sort(chosen, new_dir)
+
+    def reset_sort(self) -> None:
+        """Restore the default sort (``id`` ascending). Mirrors the
+        filter dialog's ``r``: refetches + clears selections only when
+        the state was non-default, otherwise just bumps the cursor
+        back to the id slot. The dialog stays open."""
+        if not self._sort_pending:
+            return
+        was_default = self._sort_by == "id" and self._sort_dir == "asc"
+        self._sort_cursor = 0
+        if was_default:
+            self.emit(self.dirty)
+            return
+        if self._selected_ids:
+            self._selected_ids.clear()
+            if self._multi_select_active:
+                self._details.set_multi_select(True, 0)
+        self.set_sort("id", "asc")
 
     # ------------------------------------------------------------------
     # Filter dialog
