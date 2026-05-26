@@ -24,7 +24,7 @@ and leaves UI choreography to Textual.
 from __future__ import annotations
 
 import enum
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from rhizome.db import KnowledgeEntry
 from rhizome.db.models import EntryType
@@ -239,13 +239,28 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         # Seed / wipe the linked-flashcards sub-VM. ``_sync_linked_flashcards`` is state-gated, so
         # we set ``_state`` first and let the sync helper do the right thing: in ``LINKED_FLASHCARDS``
         # it pushes the current selection; back in ``ENTRIES`` we explicitly push the empty set to
-        # invalidate any in-flight fetch and free the loaded window.
+        # invalidate any in-flight fetch and free the loaded window, and also exit relink mode
+        # since the panel is no longer visible.
         if new_state is self.State.LINKED_FLASHCARDS:
             self._sync_linked_flashcards()
         else:
+            self._linked_flashcards.exit_relink_mode()
             self._linked_flashcards.set_entry_ids(frozenset())
 
         self.emit(self.dirty)
+
+    def set_topic_filter(self, topic_ids: Iterable[int] | None) -> None:
+        """Push the topic filter down to the linked-flashcards sub-VM before applying it locally.
+
+        The panel uses the same filter to scope its relink-mode pool query; pushing first means
+        the sub-VM sees the filter at the same logical moment we do, before its own
+        ``_request_fetch`` could fire from the parent ``super().set_topic_filter``. Order doesn't
+        matter for correctness (both ends debounce + reconcile via their own fetch ids), but
+        keeping the panel ahead of the tab avoids a brief moment where the tab is querying with
+        the new filter while the panel is still on the old one.
+        """
+        self._linked_flashcards.set_topic_filter(topic_ids)
+        super().set_topic_filter(topic_ids)
 
     def set_search(self, query: str) -> None:
         """Replace the active search query. Empty string clears the search."""
@@ -332,15 +347,55 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         """Flip multi-select mode. Turning the mode **off** abandons the current selection (clears
         ``_selected_ids``); turning it on starts with an empty set. Pushes the resulting state into
         the details VM so the side panel can freeze its edits, and re-syncs the linked-flashcards
-        sub-VM because the panel's target set changes shape (cursor entry → live selection)."""
+        sub-VM because the panel's target set changes shape (cursor entry → live selection).
+
+        Entering multi-select exits any active relink — relink is a single-select-only mode, so its
+        precondition just vanished."""
         self._multi_select_active = not self._multi_select_active
         if not self._multi_select_active:
             self._selected_ids.clear()
+        else:
+            self._linked_flashcards.exit_relink_mode()
         self._details.set_multi_select(
             self._multi_select_active,
             len(self._selected_ids),
         )
         self._sync_linked_flashcards()
+        self.emit(self.dirty)
+
+    def enter_relink_mode(self) -> None:
+        """Combined-motion entry to relink mode from anywhere in the entries tab.
+
+        Drops multi-select if on (relink is single-select only), transitions to
+        ``LINKED_FLASHCARDS`` if not already, and turns on relink on the panel sub-VM (which
+        seeds its selection with all currently-loaded flashcard ids — the "currently linked"
+        baseline). Dialog dismissal is the view's concern, mirroring the pattern used by
+        ``transition_to``.
+
+        Idempotent against an already-relinking state: no-op when ``state == LINKED_FLASHCARDS``,
+        multi-select is off, and relink is already on. (Callers wanting to flip out of relink
+        should call ``exit_relink_mode`` instead — this is one-directional on purpose so the
+        ``l`` binding can sit on the entries table as an unambiguous "go to relink".)"""
+        if self._multi_select_active:
+            self._multi_select_active = False
+            self._selected_ids.clear()
+            self._details.set_multi_select(False, 0)
+            # Re-sync the panel so it re-resolves to the cursor entry (was the union of
+            # ``_selected_ids``). Needed for the case where we're already in
+            # ``LINKED_FLASHCARDS`` — the ``transition_to`` below would be a no-op and skip
+            # its own sync. ``_sync_linked_flashcards`` itself is state-guarded so calling it
+            # before the transition is safe when state is still ``ENTRIES`` (it no-ops).
+            self._sync_linked_flashcards()
+        if self._state is not self.State.LINKED_FLASHCARDS:
+            self.transition_to(self.State.LINKED_FLASHCARDS)
+        self._linked_flashcards.enter_relink_mode()
+        self.emit(self.dirty)
+
+    def exit_relink_mode(self) -> None:
+        """Turn off relink on the panel sub-VM without leaving ``LINKED_FLASHCARDS`` state. The
+        ``l`` binding routes here when relink is already on (toggle-off); ``ctrl+f`` instead
+        transitions back to ``ENTRIES``, which auto-exits relink via ``transition_to``."""
+        self._linked_flashcards.exit_relink_mode()
         self.emit(self.dirty)
 
     def toggle_current_selection(self) -> None:

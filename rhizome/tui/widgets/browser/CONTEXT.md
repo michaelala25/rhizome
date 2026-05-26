@@ -116,17 +116,26 @@ This matches `docs/design-principles.md` and the established
   against the new selection / cursor state). No structural sync happens
   through `dirty` — structural changes always come from user events.
 
-- **tab_base.py — `BrowserTabViewModel`** (abstract): the tab contract.
-  Subclasses override `TITLE` and `async _fetch`, and may call
-  `_request_fetch` from their own sort/search mutators to trigger a refresh.
-  `set_topic_filter(topic_ids)` (sync, called by the orchestrator) is **idempotent**:
-  no-op if the requested filter equals the tab's current `_filter_ids` AND
+- **tab_base.py — `BrowserTabViewModel(QueryBackedViewModel)`** (abstract):
+  the tab contract. Thin layer on top of `QueryBackedViewModel` (see
+  `widgets/CONTEXT.md`) that adds tab identity (`TITLE`, `title` property)
+  and the orchestrator-facing topic-filter API. The debounce + fetch-id
+  staleness machinery lives on the base; subclasses override `_fetch` /
+  `_process_fetched_data` and call `_request_fetch` from their own
+  sort/search mutators to trigger a refresh. `set_topic_filter(topic_ids)`
+  (sync, called by the orchestrator) is **idempotent**: no-op if the
+  requested filter equals the tab's current `_filter_ids` AND
   `_filter_applied` is True (i.e. the tab has been set up at least once);
-  otherwise cancels any in-flight fetch and spawns a new one. Cancellation
-  is enforced by stamping each task with a `_current_task` identity, so a
-  superseded task's `finally` quietly bows out instead of flipping
-  `is_loading` back off. `topic_ids=None` is "no filter" — distinct from an
-  empty iterable, which means "selection expanded to zero rows".
+  otherwise it bumps the fetch id and (re)schedules a debounced fetch.
+  `topic_ids=None` is "no filter" — distinct from an empty iterable,
+  which means "selection expanded to zero rows".
+
+  Concrete tabs may *also* propagate `set_topic_filter` to sub-VMs they
+  own (e.g. `KnowledgeEntryBrowserTabViewModel` overrides it to push the
+  filter down into the linked-flashcards panel sub-VM before calling
+  `super()`). Sub-VMs in the panel hierarchy inherit from
+  `QueryBackedViewModel` directly — they share the fetch protocol but
+  aren't tabs.
 
 - **knowledge_entry_tab/ — `KnowledgeEntryBrowserTabViewModel` +
   `KnowledgeEntryBrowserTabView`** (split across `view_model.py` and

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from fsrs import Card, Rating, Scheduler, State
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -153,6 +153,58 @@ async def count_flashcards_for_entries(
     return result.scalar_one()
 
 
+async def link_flashcards_to_entry(
+    session: AsyncSession,
+    *,
+    entry_id: int,
+    flashcard_ids: Iterable[int],
+) -> int:
+    """Insert ``FlashcardEntry`` rows linking each flashcard to ``entry_id``. Idempotent —
+    flashcards already linked to this entry are silently skipped to respect the
+    ``UNIQUE(flashcard_id, entry_id)`` constraint. Caller commits.
+
+    Returns the number of new link rows actually inserted (after deduping against existing
+    ones), so the caller can log a useful "linked N" figure."""
+    ids = list(flashcard_ids)
+    if not ids:
+        return 0
+    existing = await session.execute(
+        select(FlashcardEntry.flashcard_id).where(
+            FlashcardEntry.entry_id == entry_id,
+            FlashcardEntry.flashcard_id.in_(ids),
+        )
+    )
+    existing_ids = set(existing.scalars().all())
+    new_ids = [fid for fid in ids if fid not in existing_ids]
+    for fid in new_ids:
+        session.add(FlashcardEntry(flashcard_id=fid, entry_id=entry_id))
+    await session.flush()
+    return len(new_ids)
+
+
+async def unlink_flashcards_from_entry(
+    session: AsyncSession,
+    *,
+    entry_id: int,
+    flashcard_ids: Iterable[int],
+) -> int:
+    """Delete ``FlashcardEntry`` rows for the given flashcards on ``entry_id``. Idempotent —
+    ids that aren't currently linked are silently no-op'd. Caller commits.
+
+    Returns the number of rows actually deleted."""
+    ids = list(flashcard_ids)
+    if not ids:
+        return 0
+    result = await session.execute(
+        delete(FlashcardEntry).where(
+            FlashcardEntry.entry_id == entry_id,
+            FlashcardEntry.flashcard_id.in_(ids),
+        )
+    )
+    await session.flush()
+    return result.rowcount or 0
+
+
 async def get_flashcards_by_ids(
     session: AsyncSession,
     flashcard_ids: list[int],
@@ -166,6 +218,93 @@ async def get_flashcards_by_ids(
         .where(Flashcard.id.in_(flashcard_ids))
     )
     return list(result.scalars().all())
+
+
+def _apply_flashcard_pool_filters(
+    stmt,
+    *,
+    topic_ids: Iterable[int] | None,
+    exclude_ids: Iterable[int] | None,
+    search: str | None,
+):
+    """Apply the shared (topic_ids, exclude_ids, search) filter to a SELECT on Flashcard. Used by
+    the windowed + count variants of the relink-mode pool query.
+
+    Semantics:
+      * ``topic_ids=None`` — no topic filter (every topic). Empty iterable = "explicitly no
+        topics selected" → no rows match (same convention as the entries filter).
+      * ``exclude_ids`` — flashcards whose id is in this set are filtered out. ``None`` or empty
+        means no exclusion. Used by the relink pool to drop the already-linked rows so they
+        appear in the pinned section only, not duplicated in the remaining pool.
+      * ``search`` — case-insensitive LIKE against question + answer text. No testing notes (same
+        rationale as ``_apply_linked_flashcard_filters``).
+      * Ephemeral-session flashcards are always excluded — they're transient authoring artifacts,
+        not user-facing rows."""
+    if topic_ids is not None:
+        ids = list(topic_ids)
+        if not ids:
+            # Empty filter set: caller explicitly asked for "no topics", so no rows match.
+            stmt = stmt.where(Flashcard.id.is_(None))
+        else:
+            stmt = stmt.where(Flashcard.topic_id.in_(ids))
+    if exclude_ids is not None:
+        excl = list(exclude_ids)
+        if excl:
+            stmt = stmt.where(~Flashcard.id.in_(excl))
+    # Ephemeral exclusion via outerjoin on the linked-session row.
+    stmt = stmt.outerjoin(ReviewSession, Flashcard.session_id == ReviewSession.id).where(
+        (ReviewSession.id.is_(None)) | (ReviewSession.ephemeral == False),  # noqa: E712
+    )
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                Flashcard.question_text.ilike(pattern),
+                Flashcard.answer_text.ilike(pattern),
+            )
+        )
+    return stmt
+
+
+async def list_flashcards_paginated(
+    session: AsyncSession,
+    *,
+    topic_ids: Iterable[int] | None = None,
+    exclude_ids: Iterable[int] | None = None,
+    search: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[Flashcard]:
+    """Return a window of flashcards scoped to a topic range, optionally excluding a set of ids
+    and narrowed by a question/answer search.
+
+    The relink-mode "remaining pool" query: shows flashcards within the current topic filter that
+    aren't already linked to the cursor entry (``exclude_ids`` carries the linked-ids set). Stable
+    order by ``id`` ascending — no user-pickable sort axis yet."""
+    stmt = select(Flashcard).options(selectinload(Flashcard.session))
+    stmt = _apply_flashcard_pool_filters(
+        stmt, topic_ids=topic_ids, exclude_ids=exclude_ids, search=search,
+    )
+    stmt = stmt.order_by(Flashcard.id.asc()).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def count_flashcards(
+    session: AsyncSession,
+    *,
+    topic_ids: Iterable[int] | None = None,
+    exclude_ids: Iterable[int] | None = None,
+    search: str | None = None,
+) -> int:
+    """Count companion to ``list_flashcards_paginated``. Shares the filter helper so the count
+    matches the window exactly."""
+    stmt = select(func.count()).select_from(Flashcard)
+    stmt = _apply_flashcard_pool_filters(
+        stmt, topic_ids=topic_ids, exclude_ids=exclude_ids, search=search,
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def list_flashcards_by_topic(

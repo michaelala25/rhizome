@@ -102,6 +102,10 @@ class _EntriesTable(DataTable):
         # First-pass binding — the user can refine the keystroke later. Lives on the table (not
         # the parent tab with priority) so it doesn't compete with ``ctrl+f`` in editing surfaces.
         Binding("ctrl+f", "toggle_state", show=False),
+        # ``l`` enters / toggles relink mode. One motion from anywhere in the entries tab: drops
+        # multi-select if on, flips into ``LINKED_FLASHCARDS`` if not already, and turns on the
+        # panel's relink selection. Pressing again exits relink (stays in LINKED_FLASHCARDS).
+        Binding("l", "toggle_relink", show=False),
     ]
 
     def __init__(
@@ -161,6 +165,9 @@ class _EntriesTable(DataTable):
             else self._vm.State.ENTRIES
         )
         self._vm.transition_to(target)
+
+    def action_toggle_relink(self) -> None:
+        self._tab.toggle_relink_mode()
 
 
 class _SearchInput(Input):
@@ -1245,6 +1252,20 @@ class KnowledgeEntryBrowserTabView(Vertical):
                 # Table may have been unmounted (e.g. tab swap mid-close); let focus settle wherever
                 # Textual puts it.
                 pass
+
+    # ------------------------------------------------------------------
+    # Relink mode entry point
+    # ------------------------------------------------------------------
+
+    def toggle_relink_mode(self) -> None:
+        """View-layer wrapper around the VM's relink mutators. Closes any open dialog (mutex lives
+        here, not the VM) and then routes to ``enter_relink_mode`` or ``exit_relink_mode`` on the
+        VM based on the panel's current state. Called from the entries-table ``l`` binding."""
+        self.hide_dialog()
+        if self._vm.linked_flashcards.relink_mode:
+            self._vm.exit_relink_mode()
+        else:
+            self._vm.enter_relink_mode()
 
     # ------------------------------------------------------------------
     # Selection-target helper (used by dialog rendering and dispatchers)

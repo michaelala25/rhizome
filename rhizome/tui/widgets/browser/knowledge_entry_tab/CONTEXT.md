@@ -99,6 +99,171 @@ idempotent, so cursor moves while multi-select is on are no-ops at
 the sub-VM (the selection set didn't change), and the redundant
 sync call from `set_cursor` costs nothing.
 
+## Relink mode
+
+A second "selection" mode that lives on the **linked-flashcards panel**
+(`LinkedFlashcardsPanelViewModel`) rather than the entries side. Used to
+pick which flashcards should remain linked to the current entry; the
+relink-set semantic is "selected = linked".
+
+**Precondition**: single-select on the entries tab. Relink doesn't make
+sense over a multi-entry union, so the tab VM enforces this — entering
+relink drops multi-select, and toggling multi-select on (`m`) exits any
+active relink.
+
+**Entry**: `l` on the entries table. Combined-motion via
+`tab.toggle_relink_mode()` → `vm.enter_relink_mode()`: drops multi-select
+if on, transitions to `LINKED_FLASHCARDS` if not already, turns on relink
+on the panel sub-VM. The view wrapper also closes any open dialog (mutex
+lives on the view side). Pressing `l` again is a toggle: routes to
+`vm.exit_relink_mode()`, which turns off relink on the sub-VM but stays
+in `LINKED_FLASHCARDS`. `ctrl+f` exits all the way back to `ENTRIES`
+(its existing job); `transition_to(ENTRIES)` auto-exits relink as
+cleanup since the panel is no longer visible.
+
+### Dual-section model
+
+Relink mode reshapes the panel from "just the linked flashcards" into a
+two-section layout: the **pinned** section (flashcards currently linked
+to the cursor entry) followed by a **remaining pool** (all other
+flashcards within the parent tab's topic filter, deduped against the
+pinned set, paginated). The pinned section is frozen at fetch time —
+toggling a pinned row's selection off marks it for unlink but **does
+not reposition the row**. The partition stays stable so the eventual
+commit-relink action can diff against the originally-linked set.
+
+State on `LinkedFlashcardsPanelViewModel`:
+
+- `_linked_flashcards: list[Flashcard]` — pinned section. Always shown.
+- `_remaining_flashcards: list[Flashcard]` — pool, relink-only. Empty
+  outside relink.
+- `_remaining_total: int | None`, `_remaining_has_more: bool` —
+  pagination bookkeeping for the pool.
+- `_topic_filter: frozenset[int] | None` — pushed down from the parent
+  tab (see "Topic filter propagation" below). Scopes the pool only;
+  the pinned section ignores it.
+- `_search: str` — in non-relink filters the pinned section (existing
+  behaviour); in relink filters the pool only. The pinned section stays
+  unconditionally visible so the partition keeps its meaning mid-search.
+- `_relink_mode`, `_relink_selected_ids` — flag + the selection set.
+- `_cursor: int` — index into the combined display
+  `[*linked, <boundary>, *remaining]` in relink mode, or just `linked`
+  outside. `cursor_section()` and `cursor_flashcard` resolve which
+  section/row the cursor sits on.
+
+### Fetch protocol
+
+Inherits from `QueryBackedViewModel` (see `widgets/CONTEXT.md`) — gets
+the 50ms debounce + fetch-id staleness machinery for free. The earlier
+"no debounce, queries are sub-ms" assumption broke once the pool query
+landed; the kernel is now shared with the entry tab.
+
+`_fetch` runs the linked query first, then keys the pool query off the
+resulting linked ids via the `exclude_ids` parameter. Two sessions
+because of the data dependency, but each is a single windowed SELECT (+
+COUNT for the pool). Outside relink the pool query is skipped.
+
+`load_more` extends the remaining pool only — the pinned section
+doesn't paginate. Capture pattern matches the rest of the codebase:
+`my_id = self._fetch_id`, run the windowed SELECT, check
+`_still_current(my_id)` before applying.
+
+### Topic filter propagation
+
+`KnowledgeEntryBrowserTabViewModel.set_topic_filter` is overridden to
+push the filter down to the panel sub-VM before calling
+`super().set_topic_filter`. Order doesn't matter for correctness (both
+ends debounce + reconcile via their own fetch ids); pushing the panel
+first avoids a brief moment where the tab queries with the new filter
+while the panel is still on the old one.
+
+The panel's `set_topic_filter` is idempotent and refetches only when
+relink mode is on (the pool query depends on it). Outside relink the
+filter is stashed for the eventual relink entry.
+
+### Selection baseline
+
+On enter and on every successful `_process_fetched_data` while in mode,
+`_relink_selected_ids` reseeds to the **linked section's** ids only —
+those represent "currently linked → stay linked by default". Pool rows
+start unselected; the user opts them in explicitly via `space`. Cursor
+moves on the entries side (single-select only) trigger a fresh fetch
+that reseeds with the new entry's linked set.
+
+### View
+
+The panel renders four columns (`sel` / `id` / `question` / `answer`).
+In relink mode:
+
+- Pinned linked rows render first with `[x]` / `[ ]` markers.
+- A boundary row separates the sections — all cells render `─` glyphs
+  in dim grey. The cursor **lands** on it but
+  `toggle_current_relink_selection` no-ops there (VM guard via
+  `cursor_section() == "boundary"`).
+- Remaining pool rows render after the boundary.
+
+Three colour regimes (mirrors entries table):
+- non-relink: zebra-pair text (odd rows dim).
+- relink, not selected: darker zebra pair (`-relink` CSS class on the
+  table flips the palette).
+- relink, selected: bold green (`#5fd75f`) to pop against the dimmed
+  sea.
+
+Auto-load-more fires from `_LinkedFlashcardsTable.action_cursor_down`
+when the cursor is at the bottom edge and `remaining_has_more` is true.
+The status line in relink shows
+`"relink: N selected · pool {loaded}/{total} (l to exit, space to
+toggle)"`.
+
+### Accept / Cancel
+
+When the relink selection diverges from the originally-linked
+baseline (`is_relink_dirty` on the panel VM), a focusable
+Accept/Cancel widget reveals between the table and the answer
+preview. Mirrors the entry-details Accept/Cancel pattern: a
+`_RelinkChoicesList(Static, can_focus=True)` mounted unconditionally
+in `compose`, with its visibility toggled via the `.-visible` CSS
+class in `_refresh` based on `vm.is_relink_dirty`.
+
+Bindings: `←` / `→` move the cursor (VM-owned via
+`relink_choice_cursor`), `enter` dispatches `vm.accept_relink()` or
+`vm.cancel_relink()` by cursor position, `esc` is a shortcut for
+Cancel.
+
+The cursor (0 = Accept, 1 = Cancel) is reset to Accept on every
+selection toggle so the user picks up the most likely action.
+
+Reachable via `alt+left` / `alt+right` from the entries side: the
+focus walk goes table → choices (only when visible) → end. Returning
+left from choices lands back on the table; returning left from the
+table escapes the panel back to the entries side.
+**Focus-orphan rescue**: a dirty→clean transition (e.g. after
+`accept_relink` exits relink mode or `cancel_relink` reverts) hides
+the choices widget out from under any focus that was on it; the
+panel's `_refresh` detects the transition and re-routes focus to the
+table.
+
+**Behavior**:
+
+- **Cancel relink**: reverts `_relink_selected_ids` to the baseline
+  (= ids of the currently-linked flashcards in the pinned section).
+  Stays in relink mode so the user can keep working.
+- **Accept relink**: computes the diff against the baseline, applies
+  it via `link_flashcards_to_entry` /
+  `unlink_flashcards_from_entry` (both insert/delete on
+  `FlashcardEntry`, both idempotent against existing/missing rows),
+  commits, then calls `exit_relink_mode()`. Exiting triggers a
+  refetch via `_request_fetch`, which rebases the linked section to
+  the new DB state. Relink is a single-select-only mode so
+  `_entry_ids` must hold exactly one id; if the invariant is
+  violated the method logs a warning and bails without touching the
+  DB. `action_choice_confirm` on the view side is async to await
+  the accept path.
+
+Toggling selection itself remains a pure VM mutation (`space` flips
+membership in `_relink_selected_ids` and recomputes
+`is_relink_dirty`) — no DB I/O until accept.
+
 ## Dialog orchestration
 
 The four pop-up dialogs (delete / sort / filter / edit) all share one
