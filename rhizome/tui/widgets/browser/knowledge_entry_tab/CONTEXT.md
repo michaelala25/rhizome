@@ -264,6 +264,29 @@ Toggling selection itself remains a pure VM mutation (`space` flips
 membership in `_relink_selected_ids` and recomputes
 `is_relink_dirty`) — no DB I/O until accept.
 
+## Help section
+
+A bottom-of-tab help section toggled by `h` on the entries table.
+**View-side state** (`_help_visible: bool` on
+`KnowledgeEntryBrowserTabView`) — pure UI with no data-model
+meaning, so it lives on the view rather than the VM. Mirrors the
+`FlashcardReview` help pattern visually:
+
+- A 1-line `#tab-help-hint` always sits at the very bottom, right-
+  aligned. Shows `"h  show help"` (dim, with `h` bolded) when
+  collapsed; blanks while expanded.
+- A `#tab-help` Static directly above the hint expands when
+  `_help_visible` flips on (`.-visible` CSS class), centered, listing
+  the non-obvious bindings in a compact horizontal row joined by
+  4 spaces.
+
+`toggle_help` skips `vm.dirty` entirely and updates the two widgets
+directly via `_refresh_help`. Initial paint happens in `on_mount`
+since the hint exists independent of any VM state. The content list
+covers global mode/navigation keys (`h`, `m`, `space`, `shift+↑/↓`,
+`d/s/f/e`, `ctrl+f`, `l`, `alt+←/→`); per-dialog keys are
+documented inside the dialog widgets themselves.
+
 ## Dialog orchestration
 
 The four pop-up dialogs (delete / sort / filter / edit) all share one
