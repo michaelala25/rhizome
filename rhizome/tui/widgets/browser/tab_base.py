@@ -4,7 +4,7 @@ Each concrete tab (knowledge entries, flashcards, reviews, ...) owns its own dat
 rendering. The base class nails down the parts that every tab needs to share with the orchestrator:
 
   * a stable ``title`` for the tab bar
-  * a single ``set_filter(topic_ids)`` entry point the orchestrator calls when the topic-tree selection
+  * a single ``set_topic_filter(topic_ids)`` entry point the orchestrator calls when the topic-tree selection
     changes
   * a debounced cancel-on-supersede policy so fast multi-selection on the tree doesn't leave stale fetches
     racing each other
@@ -71,7 +71,7 @@ class BrowserTabViewModel(ViewModelBase):
 
     Filter semantics
     ----------------
-    ``set_filter(topic_ids)`` accepts:
+    ``set_topic_filter(topic_ids)`` accepts:
       * ``None`` — "no topic filter" (show everything). This is the boot state and the state after the user
         clears their tree selection.
       * a (possibly empty) iterable of topic IDs — the *already-expanded* union of subtrees from the user's
@@ -96,8 +96,8 @@ class BrowserTabViewModel(ViewModelBase):
         self._session_factory = session_factory
         # ``None`` ≠ empty iterable; see filter semantics above.
         self._filter_ids: frozenset[int] | None = None
-        # ``True`` once ``set_filter`` has been called at least once. Used by ``set_filter`` to distinguish
-        # "filter is already None" from "filter has never been applied" — the first set_filter must fetch
+        # ``True`` once ``set_topic_filter`` has been called at least once. Used by ``set_topic_filter`` to distinguish
+        # "filter is already None" from "filter has never been applied" — the first set_topic_filter must fetch
         # even when the requested filter happens to equal the default.
         self._filter_applied: bool = False
         self._is_loading: bool = False
@@ -134,7 +134,7 @@ class BrowserTabViewModel(ViewModelBase):
     # Orchestrator-facing API
     # ------------------------------------------------------------------
 
-    def set_filter(self, topic_ids: Iterable[int] | None) -> None:
+    def set_topic_filter(self, topic_ids: Iterable[int] | None) -> None:
         """Set the active topic filter and (re)fetch if it actually changed.
 
         Idempotent: calling with the same filter the tab already holds is a no-op (no cancel, no fetch, no
@@ -225,7 +225,7 @@ class BrowserTabViewModel(ViewModelBase):
             result = await self._fetch()
         except Exception:
             _logger.exception(
-                "%s._fetch raised; tab will remain in error state until next set_filter",
+                "%s._fetch raised; tab will remain in error state until next set_topic_filter",
                 type(self).__name__,
             )
             if self._still_current(my_id):

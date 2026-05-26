@@ -119,7 +119,7 @@ This matches `docs/design-principles.md` and the established
 - **tab_base.py — `BrowserTabViewModel`** (abstract): the tab contract.
   Subclasses override `TITLE` and `async _fetch`, and may call
   `_request_fetch` from their own sort/search mutators to trigger a refresh.
-  `set_filter(topic_ids)` (sync, called by the orchestrator) is **idempotent**:
+  `set_topic_filter(topic_ids)` (sync, called by the orchestrator) is **idempotent**:
   no-op if the requested filter equals the tab's current `_filter_ids` AND
   `_filter_applied` is True (i.e. the tab has been set up at least once);
   otherwise cancels any in-flight fetch and spawns a new one. Cancellation
@@ -280,7 +280,7 @@ module:
 - **empty set/iterable** = "selection is non-empty in principle but expanded
   to zero topics" — a legal terminal state that returns zero rows.
 
-Both `BrowserTabViewModel.set_filter` and `list_entries_paginated` honor
+Both `BrowserTabViewModel.set_topic_filter` and `list_entries_paginated` honor
 this distinction. The orchestrator's `_current_filter` and the tab's
 `_filter_ids` are both `frozenset[int] | None` to make the type echo the
 semantics.

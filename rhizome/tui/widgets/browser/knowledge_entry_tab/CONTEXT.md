@@ -22,7 +22,7 @@ components living in their own subdirectories.
   which dialog is open, dialog cursors, the EDIT_OPTIONS list,
   multi/single distinction in the option set — lives in the view side.
   The VM's bulk-action surface is the four mutators
-  (`set_sort`, `apply_filter`, `delete_selected_entries`,
+  (`set_sort`, `set_type_filter`, `delete_selected_entries`,
   `change_topic_on_selected_entries`,
   `change_type_on_selected_entries`); the view picks values and calls
   them. See the parent `CONTEXT.md` for the fetch behaviour notes
@@ -127,12 +127,12 @@ stacked vertically:
 - **Row 0 — `filter by type:`** (multi-select): a horizontal
   `[x] fact   [ ] exposition …` row backed by `vm.entry_types`.
   `None` means all types selected (no filter); a tuple restricts.
-  `space` flips the cursor's option and calls `vm.apply_filter`,
+  `space` flips the cursor's option and calls `vm.set_type_filter`,
   collapsing back to `None` if every type ends up selected.
 - **Row 1 — `filter by flashcards:`** (mutually exclusive radio):
   `( ) Any   ( ) No flashcards   (•) None`, backed by
   `vm.has_flashcards` (`True` / `False` / `None`). `space` makes the
-  cursor's option the active value via `vm.apply_flashcard_filter`.
+  cursor's option the active value via `vm.set_flashcard_filter`.
   The explicit `None` option lets the user step back to no-filter
   without a separate "off" key.
 
@@ -142,7 +142,7 @@ no separate "apply" key — toggles push to the VM immediately. `r`
 clears **both** axes at once (resets the dialog cursor to row 0 /
 col 0). `f` / `escape` dismiss; `s` / `e` swap.
 
-Both VM mutators (`apply_filter`, `apply_flashcard_filter`) clear the
+Both VM mutators (`set_type_filter`, `set_flashcard_filter`) clear the
 selection (same rationale as the sort dialog — a different filter is
 a different `LIMIT 500` window) and trigger a refetch via
 `_request_fetch`. The active filters are projected onto the DB op's

@@ -4,7 +4,7 @@ sort / filter / edit).
 The tab view owns *interaction state*: which dialog is currently visible, where each dialog's
 cursor lives, focus management on show/hide. The VM (see ``view_model.py``) owns *data facts* (the
 loaded window, sort/search/filter values, selection) and the bulk-action API the dialogs eventually
-invoke. The dialogs talk to the VM through that narrow surface (``set_sort``, ``apply_filter``,
+invoke. The dialogs talk to the VM through that narrow surface (``set_sort``, ``set_type_filter``,
 ``delete_selected_entries``, ``change_topic_on_selected_entries``,
 ``change_type_on_selected_entries``) and Textual's focus mechanics carry keystrokes the rest of the
 way.
@@ -248,7 +248,7 @@ class _SearchInput(Input):
 #
 # Each dialog widget owns its own cursor state and renders against a mix of local state + VM
 # read-only attributes. Actions either invoke the VM's narrow action API (``set_sort``,
-# ``apply_filter``, ``delete_selected_entries``) or ask the tab to swap to a sibling dialog
+# ``set_type_filter``, ``delete_selected_entries``) or ask the tab to swap to a sibling dialog
 # (``tab.toggle_dialog``). Show/hide and focus rescue live on the tab; dialogs expose a
 # ``prepare_for_show`` hook so they can initialize their cursor when the tab reveals them.
 
@@ -664,11 +664,11 @@ class _FilterDialog(Static, can_focus=True):
         """Dispatch ``space`` based on the active row.
 
         Row 0 (types) — flip the cursor's option in the selection, then push the new filter to the
-        VM. The VM's ``apply_filter`` collapses "all selected" back to ``None``.
+        VM. The VM's ``set_type_filter`` collapses "all selected" back to ``None``.
 
         Row 1 (flashcards) — radio-select: the cursor's option becomes the active value (including
         the ``None`` "no filter" option). Idempotent against the current selection (the VM's
-        ``apply_flashcard_filter`` no-ops).
+        ``set_flashcard_filter`` no-ops).
         """
         if self._row == 0:
             target = _TYPE_OPTIONS[self._col]
@@ -678,19 +678,19 @@ class _FilterDialog(Static, can_focus=True):
             else:
                 selected.add(target)
             if selected == set(_TYPE_OPTIONS):
-                self._vm.apply_filter(None)
+                self._vm.set_type_filter(None)
             else:
                 # Preserve enum-definition order so the kwargs snapshot is stable across toggles.
-                self._vm.apply_filter(tuple(t for t in _TYPE_OPTIONS if t in selected))
+                self._vm.set_type_filter(tuple(t for t in _TYPE_OPTIONS if t in selected))
         else:
             _, value = _FLASHCARD_OPTIONS[self._col]
-            self._vm.apply_flashcard_filter(value)
+            self._vm.set_flashcard_filter(value)
 
     def action_reset(self) -> None:
         """Clear both filter axes at once. Lands the cursor back at row 0 / col 0 so subsequent
         keystrokes start from a predictable position."""
-        self._vm.apply_filter(None)
-        self._vm.apply_flashcard_filter(None)
+        self._vm.set_type_filter(None)
+        self._vm.set_flashcard_filter(None)
         self._row = 0
         self._col = 0
 

@@ -10,21 +10,21 @@ orchestrator just arranges that:
   * the active-tab index is published as a single ``dirty`` signal the parent view can repaint against.
 
 Cross-VM coordination here is via direct method calls, per the ``ViewModelBase`` communication model: the
-BrowserVM subscribes to the tree's ``SELECTION_CHANGED`` and calls ``set_filter`` directly on the active
+BrowserVM subscribes to the tree's ``SELECTION_CHANGED`` and calls ``set_topic_filter`` directly on the active
 tab. There is no "broadcast filter" callback group — that would be one VM emitting on behalf of another.
 
 Lazy propagation
 ----------------
 Filter changes fan out only to the active tab. Inactive tabs hold whatever data they last rendered, plus
-the filter that produced it. On tab switch the new active tab gets a ``set_filter`` with the current
-orchestrator filter; because ``BrowserTabViewModel.set_filter`` is idempotent on unchanged filters,
+the filter that produced it. On tab switch the new active tab gets a ``set_topic_filter`` with the current
+orchestrator filter; because ``BrowserTabViewModel.set_topic_filter`` is idempotent on unchanged filters,
 switching to a tab that already matches the current filter is an instant no-op, while switching to a tab
 with a stale filter triggers a refetch.
 
 Async boundary: with cascade-on-toggle, the recursive-CTE expansion now happens *inside* the tree VM's
 ``toggle_selection`` (the cascade is the expansion). By the time ``SELECTION_CHANGED`` fires, the tree's
 ``_selected_ids`` is already the fully-expanded set, so the orchestrator's handler is a synchronous read of
-``expanded_filter_ids`` followed by a direct ``set_filter`` on the active tab — no background task, no
+``expanded_filter_ids`` followed by a direct ``set_topic_filter`` on the active tab — no background task, no
 cancellation dance.
 """
 
@@ -129,7 +129,7 @@ class BrowserViewModel(ViewModelBase):
         # ``switch_tab``).
         active = self.active_tab
         if active is not None:
-            active.set_filter(self._current_filter)
+            active.set_topic_filter(self._current_filter)
 
     # ------------------------------------------------------------------
     # Tab management
@@ -145,7 +145,7 @@ class BrowserViewModel(ViewModelBase):
         """Activate the tab at ``index``. No-op if already active or out of range — out-of-range is a
         programmer error, but we'd rather log and ignore than crash a UI handler.
 
-        Catches the newly-active tab up to ``_current_filter`` via ``set_filter``; the call is a no-op if
+        Catches the newly-active tab up to ``_current_filter`` via ``set_topic_filter``; the call is a no-op if
         the tab already holds data for that filter (instant switch), or triggers a refetch if not.
         """
         if index == self._active_index:
@@ -161,7 +161,7 @@ class BrowserViewModel(ViewModelBase):
         # tree hasn't loaded, ``_current_filter`` is still ``None`` by default, and nobody should be
         # switching tabs anyway.
         if self._started:
-            self._tabs[index].set_filter(self._current_filter)
+            self._tabs[index].set_topic_filter(self._current_filter)
         self.emit(self.dirty)
 
     def next_tab(self) -> None:
@@ -185,9 +185,9 @@ class BrowserViewModel(ViewModelBase):
 
         Cascade-on-toggle pre-expanded the selection inside the tree VM, so there's no async work left
         here: read the now-expanded filter set and hand it straight to the active tab. Inactive tabs
-        catch up lazily on ``switch_tab`` via the idempotent ``set_filter``.
+        catch up lazily on ``switch_tab`` via the idempotent ``set_topic_filter``.
         """
         self._current_filter = self._tree.expanded_filter_ids()
         active = self.active_tab
         if active is not None:
-            active.set_filter(self._current_filter)
+            active.set_topic_filter(self._current_filter)

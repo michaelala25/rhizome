@@ -16,7 +16,7 @@ This VM owns *data facts*: the loaded window, the current sort/search/filter val
 multi-select toggle and selection set, and the orchestration of bulk actions (delete / change topic /
 change type). It does **not** own dialog UI state — which dialog is open, where its cursor lives,
 which option is highlighted, focus management. Those concerns live in the view side. The VM exposes
-the actions the dialogs eventually invoke (``set_sort``, ``apply_filter``,
+the actions the dialogs eventually invoke (``set_sort``, ``set_type_filter``,
 ``delete_selected_entries``, ``change_topic_on_selected_entries``, ``change_type_on_selected_entries``)
 and leaves UI choreography to Textual.
 """
@@ -273,11 +273,11 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         self._clear_selection()
         self._request_fetch()
 
-    def apply_filter(self, entry_types: tuple[EntryType, ...] | None) -> None:
+    def set_type_filter(self, entry_types: tuple[EntryType, ...] | None) -> None:
         """Replace the active entry-type filter.
 
         ``None`` clears the filter. A tuple restricts the result set to those types. An empty tuple
-        is a legal terminal state meaning "no rows match" (mirrors ``set_filter``'s topic-ids
+        is a legal terminal state meaning "no rows match" (mirrors ``set_topic_filter``'s topic-ids
         semantics).
 
         Idempotent against the current value. Clears the selection, resets the cursor, refetches.
@@ -290,12 +290,12 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         self._clear_selection()
         self._request_fetch()
 
-    def apply_flashcard_filter(self, has_flashcards: bool | None) -> None:
+    def set_flashcard_filter(self, has_flashcards: bool | None) -> None:
         """Replace the active flashcard-presence filter.
 
         ``None`` clears the filter. ``True`` restricts to entries with at least one linked
         flashcard; ``False`` restricts to entries with none. Same window-reset semantics as
-        ``apply_filter``: idempotent against the current value, otherwise clears the selection,
+        ``set_type_filter``: idempotent against the current value, otherwise clears the selection,
         resets the cursor, and refetches.
         """
         if has_flashcards == self._has_flashcards:
