@@ -197,13 +197,21 @@ def _apply_entry_filters(
     search: str | None,
     entry_types: Iterable[EntryType] | None,
     has_flashcards: bool | None,
+    flashcard_ids: Iterable[int] | None,
 ):
-    """Apply the shared (topic_ids, search, entry_types, has_flashcards) filter
-    to a SELECT on KnowledgeEntry. ``None`` means "no filter on this axis"; an
-    empty iterable means "explicitly nothing matches" (consistent across
-    topic_ids and entry_types). ``has_flashcards=True`` restricts to entries
-    with at least one linked flashcard via EXISTS; ``False`` restricts to
-    entries with none via NOT EXISTS."""
+    """Apply the shared filter (topic_ids, search, entry_types, has_flashcards,
+    flashcard_ids) to a SELECT on KnowledgeEntry. ``None`` means "no filter on
+    this axis"; an empty iterable means "explicitly nothing matches" (consistent
+    across topic_ids, entry_types, and flashcard_ids).
+
+    Filter semantics:
+      - ``has_flashcards=True`` restricts to entries with at least one linked
+        flashcard via EXISTS; ``False`` restricts to entries with none via
+        NOT EXISTS.
+      - ``flashcard_ids`` restricts to entries linked to at least one
+        flashcard whose id is in the given set (EXISTS + IN). Independent of
+        ``has_flashcards`` at the SQL layer; mutual exclusion is the caller's
+        responsibility (the entry-browser VM enforces it)."""
     if topic_ids is not None:
         ids = list(topic_ids)
         if not ids:
@@ -231,6 +239,18 @@ def _apply_entry_filters(
     if has_flashcards is not None:
         link_exists = exists().where(FlashcardEntry.entry_id == KnowledgeEntry.id)
         stmt = stmt.where(link_exists if has_flashcards else ~link_exists)
+    if flashcard_ids is not None:
+        fids = list(flashcard_ids)
+        if not fids:
+            # Empty set: same "no rows match" contradiction as topic_ids / entry_types.
+            stmt = stmt.where(KnowledgeEntry.id.is_(None))
+        else:
+            stmt = stmt.where(
+                exists().where(
+                    (FlashcardEntry.entry_id == KnowledgeEntry.id)
+                    & (FlashcardEntry.flashcard_id.in_(fids))
+                )
+            )
     return stmt
 
 
@@ -241,6 +261,7 @@ async def list_entries_paginated(
     search: str | None = None,
     entry_types: Iterable[EntryType] | None = None,
     has_flashcards: bool | None = None,
+    flashcard_ids: Iterable[int] | None = None,
     sort_by: EntrySortKey = "created_at",
     sort_dir: Literal["asc", "desc"] = "asc",
     limit: int = 500,
@@ -260,6 +281,10 @@ async def list_entries_paginated(
       - ``has_flashcards=None`` means "no flashcard-presence filter". ``True``
         restricts to entries that have at least one linked flashcard (EXISTS);
         ``False`` restricts to entries with no linked flashcards (NOT EXISTS).
+      - ``flashcard_ids=None`` means "no specific-flashcard filter". A non-empty
+        iterable restricts to entries linked to at least one flashcard in the
+        set; an empty iterable means "no rows" (same convention as
+        ``topic_ids`` / ``entry_types``).
       - Results are ordered by ``sort_by`` then by ``id`` to keep ordering stable
         across pages when the primary key has ties (e.g. multiple rows with the
         same ``created_at`` at second granularity).
@@ -284,6 +309,7 @@ async def list_entries_paginated(
         search=search,
         entry_types=entry_types,
         has_flashcards=has_flashcards,
+        flashcard_ids=flashcard_ids,
     )
     stmt = stmt.order_by(direction, tiebreaker).limit(limit).offset(offset)
     result = await session.execute(stmt)
@@ -297,6 +323,7 @@ async def count_entries_filtered(
     search: str | None = None,
     entry_types: Iterable[EntryType] | None = None,
     has_flashcards: bool | None = None,
+    flashcard_ids: Iterable[int] | None = None,
 ) -> int:
     """Return the count of entries matching the same filter as ``list_entries_paginated``.
 
@@ -310,6 +337,7 @@ async def count_entries_filtered(
         search=search,
         entry_types=entry_types,
         has_flashcards=has_flashcards,
+        flashcard_ids=flashcard_ids,
     )
     result = await session.execute(stmt)
     return result.scalar_one()

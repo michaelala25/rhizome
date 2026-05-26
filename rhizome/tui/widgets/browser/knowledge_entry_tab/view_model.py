@@ -100,6 +100,12 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         # have at least one linked flashcard; ``False`` = restrict to entries with none. Threaded
         # through the same _query_kwargs path as the other filter axes.
         self._has_flashcards: bool | None = None
+        # Specific-flashcard filter ("one of these flashcards"). ``None`` = no filter; a tuple
+        # restricts to entries linked to at least one flashcard in the set. Mutually exclusive
+        # with ``_has_flashcards`` at the VM layer — both setters wipe the twin field so the two
+        # axes can never both be active simultaneously (they're a tagged union from the dialog's
+        # point of view; the DB op treats them as orthogonal predicates).
+        self._flashcard_ids: tuple[int, ...] | None = None
 
         # Row cursor within the currently-loaded window. The view owns navigation; the VM owns the
         # persisted position so it survives repaints. Reset to 0 on any "reset" operation.
@@ -171,6 +177,13 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         """Current flashcard-presence filter. ``None`` means no filter; ``True`` restricts to entries
         with at least one linked flashcard; ``False`` restricts to entries with none."""
         return self._has_flashcards
+
+    @property
+    def flashcard_ids(self) -> tuple[int, ...] | None:
+        """Current specific-flashcard filter. ``None`` means no filter; a tuple restricts to entries
+        linked to at least one flashcard in the set. Mutually exclusive with ``has_flashcards`` —
+        both setters wipe the twin axis."""
+        return self._flashcard_ids
 
     @property
     def cursor(self) -> int:
@@ -310,12 +323,37 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
 
         ``None`` clears the filter. ``True`` restricts to entries with at least one linked
         flashcard; ``False`` restricts to entries with none. Same window-reset semantics as
-        ``set_type_filter``: idempotent against the current value, otherwise clears the selection,
-        resets the cursor, and refetches.
+        ``set_type_filter``: idempotent against the current value (when the twin ``flashcard_ids``
+        axis is also clear), otherwise clears the selection, resets the cursor, refetches.
+
+        Mutually exclusive with ``set_flashcard_ids_filter``: setting either axis wipes the other,
+        since the dialog UI surfaces them as one tagged radio choice.
         """
-        if has_flashcards == self._has_flashcards:
+        if has_flashcards == self._has_flashcards and self._flashcard_ids is None:
             return
         self._has_flashcards = has_flashcards
+        self._flashcard_ids = None
+        self._cursor = 0
+        self._clear_selection()
+        self._request_fetch()
+
+    def set_flashcard_ids_filter(self, flashcard_ids: tuple[int, ...] | None) -> None:
+        """Replace the active specific-flashcard filter.
+
+        ``None`` clears the filter. A tuple restricts to entries linked to at least one flashcard
+        in the set; an empty tuple is a legal terminal state meaning "no rows match" (mirrors
+        ``set_type_filter``'s entry-types semantics).
+
+        Idempotent against the current value (when the twin ``has_flashcards`` axis is also
+        clear). Otherwise clears the selection, resets the cursor, and refetches. Wipes the
+        ``has_flashcards`` axis as a side effect (mutual-exclusion invariant — see
+        ``set_flashcard_filter``).
+        """
+        new = None if flashcard_ids is None else tuple(flashcard_ids)
+        if new == self._flashcard_ids and self._has_flashcards is None:
+            return
+        self._flashcard_ids = new
+        self._has_flashcards = None
         self._cursor = 0
         self._clear_selection()
         self._request_fetch()
@@ -642,6 +680,7 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
             "search": self._search or None,
             "entry_types": list(self._entry_types) if self._entry_types is not None else None,
             "has_flashcards": self._has_flashcards,
+            "flashcard_ids": list(self._flashcard_ids) if self._flashcard_ids is not None else None,
             "sort_by": self._sort_by,
             "sort_dir": self._sort_dir,
         }
@@ -672,6 +711,7 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
                 search=kwargs["search"],
                 entry_types=kwargs["entry_types"],
                 has_flashcards=kwargs["has_flashcards"],
+                flashcard_ids=kwargs["flashcard_ids"],
             )
         return rows, total
 

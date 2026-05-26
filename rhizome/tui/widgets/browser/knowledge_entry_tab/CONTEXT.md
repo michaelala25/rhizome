@@ -309,7 +309,9 @@ bar opens). State transitions auto-dismiss any open dialog
 
 ### Filter
 
-Pressing `f` opens `_FilterDialog`. It surfaces two filter axes
+Pressing `f` opens `_FilterDialog`. It's a `Vertical` container (not a
+single `Static`, unlike the other dialogs) so it can embed a real
+focusable Input next to the radio row. It surfaces two filter axes
 stacked vertically:
 
 - **Row 0 — `filter by type:`** (multi-select): a horizontal
@@ -318,27 +320,77 @@ stacked vertically:
   `space` flips the cursor's option and calls `vm.set_type_filter`,
   collapsing back to `None` if every type ends up selected.
 - **Row 1 — `filter by flashcards:`** (mutually exclusive radio):
-  `( ) Any   ( ) No flashcards   (•) None`, backed by
-  `vm.has_flashcards` (`True` / `False` / `None`). `space` makes the
-  cursor's option the active value via `vm.set_flashcard_filter`.
-  The explicit `None` option lets the user step back to no-filter
-  without a separate "off" key.
+  `(•) None   ( ) Any   ( ) No flashcards   ( ) One of: [____]`.
+  The first three are backed by `vm.has_flashcards` (`None` / `True` /
+  `False`); "One of" is backed by `vm.flashcard_ids` (`tuple[int, ...]
+  | None`). The two VM axes are mutually exclusive — setting either
+  wipes the other (see "Two-axis tagged union" below).
 
 Navigation: `↑` / `↓` move the cursor between rows (column clamps to
-the new row's length); `←` / `→` move within a row (wrap). There's
-no separate "apply" key — toggles push to the VM immediately. `r`
-clears **both** axes at once (resets the dialog cursor to row 0 /
-col 0). `f` / `escape` dismiss; `s` / `e` swap.
+the new row's length); `←` / `→` move within a row (wrap). On the
+flashcards row, the cursor reaches a fourth column past the radios —
+the "One of" pseudo-option. `r` clears **both** axes at once (resets
+the dialog cursor to row 0 / col 0) and also clears the One-of buffer.
+`f` / `escape` dismiss; `s` / `e` swap.
 
-Both VM mutators (`set_type_filter`, `set_flashcard_filter`) clear the
-selection (same rationale as the sort dialog — a different filter is
-a different `LIMIT 500` window) and trigger a refetch via
-`_request_fetch`. The active filters are projected onto the DB op's
-`entry_types` (list of `EntryType` enums, or `None` for no filter;
-empty list = "no rows match") and `has_flashcards` (`bool | None` —
-`True` ⇒ EXISTS on `flashcard_entry`, `False` ⇒ NOT EXISTS, `None`
-skipped). Filter state lives entirely in the VM and persists across
-dialog open/close cycles.
+#### "One of" sub-flow
+
+Selecting "One of" via `space` activates the radio bullet on the view
+side (`_one_of_selected`), clears any prior VM flashcard filter
+(`set_flashcard_filter(None)` — wipes both axes thanks to the mutual-
+exclusion invariant), and focuses the compact `_OneOfInput` widget
+mounted next to the label. Re-pressing `space` on "One of" while
+already active just re-focuses the input (useful for resuming edits
+after a submit).
+
+Inside the input:
+
+- `enter` parses the buffer via `_parse_id_list` (comma-separated
+  tokens, stripped, `int()`-parsed; unparseable or empty tokens are
+  silently dropped) and pushes the resulting tuple to
+  `vm.set_flashcard_ids_filter`. An empty parsed result clears the
+  VM-side filter (treated as "stop filtering" rather than
+  "no rows") but the dialog stays in "One of" mode so the user can
+  keep editing. The input's placeholder doubles as the format hint
+  (`"comma-separated ids"`).
+- `escape` clears the buffer, drops `_one_of_selected` back to False,
+  calls `vm.set_flashcard_filter(None)` to wipe both VM axes, and
+  returns focus to the dialog.
+
+After enter or escape, focus returns to the dialog itself (so the
+user can resume `↑/↓/←/→` navigation).
+
+Switching to a different radio (`Any` / `No flashcards` / `None`)
+via `space` calls `vm.set_flashcard_filter(value)`, which wipes the
+`flashcard_ids` axis as a side effect. The view-side `_one_of_buffer`
+is **preserved** so the user can return to it via a future
+`space`-on-"One of" without retyping; only `_one_of_selected` flips
+back to False.
+
+#### Two-axis tagged union
+
+The flashcards filter is two VM fields (`has_flashcards: bool | None`
+and `flashcard_ids: tuple[int, ...] | None`) but presents as one
+radio choice. Both setters (`set_flashcard_filter`,
+`set_flashcard_ids_filter`) wipe the twin axis so they can never both
+be active. The DB op treats them as orthogonal predicates — the VM
+owns the mutual-exclusion invariant. The empty-tuple convention
+matches `entry_types`: an empty `flashcard_ids` tuple is "no rows
+match", and `None` is "no filter on this axis".
+
+Both VM mutators (`set_type_filter`, `set_flashcard_filter`,
+`set_flashcard_ids_filter`) clear the selection (same rationale as
+the sort dialog — a different filter is a different `LIMIT 500`
+window) and trigger a refetch via `_request_fetch`. The active
+filters are projected onto the DB op's `entry_types` (list of
+`EntryType` enums, or `None` for no filter; empty list = "no rows
+match"), `has_flashcards` (`bool | None` — `True` ⇒ EXISTS on
+`flashcard_entry`, `False` ⇒ NOT EXISTS, `None` skipped), and
+`flashcard_ids` (iterable of ints, or `None`; empty iterable = "no
+rows", non-empty = EXISTS + IN). Filter state lives entirely in the
+VM and persists across dialog open/close cycles; the view-side One-of
+buffer also persists across opens (the dialog is mounted once and
+reused).
 
 The widget is intentionally not generalized over an abstract
 "category" list — the previous `FilterCategoryViewModel` /
