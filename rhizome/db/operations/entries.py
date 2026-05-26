@@ -2,12 +2,12 @@
 
 from typing import Iterable, Literal
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from rhizome.db import KnowledgeEntry, Topic
-from rhizome.db.models import EntryType
+from rhizome.db.models import EntryType, FlashcardEntry
 from rhizome.logs import get_logger
 
 _logger = get_logger("tools.entries")
@@ -196,11 +196,14 @@ def _apply_entry_filters(
     topic_ids: Iterable[int] | None,
     search: str | None,
     entry_types: Iterable[EntryType] | None,
+    has_flashcards: bool | None,
 ):
-    """Apply the shared (topic_ids, search, entry_types) filter to a SELECT
-    on KnowledgeEntry. ``None`` means "no filter on this axis"; an empty
-    iterable means "explicitly nothing matches" (consistent across
-    topic_ids and entry_types)."""
+    """Apply the shared (topic_ids, search, entry_types, has_flashcards) filter
+    to a SELECT on KnowledgeEntry. ``None`` means "no filter on this axis"; an
+    empty iterable means "explicitly nothing matches" (consistent across
+    topic_ids and entry_types). ``has_flashcards=True`` restricts to entries
+    with at least one linked flashcard via EXISTS; ``False`` restricts to
+    entries with none via NOT EXISTS."""
     if topic_ids is not None:
         ids = list(topic_ids)
         if not ids:
@@ -225,6 +228,9 @@ def _apply_entry_filters(
             stmt = stmt.where(KnowledgeEntry.id.is_(None))
         else:
             stmt = stmt.where(KnowledgeEntry.entry_type.in_(types))
+    if has_flashcards is not None:
+        link_exists = exists().where(FlashcardEntry.entry_id == KnowledgeEntry.id)
+        stmt = stmt.where(link_exists if has_flashcards else ~link_exists)
     return stmt
 
 
@@ -234,6 +240,7 @@ async def list_entries_paginated(
     topic_ids: Iterable[int] | None = None,
     search: str | None = None,
     entry_types: Iterable[EntryType] | None = None,
+    has_flashcards: bool | None = None,
     sort_by: EntrySortKey = "created_at",
     sort_dir: Literal["asc", "desc"] = "asc",
     limit: int = 500,
@@ -250,6 +257,9 @@ async def list_entries_paginated(
       - ``entry_types=None`` means "no type filter" (every type). An empty
         iterable means "explicitly nothing matches" (same convention as
         ``topic_ids``).
+      - ``has_flashcards=None`` means "no flashcard-presence filter". ``True``
+        restricts to entries that have at least one linked flashcard (EXISTS);
+        ``False`` restricts to entries with no linked flashcards (NOT EXISTS).
       - Results are ordered by ``sort_by`` then by ``id`` to keep ordering stable
         across pages when the primary key has ties (e.g. multiple rows with the
         same ``created_at`` at second granularity).
@@ -269,7 +279,11 @@ async def list_entries_paginated(
     if needs_topic_join:
         stmt = stmt.join(Topic, KnowledgeEntry.topic_id == Topic.id)
     stmt = _apply_entry_filters(
-        stmt, topic_ids=topic_ids, search=search, entry_types=entry_types,
+        stmt,
+        topic_ids=topic_ids,
+        search=search,
+        entry_types=entry_types,
+        has_flashcards=has_flashcards,
     )
     stmt = stmt.order_by(direction, tiebreaker).limit(limit).offset(offset)
     result = await session.execute(stmt)
@@ -282,6 +296,7 @@ async def count_entries_filtered(
     topic_ids: Iterable[int] | None = None,
     search: str | None = None,
     entry_types: Iterable[EntryType] | None = None,
+    has_flashcards: bool | None = None,
 ) -> int:
     """Return the count of entries matching the same filter as ``list_entries_paginated``.
 
@@ -290,7 +305,11 @@ async def count_entries_filtered(
     """
     stmt = select(func.count()).select_from(KnowledgeEntry)
     stmt = _apply_entry_filters(
-        stmt, topic_ids=topic_ids, search=search, entry_types=entry_types,
+        stmt,
+        topic_ids=topic_ids,
+        search=search,
+        entry_types=entry_types,
+        has_flashcards=has_flashcards,
     )
     result = await session.execute(stmt)
     return result.scalar_one()

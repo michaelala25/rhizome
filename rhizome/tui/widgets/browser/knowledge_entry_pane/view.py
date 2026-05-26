@@ -50,8 +50,24 @@ _EDIT_OPTIONS_MULTI: tuple[str, ...] = (
     "delete",
 )
 
-# Entry-type filter options. The view's only filter today; mirrors ``EntryType`` enum order.
+# Entry-type filter options (first filter row). Mirrors ``EntryType`` enum order.
 _TYPE_OPTIONS: tuple[EntryType, ...] = tuple(EntryType)
+
+# Flashcard-presence filter options (second filter row). Mutually exclusive — exactly one is the
+# active value at any time. The third option, ``None``, corresponds to "no filter active" so the
+# user can step back to no-filter without a separate key. Label / value pairs:
+#   * "Any"            → has_flashcards=True   (entries with at least one linked flashcard)
+#   * "No flashcards"  → has_flashcards=False  (entries with none)
+#   * "None"           → has_flashcards=None   (no filter applied — default)
+_FLASHCARD_OPTIONS: tuple[tuple[str, bool | None], ...] = (
+    ("Any", True),
+    ("No flashcards", False),
+    ("None", None),
+)
+
+# Lead-in column width for the two filter-row labels — wide enough for the longer of the two
+# ("filter by flashcards:") with a 2-space gutter, so the option columns line up vertically.
+_FILTER_LEAD_WIDTH = len("filter by flashcards:") + 2
 
 _DialogName = Literal["delete", "sort", "filter", "edit"]
 
@@ -482,17 +498,26 @@ class _SortBar(Static, can_focus=True):
 
 
 class _FilterDialog(Static, can_focus=True):
-    """Entry-type filter picker. Sits in the same screen slot as the other dialogs.
+    """Two-axis filter picker (entry-type + flashcard-presence). Sits in the same screen slot as the
+    other dialogs.
 
-    The selection state derives directly from ``vm.entry_types``: ``None`` means "all types selected"
-    (no filter); a tuple restricts to those types. Toggling an option recomputes the new set and
-    calls ``vm.apply_filter`` immediately — there's no separate "apply" key.
+    Layout: two rows stacked vertically.
+      * Row 0 — ``filter by type:`` (multi-select checkboxes mirroring ``EntryType``). Selection
+        state derives directly from ``vm.entry_types`` (``None`` = all types selected).
+      * Row 1 — ``filter by flashcards:`` (mutually-exclusive radio: Any / No flashcards / None).
+        Selection state derives directly from ``vm.has_flashcards``.
 
-    Keys: ``left`` / ``right`` move the cursor (with wrap); ``space`` toggles the option under the
-    cursor; ``r`` resets to no-filter; ``f`` / ``escape`` dismiss; ``s`` / ``e`` swap dialogs.
+    Keys: ``up`` / ``down`` move the cursor between rows; ``left`` / ``right`` move within a row
+    (wrap); ``space`` toggles the option under the cursor (multi-toggle on row 0; radio-select on
+    row 1); ``r`` clears both filter axes; ``f`` / ``escape`` dismiss; ``s`` / ``e`` swap dialogs.
+
+    Both rows push to the VM immediately on toggle — no separate "apply" key, matching the original
+    single-row design.
     """
 
     BINDINGS = [
+        Binding("up", "cursor_up", show=False),
+        Binding("down", "cursor_down", show=False),
         Binding("left", "cursor_left", show=False),
         Binding("right", "cursor_right", show=False),
         Binding("space", "toggle", show=False),
@@ -514,8 +539,11 @@ class _FilterDialog(Static, can_focus=True):
         super().__init__(**kwargs)
         self._vm = view_model
         self._pane = pane
-        # Cursor index into ``_TYPE_OPTIONS``.
-        self._cursor: int = 0
+        # Two-axis cursor: ``_row`` picks the filter row (0 = type, 1 = flashcards), ``_col`` is the
+        # column within that row. Rows have different option counts, so ``_col`` is clamped on row
+        # change.
+        self._row: int = 0
+        self._col: int = 0
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
@@ -531,36 +559,59 @@ class _FilterDialog(Static, can_focus=True):
         self.call_after_refresh(self._refresh)
 
     def prepare_for_show(self) -> None:
-        """Park the cursor at index 0 on each open. The active selection is read directly from the
-        VM, so nothing else to sync here."""
-        self._cursor = 0
+        """Park the cursor at row 0, col 0 on each open. The active selections are read directly
+        from the VM, so nothing else to sync here."""
+        self._row = 0
+        self._col = 0
+
+    def _row_lengths(self) -> tuple[int, int]:
+        return (len(_TYPE_OPTIONS), len(_FLASHCARD_OPTIONS))
 
     def _refresh(self) -> None:
         self.update(self._render_dialog())
 
     def _selected_types(self) -> set[EntryType]:
-        """Derive the current selection from ``vm.entry_types``. ``None`` = all selected."""
+        """Derive the current type selection from ``vm.entry_types``. ``None`` = all selected."""
         if self._vm.entry_types is None:
             return set(_TYPE_OPTIONS)
         return set(self._vm.entry_types)
 
-    def _is_default(self) -> bool:
-        """True when no filter is active (every type selected). Used for the "filter is narrowing"
-        green-tint highlight in the header."""
-        return self._selected_types() == set(_TYPE_OPTIONS)
+    def _type_filter_active(self) -> bool:
+        """True when the type filter is narrowing the view (not "all types selected")."""
+        return self._selected_types() != set(_TYPE_OPTIONS)
+
+    def _flashcard_filter_active(self) -> bool:
+        """True when the flashcard-presence filter is narrowing the view."""
+        return self._vm.has_flashcards is not None
 
     def _render_dialog(self) -> Text:
         cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
-        selected = self._selected_types()
-        narrow_color = "#5fd75f" if not self._is_default() else ""
 
         text = Text()
-        # Line 1 — lead-in + option row. Lead-in gets a green tint when the filter is active so the
-        # user can spot at a glance that this dialog is narrowing the view.
-        lead_style = ("bold " + narrow_color).strip() if narrow_color else "dim"
-        text.append("filter by type:  ", style=lead_style)
+        self._append_type_row(text, cursor_color)
+        text.append("\n")
+        self._append_flashcard_row(text, cursor_color)
+        text.append("\n")
+
+        # Hint line — extended with the selection-clearing warning while multi-select is on
+        # (mirrors ``_SortBar``'s pattern).
+        hint = Text()
+        hint.append(
+            "↑/↓ row • ←/→ move • space toggle • r reset • f/esc dismiss",
+            style="dim",
+        )
+        if self._vm.multi_select_active:
+            hint.append("   ", style="dim")
+            hint.append("Toggling clears your selection.", style="#ff8787")
+        text.append(hint)
+        return text
+
+    def _append_type_row(self, text: Text, cursor_color: str) -> None:
+        selected = self._selected_types()
+        lead_style = "bold #5fd75f" if self._type_filter_active() else "dim"
+        text.append(_pad_lead("filter by type:"), style=lead_style)
         for i, opt in enumerate(_TYPE_OPTIONS):
-            is_cursor = i == self._cursor
+            is_cursor = self._row == 0 and self._col == i
             is_sel = opt in selected
             marker = "[x]" if is_sel else "[ ]"
             marker_style = "#5fd75f" if is_sel else "#787878"
@@ -570,51 +621,90 @@ class _FilterDialog(Static, can_focus=True):
             text.append(opt.value, style=label_style)
             if i < len(_TYPE_OPTIONS) - 1:
                 text.append("    ")
-        text.append("\n")
 
-        # Line 2 — hint, extended with the selection-clearing warning while multi-select is on
-        # (mirrors ``_SortBar``'s pattern).
-        hint = Text()
-        hint.append(
-            "← / → move • space toggle • r reset • f/esc dismiss", style="dim",
-        )
-        if self._vm.multi_select_active:
-            hint.append("   ", style="dim")
-            hint.append("Toggling clears your selection.", style="#ff8787")
-        text.append(hint)
-        return text
+    def _append_flashcard_row(self, text: Text, cursor_color: str) -> None:
+        active = self._vm.has_flashcards
+        lead_style = "bold #5fd75f" if self._flashcard_filter_active() else "dim"
+        text.append(_pad_lead("filter by flashcards:"), style=lead_style)
+        for i, (label, value) in enumerate(_FLASHCARD_OPTIONS):
+            is_cursor = self._row == 1 and self._col == i
+            is_sel = value == active
+            marker = "(•)" if is_sel else "( )"
+            marker_style = "#5fd75f" if is_sel and value is not None else (
+                "#787878" if not is_sel else ""
+            )
+            label_style = cursor_color if is_cursor else ""
+            text.append(marker, style=marker_style)
+            text.append(" ")
+            text.append(label, style=label_style)
+            if i < len(_FLASHCARD_OPTIONS) - 1:
+                text.append("    ")
+
+    def action_cursor_up(self) -> None:
+        self._row = (self._row - 1) % 2
+        self._col = min(self._col, self._row_lengths()[self._row] - 1)
+        self._refresh()
+
+    def action_cursor_down(self) -> None:
+        self._row = (self._row + 1) % 2
+        self._col = min(self._col, self._row_lengths()[self._row] - 1)
+        self._refresh()
 
     def action_cursor_left(self) -> None:
-        self._cursor = (self._cursor - 1) % len(_TYPE_OPTIONS)
+        n = self._row_lengths()[self._row]
+        self._col = (self._col - 1) % n
         self._refresh()
 
     def action_cursor_right(self) -> None:
-        self._cursor = (self._cursor + 1) % len(_TYPE_OPTIONS)
+        n = self._row_lengths()[self._row]
+        self._col = (self._col + 1) % n
         self._refresh()
 
     def action_toggle(self) -> None:
-        """Flip the cursor's option in the selection, then push the new filter to the VM. The VM's
-        ``apply_filter`` collapses "all selected" back to ``None``."""
-        target = _TYPE_OPTIONS[self._cursor]
-        selected = self._selected_types()
-        if target in selected:
-            selected.discard(target)
+        """Dispatch ``space`` based on the active row.
+
+        Row 0 (types) — flip the cursor's option in the selection, then push the new filter to the
+        VM. The VM's ``apply_filter`` collapses "all selected" back to ``None``.
+
+        Row 1 (flashcards) — radio-select: the cursor's option becomes the active value (including
+        the ``None`` "no filter" option). Idempotent against the current selection (the VM's
+        ``apply_flashcard_filter`` no-ops).
+        """
+        if self._row == 0:
+            target = _TYPE_OPTIONS[self._col]
+            selected = self._selected_types()
+            if target in selected:
+                selected.discard(target)
+            else:
+                selected.add(target)
+            if selected == set(_TYPE_OPTIONS):
+                self._vm.apply_filter(None)
+            else:
+                # Preserve enum-definition order so the kwargs snapshot is stable across toggles.
+                self._vm.apply_filter(tuple(t for t in _TYPE_OPTIONS if t in selected))
         else:
-            selected.add(target)
-        if selected == set(_TYPE_OPTIONS):
-            self._vm.apply_filter(None)
-        else:
-            # Preserve enum-definition order so the kwargs snapshot is stable across toggles.
-            self._vm.apply_filter(tuple(t for t in _TYPE_OPTIONS if t in selected))
+            _, value = _FLASHCARD_OPTIONS[self._col]
+            self._vm.apply_flashcard_filter(value)
 
     def action_reset(self) -> None:
+        """Clear both filter axes at once. Lands the cursor back at row 0 / col 0 so subsequent
+        keystrokes start from a predictable position."""
         self._vm.apply_filter(None)
+        self._vm.apply_flashcard_filter(None)
+        self._row = 0
+        self._col = 0
 
     def action_cancel(self) -> None:
         self._pane.hide_dialog()
 
     def action_swap_to(self, name: str) -> None:
         self._pane.toggle_dialog(name)  # type: ignore[arg-type]
+
+
+def _pad_lead(label: str) -> str:
+    """Right-pad a filter-row lead-in to the shared column width so the option columns line up
+    vertically across rows."""
+    return label.ljust(_FILTER_LEAD_WIDTH)
 
 
 class _TypePickerScreen(ModalScreen[EntryType | None]):
@@ -998,7 +1088,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         border-top: solid $accent;
     }
     KnowledgeEntryBrowserPaneView #filter-dialog {
-        height: 3;
+        height: 4;
         margin: 1 0 0 0;
         padding: 0 1;
         border-top: solid #3a3a3a;

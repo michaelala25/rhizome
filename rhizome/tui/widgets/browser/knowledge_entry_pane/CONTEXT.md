@@ -110,29 +110,45 @@ bar opens). State transitions auto-dismiss any open dialog
 
 ### Filter
 
-Pressing `f` opens `_FilterDialog`. It surfaces the entry-type filter
-— the only filter today — as a horizontal `[x] fact   [ ] exposition
-…` row. Selection state is derived directly from `vm.entry_types`:
-`None` means all types selected (no filter); a tuple restricts.
-There's no separate "apply" key — `space` flips the cursor's option
-locally and calls `vm.apply_filter` immediately, collapsing back to
-`None` if every type ends up selected. `r` resets to no filter via
-`vm.apply_filter(None)`. `f` / `escape` dismiss; `s` / `e` swap.
+Pressing `f` opens `_FilterDialog`. It surfaces two filter axes
+stacked vertically:
 
-`vm.apply_filter` clears the selection (same rationale as the sort
-dialog — a different filter is a different `LIMIT 500` window) and
-triggers a refetch via `_request_fetch`. The active filter is
-projected to the DB op's `entry_types` parameter (list of `EntryType`
-enums, or `None` for no filter; an empty list means "no rows match",
-mirroring `topic_ids` semantics). Filter state lives entirely in the
-VM and persists across dialog open/close cycles.
+- **Row 0 — `filter by type:`** (multi-select): a horizontal
+  `[x] fact   [ ] exposition …` row backed by `vm.entry_types`.
+  `None` means all types selected (no filter); a tuple restricts.
+  `space` flips the cursor's option and calls `vm.apply_filter`,
+  collapsing back to `None` if every type ends up selected.
+- **Row 1 — `filter by flashcards:`** (mutually exclusive radio):
+  `( ) Any   ( ) No flashcards   (•) None`, backed by
+  `vm.has_flashcards` (`True` / `False` / `None`). `space` makes the
+  cursor's option the active value via `vm.apply_flashcard_filter`.
+  The explicit `None` option lets the user step back to no-filter
+  without a separate "off" key.
+
+Navigation: `↑` / `↓` move the cursor between rows (column clamps to
+the new row's length); `←` / `→` move within a row (wrap). There's
+no separate "apply" key — toggles push to the VM immediately. `r`
+clears **both** axes at once (resets the dialog cursor to row 0 /
+col 0). `f` / `escape` dismiss; `s` / `e` swap.
+
+Both VM mutators (`apply_filter`, `apply_flashcard_filter`) clear the
+selection (same rationale as the sort dialog — a different filter is
+a different `LIMIT 500` window) and trigger a refetch via
+`_request_fetch`. The active filters are projected onto the DB op's
+`entry_types` (list of `EntryType` enums, or `None` for no filter;
+empty list = "no rows match") and `has_flashcards` (`bool | None` —
+`True` ⇒ EXISTS on `flashcard_entry`, `False` ⇒ NOT EXISTS, `None`
+skipped). Filter state lives entirely in the VM and persists across
+dialog open/close cycles.
 
 The widget is intentionally not generalized over an abstract
 "category" list — the previous `FilterCategoryViewModel` /
 `MultiSelectFilterViewModel` hierarchy was speculative generality
-that never paid off. Adding a second filter axis (text-CONTAINS, date
-range, etc.) is a future refactor: extend the dialog's render and
-keystroke dispatch, extend `vm.apply_filter`'s signature.
+that never paid off. Adding a third filter axis (text-CONTAINS, date
+range, etc.) follows the pattern used to add the flashcards row:
+extend the dialog's render + keystroke dispatch, add a new VM
+mutator + property, thread a new kwarg through `_query_kwargs` /
+`_apply_entry_filters`.
 
 ### Sort
 

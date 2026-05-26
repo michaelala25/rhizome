@@ -96,6 +96,10 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._sort_by: EntrySortKey = "id"
         self._sort_dir: Literal["asc", "desc"] = "asc"
         self._entry_types: tuple[EntryType, ...] | None = None
+        # Flashcard-presence filter. ``None`` = no filter; ``True`` = restrict to entries that
+        # have at least one linked flashcard; ``False`` = restrict to entries with none. Threaded
+        # through the same _query_kwargs path as the other filter axes.
+        self._has_flashcards: bool | None = None
 
         # Row cursor within the currently-loaded window. The view owns navigation; the VM owns the
         # persisted position so it survives repaints. Reset to 0 on any "reset" operation.
@@ -161,6 +165,12 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         empty tuple means "no rows match" (legal terminal state, mirrors ``BrowserPaneViewModel``'s
         topic filter semantics)."""
         return self._entry_types
+
+    @property
+    def has_flashcards(self) -> bool | None:
+        """Current flashcard-presence filter. ``None`` means no filter; ``True`` restricts to entries
+        with at least one linked flashcard; ``False`` restricts to entries with none."""
+        return self._has_flashcards
 
     @property
     def cursor(self) -> int:
@@ -276,6 +286,21 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         if new == self._entry_types:
             return
         self._entry_types = new
+        self._cursor = 0
+        self._clear_selection()
+        self._request_fetch()
+
+    def apply_flashcard_filter(self, has_flashcards: bool | None) -> None:
+        """Replace the active flashcard-presence filter.
+
+        ``None`` clears the filter. ``True`` restricts to entries with at least one linked
+        flashcard; ``False`` restricts to entries with none. Same window-reset semantics as
+        ``apply_filter``: idempotent against the current value, otherwise clears the selection,
+        resets the cursor, and refetches.
+        """
+        if has_flashcards == self._has_flashcards:
+            return
+        self._has_flashcards = has_flashcards
         self._cursor = 0
         self._clear_selection()
         self._request_fetch()
@@ -534,6 +559,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
             "topic_ids": self._filter_ids,
             "search": self._search or None,
             "entry_types": list(self._entry_types) if self._entry_types is not None else None,
+            "has_flashcards": self._has_flashcards,
             "sort_by": self._sort_by,
             "sort_dir": self._sort_dir,
         }
@@ -563,6 +589,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
                 topic_ids=kwargs["topic_ids"],
                 search=kwargs["search"],
                 entry_types=kwargs["entry_types"],
+                has_flashcards=kwargs["has_flashcards"],
             )
         return rows, total
 
