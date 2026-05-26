@@ -16,8 +16,9 @@ from .view_model import EntryDetailsViewModel
 
 
 class _ChoicesList(Static, can_focus=True):
-    """Two-line Accept/Cancel choices list. Focusable so up/down/enter bindings can fire only when the user
-    has explicitly given it focus (avoids hijacking those keys from the title input or content area).
+    """Horizontal Accept/Cancel choices list. Focusable so left/right/enter/escape bindings fire only when
+    the user has explicitly given it focus (avoids hijacking those keys from the title input or content
+    area).
 
     Owns its own render — both because the focus state (which affects cursor brightness) lives here, not on
     the VM, and because keeping the render co-located with the widget keeps the parent view's ``_refresh``
@@ -26,14 +27,22 @@ class _ChoicesList(Static, can_focus=True):
     """
 
     BINDINGS = [
-        Binding("up", "choice_up", show=False),
-        Binding("down", "choice_down", show=False),
+        Binding("left", "choice_left", show=False),
+        Binding("right", "choice_right", show=False),
         Binding("enter", "choice_confirm", show=False),
+        # Escape acts as Cancel regardless of cursor position — same convention as the relink Accept/Cancel
+        # widget on the linked-flashcards panel.
+        Binding("escape", "cancel", show=False),
     ]
 
     def __init__(self, view_model: EntryDetailsViewModel, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
+        # 0 = Accept, 1 = Cancel. Owned by the widget rather than the VM: the cursor is pure UI state with
+        # no data-model meaning, and the design principle is that dialog UI state lives view-side. Reset to
+        # 0 in ``prepare_for_show`` (called by the parent's ``_refresh`` on the clean→dirty transition) so
+        # each fresh open lands on Accept.
+        self._choice_cursor: int = 0
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
@@ -51,17 +60,25 @@ class _ChoicesList(Static, can_focus=True):
     def on_blur(self) -> None:
         self.call_after_refresh(self._refresh)
 
+    def prepare_for_show(self) -> None:
+        """Called by the parent view when the widget transitions from hidden to visible. Resets the
+        choice cursor to Accept so each fresh open starts on the most likely action. Mirrors the
+        ``prepare_for_show`` hook used by the entries-tab dialogs."""
+        self._choice_cursor = 0
+        self._refresh()
+
     def _refresh(self) -> None:
         self.update(self._render_choices())
 
     def _render_choices(self) -> Text:
-        """Two lines: ``► Accept`` / ``  Cancel`` (or vice versa). Cursor brightness tracks focus — bright on
-        focus, dim grey otherwise. Label styling tracks the *selected* state and is independent of focus."""
-        labels = ("Accept", "Cancel")
-        cursor_style = "bold" if self.has_focus else "#6a6a6a"
+        """Lead-in label + horizontal ``► Accept   Cancel`` row, then a dim hint line. Cursor brightness
+        tracks focus — bright gold on focus, dim grey otherwise. Mirrors the relink Accept/Cancel widget."""
+        cursor_style = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
         text = Text()
+        text.append("Edit: ", style="dim")
+        labels = ("Accept", "Cancel")
         for i, label in enumerate(labels):
-            selected = i == self._vm.choice_cursor
+            selected = i == self._choice_cursor
             if selected:
                 text.append("► ", style=cursor_style)
                 text.append(label, style="bold")
@@ -69,22 +86,29 @@ class _ChoicesList(Static, can_focus=True):
                 text.append("  ")
                 text.append(label, style="dim")
             if i < len(labels) - 1:
-                text.append("\n")
+                text.append("   ")
+        text.append("\n")
+        text.append("← / → move • enter confirm • esc cancels", style="dim")
         return text
 
-    def action_choice_up(self) -> None:
-        self._vm.move_choice_cursor(-1)
+    def action_choice_left(self) -> None:
+        self._choice_cursor = (self._choice_cursor - 1) % 2
+        self._refresh()
 
-    def action_choice_down(self) -> None:
-        self._vm.move_choice_cursor(1)
+    def action_choice_right(self) -> None:
+        self._choice_cursor = (self._choice_cursor + 1) % 2
+        self._refresh()
 
     async def action_choice_confirm(self) -> None:
         # Dispatch by current cursor position. ``accept`` is async (it opens a session and commits);
         # ``cancel`` is sync. Textual supports async actions, so this signature is fine.
-        if self._vm.choice_cursor == 0:
+        if self._choice_cursor == 0:
             await self._vm.accept()
         else:
             self._vm.cancel()
+
+    def action_cancel(self) -> None:
+        self._vm.cancel()
 
 
 class EntryDetailsView(Vertical):
@@ -124,14 +148,18 @@ class EntryDetailsView(Vertical):
         border: solid $accent;
     }
     EntryDetailsView #details-choices {
-        height: 2;
+        height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
-        color: rgb(150,150,150);
+        border-top: solid #3a3a3a;
+        color: rgb(200,200,200);
         display: none;
     }
     EntryDetailsView #details-choices.-visible {
         display: block;
+    }
+    EntryDetailsView #details-choices:focus {
+        border-top: solid $accent;
     }
     """
 
@@ -206,6 +234,10 @@ class EntryDetailsView(Vertical):
 
         is_dirty_now = self._vm.is_dirty and not frozen
         if is_dirty_now:
+            # Reset the choice cursor on each clean→dirty transition so each fresh open lands on
+            # Accept regardless of where the user left it previously.
+            if not self._was_dirty:
+                choices.prepare_for_show()
             choices.add_class("-visible")
         else:
             # On the dirty→clean (or dirty→frozen) transition, if focus was on the choices widget it's about

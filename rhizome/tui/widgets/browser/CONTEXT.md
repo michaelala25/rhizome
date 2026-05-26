@@ -183,12 +183,19 @@ This matches `docs/design-principles.md` and the established
   reseeds buffers from the new entry. The user has to explicitly Accept
   before navigating away.
 
-  **Choices list.** When `is_dirty` is true, a two-line `_ChoicesList`
-  (Accept / Cancel) reveals below the content area. It's a focusable
-  `Static` with its own bindings: up/down (`vm.move_choice_cursor`)
-  and enter (dispatches `vm.accept()` or `vm.cancel()` by
-  `choice_cursor`). When clean, it's hidden via a `.-visible` class
-  toggle.
+  **Choices list.** When `is_dirty` is true, a `_ChoicesList`
+  (lead-in "Edit:" label, horizontal Accept / Cancel, dim hint line)
+  reveals below the content area. It's a focusable `Static` that owns
+  its own choice cursor (dialog UI state is a view concern; the VM
+  exposes only `accept` / `cancel`). Bindings: left/right (move the
+  local cursor), enter (dispatches `vm.accept()` or `vm.cancel()` by
+  cursor position), and escape (shortcut for cancel). The parent
+  view's `_refresh` calls `prepare_for_show()` on the clean→dirty
+  transition so each fresh open lands on Accept. When clean, the
+  widget is hidden via a `.-visible` class toggle. Visual shape
+  mirrors the relink Accept/Cancel widget in the linked-flashcards
+  panel — top border that flips accent on focus, bright-gold cursor
+  arrow on focus.
 
   **Accept path**: opens a session, calls `update_entry` + `commit`,
   then mutates the in-memory `KnowledgeEntry` instance in place so the

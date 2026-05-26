@@ -24,8 +24,17 @@ focus-orphan rescue, cross-region focus contract).
 - **view.py — `EntryDetailsView` + private `_ChoicesList`**:
   `Vertical` containing a title `TextArea`, a content `TextArea`, and
   the hidden-when-clean `_ChoicesList`. `_ChoicesList` is a focusable
-  `Static` with its own up/down/enter bindings that dispatch to
-  `vm.move_choice_cursor` / `vm.accept` / `vm.cancel`. The view
+  `Static` rendered as a lead-in "Edit:" label, a horizontal
+  Accept / Cancel row, and a dim hint line — mirrors the relink
+  Accept/Cancel widget on the linked-flashcards panel. The cursor
+  (0 = Accept, 1 = Cancel) lives on the widget, not the VM —
+  dialog UI state is a view concern; the VM exposes only the data
+  actions (`accept`, `cancel`). Bindings: left/right (mutate
+  `_choice_cursor` locally), enter (dispatches `vm.accept` /
+  `vm.cancel` by `_choice_cursor`), and escape (shortcut for
+  cancel). A `prepare_for_show()` hook is called by the parent
+  view's `_refresh` on the clean→dirty transition so each fresh
+  open lands on Accept. The view
   implements the tab sub-region focus contract (`focus_first`,
   `focus_next_region`, `focus_prev_region`) walking
   `_REGION_IDS = (title, content, choices)` and skipping hidden

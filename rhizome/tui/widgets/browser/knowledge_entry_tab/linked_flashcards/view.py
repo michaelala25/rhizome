@@ -316,7 +316,7 @@ class LinkedFlashcardsPanelView(Vertical):
        only when ``vm.is_relink_dirty`` is True (``.-visible`` class managed by ``_refresh``).
        Mirrors the entry-details choices styling: thin top border that flips accent on focus. */
     LinkedFlashcardsPanelView #linked-flashcards-relink-choices {
-        height: 4;
+        height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
         border-top: solid #3a3a3a;

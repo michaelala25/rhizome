@@ -61,10 +61,6 @@ class EntryDetailsViewModel(ViewModelBase):
         self._title_buffer: str = ""
         self._content_buffer: str = ""
 
-        # 0 = Accept, 1 = Cancel. Reset on every entry change and on accept/cancel completion. Modulo-2 wrap
-        # on arrow nav.
-        self._choice_cursor: int = 0
-
         # Freeze flag pushed by the tab VM when the user enters multi-select mode. Title/content remain
         # visible (they still track the cursor row) but the view switches the ``TextArea``s to read-only and
         # hides the Accept/Cancel choices. ``_count`` is the size of the tab VM's selection set; the view
@@ -115,10 +111,6 @@ class EntryDetailsViewModel(ViewModelBase):
         )
 
     @property
-    def choice_cursor(self) -> int:
-        return self._choice_cursor
-
-    @property
     def multi_select_active(self) -> bool:
         return self._multi_select_active
 
@@ -140,7 +132,6 @@ class EntryDetailsViewModel(ViewModelBase):
         self._entry = entry
         self._title_buffer = "" if entry is None else entry.title
         self._content_buffer = "" if entry is None else entry.content
-        self._choice_cursor = 0
         self.emit(self.dirty)
 
     def set_multi_select(self, active: bool, count: int) -> None:
@@ -177,18 +168,8 @@ class EntryDetailsViewModel(ViewModelBase):
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
-    # Choice cursor + accept/cancel
+    # Accept/cancel
     # ------------------------------------------------------------------
-
-    def move_choice_cursor(self, direction: int) -> None:
-        """Move the Accept/Cancel cursor. No-op when the choices list isn't meaningful (clean state)."""
-        if not self.is_dirty:
-            return
-        new = (self._choice_cursor + direction) % 2
-        if new == self._choice_cursor:
-            return
-        self._choice_cursor = new
-        self.emit(self.dirty)
 
     async def accept(self) -> None:
         """Persist the current buffers to the DB and mutate the in-memory entry in place.
@@ -214,7 +195,6 @@ class EntryDetailsViewModel(ViewModelBase):
         # subscribers seeing ``saved`` can trust ``entry.title`` / ``entry.content``.
         self._entry.title = self._title_buffer
         self._entry.content = self._content_buffer
-        self._choice_cursor = 0
         self.emit(self.dirty)
         self.emit(self._saved)
 
@@ -224,5 +204,4 @@ class EntryDetailsViewModel(ViewModelBase):
             return
         self._title_buffer = self._entry.title
         self._content_buffer = self._entry.content
-        self._choice_cursor = 0
         self.emit(self.dirty)
