@@ -1,22 +1,22 @@
-"""Browser widget (MVVM) — multi-pane data browser with a multi-select topic tree."""
+"""Browser widget (MVVM) — multi-tab data browser with a multi-select topic tree."""
 
-from .knowledge_entry_pane import (
+from .knowledge_entry_tab import (
     DEFAULT_PAGE_LIMIT,
-    KnowledgeEntryBrowserPaneView,
-    KnowledgeEntryBrowserPaneViewModel,
+    KnowledgeEntryBrowserTabView,
+    KnowledgeEntryBrowserTabViewModel,
 )
-from .pane_base import BrowserPaneViewModel
+from .tab_base import BrowserTabViewModel
 from .topic_tree import BrowserTopicTreeView, BrowserTopicTreeViewModel
 from .view import BrowserView
 from .view_model import BrowserViewModel
 
 __all__ = [
-    "BrowserPaneViewModel",
+    "BrowserTabViewModel",
     "BrowserTopicTreeView",
     "BrowserTopicTreeViewModel",
     "BrowserView",
     "BrowserViewModel",
     "DEFAULT_PAGE_LIMIT",
-    "KnowledgeEntryBrowserPaneView",
-    "KnowledgeEntryBrowserPaneViewModel",
+    "KnowledgeEntryBrowserTabView",
+    "KnowledgeEntryBrowserTabViewModel",
 ]

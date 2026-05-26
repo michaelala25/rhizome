@@ -1,7 +1,7 @@
-"""BrowserPaneViewModel — abstract base for tabbed panes in the browser widget.
+"""BrowserTabViewModel — abstract base for tabs in the browser widget.
 
-Each concrete pane (knowledge entries, flashcards, reviews, ...) owns its own data, sort/filter state, and
-rendering. The base class nails down the parts that every pane needs to share with the orchestrator:
+Each concrete tab (knowledge entries, flashcards, reviews, ...) owns its own data, sort/filter state, and
+rendering. The base class nails down the parts that every tab needs to share with the orchestrator:
 
   * a stable ``title`` for the tab bar
   * a single ``set_filter(topic_ids)`` entry point the orchestrator calls when the topic-tree selection
@@ -39,7 +39,7 @@ Subclasses implement two methods:
 The fetch-id machinery that decides "still current?" lives entirely in the base. Subclasses participating
 only in the main fetch path never touch ``_fetch_id`` or ``_still_current``. (Subclass ad-hoc append
 operations like ``load_more`` are an exception — they need to gate their own writes against the same id;
-see the ``KnowledgeEntryBrowserPaneViewModel.load_more`` for the pattern.)
+see the ``KnowledgeEntryBrowserTabViewModel.load_more`` for the pattern.)
 
 Future direction (not implemented)
 ----------------------------------
@@ -62,11 +62,11 @@ from rhizome.logs import get_logger
 
 from ..view_model_base import ViewModelBase
 
-_logger = get_logger("browser.pane")
+_logger = get_logger("browser.tab")
 
 
-class BrowserPaneViewModel(ViewModelBase):
-    """Abstract pane VM. Concrete subclasses must override ``_fetch``, ``_process_fetched_data``, and
+class BrowserTabViewModel(ViewModelBase):
+    """Abstract tab VM. Concrete subclasses must override ``_fetch``, ``_process_fetched_data``, and
     ``title``, plus expose whatever data attributes the corresponding view needs to render.
 
     Filter semantics
@@ -78,12 +78,12 @@ class BrowserPaneViewModel(ViewModelBase):
         tree selection. An empty iterable means "no rows match" (selection was made but is empty after
         expansion, which is a legal terminal state).
 
-    The orchestrator (``BrowserViewModel``) handles subtree expansion before calling here, so panes never
+    The orchestrator (``BrowserViewModel``) handles subtree expansion before calling here, so tabs never
     run the CTE themselves.
     """
 
     # Subclasses override.
-    TITLE: str = "<untitled pane>"
+    TITLE: str = "<untitled tab>"
 
     # Length of the cancellable debounce window before a fetch's actual DB work begins. Sized to absorb
     # bursts of input (filter toggles via spacebar, multi-select tree changes, etc.) without being long
@@ -137,11 +137,11 @@ class BrowserPaneViewModel(ViewModelBase):
     def set_filter(self, topic_ids: Iterable[int] | None) -> None:
         """Set the active topic filter and (re)fetch if it actually changed.
 
-        Idempotent: calling with the same filter the pane already holds is a no-op (no cancel, no fetch, no
-        dirty emit). This matters under lazy propagation in the orchestrator — switching to a pane that's
+        Idempotent: calling with the same filter the tab already holds is a no-op (no cancel, no fetch, no
+        dirty emit). This matters under lazy propagation in the orchestrator — switching to a tab that's
         already showing data for the current filter should be instant, not paint a loading flash.
 
-        Coalescing across rapid distinct filters is handled by the debounce in ``_request_fetch``; panes
+        Coalescing across rapid distinct filters is handled by the debounce in ``_request_fetch``; tabs
         don't need to know about input cadence.
         """
         new_filter: frozenset[int] | None = (
@@ -175,7 +175,7 @@ class BrowserPaneViewModel(ViewModelBase):
 
         ``on_complete`` (optional) fires synchronously right after ``_process_fetched_data`` succeeds and
         before the final ``dirty`` emit. Used by callers that need post-refetch bookkeeping (e.g. the
-        knowledge-entry pane intersects ``_selected_ids`` with the surviving window after a bulk edit).
+        knowledge-entry tab intersects ``_selected_ids`` with the surviving window after a bulk edit).
         Not invoked if the task is superseded or ``_fetch`` raises.
         """
         self._fetch_id += 1
@@ -225,7 +225,7 @@ class BrowserPaneViewModel(ViewModelBase):
             result = await self._fetch()
         except Exception:
             _logger.exception(
-                "%s._fetch raised; pane will remain in error state until next set_filter",
+                "%s._fetch raised; tab will remain in error state until next set_filter",
                 type(self).__name__,
             )
             if self._still_current(my_id):

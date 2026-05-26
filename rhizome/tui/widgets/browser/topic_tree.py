@@ -169,7 +169,7 @@ class BrowserTopicTreeViewModel(ViewModelBase):
             re-adds everything, including any descendant the user previously unchecked).
 
         Emits ``dirty`` (the tree repaints every affected checkbox) and ``SELECTION_CHANGED`` (the
-        orchestrator hands the new filter to the active pane). Both fire exactly once per toggle even
+        orchestrator hands the new filter to the active tab). Both fire exactly once per toggle even
         though the cascade may move many ids.
         """
         async with self._session_factory() as session:
@@ -206,7 +206,7 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def expanded_filter_ids(self) -> frozenset[int] | None:
-        """Return the topic-id filter the panes should apply.
+        """Return the topic-id filter the tabs should apply.
 
         ``None`` means "no filter — show everything" (the empty-selection state). Otherwise returns
         ``_selected_ids`` as a frozenset.

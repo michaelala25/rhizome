@@ -1,5 +1,5 @@
 """EntryDetailsView (+ private ``_ChoicesList``) — the title/content side panel that sits to the right of
-the entry table in ``KnowledgeEntryBrowserPaneView``. See ``view_model.py`` for the VM contract.
+the entry table in ``KnowledgeEntryBrowserTabView``. See ``view_model.py`` for the VM contract.
 """
 
 from __future__ import annotations
@@ -166,7 +166,7 @@ class EntryDetailsView(Vertical):
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
-        # Paint whatever the VM was holding at construction (typically nothing, but the pane VM may have
+        # Paint whatever the VM was holding at construction (typically nothing, but the tab VM may have
         # called ``set_entry`` before mount).
         self._refresh()
 
@@ -192,12 +192,12 @@ class EntryDetailsView(Vertical):
         if content_area.text != target_content:
             content_area.text = target_content
 
-        # Freeze the edit surfaces while the pane is in multi-select mode. The cursor still moves through
+        # Freeze the edit surfaces while the tab is in multi-select mode. The cursor still moves through
         # entries so we keep the text current, but ``read_only=True`` blocks user keystrokes and we hide the
         # Accept/Cancel choices entirely. ``is_dirty`` is treated as effectively False from the view's
         # perspective — there's no way to act on the buffers — so any stale buffer divergence carried into
         # multi-select mode is invisible to the user. (It'll be reseeded on the next ``set_entry`` from the
-        # pane VM's normal cursor sync.)
+        # tab VM's normal cursor sync.)
         frozen = self._vm.multi_select_active
         if title_area.read_only != frozen:
             title_area.read_only = frozen
@@ -210,7 +210,7 @@ class EntryDetailsView(Vertical):
         else:
             # On the dirty→clean (or dirty→frozen) transition, if focus was on the choices widget it's about
             # to be display:none'd — move it back to the content area first so the user lands somewhere
-            # sensible. Frozen also lands here, but the parent pane's focus guard generally keeps focus on
+            # sensible. Frozen also lands here, but the parent tab's focus guard generally keeps focus on
             # the table while frozen, so this branch is belt-and-braces.
             if (
                 self._was_dirty
@@ -222,16 +222,16 @@ class EntryDetailsView(Vertical):
         self._was_dirty = is_dirty_now
 
     # ------------------------------------------------------------------
-    # Cross-region focus (driven by parent pane's alt+left/right)
+    # Cross-region focus (driven by parent tab's alt+left/right)
     # ------------------------------------------------------------------
     #
     # Internal cycle through ``_REGION_IDS``. The choices region is skipped when its widget is hidden
     # (``widget.display`` is False while the ``-visible`` class is absent). Methods return True if they
-    # successfully moved focus, False if they were already at the corresponding edge — the parent pane uses
+    # successfully moved focus, False if they were already at the corresponding edge — the parent tab uses
     # the bool to decide whether to step further (e.g. back to the table).
 
     def focus_first(self) -> None:
-        """Land on the leftmost sub-region (title). Called by the parent pane when ``BrowserView`` enters
+        """Land on the leftmost sub-region (title). Called by the parent tab when ``BrowserView`` enters
         the details region from the left."""
         self.query_one("#details-title", TextArea).focus()
 

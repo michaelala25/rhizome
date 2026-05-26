@@ -1,7 +1,7 @@
-"""KnowledgeEntryBrowserPaneView — DataTable + details + status row + four pop-up dialogs (delete /
+"""KnowledgeEntryBrowserTabView — DataTable + details + status row + four pop-up dialogs (delete /
 sort / filter / edit).
 
-The pane view owns *interaction state*: which dialog is currently visible, where each dialog's
+The tab view owns *interaction state*: which dialog is currently visible, where each dialog's
 cursor lives, focus management on show/hide. The VM (see ``view_model.py``) owns *data facts* (the
 loaded window, sort/search/filter values, selection) and the bulk-action API the dialogs eventually
 invoke. The dialogs talk to the VM through that narrow surface (``set_sort``, ``apply_filter``,
@@ -25,8 +25,8 @@ from rhizome.db.models import EntryType
 from rhizome.db.operations import EntrySortKey
 
 from .entry_details import EntryDetailsView
-from .linked_flashcards import LinkedFlashcardsPaneView
-from .view_model import KnowledgeEntryBrowserPaneViewModel
+from .linked_flashcards import LinkedFlashcardsPanelView
+from .view_model import KnowledgeEntryBrowserTabViewModel
 
 # Sort axes the dialog surfaces. Ordered left-to-right the way they're laid out (matches the data
 # table's column order). The DB op accepts a wider set; the dialog deliberately surfaces the four
@@ -78,8 +78,8 @@ class _EntriesTable(DataTable):
 
     Lives here rather than as standalone bindings on the parent view so the keys only fire when the
     table is focused — ``m`` and ``space`` on the details panel's ``TextArea``s would otherwise have
-    to be suppressed. Selection actions delegate straight to the pane VM; dialog-toggle actions ask
-    the parent pane to show/hide the named dialog.
+    to be suppressed. Selection actions delegate straight to the tab VM; dialog-toggle actions ask
+    the parent tab to show/hide the named dialog.
     """
 
     BINDINGS = [
@@ -92,27 +92,27 @@ class _EntriesTable(DataTable):
         # needs its own cursor step.
         Binding("shift+down", "select_down", show=False),
         Binding("shift+up", "select_up", show=False),
-        # ``d`` / ``s`` / ``f`` / ``e`` toggle the four dialogs. The pane owns which is currently
+        # ``d`` / ``s`` / ``f`` / ``e`` toggle the four dialogs. The tab owns which is currently
         # shown and runs the mutex (showing one hides the others).
         Binding("d", "toggle_dialog('delete')", show=False),
         Binding("s", "toggle_dialog('sort')", show=False),
         Binding("f", "toggle_dialog('filter')", show=False),
         Binding("e", "toggle_dialog('edit')", show=False),
-        # ``ctrl+f`` flips the pane between ``ENTRIES`` (default) and ``LINKED_FLASHCARDS`` views.
+        # ``ctrl+f`` flips the tab between ``ENTRIES`` (default) and ``LINKED_FLASHCARDS`` views.
         # First-pass binding — the user can refine the keystroke later. Lives on the table (not
-        # the parent pane with priority) so it doesn't compete with ``ctrl+f`` in editing surfaces.
+        # the parent tab with priority) so it doesn't compete with ``ctrl+f`` in editing surfaces.
         Binding("ctrl+f", "toggle_state", show=False),
     ]
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
-        pane: "KnowledgeEntryBrowserPaneView",
+        view_model: KnowledgeEntryBrowserTabViewModel,
+        tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        self._pane = pane
+        self._tab = tab
 
     def action_toggle_multi_select(self) -> None:
         self._vm.toggle_multi_select()
@@ -150,7 +150,7 @@ class _EntriesTable(DataTable):
         super().action_cursor_down()
 
     def action_toggle_dialog(self, name: str) -> None:
-        self._pane.toggle_dialog(name)  # type: ignore[arg-type]
+        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
 
     def action_toggle_state(self) -> None:
         # Two-state toggle for now; if a third state lands, replace this with an explicit picker.
@@ -200,7 +200,7 @@ class _SearchInput(Input):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
+        view_model: KnowledgeEntryBrowserTabViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -212,7 +212,7 @@ class _SearchInput(Input):
         self._refresh_title()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Submit handler lives on the input itself rather than the pane view so the search bar is
+        # Submit handler lives on the input itself rather than the tab view so the search bar is
         # self-contained — the only outward coupling is the ``vm.set_search`` call.
         if event.input is not self:
             return
@@ -248,9 +248,9 @@ class _SearchInput(Input):
 #
 # Each dialog widget owns its own cursor state and renders against a mix of local state + VM
 # read-only attributes. Actions either invoke the VM's narrow action API (``set_sort``,
-# ``apply_filter``, ``delete_selected_entries``) or ask the pane to swap to a sibling dialog
-# (``pane.toggle_dialog``). Show/hide and focus rescue live on the pane; dialogs expose a
-# ``prepare_for_show`` hook so they can initialize their cursor when the pane reveals them.
+# ``apply_filter``, ``delete_selected_entries``) or ask the tab to swap to a sibling dialog
+# (``tab.toggle_dialog``). Show/hide and focus rescue live on the tab; dialogs expose a
+# ``prepare_for_show`` hook so they can initialize their cursor when the tab reveals them.
 
 
 class _DeleteConfirm(Static, can_focus=True):
@@ -274,13 +274,13 @@ class _DeleteConfirm(Static, can_focus=True):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
-        pane: "KnowledgeEntryBrowserPaneView",
+        view_model: KnowledgeEntryBrowserTabViewModel,
+        tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        self._pane = pane
+        self._tab = tab
         # 0 = Confirm, 1 = Cancel. Reset to 0 every time the dialog is shown (``prepare_for_show``).
         self._choice_cursor: int = 0
 
@@ -299,7 +299,7 @@ class _DeleteConfirm(Static, can_focus=True):
         self.call_after_refresh(self._refresh)
 
     def prepare_for_show(self) -> None:
-        """Called by the pane right before this dialog becomes visible. Reset the choice cursor to
+        """Called by the tab right before this dialog becomes visible. Reset the choice cursor to
         ``Confirm`` so each open starts fresh."""
         self._choice_cursor = 0
 
@@ -311,7 +311,7 @@ class _DeleteConfirm(Static, can_focus=True):
         self.update(self._render_dialog())
 
     def _render_dialog(self) -> Text:
-        count = self._pane.selection_target_count()
+        count = self._tab.selection_target_count()
         noun = "entry" if count == 1 else "entries"
         # In single-select mode the lead-in is just "Delete this entry?" — "selected" reads weird
         # when there's no visible selection mark. Multi-select keeps the existing phrasing.
@@ -345,17 +345,17 @@ class _DeleteConfirm(Static, can_focus=True):
     async def action_choice_confirm(self) -> None:
         if self._choice_cursor == 0:
             await self._vm.delete_selected_entries()
-        self._pane.hide_dialog()
+        self._tab.hide_dialog()
 
     def action_cancel(self) -> None:
-        self._pane.hide_dialog()
+        self._tab.hide_dialog()
 
     def action_swap_to(self, name: str) -> None:
-        self._pane.toggle_dialog(name)  # type: ignore[arg-type]
+        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
 
 
 class _SortBar(Static, can_focus=True):
-    """Sort-axis picker dialog. Sits in the same screen slot as the other dialogs (the pane runs the
+    """Sort-axis picker dialog. Sits in the same screen slot as the other dialogs (the tab runs the
     mutex).
 
     Renders horizontally, mirroring the data table's column order: ``id   title   type   topic``.
@@ -386,13 +386,13 @@ class _SortBar(Static, can_focus=True):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
-        pane: "KnowledgeEntryBrowserPaneView",
+        view_model: KnowledgeEntryBrowserTabViewModel,
+        tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        self._pane = pane
+        self._tab = tab
         # Cursor index into ``_SORT_OPTIONS``. Landed on the currently-active sort axis at
         # ``prepare_for_show``; moves with ←/→.
         self._cursor: int = 0
@@ -491,10 +491,10 @@ class _SortBar(Static, can_focus=True):
         self._vm.set_sort("id", "asc")
 
     def action_cancel(self) -> None:
-        self._pane.hide_dialog()
+        self._tab.hide_dialog()
 
     def action_swap_to(self, name: str) -> None:
-        self._pane.toggle_dialog(name)  # type: ignore[arg-type]
+        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
 
 
 class _FilterDialog(Static, can_focus=True):
@@ -532,13 +532,13 @@ class _FilterDialog(Static, can_focus=True):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
-        pane: "KnowledgeEntryBrowserPaneView",
+        view_model: KnowledgeEntryBrowserTabViewModel,
+        tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        self._pane = pane
+        self._tab = tab
         # Two-axis cursor: ``_row`` picks the filter row (0 = type, 1 = flashcards), ``_col`` is the
         # column within that row. Rows have different option counts, so ``_col`` is clamped on row
         # change.
@@ -695,10 +695,10 @@ class _FilterDialog(Static, can_focus=True):
         self._col = 0
 
     def action_cancel(self) -> None:
-        self._pane.hide_dialog()
+        self._tab.hide_dialog()
 
     def action_swap_to(self, name: str) -> None:
-        self._pane.toggle_dialog(name)  # type: ignore[arg-type]
+        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
 
 
 def _pad_lead(label: str) -> str:
@@ -711,7 +711,7 @@ class _TypePickerScreen(ModalScreen[EntryType | None]):
     """Modal screen for picking an ``EntryType``. Three options laid out vertically; arrows / enter
     / escape. Dismisses with the chosen ``EntryType`` (caller applies it) or ``None`` on cancel.
 
-    Deliberately co-located with the pane view rather than under ``tui/screens/`` — the picker is
+    Deliberately co-located with the tab view rather than under ``tui/screens/`` — the picker is
     tiny and only used here, so the extra indirection isn't worth it. If a second consumer shows
     up, lift it out.
     """
@@ -803,7 +803,7 @@ class _EditBar(Static, can_focus=True):
     Keys: ``left`` / ``right`` move the cursor (wrap); ``enter`` dispatches the highlighted choice;
     ``e`` / ``escape`` dismiss; ``s`` / ``f`` / ``d`` swap to the corresponding sibling dialog.
 
-    Dispatch sits on the pane (``handle_edit_choice``) because two of the choices — ``change topic``
+    Dispatch sits on the tab (``handle_edit_choice``) because two of the choices — ``change topic``
     and ``change type`` — open modal screens, and the other two (``edit title`` / ``edit content``)
     are pure focus shortcuts to the details panel. The bar's job is to forward the highlighted
     choice string.
@@ -823,13 +823,13 @@ class _EditBar(Static, can_focus=True):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
-        pane: "KnowledgeEntryBrowserPaneView",
+        view_model: KnowledgeEntryBrowserTabViewModel,
+        tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        self._pane = pane
+        self._tab = tab
         # Cursor index into the active options list (mode-dependent).
         self._cursor: int = 0
 
@@ -869,7 +869,7 @@ class _EditBar(Static, can_focus=True):
         text = Text()
         # Lead-in: "edit N entries:" / "edit this entry:" — gives the user a clear scope reminder
         # while they navigate.
-        count = self._pane.selection_target_count()
+        count = self._tab.selection_target_count()
         if self._vm.multi_select_active:
             noun = "entry" if count == 1 else "entries"
             text.append(f"edit {count} {noun}:  ", style="dim")
@@ -899,30 +899,30 @@ class _EditBar(Static, can_focus=True):
             self._refresh()
 
     async def action_select(self) -> None:
-        """Forward the highlighted choice string to the pane for dispatch."""
+        """Forward the highlighted choice string to the tab for dispatch."""
         opts = self._options()
         if not opts or self._cursor < 0 or self._cursor >= len(opts):
             return
-        await self._pane.handle_edit_choice(opts[self._cursor])
+        await self._tab.handle_edit_choice(opts[self._cursor])
 
     def action_cancel(self) -> None:
-        self._pane.hide_dialog()
+        self._tab.hide_dialog()
 
     def action_swap_to(self, name: str) -> None:
-        self._pane.toggle_dialog(name)  # type: ignore[arg-type]
+        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
 
 
 class _EntryContentPreview(TextArea):
     """Read-only scrollable preview of the cursor entry's ``content`` field. Non-navigable
     (``can_focus=False``) so the keyboard never lands here; mouse-wheel scroll still works.
 
-    Subscribes to the pane VM's ``dirty`` (refetches, post-save repaints) and the details VM's
+    Subscribes to the tab VM's ``dirty`` (refetches, post-save repaints) and the details VM's
     ``dirty`` (cursor moves — ``set_cursor`` routes through ``details.set_entry`` which fires the
-    details dirty, but does **not** fire the pane dirty itself). Re-reads ``entries[cursor]`` on
+    details dirty, but does **not** fire the tab dirty itself). Re-reads ``entries[cursor]`` on
     each fire and rebuilds the text.
 
-    Only rendered when the parent pane is in ``State.LINKED_FLASHCARDS`` (CSS-driven via the
-    ``-state-*`` class on the pane); in ``ENTRIES`` the details panel covers the same job, so
+    Only rendered when the parent tab is in ``State.LINKED_FLASHCARDS`` (CSS-driven via the
+    ``-state-*`` class on the tab); in ``ENTRIES`` the details panel covers the same job, so
     showing both would be redundant.
     """
 
@@ -938,7 +938,7 @@ class _EntryContentPreview(TextArea):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
+        view_model: KnowledgeEntryBrowserTabViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -968,35 +968,35 @@ class _EntryContentPreview(TextArea):
             self.text = target
 
 
-class KnowledgeEntryBrowserPaneView(Vertical):
-    """Pane view for ``KnowledgeEntryBrowserPaneViewModel``: search bar + DataTable + status row,
+class KnowledgeEntryBrowserTabView(Vertical):
+    """Tab view for ``KnowledgeEntryBrowserTabViewModel``: search bar + DataTable + status row,
     a details panel on the right (in ``ENTRIES``) or a linked-flashcards table (in
     ``LINKED_FLASHCARDS``), and four pop-up dialogs (delete / sort / filter / edit) along the
     bottom.
 
     Owns the dialog mutex via ``_active_dialog`` and the ``toggle_dialog`` / ``show_dialog`` /
-    ``hide_dialog`` methods. The dialog widgets and the entries-table key bindings ask the pane to
-    swap dialogs; the pane handles visibility (``-visible`` class) and focus rescue.
+    ``hide_dialog`` methods. The dialog widgets and the entries-table key bindings ask the tab to
+    swap dialogs; the tab handles visibility (``-visible`` class) and focus rescue.
     """
 
     DEFAULT_CSS = """
-    KnowledgeEntryBrowserPaneView {
+    KnowledgeEntryBrowserTabView {
         height: 1fr;
         layout: vertical;
         padding: 0 1;
     }
-    KnowledgeEntryBrowserPaneView #pane-body {
+    KnowledgeEntryBrowserTabView #tab-body {
         layout: horizontal;
         height: 1fr;
     }
-    /* Left column of the pane body: search bar over the entries
+    /* Left column of the tab body: search bar over the entries
        table. Width is set per-state below (60% in ENTRIES, 50% in
        LINKED_FLASHCARDS); the table fills its parent column. */
-    KnowledgeEntryBrowserPaneView #table-column {
+    KnowledgeEntryBrowserTabView #table-column {
         height: 1fr;
         layout: vertical;
     }
-    KnowledgeEntryBrowserPaneView #entries-table {
+    KnowledgeEntryBrowserTabView #entries-table {
         width: 1fr;
         height: 1fr;
         margin: 1 0 0 0;
@@ -1005,13 +1005,13 @@ class KnowledgeEntryBrowserPaneView(Vertical):
        (the ``ENTRIES`` state has the editable details panel on the right doing the same job); the
        ``-state-linked-flashcards`` rule below flips it on and rebalances the column to 2fr/1fr
        table/preview. */
-    KnowledgeEntryBrowserPaneView #entry-content-preview {
+    KnowledgeEntryBrowserTabView #entry-content-preview {
         display: none;
     }
-    KnowledgeEntryBrowserPaneView.-state-linked-flashcards #entries-table {
+    KnowledgeEntryBrowserTabView.-state-linked-flashcards #entries-table {
         height: 2fr;
     }
-    KnowledgeEntryBrowserPaneView.-state-linked-flashcards #entry-content-preview {
+    KnowledgeEntryBrowserTabView.-state-linked-flashcards #entry-content-preview {
         display: block;
         width: 1fr;
         height: 1fr;
@@ -1020,46 +1020,46 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     /* Multi-select wash: keep the zebra alternation but shift both rows
        darker, so the table reads as muted-but-structured and the bright-
        green selected rows pop. */
-    KnowledgeEntryBrowserPaneView #entries-table.-multi-select {
+    KnowledgeEntryBrowserTabView #entries-table.-multi-select {
         background: $surface-darken-2;
     }
-    KnowledgeEntryBrowserPaneView #entries-table.-multi-select > .datatable--even-row {
+    KnowledgeEntryBrowserTabView #entries-table.-multi-select > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
     /* State-driven layout swap. Both right-hand views are mounted up
        front; the ``-state-*`` class toggles which is visible and the
        corresponding widths. */
-    KnowledgeEntryBrowserPaneView.-state-entries #table-column {
+    KnowledgeEntryBrowserTabView.-state-entries #table-column {
         width: 60%;
     }
-    KnowledgeEntryBrowserPaneView.-state-entries EntryDetailsView {
+    KnowledgeEntryBrowserTabView.-state-entries EntryDetailsView {
         width: 40%;
         height: 1fr;
         display: block;
     }
-    KnowledgeEntryBrowserPaneView.-state-entries LinkedFlashcardsPaneView {
+    KnowledgeEntryBrowserTabView.-state-entries LinkedFlashcardsPanelView {
         display: none;
     }
-    KnowledgeEntryBrowserPaneView.-state-linked-flashcards #table-column {
+    KnowledgeEntryBrowserTabView.-state-linked-flashcards #table-column {
         width: 50%;
     }
-    KnowledgeEntryBrowserPaneView.-state-linked-flashcards LinkedFlashcardsPaneView {
+    KnowledgeEntryBrowserTabView.-state-linked-flashcards LinkedFlashcardsPanelView {
         width: 50%;
         height: 1fr;
         display: block;
     }
-    KnowledgeEntryBrowserPaneView.-state-linked-flashcards EntryDetailsView {
+    KnowledgeEntryBrowserTabView.-state-linked-flashcards EntryDetailsView {
         display: none;
     }
     /* Status row at the bottom of ``#table-column`` so it aligns with the linked-flashcards docked
        status row inside its own column. */
-    KnowledgeEntryBrowserPaneView #pane-status {
+    KnowledgeEntryBrowserTabView #tab-status {
         height: 1;
         color: $foreground-muted;
         text-style: dim;
         padding: 0 1;
     }
-    KnowledgeEntryBrowserPaneView #delete-confirm {
+    KnowledgeEntryBrowserTabView #delete-confirm {
         height: 4;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -1067,13 +1067,13 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserPaneView #delete-confirm.-visible {
+    KnowledgeEntryBrowserTabView #delete-confirm.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserPaneView #delete-confirm:focus {
+    KnowledgeEntryBrowserTabView #delete-confirm:focus {
         border-top: solid $accent;
     }
-    KnowledgeEntryBrowserPaneView #sort-bar {
+    KnowledgeEntryBrowserTabView #sort-bar {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -1081,13 +1081,13 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserPaneView #sort-bar.-visible {
+    KnowledgeEntryBrowserTabView #sort-bar.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserPaneView #sort-bar:focus {
+    KnowledgeEntryBrowserTabView #sort-bar:focus {
         border-top: solid $accent;
     }
-    KnowledgeEntryBrowserPaneView #filter-dialog {
+    KnowledgeEntryBrowserTabView #filter-dialog {
         height: 4;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -1095,13 +1095,13 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserPaneView #filter-dialog.-visible {
+    KnowledgeEntryBrowserTabView #filter-dialog.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserPaneView #filter-dialog:focus {
+    KnowledgeEntryBrowserTabView #filter-dialog:focus {
         border-top: solid $accent;
     }
-    KnowledgeEntryBrowserPaneView #edit-bar {
+    KnowledgeEntryBrowserTabView #edit-bar {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -1109,10 +1109,10 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserPaneView #edit-bar.-visible {
+    KnowledgeEntryBrowserTabView #edit-bar.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserPaneView #edit-bar:focus {
+    KnowledgeEntryBrowserTabView #edit-bar:focus {
         border-top: solid $accent;
     }
     """
@@ -1132,7 +1132,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserPaneViewModel,
+        view_model: KnowledgeEntryBrowserTabViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -1144,7 +1144,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         # Tracks the VM's state at the last refresh so a state transition can auto-dismiss any open
         # dialog (dialogs that depend on the current state — selection actions, sort axes — aren't
         # generally meaningful across a layout switch).
-        self._last_state: KnowledgeEntryBrowserPaneViewModel.State | None = None
+        self._last_state: KnowledgeEntryBrowserTabViewModel.State | None = None
         # Signature of the entries list at the last refresh — a tuple of entry ids in display order.
         # Used by ``_refresh`` to decide between a full ``clear()`` + rebuild (when row identity has
         # actually changed: refetch, delete, load_more) and a cheap in-place ``update_cell_at`` pass
@@ -1166,20 +1166,20 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         table.add_column("type")
         table.add_column("topic")
         table.add_column("flashcards")
-        with Horizontal(id="pane-body"):
+        with Horizontal(id="tab-body"):
             with Vertical(id="table-column"):
                 yield _SearchInput(self._vm, id="search-input")
                 yield table
                 # Preview only renders in ``LINKED_FLASHCARDS`` — CSS toggles ``display`` based on
                 # the parent's ``-state-*`` class.
                 yield _EntryContentPreview(self._vm, id="entry-content-preview")
-                yield Static("", id="pane-status")
+                yield Static("", id="tab-status")
 
             # Both right-hand views are mounted up front and shown / hidden via the ``-state-*``
             # class on the parent. Mounting them once avoids the cost of re-subscribing each child
             # view's ``vm.dirty`` callback on every state flip.
             yield EntryDetailsView(self._vm.details)
-            yield LinkedFlashcardsPaneView(self._vm.linked_flashcards)
+            yield LinkedFlashcardsPanelView(self._vm.linked_flashcards)
         yield _DeleteConfirm(self._vm, self, id="delete-confirm")
         yield _SortBar(self._vm, self, id="sort-bar")
         yield _FilterDialog(self._vm, self, id="filter-dialog")
@@ -1242,7 +1242,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
             try:
                 self.query_one("#entries-table", DataTable).focus()
             except Exception:
-                # Table may have been unmounted (e.g. pane swap mid-close); let focus settle wherever
+                # Table may have been unmounted (e.g. tab swap mid-close); let focus settle wherever
                 # Textual puts it.
                 pass
 
@@ -1368,7 +1368,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         ):
             table.move_cursor(row=self._vm.cursor, animate=False)
 
-        status = self.query_one("#pane-status", Static)
+        status = self.query_one("#tab-status", Static)
         status.update(self._format_status())
 
     # ------------------------------------------------------------------
@@ -1377,11 +1377,11 @@ class KnowledgeEntryBrowserPaneView(Vertical):
     #
     # Two regions at this level: the entries table and the details panel. The details panel has its
     # own internal cycle (title → content → choices) which we delegate to ``EntryDetailsView``. The
-    # bool returns let the ``BrowserView`` know when the pane is at its leftmost edge so it can roll
+    # bool returns let the ``BrowserView`` know when the tab is at its leftmost edge so it can roll
     # focus back to the tree.
 
     def focus_first(self) -> None:
-        """Entry point when ``BrowserView`` enters the pane from the tree. Land on the active
+        """Entry point when ``BrowserView`` enters the tab from the tree. Land on the active
         dialog if there is one (so the user picks up where they left off after a tree side-trip),
         else the entries table."""
         if self._active_dialog is not None:
@@ -1397,7 +1397,7 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         focused = self.screen.focused if self.screen else None
         table = self.query_one("#entries-table", DataTable)
         details = self.query_one(EntryDetailsView)
-        linked = self.query_one(LinkedFlashcardsPaneView)
+        linked = self.query_one(LinkedFlashcardsPanelView)
         # The right-hand region depends on state: details in ENTRIES, linked-flashcards table in
         # LINKED_FLASHCARDS.
         right = (
@@ -1426,14 +1426,14 @@ class KnowledgeEntryBrowserPaneView(Vertical):
         focused = self.screen.focused if self.screen else None
         table = self.query_one("#entries-table", DataTable)
         details = self.query_one(EntryDetailsView)
-        linked = self.query_one(LinkedFlashcardsPaneView)
+        linked = self.query_one(LinkedFlashcardsPanelView)
         right = (
             linked
             if self._vm.state is self._vm.State.LINKED_FLASHCARDS
             else details
         )
         if focused is table:
-            # Pane's leftmost edge — let ``BrowserView`` hand focus to the tree.
+            # Tab's leftmost edge — let ``BrowserView`` hand focus to the tree.
             return False
         if focused is not None and right in focused.ancestors_with_self:
             moved = right.focus_prev_region()

@@ -55,10 +55,10 @@ Browser refactor
 Widget architecture:
 
     Topic Tree on the left
-    "Browser Pane" on the right
-    "Browser Tabs" above the "Browser Pane"
+    "Browser Tab" on the right
+    "Browser Tabs" above the "Browser Tab"
 
-    Browser Pane is an _abstract view_ - a notion of "what data is displayed" which is _modulated_ by the TopicTree
+    Browser Tab is an _abstract view_ - a notion of "what data is displayed" which is _modulated_ by the TopicTree
 
     Fluff:
         ChatArea below - specialized chat area plugged into a subagent with direct DB/VM access, can be used to perform specialized actions
@@ -66,7 +66,7 @@ Widget architecture:
             - perform a certain modification
             - etc.
 
-    Because we're using a VM/View separation, this can be BOTH a feed widget AND a pane, so the user can expand^ to a pane if they want
+    Because we're using a VM/View separation, this can be BOTH a feed widget AND a tab, so the user can expand^ to a tab if they want
 
 
 
@@ -77,7 +77,7 @@ Widget architecture:
 
 
 
-Browser Panes
+Browser Tabs
     Knowledge Entries
 
         Simplest one: displays knowledge entries plus entry title/detail box
@@ -92,7 +92,7 @@ Browser Panes
         ...
 
         
-        Filtered on topics selected in the topic tree pane
+        Filtered on topics selected in the topic tree tab
 
         Search bar filters on topic & content?
 
@@ -106,7 +106,7 @@ Browser Panes
 
         
 
-        Need to be able to modify everything except ID in this pane
+        Need to be able to modify everything except ID in this tab
             - Title - modifyable via the entry title box
             - Content - modifyable via the entry content box
             - Type
@@ -137,12 +137,12 @@ Architecture of what we're implementing:
 
     BrowserTopicTreeViewModel + BrowserTopicTreeView
 
-    BrowserPaneViewModel (abstract)
+    BrowserTabViewModel (abstract)
 
     
     
-    KnowledgeEntryBrowserPaneViewModel -> BrowserPaneViewModel
-    + KnowledgeEntryBrowserPaneView
+    KnowledgeEntryBrowserTabViewModel -> BrowserTabViewModel
+    + KnowledgeEntryBrowserTabView
 
     Composed of:
         - KnowledgeEntryTableVM + View

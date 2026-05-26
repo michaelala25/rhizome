@@ -1,7 +1,7 @@
-"""LinkedFlashcardsPaneViewModel — sub-VM for the right-hand flashcard table shown when the parent
-pane is in ``State.LINKED_FLASHCARDS``.
+"""LinkedFlashcardsPanelViewModel — sub-VM for the right-hand flashcard table shown when the parent
+tab is in ``State.LINKED_FLASHCARDS``.
 
-The pane is **cursor-driven**: the parent pushes the highlighted entry's id via ``set_entry_id``
+The tab is **cursor-driven**: the parent pushes the highlighted entry's id via ``set_entry_id``
 whenever the entries-table cursor moves; this VM owns the per-entry flashcard window, its total /
 has-more bookkeeping, its own search query, and an internal row cursor. The view is read-only for
 this iteration (just up/down navigation), so there's no multi-select, selection set, or detail
@@ -16,7 +16,7 @@ parent state; it just reacts to whatever id (or None) it's given.
 
 Fetch strategy
 --------------
-Mirrors ``BrowserPaneViewModel``'s split — stateless ``_fetch`` returns ``(rows, total)``;
+Mirrors ``BrowserTabViewModel``'s split — stateless ``_fetch`` returns ``(rows, total)``;
 ``_process_fetched_data`` applies them — but skips the debounce. Per-entry flashcard list + count
 queries are sub-millisecond, and ``set_entry_id`` fires on every parent cursor move (dozens of
 calls per second under fast scrolling); a 50ms debounce would be perceptible. Instead, in-flight
@@ -44,14 +44,14 @@ from ....view_model_base import ViewModelBase
 
 _logger = get_logger("browser.linked_flashcards")
 
-# Mirrors ``KnowledgeEntryBrowserPaneViewModel.DEFAULT_PAGE_LIMIT`` so the two tables share a memory
+# Mirrors ``KnowledgeEntryBrowserTabViewModel.DEFAULT_PAGE_LIMIT`` so the two tables share a memory
 # / render footprint cap. Per-entry flashcard counts are usually small (single digits), so this is
 # almost never the binding constraint — but keeping it symmetric means ``load_more`` works the same
-# way in both panes if we ever need it.
+# way in both tabs if we ever need it.
 DEFAULT_PAGE_LIMIT = 500
 
 
-class LinkedFlashcardsPaneViewModel(ViewModelBase):
+class LinkedFlashcardsPanelViewModel(ViewModelBase):
     """Sub-VM driving the linked-flashcards table.
 
     Owns: the current target entry id, the loaded flashcard window, total + has-more, the search
@@ -82,8 +82,8 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         self._has_more: bool = False
 
         # Search query. Empty string = no filter (the DB op treats falsy as None). Survives entry-id
-        # changes — the user's filter is a per-pane preference, not per-entry — but resets the
-        # window / cursor on apply, same as the entries pane.
+        # changes — the user's filter is a per-tab preference, not per-entry — but resets the
+        # window / cursor on apply, same as the entries tab.
         self._search: str = ""
 
         # Row cursor within the loaded window. Window-local index (not flashcard id), so it points
@@ -131,7 +131,7 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
     @property
     def cursor_flashcard(self) -> Flashcard | None:
         """The flashcard currently under the cursor, or ``None`` when the window is empty / cursor is
-        out of bounds. Convenience for preview panes that need to read the current row without
+        out of bounds. Convenience for preview tabs that need to read the current row without
         recomputing the bounds-check."""
         if not self._flashcards or self._cursor >= len(self._flashcards):
             return None
@@ -142,11 +142,11 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def set_entry_id(self, entry_id: int | None) -> None:
-        """Set the target entry whose flashcards to show. ``None`` clears the pane and invalidates any
+        """Set the target entry whose flashcards to show. ``None`` clears the tab and invalidates any
         in-flight fetch — used by the parent when transitioning out of ``LINKED_FLASHCARDS``.
 
         Idempotent: a call with the same id we already hold is a no-op (no refetch). The cursor and
-        window reset on a real change; search persists across entry-id changes since it's a per-pane
+        window reset on a real change; search persists across entry-id changes since it's a per-tab
         preference.
         """
         if entry_id == self._entry_id:
@@ -229,7 +229,7 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
-    # Fetch machinery (mirrors BrowserPaneViewModel, sans debounce)
+    # Fetch machinery (mirrors BrowserTabViewModel, sans debounce)
     # ------------------------------------------------------------------
 
     def _still_current(self, my_id: int) -> bool:
@@ -279,7 +279,7 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
             result = await self._fetch()
         except Exception:
             _logger.exception(
-                "LinkedFlashcardsPaneViewModel._fetch raised; pane will remain in error "
+                "LinkedFlashcardsPanelViewModel._fetch raised; tab will remain in error "
                 "state until next entry-id / search change",
             )
             if self._still_current(my_id):

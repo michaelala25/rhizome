@@ -1,4 +1,4 @@
-"""KnowledgeEntryBrowserPaneViewModel — the first concrete browser pane.
+"""KnowledgeEntryBrowserTabViewModel — the first concrete browser tab.
 
 Shows ``KnowledgeEntry`` rows matching the orchestrator's topic filter (plus its own search / sort /
 entry-type state) in a fixed-size window. Total counts and pagination are kept deliberately simple
@@ -37,11 +37,11 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from ..pane_base import BrowserPaneViewModel
+from ..tab_base import BrowserTabViewModel
 from .entry_details import EntryDetailsViewModel
-from .linked_flashcards import LinkedFlashcardsPaneViewModel
+from .linked_flashcards import LinkedFlashcardsPanelViewModel
 
-_logger = get_logger("browser.knowledge_entry_pane")
+_logger = get_logger("browser.knowledge_entry_tab")
 
 # Hard cap on the rows fetched per page. See braindump for the rationale: at 100K+ entries we want a
 # bounded memory + render footprint, and "showing 500 of N+, load more" is the simplest UX that scales.
@@ -49,13 +49,13 @@ _logger = get_logger("browser.knowledge_entry_pane")
 DEFAULT_PAGE_LIMIT = 500
 
 
-class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
-    """Concrete pane VM for browsing knowledge entries."""
+class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
+    """Concrete tab VM for browsing knowledge entries."""
 
     TITLE = "Knowledge Entries"
 
     class State(enum.Enum):
-        """Top-level layout state for the pane.
+        """Top-level layout state for the tab.
 
         Two states for now — the default ``ENTRIES`` view (entries table + details panel) and
         ``LINKED_FLASHCARDS`` (entries table + per-cursor flashcard table; details panel hidden).
@@ -89,7 +89,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._has_more: bool = False
 
         # Search / sort / entry-type filter state. ``_search`` is an empty string when no search is
-        # active. ``_entry_types`` follows the same None/tuple convention as ``BrowserPaneViewModel``'s
+        # active. ``_entry_types`` follows the same None/tuple convention as ``BrowserTabViewModel``'s
         # topic filter: ``None`` = no filter; a tuple restricts to those types; an empty tuple is a legal
         # "no rows match" terminal state. Default sort is ``id`` ascending.
         self._search: str = ""
@@ -113,7 +113,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._selected_ids: set[int] = set()
 
         # The detail panel's VM. We push it the cursor's entry via ``_sync_details`` whenever the cursor
-        # moves or the window reloads. The pane view picks the VM up via ``self.details`` to construct its
+        # moves or the window reloads. The tab view picks the VM up via ``self.details`` to construct its
         # companion ``EntryDetailsView``. We subscribe to its ``SAVED`` callback so that after an Accept
         # we can repaint the table row (the in-memory ``KnowledgeEntry`` was mutated in place, but the
         # ``DataTable`` doesn't know that until we emit ``dirty`` here).
@@ -124,8 +124,8 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # ``State.LINKED_FLASHCARDS``). We feed it the cursor entry id via ``_sync_linked_flashcards``
         # but only while we're actually in that state — see ``_sync_linked_flashcards``'s guard.
         # The view picks the sub-VM up via ``self.linked_flashcards`` to construct its companion
-        # ``LinkedFlashcardsPaneView`` (not yet implemented).
-        self._linked_flashcards = LinkedFlashcardsPaneViewModel(session_factory)
+        # ``LinkedFlashcardsPanelView`` (not yet implemented).
+        self._linked_flashcards = LinkedFlashcardsPanelViewModel(session_factory)
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -162,7 +162,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     @property
     def entry_types(self) -> tuple[EntryType, ...] | None:
         """Current entry-type filter. ``None`` means no filter; a tuple restricts to those types; an
-        empty tuple means "no rows match" (legal terminal state, mirrors ``BrowserPaneViewModel``'s
+        empty tuple means "no rows match" (legal terminal state, mirrors ``BrowserTabViewModel``'s
         topic filter semantics)."""
         return self._entry_types
 
@@ -178,20 +178,20 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
 
     @property
     def details(self) -> EntryDetailsViewModel:
-        """Sub-VM driving the entry detail panel. Owned by this pane VM; the view picks it up to construct
+        """Sub-VM driving the entry detail panel. Owned by this tab VM; the view picks it up to construct
         the companion view."""
         return self._details
 
     @property
-    def linked_flashcards(self) -> LinkedFlashcardsPaneViewModel:
+    def linked_flashcards(self) -> LinkedFlashcardsPanelViewModel:
         """Sub-VM driving the linked-flashcards table (rendered only in ``State.LINKED_FLASHCARDS``).
-        Owned by this pane VM. The pane VM feeds it the cursor entry id via
+        Owned by this tab VM. The tab VM feeds it the cursor entry id via
         ``_sync_linked_flashcards``."""
         return self._linked_flashcards
 
     @property
     def session_factory(self) -> Any:
-        """Exposed so the pane view can hand the same factory off to modal screens (e.g. the topic
+        """Exposed so the tab view can hand the same factory off to modal screens (e.g. the topic
         picker) without reaching into the inherited private attr."""
         return self._session_factory
 
@@ -214,7 +214,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     # ------------------------------------------------------------------
 
     def transition_to(self, new_state: State) -> None:
-        """Transition the pane to a new top-level layout state.
+        """Transition the tab to a new top-level layout state.
 
         Idempotent: a transition to the current state is a no-op. Otherwise the transition discards
         any unsaved title/content edits in the details panel (matches the silent-discard policy
@@ -229,7 +229,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         """
         if new_state is self._state:
             return
-        _logger.info("Pane state transition: %s -> %s", self._state.value, new_state.value)
+        _logger.info("Tab state transition: %s -> %s", self._state.value, new_state.value)
 
         # Discard any unsaved title/content edits in the details panel. ``cancel`` no-ops when clean.
         self._details.cancel()
@@ -491,7 +491,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         """Push the cursor's entry (or ``None``) into the detail sub-VM.
 
         Called whenever the cursor moves or the window is replaced. The sub-VM emits its own ``dirty``
-        when the reference changes, so the detail view repaints independently of the pane view.
+        when the reference changes, so the detail view repaints independently of the tab view.
         """
         if not self._entries or self._cursor >= len(self._entries):
             self._details.set_entry(None)
@@ -501,7 +501,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     def _sync_linked_flashcards(self) -> None:
         """Push the cursor's entry id (or ``None``) into the linked-flashcards sub-VM — but only
         while we're actually in ``State.LINKED_FLASHCARDS``. The sub-VM does no work when the
-        pane isn't rendering it, so skipping the call in ``ENTRIES`` avoids spurious fetches.
+        tab isn't rendering it, so skipping the call in ``ENTRIES`` avoids spurious fetches.
 
         The transition into ``LINKED_FLASHCARDS`` calls this directly (``transition_to``) so the
         right-hand table seeds itself with the current cursor entry on entry. The transition out
@@ -516,8 +516,8 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
 
     def _on_details_saved(self) -> None:
         """Detail panel just persisted a buffered edit. The in-memory ``KnowledgeEntry`` at the cursor
-        was mutated in place, so the cached row in this pane VM's ``self._entries`` already sees the new
-        values — we just need to trigger a pane-view repaint so the ``DataTable`` row picks them up."""
+        was mutated in place, so the cached row in this tab VM's ``self._entries`` already sees the new
+        values — we just need to trigger a tab-view repaint so the ``DataTable`` row picks them up."""
         self.emit(self.dirty)
 
     async def load_more(self) -> None:
@@ -545,7 +545,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
-    # BrowserPaneViewModel contract
+    # BrowserTabViewModel contract
     # ------------------------------------------------------------------
 
     def _query_kwargs(self) -> dict[str, Any]:

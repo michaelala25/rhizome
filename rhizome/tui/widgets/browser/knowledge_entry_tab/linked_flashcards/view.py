@@ -1,7 +1,7 @@
-"""LinkedFlashcardsPaneView — flashcard ``DataTable`` + search bar + status row.
+"""LinkedFlashcardsPanelView — flashcard ``DataTable`` + search bar + status row.
 
 Read-only for now (just up/down navigation); see ``view_model.py`` for the VM contract. Visual shape
-mirrors ``KnowledgeEntryBrowserPaneView`` so the user gets the same affordances on either side: the
+mirrors ``KnowledgeEntryBrowserTabView`` so the user gets the same affordances on either side: the
 top search box behaves identically, the table colouring matches the entries-table palette in
 non-multi-select mode, and the status row sits docked at the bottom with the same "showing N of M"
 formatting.
@@ -17,7 +17,7 @@ from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Input, Static, TextArea
 
-from .view_model import LinkedFlashcardsPaneViewModel
+from .view_model import LinkedFlashcardsPanelViewModel
 
 
 class _LinkedFlashcardsTable(DataTable):
@@ -28,7 +28,7 @@ class _LinkedFlashcardsTable(DataTable):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPaneViewModel,
+        view_model: LinkedFlashcardsPanelViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -52,7 +52,7 @@ class _LinkedFlashcardsSearchInput(Input):
     focus, right-aligned border-title hint, esc × 2 to clear).
 
     Lives as its own widget rather than a shared generic because the existing entries-side one is
-    typed against ``KnowledgeEntryBrowserPaneViewModel``; a future refactor could lift both onto a
+    typed against ``KnowledgeEntryBrowserTabViewModel``; a future refactor could lift both onto a
     small ``HasSetSearch`` protocol but it's not worth the indirection today.
     """
 
@@ -74,7 +74,7 @@ class _LinkedFlashcardsSearchInput(Input):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPaneViewModel,
+        view_model: LinkedFlashcardsPanelViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -129,7 +129,7 @@ class _FlashcardAnswerPreview(TextArea):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPaneViewModel,
+        view_model: LinkedFlashcardsPanelViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -163,18 +163,18 @@ class _FlashcardAnswerPreview(TextArea):
             self.text = target
 
 
-class LinkedFlashcardsPaneView(Vertical):
-    """Right-hand companion to the entries table when the parent pane is in
+class LinkedFlashcardsPanelView(Vertical):
+    """Right-hand companion to the entries table when the parent tab is in
     ``State.LINKED_FLASHCARDS``. Columns: id / question / answer.
 
     Layout: search bar over the flashcard table, with a docked one-line status row at the bottom
-    (matches the entries-pane layout). Question + answer columns are auto-sized but capped so a
+    (matches the entries-tab layout). Question + answer columns are auto-sized but capped so a
     single long card doesn't expand the column to several screens wide; the ``DataTable`` ellipsises
     overflow.
     """
 
     DEFAULT_CSS = """
-    LinkedFlashcardsPaneView {
+    LinkedFlashcardsPanelView {
         height: 1fr;
         layout: vertical;
         padding: 0 1;
@@ -182,17 +182,17 @@ class LinkedFlashcardsPaneView(Vertical):
     /* Table + preview split the available column 2:1 vertically — table gets the larger share,
        preview gets enough room (~1/3) to show a few lines of answer + notes without dwarfing the
        table. The status row docks to the bottom and doesn't participate in the fr split. */
-    LinkedFlashcardsPaneView #linked-flashcards-table {
+    LinkedFlashcardsPanelView #linked-flashcards-table {
         width: 1fr;
         height: 2fr;
         margin: 1 0 0 0;
     }
-    LinkedFlashcardsPaneView #linked-flashcards-answer-preview {
+    LinkedFlashcardsPanelView #linked-flashcards-answer-preview {
         width: 1fr;
         height: 1fr;
         margin: 1 0 0 0;
     }
-    LinkedFlashcardsPaneView #linked-flashcards-status {
+    LinkedFlashcardsPanelView #linked-flashcards-status {
         dock: bottom;
         height: 1;
         color: $foreground-muted;
@@ -201,18 +201,18 @@ class LinkedFlashcardsPaneView(Vertical):
     }
     """
 
-    # Question / answer columns are capped at 40 chars each — the right pane is 50% wide, so a
+    # Question / answer columns are capped at 40 chars each — the right tab is 50% wide, so a
     # longer column would force the other to collapse. ``DataTable`` ellipsises anything wider.
     _TEXT_COLUMN_WIDTH = 40
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPaneViewModel,
+        view_model: LinkedFlashcardsPanelViewModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        # Row-signature edge detector — same three-path refresh as the entries pane (rebuild /
+        # Row-signature edge detector — same three-path refresh as the entries tab (rebuild /
         # extend / inplace) so cursor + scroll survive non-structural changes. ``None`` forces the
         # first refresh through the rebuild path.
         self._last_row_signature: tuple[int, ...] | None = None
@@ -242,7 +242,7 @@ class LinkedFlashcardsPaneView(Vertical):
     def _refresh(self) -> None:
         table = self.query_one("#linked-flashcards-table", DataTable)
 
-        # Three-path refresh — identical strategy to the entries pane. Rebuild on structural change
+        # Three-path refresh — identical strategy to the entries tab. Rebuild on structural change
         # (refetch, entry-id change), extend on append (load_more), in-place on pure style churn.
         # Preserves scroll + cursor on the non-rebuild paths so the user's view doesn't jump.
         new_signature = tuple(fc.id for fc in self._vm.flashcards)
@@ -281,7 +281,7 @@ class LinkedFlashcardsPaneView(Vertical):
         self._last_row_signature = new_signature
 
         # Restore the cursor after a rebuild — ``clear()`` reset the table to row 0 (see the
-        # entries-pane comment for the round-trip-through-RowHighlighted dance).
+        # entries-tab comment for the round-trip-through-RowHighlighted dance).
         if (
             path == "rebuild"
             and self._vm.flashcards
@@ -296,7 +296,7 @@ class LinkedFlashcardsPaneView(Vertical):
         if self._vm.is_loading:
             return "loading…"
         if self._vm.entry_id is None:
-            # The parent pane only feeds an entry id while in ``LINKED_FLASHCARDS``, so this branch
+            # The parent tab only feeds an entry id while in ``LINKED_FLASHCARDS``, so this branch
             # only fires when the entries window is empty (no row to highlight).
             return "no entry highlighted"
         total = self._vm.total
@@ -312,25 +312,25 @@ class LinkedFlashcardsPaneView(Vertical):
         return f"{total} linked flashcards"
 
     # ------------------------------------------------------------------
-    # Cross-region focus (driven by the parent pane's alt+left/right)
+    # Cross-region focus (driven by the parent tab's alt+left/right)
     # ------------------------------------------------------------------
     #
     # Only one focusable sub-region for now: the table. The search bar is excluded from the
     # alt+left/right walk — same convention as the entries-side search bar — so cycling through
-    # this pane is single-stop. If the search bar joins the walk later, extend with a
+    # this tab is single-stop. If the search bar joins the walk later, extend with a
     # ``_REGION_IDS`` tuple + index helper like ``EntryDetailsView``.
 
     def focus_first(self) -> None:
-        """Land on the leftmost focusable sub-region (the table). Called by the parent pane when
+        """Land on the leftmost focusable sub-region (the table). Called by the parent tab when
         ``BrowserView`` enters the linked-flashcards region from the entries table."""
         self.query_one("#linked-flashcards-table", DataTable).focus()
 
     def focus_next_region(self) -> bool:
-        # Single region; no further step inside this pane.
+        # Single region; no further step inside this tab.
         return False
 
     def focus_prev_region(self) -> bool:
-        # Single region; no further step inside this pane.
+        # Single region; no further step inside this tab.
         return False
 
     # ------------------------------------------------------------------
@@ -341,7 +341,7 @@ class LinkedFlashcardsPaneView(Vertical):
         self,
         event: DataTable.RowHighlighted,
     ) -> None:
-        """Push the cursor back into the VM. Mirrors the entries-pane handler; the VM early-returns
+        """Push the cursor back into the VM. Mirrors the entries-tab handler; the VM early-returns
         when the index is unchanged, so this is safe to fire from programmatic ``move_cursor`` calls
         during ``_refresh``."""
         if event.data_table.id != "linked-flashcards-table":

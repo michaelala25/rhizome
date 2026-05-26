@@ -1,5 +1,5 @@
 """EntryDetailsViewModel — buffered-edit VM for the title/content side panel that sits to the right of the
-entry table in ``KnowledgeEntryBrowserPaneView``.
+entry table in ``KnowledgeEntryBrowserTabView``.
 
 Editing model: **buffered with explicit accept/cancel**. The title input and content textarea write to
 in-VM buffers (``_title_buffer``, ``_content_buffer``) that are seeded from the entry on ``set_entry``. As
@@ -8,7 +8,7 @@ reveals a two-line choices list ("Accept" / "Cancel") below the content area. Th
 arrows and confirms with enter, which either calls ``update_entry`` + commits + mutates the in-memory entry
 in place (Accept) or resets the buffers (Cancel).
 
-Cursor-move-while-dirty policy: **silent discard**. ``set_entry`` is called by the pane VM on every cursor
+Cursor-move-while-dirty policy: **silent discard**. ``set_entry`` is called by the tab VM on every cursor
 move; it reseeds the buffers from the new entry, so any unsaved edits to the previous entry are lost. The
 user must explicitly Accept before moving on.
 
@@ -16,10 +16,10 @@ The VM emits two distinct callback groups:
 
   * ``dirty`` — the usual repaint signal (buffer changed, entry changed, choice cursor moved, accept/cancel
     landed).
-  * ``saved`` — fires only on successful Accept. The pane VM subscribes so it can repaint its table row (the
+  * ``saved`` — fires only on successful Accept. The tab VM subscribes so it can repaint its table row (the
     in-memory ``KnowledgeEntry`` was mutated in place, but the ``DataTable`` doesn't know that yet).
 
-The VM is still a leaf — no subscriptions of its own. The pane VM is the only writer (it calls
+The VM is still a leaf — no subscriptions of its own. The tab VM is the only writer (it calls
 ``set_entry``); the view drives the buffer mutators and the accept/cancel actions.
 """
 
@@ -46,7 +46,7 @@ class EntryDetailsViewModel(ViewModelBase):
     """
 
     class Callbacks(Enum):
-        # Standard dirty + focus inherited. ``SAVED`` is browser-specific: the pane VM subscribes so it can
+        # Standard dirty + focus inherited. ``SAVED`` is browser-specific: the tab VM subscribes so it can
         # repaint its table row after a successful write.
         SAVED = "saved"
 
@@ -65,9 +65,9 @@ class EntryDetailsViewModel(ViewModelBase):
         # on arrow nav.
         self._choice_cursor: int = 0
 
-        # Freeze flag pushed by the pane VM when the user enters multi-select mode. Title/content remain
+        # Freeze flag pushed by the tab VM when the user enters multi-select mode. Title/content remain
         # visible (they still track the cursor row) but the view switches the ``TextArea``s to read-only and
-        # hides the Accept/Cancel choices. ``_count`` is the size of the pane VM's selection set; the view
+        # hides the Accept/Cancel choices. ``_count`` is the size of the tab VM's selection set; the view
         # can surface it once it grows beyond a placeholder.
         self._multi_select_active: bool = False
         self._multi_select_count: int = 0
@@ -127,7 +127,7 @@ class EntryDetailsViewModel(ViewModelBase):
         return self._multi_select_count
 
     # ------------------------------------------------------------------
-    # Mutators (display side — called by the pane VM)
+    # Mutators (display side — called by the tab VM)
     # ------------------------------------------------------------------
 
     def set_entry(self, entry: KnowledgeEntry | None) -> None:
@@ -144,7 +144,7 @@ class EntryDetailsViewModel(ViewModelBase):
         self.emit(self.dirty)
 
     def set_multi_select(self, active: bool, count: int) -> None:
-        """Push from the pane VM whenever it toggles multi-select mode or the selection set grows/shrinks.
+        """Push from the tab VM whenever it toggles multi-select mode or the selection set grows/shrinks.
         Equality-guarded so this is safe to call on every selection toggle."""
         if (active, count) == (self._multi_select_active, self._multi_select_count):
             return
@@ -193,8 +193,8 @@ class EntryDetailsViewModel(ViewModelBase):
     async def accept(self) -> None:
         """Persist the current buffers to the DB and mutate the in-memory entry in place.
 
-        Mutating the entry instance after the write means the pane VM's ``self._entries[i]`` reference picks
-        up the new values for free — no refetch needed. We then emit ``saved`` so the pane VM can repaint
+        Mutating the entry instance after the write means the tab VM's ``self._entries[i]`` reference picks
+        up the new values for free — no refetch needed. We then emit ``saved`` so the tab VM can repaint
         its table row with the new title. After this returns ``is_dirty`` is False and the choices list
         disappears naturally on the next refresh.
 
