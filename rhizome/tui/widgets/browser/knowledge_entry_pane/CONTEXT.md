@@ -13,12 +13,21 @@ components living in their own subdirectories.
 
 - **view_model.py — `KnowledgeEntryBrowserPaneViewModel`**: subclasses
   `BrowserPaneViewModel`. Owns the windowed entries list, `_total`,
-  `_has_more`, search/sort state, the row cursor, multi-select state
-  (`_multi_select_active`, `_selected_ids`), and a child
-  `EntryDetailsViewModel` exposed via `self.details`. Also exports
-  `DEFAULT_PAGE_LIMIT = 500`. See the parent `CONTEXT.md` for the
-  detailed behaviour notes (windowed fetch + count, cursor-doesn't-emit-
-  dirty, `_on_details_saved` repaint, etc.).
+  `_has_more`, search/sort/entry-type filter state, the row cursor,
+  multi-select state (`_multi_select_active`, `_selected_ids`), and a
+  child `EntryDetailsViewModel` exposed via `self.details`. Also
+  exports `DEFAULT_PAGE_LIMIT = 500`.
+
+  **Scope discipline:** the VM owns *data facts*. Dialog UI state —
+  which dialog is open, dialog cursors, the EDIT_OPTIONS list,
+  multi/single distinction in the option set — lives in the view side.
+  The VM's bulk-action surface is the four mutators
+  (`set_sort`, `apply_filter`, `delete_selected_entries`,
+  `change_topic_on_selected_entries`,
+  `change_type_on_selected_entries`); the view picks values and calls
+  them. See the parent `CONTEXT.md` for the fetch behaviour notes
+  (windowed fetch + count, cursor-doesn't-emit-dirty,
+  `_on_details_saved` repaint, etc.).
 
 - **view.py — `KnowledgeEntryBrowserPaneView`**: `Vertical` containing a
   `Horizontal #pane-body` and a docked one-line status row. The body
@@ -79,155 +88,140 @@ list — the title/content of the cursor's entry stay visible (the
 cursor still drives `set_entry`) but the user can't make edits until
 they exit multi-select.
 
+## Dialog orchestration
+
+The four pop-up dialogs (delete / sort / filter / edit) all share one
+screen slot — only one is visible at a time. The mutex lives on the
+**view side** in `KnowledgeEntryBrowserPaneView`: a single
+`_active_dialog: Literal["delete","sort","filter","edit", None]`
+attribute plus three methods (`show_dialog`, `hide_dialog`,
+`toggle_dialog`) that toggle the `-visible` class on the right widget
+and run focus rescue. The entries table's `d` / `s` / `f` / `e`
+bindings call `pane.toggle_dialog(name)`; each dialog's own
+sibling-swap bindings (e.g. pressing `s` inside `_DeleteConfirm`) also
+go through `toggle_dialog`.
+
+Each dialog widget owns its own cursor as a local attribute (no
+`_*_pending` / `_*_cursor` on the VM) and exposes a `prepare_for_show`
+hook the pane calls before revealing it — used to land the cursor on
+a sensible default (e.g. the currently-active sort axis when the sort
+bar opens). State transitions auto-dismiss any open dialog
+(`_refresh` detects a `state != _last_state` and calls `hide_dialog`).
+
 ### Filter
 
-Pressing `f` while the entries table is focused opens a per-axis
-filter picker (`_FilterDialog`) in the same screen slot as
-`_SortBar` / `_DeleteConfirm`. The three dialogs are mutually
-exclusive at the VM level (`request_filter` / `request_sort` /
-`request_delete` each clear the others), and the view's `_refresh`
-resolves focus once across all three after toggling visibility so
-swaps like `f`-from-sort don't let the closing dialog's "restore
-focus to table" overwrite the opening dialog's focus grab.
+Pressing `f` opens `_FilterDialog`. It surfaces the entry-type filter
+— the only filter today — as a horizontal `[x] fact   [ ] exposition
+…` row. Selection state is derived directly from `vm.entry_types`:
+`None` means all types selected (no filter); a tuple restricts.
+There's no separate "apply" key — `space` flips the cursor's option
+locally and calls `vm.apply_filter` immediately, collapsing back to
+`None` if every type ends up selected. `r` resets to no filter via
+`vm.apply_filter(None)`. `f` / `escape` dismiss; `s` / `e` swap.
 
-The dialog is built around an extensible list of `FilterCategoryViewModel`
-subclasses. Today there's only one — a `MultiSelectFilterViewModel`
-seeded with the three `EntryType` values — but the widget's
-rendering and key dispatch both branch on `isinstance(category, …)`
-so adding a new shape (e.g. a text-CONTAINS filter or a numeric
-range) is a localized change: a new VM subclass plus one new branch
-in `_FilterDialog._render_active_category` and the action handlers.
-The top line of the dialog shows the category tabs (active one
-bracketed, non-default categories tinted green); the second line
-hosts whatever input shape the active category needs.
+`vm.apply_filter` clears the selection (same rationale as the sort
+dialog — a different filter is a different `LIMIT 500` window) and
+triggers a refetch via `_request_fetch`. The active filter is
+projected to the DB op's `entry_types` parameter (list of `EntryType`
+enums, or `None` for no filter; an empty list means "no rows match",
+mirroring `topic_ids` semantics). Filter state lives entirely in the
+VM and persists across dialog open/close cycles.
 
-Keys: `tab` / `shift+tab` cycle categories (no-op with one); `←` /
-`→` move the cursor within the active category; `space` toggles the
-cursor's option (multi-select); `r` resets every category to
-default; `s` swaps to the sort dialog; `f` / `escape` dismiss.
-Pressing `f` from `_SortBar` or `_DeleteConfirm` swaps to the
-filter dialog in one step — same priority pattern as the existing
-`s` swap.
-
-**Toggling clears any active selection** (same rationale as the sort
-dialog — a different filter is a different `LIMIT 500` window). The
-toggle itself triggers a refetch and a count update via the same
-`_request_fetch` path the sort + topic-tree filters use; the active
-type filter is projected to the DB op's new `entry_types` parameter
-(`None` when at default = all selected, list of `EntryType` enums
-otherwise; the DB op treats an empty iterable as "no rows" same as
-`topic_ids`). Filter state persists across dialog open/close cycles
-— the user can dismiss with `f` and reopen later to fine-tune.
+The widget is intentionally not generalized over an abstract
+"category" list — the previous `FilterCategoryViewModel` /
+`MultiSelectFilterViewModel` hierarchy was speculative generality
+that never paid off. Adding a second filter axis (text-CONTAINS, date
+range, etc.) is a future refactor: extend the dialog's render and
+keystroke dispatch, extend `vm.apply_filter`'s signature.
 
 ### Sort
 
-Pressing `s` while the entries table is focused opens a horizontal
-sort-axis picker (`_SortBar`) mounted in the same screen slot as the
-delete dialog (the VM enforces mutual exclusion — `request_sort`
-dismisses any pending delete first; pressing `s` from inside the
-delete dialog swaps dialogs in one step via a binding on
-`_DeleteConfirm`).
+Pressing `s` opens `_SortBar`. The dialog surfaces four axes — `id`,
+`title`, `type`, `topic` — mirroring the data table's column order
+left-to-right. The cursor lands on the currently-active axis on open
+(via `prepare_for_show`); `left` / `right` move with wrap; `enter`
+applies, computing the toggle locally — same axis → flip direction,
+different axis → switch ascending — and calls `vm.set_sort(by, dir)`.
+`r` resets to `id` ascending. `s` / `escape` dismiss; `f` / `e` swap.
 
-The dialog surfaces four axes — `id`, `title`, `type`, `topic` —
-mirroring the data table's column order left-to-right. `left` / `right`
-move the cursor (with wrap); `enter` applies the highlighted axis,
-toggling direction when it matches the current sort and otherwise
-switching to that axis in ascending order; `s` / `escape` dismiss
-without applying. The active sort renders with an arrow + brackets
-(`↑[id]`); the cursor option is shown in bold gold on focus / bold
-grey otherwise.
+The active sort renders with an arrow + brackets (`↑[id]`); the
+cursor option is shown in bold gold on focus / bold grey otherwise.
 
-The DB op gets a small expansion to support the two non-column axes:
-`type` uses a `CASE` expression (locks the semantic order
-fact → exposition → overview rather than the natural string sort
-which puts exposition first), and `topic` joins onto the `Topic` table
-and orders on `lower(Topic.name)` for case-insensitive alpha.
+The DB op handles the two non-column axes: `type` uses a `CASE`
+expression (locks the semantic order fact → exposition → overview
+rather than the natural string sort which puts exposition first), and
+`topic` joins onto the `Topic` table and orders on `lower(Topic.name)`
+for case-insensitive alpha.
 
-**Applying a sort clears any active selection.** A new sort means a
-new `LIMIT 500` window — different rows may end up in scope — and
-tracking selections across windows that don't necessarily contain the
-same entries is more complexity than the feature warrants. The
-multi-select dialog hint surfaces this in red while picking; the mode
-itself stays on, just with an empty set.
+`vm.set_sort` clears the selection (a new sort means a new `LIMIT
+500` window, and tracking selections across reshuffled windows is
+more complexity than the feature warrants). The multi-select dialog
+hint surfaces this in red while picking; the mode itself stays on,
+just with an empty set.
 
 ### Delete
 
-Pressing `d` while the entries table is focused opens a confirm
-dialog mounted between the pane body and the docked status line
-(`_DeleteConfirm` widget; mirrors the design of `_ChoicesList` in
-the details panel). The target set comes from the VM's
-`delete_target_ids` computed property: the live `_selected_ids` in
-multi-select mode, or `{entries[cursor].id}` in single-select mode
-(frozen into `_delete_single_target_id` at `request_delete` time so
-cursor moves while the dialog is open don't repoint the target).
-Dialog copy adjusts: `Delete N selected entries?` in multi-select,
-`Delete 1 entry?` in single-select. Up/down moves the
-Confirm/Cancel cursor; enter dispatches; escape dismisses without
-deleting; `s` / `f` / `e` swap to the corresponding sibling dialog.
-The dialog grabs focus on appear and returns it to the table on
-dismiss; `focus_first` also re-focuses the dialog when it's open, so
-a tree side-trip via alt+left then alt+right lands the user back on
-the dialog.
+Pressing `d` opens `_DeleteConfirm`, mounted between the pane body
+and the docked status line. The dialog reads `pane.selection_target_count()`
+to render the header (`Delete N selected entries?` in multi-select,
+`Delete 1 entry?` in single-select). Up/down moves the Confirm/Cancel
+cursor (owned locally by the widget); enter dispatches; escape
+dismisses; `s` / `f` / `e` swap.
 
-On confirm, the pane VM deletes each target entry via `delete_entry`
-inside a single session + commit. The FK on `flashcard_entry.entry_id`
-cascades, so flashcard-to-entry link rows are cleaned up automatically
-but the flashcards themselves are unaffected — which is what the
-dialog promises the user. After the commit, the VM prunes
-`self._entries`, decrements `self._total`, clears `_selected_ids`
-(multi-select only), and clamps the cursor; no refetch. Multi-select
-mode stays on so the visual context is preserved — the user hits `m`
-to exit when done.
+On confirm the dialog awaits `vm.delete_selected_entries()` and then
+hides itself. The VM resolves the target set via the internal
+`_selected_target_ids` helper (the live `_selected_ids` set in
+multi-select, the cursor entry in single-select) and deletes each via
+`delete_entry` inside a single session + commit. The FK on
+`flashcard_entry.entry_id` cascades, so flashcard-to-entry link rows
+are cleaned up automatically but the flashcards themselves are
+unaffected. After the commit, the VM prunes `self._entries`,
+decrements `self._total`, clears `_selected_ids` (multi-select only),
+and clamps the cursor; no refetch. Multi-select mode stays on so the
+visual context is preserved — the user hits `m` to exit when done.
 
-Pressing `d` is a no-op when nothing is targetable (empty window in
-single-select, empty selection in multi-select) or when the dialog
-is already open. Toggling multi-select off while the dialog is open
-dismisses it (the selection is about to be cleared anyway).
+There's no longer a frozen-target mechanism — focus-based dismissal
+handles the equivalent: while the dialog is focused, the table
+doesn't see arrow keys, so the cursor stays put and the single-select
+target naturally remains the same. `vm.delete_selected_entries`
+no-ops when nothing's targetable.
 
 ### Edit
 
-Pressing `e` while the entries table is focused opens a horizontal
-edit-action picker (`_EditBar`) sharing the screen slot with the
-sort / filter / delete dialogs — the four are mutually exclusive at
-the VM level (`request_edit` / `request_sort` / `request_filter` /
-`request_delete` each clear the other three). Target resolution
-mirrors delete: live `_selected_ids` in multi-select mode, frozen
-`_edit_single_target_id` in single-select mode.
+Pressing `e` opens `_EditBar`. The option list lives on the view side
+as module-level constants:
 
-Option set depends on mode (exposed by `vm.edit_options`):
-
-- **multi-select**: `change topic` · `change type` · `delete`
-- **single-select**: `change topic` · `change type` · `edit title` ·
-  `edit content` · `delete`
+- **multi-select** (`_EDIT_OPTIONS_MULTI`): `change topic` ·
+  `change type` · `delete`
+- **single-select** (`_EDIT_OPTIONS_SINGLE`): `change topic` ·
+  `change type` · `edit title` · `edit content` · `delete`
 
 `edit title` / `edit content` are excluded in multi-select because
-the details panel is frozen (read-only) and there's no single entry
-for them to refocus onto. `delete` always sits last so the cursor
-never lands on the destructive action without an explicit rightward
-step.
+the details panel is frozen and there's no single entry to refocus
+onto. `delete` always sits last so the cursor never lands on the
+destructive action without an explicit rightward step.
 
-Dispatch lives on the view side (`KnowledgeEntryBrowserPaneView.handle_edit_choice`)
-because two of the choices need view-level affordances (modal screen
-push for `change topic` / `change type`) and two are pure focus
-shortcuts onto sibling widgets (`edit title` / `edit content` focus
-the corresponding TextArea in the details panel and dismiss the
-bar). The VM is only consulted for the cursor index and for applying
-the chosen value (`apply_change_topic` / `apply_change_type`).
+On `enter`, `_EditBar.action_select` calls `pane.handle_edit_choice(opt)`
+with the option string. The pane dispatches:
 
-`change topic` pushes the existing `TopicSelectorScreen` (same
-modal used by the commit-proposal widget); `change type` pushes a
-local `_TypePickerScreen` defined in the same `view.py` rather than
+- `change topic` / `change type` push a modal screen
+  (`TopicSelectorScreen` / `_TypePickerScreen`); on dismiss, the
+  selected value is applied via
+  `vm.change_topic_on_selected_entries` / `vm.change_type_on_selected_entries`.
+  On cancel, the edit bar refocuses so the user can pick a different
+  action without re-pressing `e`.
+- `edit title` / `edit content` hide the edit bar and focus the
+  corresponding TextArea in the details panel.
+- `delete` swaps to the delete confirm dialog
+  (`pane.show_dialog("delete")`).
+
+`_TypePickerScreen` is defined in the same `view.py` rather than
 under `tui/screens/` — it's tiny and only used here, so the extra
 indirection isn't worth it (lift it if a second consumer appears).
-Both screens dismiss with the picked value or `None`; on cancel,
-the edit bar refocuses so the user can pick a different action
-without re-pressing `e`. On apply, the change persists via
-`update_entry` per target inside a single session + commit, then
-the pane refetches.
 
-**Selection-preserving refetch.** `apply_change_topic` and
-`apply_change_type` go through `_post_change_refetch`, which kicks
-off a normal `_request_fetch` and passes
+**Selection-preserving refetch.** `change_topic_on_selected_entries`
+and `change_type_on_selected_entries` go through `_post_change_refetch`,
+which kicks off a normal `_request_fetch` and passes
 `_intersect_selection_with_window` as the `on_complete` callback.
 The base class runs the callback synchronously right after
 `_process_fetched_data` lands, so the intersection sees the fresh
@@ -238,12 +232,6 @@ Edge: an entry that still matches the filter but lands past the
 500-row window is also dropped from the selection — matches
 `load_more`'s behaviour of not reaching back for selected-but-
 unloaded rows.
-
-`edit title` and `edit content` are sub-trivial: dismiss the edit
-bar (via `cancel_edit`) and focus `#details-title` /
-`#details-content` directly. The cancel triggers the pane's
-`_refresh` which would normally route focus back to the table, but
-the explicit `target.focus()` call afterwards wins.
 
 The pane VM's `update_entry` op gained a `topic_id` keyword argument
 to support the topic-change path (non-nullable on the model, so

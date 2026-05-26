@@ -1,20 +1,29 @@
 """KnowledgeEntryBrowserPaneViewModel — the first concrete browser pane.
 
-Shows ``KnowledgeEntry`` rows matching the orchestrator's topic filter (plus its own search/sort state) in
-a fixed-size window. Total counts and pagination are kept deliberately simple for the MVP: a single
-LIMIT-N window with a "showing N of M" hint, and an explicit ``load_more`` for the next page. Once we want
-true virtualized scroll, the seam is at ``_query_window`` — swap the offset-based call for a keyset-
-paginated one and the rest of the VM keeps working.
+Shows ``KnowledgeEntry`` rows matching the orchestrator's topic filter (plus its own search / sort /
+entry-type state) in a fixed-size window. Total counts and pagination are kept deliberately simple
+for the MVP: a single LIMIT-N window with a "showing N of M" hint, and an explicit ``load_more`` for
+the next page. Once we want true virtualized scroll, the seam is at ``_query_window`` — swap the
+offset-based call for a keyset-paginated one and the rest of the VM keeps working.
 
-Filter, search, and sort are all "reset" operations: changing any of them discards the current window and
-refetches from offset 0, resetting the row cursor. ``load_more`` is an "append" operation — it extends the
-existing window without touching the cursor.
+Filter, search, and sort are all "reset" operations: changing any of them discards the current window
+and refetches from offset 0, resetting the row cursor. ``load_more`` is an "append" operation — it
+extends the existing window without touching the cursor.
+
+Scope
+-----
+This VM owns *data facts*: the loaded window, the current sort/search/filter values, the cursor, the
+multi-select toggle and selection set, and the orchestration of bulk actions (delete / change topic /
+change type). It does **not** own dialog UI state — which dialog is open, where its cursor lives,
+which option is highlighted, focus management. Those concerns live in the view side. The VM exposes
+the actions the dialogs eventually invoke (``set_sort``, ``apply_filter``,
+``delete_selected_entries``, ``change_topic_on_selected_entries``, ``change_type_on_selected_entries``)
+and leaves UI choreography to Textual.
 """
 
 from __future__ import annotations
 
 import enum
-from abc import ABC, abstractmethod
 from typing import Any, Literal
 
 from rhizome.db import KnowledgeEntry
@@ -38,117 +47,6 @@ _logger = get_logger("browser.knowledge_entry_pane")
 # bounded memory + render footprint, and "showing 500 of N+, load more" is the simplest UX that scales.
 # Lifting this is a one-line change; switching to keyset pagination is the longer-term migration.
 DEFAULT_PAGE_LIMIT = 500
-
-# The sort axes the UI lets the user pick from. Ordered left-to-right the way they're laid out in the sort
-# dialog (which mirrors the data table's column order). The DB op accepts a wider set (``created_at`` /
-# ``updated_at``) for backward compat; the dialog deliberately surfaces only the four most useful axes.
-SORT_OPTIONS: tuple[EntrySortKey, ...] = ("id", "title", "type", "topic")
-
-# Edit-dialog action choices, ordered left-to-right as shown to the user. ``edit_title`` and
-# ``edit_content`` only appear in single-select mode (they refocus the corresponding details TextArea,
-# which has no useful meaning for a bulk edit); the other three are always available. Order matters: the
-# destructive ``delete`` sits last so the cursor never lands on it without an explicit rightward step.
-EDIT_OPTIONS_SINGLE: tuple[str, ...] = (
-    "change topic",
-    "change type",
-    "edit title",
-    "edit content",
-    "delete",
-)
-EDIT_OPTIONS_MULTI: tuple[str, ...] = (
-    "change topic",
-    "change type",
-    "delete",
-)
-
-
-
-
-# ----------------------------------------------------------------------
-# Filter category VMs
-# ----------------------------------------------------------------------
-#
-# The filter dialog is structured around an extensible list of "filter categories" — each one carries its
-# own state shape and input style. Concretely today there's only one (a multi-select for entry type), but
-# the abstraction is here for the next browser pane that wants something like "field CONTAINS …" or a
-# numeric range. The dialog widget dispatches rendering + input on the concrete subclass via
-# ``isinstance``; adding a new category means a new subclass plus one new branch in
-# ``_FilterDialog._render_category`` / ``action_toggle``.
-#
-# Categories don't emit ``dirty`` themselves — the pane VM emits one after mutating the active category
-# and (when the filter actually changed) triggers a refetch. Keeping categories as plain holders avoids a
-# second tier of subscription wiring.
-
-
-class FilterCategoryViewModel(ABC):
-    """Per-axis filter state. Subclasses choose their own data shape (a selection set, an input string, a
-    numeric range, …); the pane VM only needs to know the ``name``, whether the category is at its "no
-    filter" default (so the dialog can highlight active filters), and how to ``reset`` it."""
-
-    name: str
-
-    @property
-    @abstractmethod
-    def is_default(self) -> bool:
-        """True when the category contributes no filter — applying it would not narrow the result set."""
-
-    @abstractmethod
-    def reset(self) -> None:
-        """Restore the category to its default (no-filter) state."""
-
-
-class MultiSelectFilterViewModel(FilterCategoryViewModel):
-    """Filter category where the user picks any subset of a fixed set of string options. Default = every
-    option selected (equivalent to no filter). Deselecting any option activates the filter; selecting none
-    yields an explicit "no rows" — same semantics as the DB op's empty-iterable handling for
-    ``topic_ids``."""
-
-    def __init__(self, name: str, options: list[str]) -> None:
-        self.name = name
-        self._options = list(options)
-        self._selected: set[str] = set(self._options)
-        self._cursor: int = 0
-
-    @property
-    def options(self) -> list[str]:
-        return self._options
-
-    @property
-    def cursor(self) -> int:
-        return self._cursor
-
-    def is_selected(self, option: str) -> bool:
-        return option in self._selected
-
-    @property
-    def selected(self) -> set[str]:
-        return set(self._selected)
-
-    @property
-    def is_default(self) -> bool:
-        return self._selected == set(self._options)
-
-    def move_cursor(self, direction: int) -> None:
-        """Move the option cursor with wrap. No-op when the option list is empty."""
-        if not self._options:
-            return
-        self._cursor = (self._cursor + direction) % len(self._options)
-
-    def toggle_cursor(self) -> bool:
-        """Toggle the option under the cursor. Returns True (the filter state always changes here unless
-        the cursor is out of bounds) so the pane VM can decide whether to refetch."""
-        if not self._options or self._cursor >= len(self._options):
-            return False
-        opt = self._options[self._cursor]
-        if opt in self._selected:
-            self._selected.discard(opt)
-        else:
-            self._selected.add(opt)
-        return True
-
-    def reset(self) -> None:
-        self._selected = set(self._options)
-        self._cursor = 0
 
 
 class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
@@ -181,8 +79,6 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._limit = limit
 
         # Top-level layout state. Boot is always ``ENTRIES``; ``transition_to`` is the only mutator.
-        # See the nested ``State`` enum for the docs and the transition policy comment on
-        # ``transition_to`` itself for what's preserved vs. dropped on a state change.
         self._state: State = self.State.ENTRIES
 
         # Result window state. ``_entries`` is the currently-loaded rows; ``_total`` is the count of rows
@@ -192,64 +88,25 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._total: int | None = None
         self._has_more: bool = False
 
-        # Search/sort state. ``_search`` is an empty string when no search is active — the DB op treats
-        # falsy strings as "no filter". Default sort is ``id`` (matches the UI's default position in the
-        # sort dialog and gives the user a stable, predictable initial view).
+        # Search / sort / entry-type filter state. ``_search`` is an empty string when no search is
+        # active. ``_entry_types`` follows the same None/tuple convention as ``BrowserPaneViewModel``'s
+        # topic filter: ``None`` = no filter; a tuple restricts to those types; an empty tuple is a legal
+        # "no rows match" terminal state. Default sort is ``id`` ascending.
         self._search: str = ""
         self._sort_by: EntrySortKey = "id"
         self._sort_dir: Literal["asc", "desc"] = "asc"
+        self._entry_types: tuple[EntryType, ...] | None = None
 
         # Row cursor within the currently-loaded window. The view owns navigation; the VM owns the
         # persisted position so it survives repaints. Reset to 0 on any "reset" operation.
         self._cursor: int = 0
 
         # Multi-select state. When ``_multi_select_active`` is True the view paints a leading marker
-        # column ("[x]"/"[ ]") and the user can toggle selection of the cursor's row with ``space``.
-        # ``_selected_ids`` is keyed by entry id (not row index) so the selection survives ``load_more``
-        # and refetches. Turning the mode off clears the set ("abandons the selection").
+        # column ("[x]"/"[ ]") and the user can toggle selection of the cursor's row. ``_selected_ids``
+        # is keyed by entry id (not row index) so the selection survives ``load_more`` and refetches.
+        # Turning the mode off clears the set ("abandons the selection").
         self._multi_select_active: bool = False
         self._selected_ids: set[int] = set()
-
-        # Pending delete confirmation. Flipped on by ``request_delete``; the view reveals a confirm dialog
-        # whose Confirm/Cancel cursor lives in ``_delete_choice_cursor`` (0 = Confirm, 1 = Cancel).
-        # ``confirm_delete`` / ``cancel_delete`` are the only exits.
-        #
-        # Target resolution lives in ``_delete_target_ids``: in multi-select mode that's
-        # ``_selected_ids``; in single-select mode it's the cursor's entry id (frozen at
-        # ``request_delete`` time into ``_delete_single_target_id`` so a stray cursor move while the
-        # dialog is open doesn't repoint the action).
-        self._delete_pending: bool = False
-        self._delete_choice_cursor: int = 0
-        self._delete_single_target_id: int | None = None
-
-        # Pending edit-action dialog. Opened with ``e`` from the table (and from inside the other
-        # dialogs); shows a horizontal choices list of edit actions. Options vary by mode — see
-        # ``edit_options``. Cursor lands at index 0 (``change topic``) on every open. Like the other
-        # dialogs, it's in the three-way mutex with sort/filter/delete, now widened to four.
-        self._edit_pending: bool = False
-        self._edit_cursor: int = 0
-        # Frozen target for single-select edit-bar actions, mirroring ``_delete_single_target_id``.
-        # Pinned at ``request_edit`` time so a stray cursor move while the bar is open doesn't repoint
-        # which entry the action lands on. ``None`` in multi-select mode (the target is the live
-        # ``_selected_ids`` set).
-        self._edit_single_target_id: int | None = None
-
-        # Pending sort dialog. ``_sort_cursor`` indexes into ``SORT_OPTIONS`` — initialized lazily by
-        # ``request_sort`` so it lands on the currently-active sort key.
-        self._sort_pending: bool = False
-        self._sort_cursor: int = 0
-
-        # Filter dialog state. The category list is fixed at construction for now (just the type filter);
-        # future panes can add more ``FilterCategoryViewModel`` subclasses to the list and the dialog
-        # widget will dispatch on type. ``_type_filter`` is also held as a direct attr so ``_fetch`` can
-        # pull the type filter without a name lookup.
-        self._type_filter = MultiSelectFilterViewModel(
-            name="type",
-            options=[t.value for t in EntryType],
-        )
-        self._filter_categories: list[FilterCategoryViewModel] = [self._type_filter]
-        self._filter_active_idx: int = 0
-        self._filter_pending: bool = False
 
         # The detail panel's VM. We push it the cursor's entry via ``_sync_details`` whenever the cursor
         # moves or the window reloads. The pane view picks the VM up via ``self.details`` to construct its
@@ -299,6 +156,13 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         return self._sort_dir
 
     @property
+    def entry_types(self) -> tuple[EntryType, ...] | None:
+        """Current entry-type filter. ``None`` means no filter; a tuple restricts to those types; an
+        empty tuple means "no rows match" (legal terminal state, mirrors ``BrowserPaneViewModel``'s
+        topic filter semantics)."""
+        return self._entry_types
+
+    @property
     def cursor(self) -> int:
         return self._cursor
 
@@ -335,67 +199,6 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     def is_selected(self, entry_id: int) -> bool:
         return entry_id in self._selected_ids
 
-    @property
-    def delete_pending(self) -> bool:
-        return self._delete_pending
-
-    @property
-    def delete_choice_cursor(self) -> int:
-        return self._delete_choice_cursor
-
-    @property
-    def sort_pending(self) -> bool:
-        return self._sort_pending
-
-    @property
-    def sort_cursor(self) -> int:
-        return self._sort_cursor
-
-    @property
-    def filter_pending(self) -> bool:
-        return self._filter_pending
-
-    @property
-    def edit_pending(self) -> bool:
-        return self._edit_pending
-
-    @property
-    def edit_cursor(self) -> int:
-        return self._edit_cursor
-
-    @property
-    def edit_options(self) -> tuple[str, ...]:
-        """Choices to show in the edit dialog. Multi-select hides ``edit title`` / ``edit content`` —
-        those refocus the details panel's single-entry TextAreas, which have no meaning when a bulk edit
-        is being composed."""
-        return EDIT_OPTIONS_MULTI if self._multi_select_active else EDIT_OPTIONS_SINGLE
-
-    @property
-    def delete_target_ids(self) -> set[int]:
-        """Resolved targets for ``confirm_delete``. In multi-select mode this is the live
-        ``_selected_ids`` set; in single-select mode it's the frozen ``_delete_single_target_id`` (set
-        when the dialog opened — see ``request_delete``). Empty set when the dialog isn't open or there's
-        nothing to delete; callers should treat empty as a no-op."""
-        if self._multi_select_active:
-            return set(self._selected_ids)
-        if self._delete_single_target_id is None:
-            return set()
-        return {self._delete_single_target_id}
-
-    @property
-    def filter_categories(self) -> list[FilterCategoryViewModel]:
-        return self._filter_categories
-
-    @property
-    def filter_active_category(self) -> FilterCategoryViewModel | None:
-        if not self._filter_categories:
-            return None
-        return self._filter_categories[self._filter_active_idx]
-
-    @property
-    def filter_active_idx(self) -> int:
-        return self._filter_active_idx
-
     # ------------------------------------------------------------------
     # Mutators
     # ------------------------------------------------------------------
@@ -403,40 +206,22 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     def transition_to(self, new_state: State) -> None:
         """Transition the pane to a new top-level layout state.
 
-        Idempotent: a transition to the current state is a no-op (no dialog cancellation, no detail-
-        buffer reset, no dirty emit). Otherwise the transition is "soft" — pending fetches and the
-        multi-select selection survive, but anything mid-edit gets dropped because the new state may
-        not surface the affordance the user was using:
+        Idempotent: a transition to the current state is a no-op. Otherwise the transition discards
+        any unsaved title/content edits in the details panel (matches the silent-discard policy
+        already used for cursor-move-while-dirty) and re-seeds the linked-flashcards sub-VM.
 
-          * **Pending dialogs** (sort/filter/edit/delete) — cancelled. Cheap to reopen if the user
-            still wants them; better than carrying a dialog into a state that may not render it.
-          * **Dirty details buffers** — discarded via ``details.cancel()``. Matches the silent-
-            discard policy already used for cursor-move-while-dirty; the user has to Accept before
-            navigating away if they want the edit to land.
-          * **Multi-select state** — preserved. The selection set is keyed by entry id, has no
-            visual coupling to the state, and there's nothing in the planned ``LINKED_FLASHCARDS``
-            view that would invalidate it.
-          * **In-flight fetches** — preserved. The base class's fetch-id gating handles any race
-            between an outgoing fetch and the new state; the entries list is owned by this VM, not
-            the layout.
+        Multi-select state is preserved across transitions — the selection set is keyed by entry id,
+        has no visual coupling to the layout state. In-flight fetches are preserved too; the base
+        class's fetch-id gating handles any race between an outgoing fetch and the new state.
 
-        Emits a single ``dirty`` at the end so the view re-renders against the new state. The view
-        is expected to branch its layout on ``vm.state``; this method does not touch the view side.
+        Dialog dismissal on state change is the view's concern: the view subscribes to ``dirty`` and
+        can drop whichever dialog widget it currently has visible when ``state`` changes.
         """
         if new_state is self._state:
             return
         _logger.info("Pane state transition: %s -> %s", self._state.value, new_state.value)
 
-        # Drop dialogs first. We use the cancel_* mutators (rather than just resetting flags) so any
-        # bookkeeping each cancel does — clearing dialog-local cursors, frozen target ids — runs.
-        # Each ``cancel_*`` no-ops when its dialog isn't open, so this fan-out is cheap.
-        self.cancel_sort()
-        self.cancel_filter()
-        self.cancel_edit()
-        self.cancel_delete()
-
-        # Discard any unsaved title/content edits in the details panel. ``cancel`` no-ops when the
-        # buffers are clean.
+        # Discard any unsaved title/content edits in the details panel. ``cancel`` no-ops when clean.
         self._details.cancel()
 
         self._state = new_state
@@ -444,7 +229,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         # Seed / wipe the linked-flashcards sub-VM. ``_sync_linked_flashcards`` is state-gated, so
         # we set ``_state`` first and let the sync helper do the right thing: in ``LINKED_FLASHCARDS``
         # it pushes the cursor entry id; back in ``ENTRIES`` we explicitly call ``set_entry_id(None)``
-        # to cancel any in-flight fetch and free the loaded window.
+        # to invalidate any in-flight fetch and free the loaded window.
         if new_state is self.State.LINKED_FLASHCARDS:
             self._sync_linked_flashcards()
         else:
@@ -466,12 +251,33 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         sort_by: EntrySortKey,
         sort_dir: Literal["asc", "desc"] = "asc",
     ) -> None:
-        """Replace the active sort. Triggers a refetch from offset 0."""
+        """Replace the active sort. Clears the selection (rows reshuffle and selection-by-position
+        loses meaning), resets the cursor, and triggers a refetch from offset 0. The view computes
+        whatever toggle/reset semantic it wants (header-click toggle, explicit reset, etc.) and calls
+        this with concrete values."""
         if sort_by == self._sort_by and sort_dir == self._sort_dir:
             return
         self._sort_by = sort_by
         self._sort_dir = sort_dir
         self._cursor = 0
+        self._clear_selection()
+        self._request_fetch()
+
+    def apply_filter(self, entry_types: tuple[EntryType, ...] | None) -> None:
+        """Replace the active entry-type filter.
+
+        ``None`` clears the filter. A tuple restricts the result set to those types. An empty tuple
+        is a legal terminal state meaning "no rows match" (mirrors ``set_filter``'s topic-ids
+        semantics).
+
+        Idempotent against the current value. Clears the selection, resets the cursor, refetches.
+        """
+        new = None if entry_types is None else tuple(entry_types)
+        if new == self._entry_types:
+            return
+        self._entry_types = new
+        self._cursor = 0
+        self._clear_selection()
         self._request_fetch()
 
     def set_cursor(self, index: int) -> None:
@@ -499,21 +305,11 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
 
     def toggle_multi_select(self) -> None:
         """Flip multi-select mode. Turning the mode **off** abandons the current selection (clears
-        ``_selected_ids``) and dismisses any open delete-confirm dialog (it'd be operating on a now-empty
-        set); turning it on starts with an empty set. Pushes the resulting state into the details VM so
-        the side panel can freeze its edits."""
+        ``_selected_ids``); turning it on starts with an empty set. Pushes the resulting state into
+        the details VM so the side panel can freeze its edits."""
         self._multi_select_active = not self._multi_select_active
         if not self._multi_select_active:
             self._selected_ids.clear()
-            self._delete_pending = False
-            self._delete_choice_cursor = 0
-            self._delete_single_target_id = None
-        # The edit dialog's option set differs by mode (multi excludes edit title/content), and the
-        # frozen target id only applies to single-select. Closing it on either transition avoids the
-        # bar showing stale options after the mode flips.
-        self._edit_pending = False
-        self._edit_cursor = 0
-        self._edit_single_target_id = None
         self._details.set_multi_select(
             self._multi_select_active,
             len(self._selected_ids),
@@ -547,87 +343,41 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         self._details.set_multi_select(True, len(self._selected_ids))
         self.emit(self.dirty)
 
-    def request_delete(self) -> None:
-        """Open the delete confirmation. Targets:
-          * multi-select mode: ``_selected_ids`` (no-op if empty).
-          * single-select mode: the cursor's entry (no-op if the window is empty).
+    # ------------------------------------------------------------------
+    # Bulk actions on the selection
+    # ------------------------------------------------------------------
+    #
+    # "The selection" is whatever ``_selected_target_ids`` resolves: the explicit ``_selected_ids``
+    # set in multi-select mode, the cursor's entry id in single-select mode. The three action methods
+    # below all share that resolution and no-op against an empty result, so a stray invocation against
+    # an empty window or empty selection is safe.
 
-        Closes the sort / filter / edit dialogs (the 4-way mutex). In single-select mode the cursor
-        entry id is frozen into ``_delete_single_target_id`` so navigating the table while the dialog is
-        open doesn't repoint the delete target. Idempotent when already open."""
-        if self._multi_select_active:
-            if not self._selected_ids:
-                return
-            target_id: int | None = None
-        else:
-            if not self._entries:
-                return
-            target_id = self._entries[self._cursor].id
-        if self._delete_pending:
-            return
-        self._sort_pending = False
-        self._filter_pending = False
-        self._edit_pending = False
-        self._delete_pending = True
-        self._delete_choice_cursor = 0
-        self._delete_single_target_id = target_id
-        self.emit(self.dirty)
+    async def delete_selected_entries(self) -> None:
+        """Delete the resolved target entries from the DB and prune them from the loaded window.
 
-    def move_delete_cursor(self, direction: int) -> None:
-        """Move the Confirm/Cancel cursor in the dialog. Mod-2 wrap; no-op when the dialog isn't open."""
-        if not self._delete_pending:
-            return
-        new = (self._delete_choice_cursor + direction) % 2
-        if new == self._delete_choice_cursor:
-            return
-        self._delete_choice_cursor = new
-        self.emit(self.dirty)
-
-    def cancel_delete(self) -> None:
-        """Dismiss the dialog without deleting anything. Multi-select state and the selection set are
-        untouched."""
-        if not self._delete_pending:
-            return
-        self._delete_pending = False
-        self._delete_choice_cursor = 0
-        self._delete_single_target_id = None
-        self.emit(self.dirty)
-
-    async def confirm_delete(self) -> None:
-        """Delete the resolved target entries (see ``delete_target_ids``) from the DB, prune them from
-        the loaded window, and dismiss the dialog.
-
-        Each ``KnowledgeEntry`` row is removed via ``delete_entry`` inside a single session + commit so
-        partial-failure leaves an atomic DB state. The FK on ``flashcard_entry.entry_id`` cascades, so any
-        flashcard-to-entry links pointing at deleted entries are cleaned up automatically; the flashcards
-        themselves are unaffected (which is what the dialog promises the user).
+        Each row is removed via ``delete_entry`` inside a single session + commit so partial-failure
+        leaves an atomic DB state. The FK on ``flashcard_entry.entry_id`` cascades, so any flashcard-
+        to-entry links pointing at deleted entries are cleaned up automatically; the flashcards
+        themselves are unaffected.
 
         After the commit we update local state in place: filter ``self._entries``, decrement
         ``self._total``, clamp the cursor, clear ``self._selected_ids`` (multi-select), and reconcile
-        ``_has_more``. No refetch — we know exactly which rows went away.
-
-        In multi-select mode the mode stays on so the visual context is preserved; the user can hit
-        ``m`` to exit when they're done.
+        ``_has_more``. No refetch — we know exactly which rows went away. In multi-select mode the
+        mode stays on so the visual context is preserved.
         """
-        to_delete = self.delete_target_ids
-        if not self._delete_pending or not to_delete:
-            # Defensive: the dialog shouldn't be visible without a non-empty target set, but a stray
-            # callback could still fire here.
-            self._delete_pending = False
-            self._delete_single_target_id = None
-            self.emit(self.dirty)
+        targets = self._selected_target_ids()
+        if not targets:
             return
 
         async with self._session_factory() as session:
-            for entry_id in to_delete:
+            for entry_id in targets:
                 await delete_entry(session, entry_id)
             await session.commit()
-        _logger.info("Deleted %d entries", len(to_delete))
+        _logger.info("Deleted %d entries", len(targets))
 
-        # Prune local state. Filter the window in-place to preserve order.
-        self._entries = [e for e in self._entries if e.id not in to_delete]
+        self._entries = [e for e in self._entries if e.id not in targets]
         if self._total is not None:
-            self._total = max(0, self._total - len(to_delete))
+            self._total = max(0, self._total - len(targets))
         if self._multi_select_active:
             self._selected_ids.clear()
         if self._cursor >= len(self._entries):
@@ -635,260 +385,12 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         if self._total is not None:
             self._has_more = len(self._entries) < self._total
 
-        self._delete_pending = False
-        self._delete_choice_cursor = 0
-        self._delete_single_target_id = None
-
-        # Re-point the detail panel and tell it the new (zero) selection count, then emit one dirty for
-        # the table repaint.
         self._sync_details()
         self._sync_linked_flashcards()
         self._details.set_multi_select(self._multi_select_active, 0)
         self.emit(self.dirty)
 
-    def request_sort(self) -> None:
-        """Open the sort dialog. Cancels any pending filter / edit / delete so the four dialogs never
-        co-exist. The cursor lands on the currently-active sort axis so the most common action (toggle
-        direction of the active sort) is a single ``enter`` away. Idempotent when the dialog is already
-        open."""
-        if self._sort_pending:
-            return
-        self._filter_pending = False
-        self._edit_pending = False
-        self._delete_pending = False
-        self._delete_choice_cursor = 0
-        self._delete_single_target_id = None
-        self._sort_pending = True
-        try:
-            self._sort_cursor = SORT_OPTIONS.index(self._sort_by)
-        except ValueError:
-            # Active sort isn't in the UI's surfaced set (e.g. legacy ``created_at`` from an older
-            # session). Park on ``id``.
-            self._sort_cursor = 0
-        self.emit(self.dirty)
-
-    def cancel_sort(self) -> None:
-        """Dismiss the sort dialog without applying anything."""
-        if not self._sort_pending:
-            return
-        self._sort_pending = False
-        self.emit(self.dirty)
-
-    def move_sort_cursor(self, direction: int) -> None:
-        """Move the sort-axis cursor left (-1) or right (+1) with wrap. No-op when the dialog isn't
-        open."""
-        if not self._sort_pending:
-            return
-        new = (self._sort_cursor + direction) % len(SORT_OPTIONS)
-        if new == self._sort_cursor:
-            return
-        self._sort_cursor = new
-        self.emit(self.dirty)
-
-    def apply_sort(self) -> None:
-        """Confirm the highlighted axis. If it matches the current sort, flip the direction; otherwise
-        switch to that axis in ascending order. **Clears any active selection** — the ``LIMIT 500``
-        window is reshuffled by a refetch, and tracking selections across windows that don't necessarily
-        include the same rows is more trouble than it's worth (see the dialog hint). The dialog stays
-        open so the user can keep tweaking; ``s`` / ``escape`` dismiss when they're done."""
-        if not self._sort_pending:
-            return
-        chosen = SORT_OPTIONS[self._sort_cursor]
-        if chosen == self._sort_by:
-            new_dir: Literal["asc", "desc"] = (
-                "desc" if self._sort_dir == "asc" else "asc"
-            )
-        else:
-            new_dir = "asc"
-
-        # Drop selections before triggering the refetch. We do this even when the chosen sort matches the
-        # current one (direction-flip) because the row order — and thus what the user "selected by
-        # position" — has changed.
-        if self._selected_ids:
-            self._selected_ids.clear()
-            if self._multi_select_active:
-                self._details.set_multi_select(True, 0)
-
-        # ``set_sort`` short-circuits when nothing changed, so direction toggles still go through the
-        # refetch path.
-        self.set_sort(chosen, new_dir)
-
-    def reset_sort(self) -> None:
-        """Restore the default sort (``id`` ascending). Mirrors the filter dialog's ``r``: refetches +
-        clears selections only when the state was non-default, otherwise just bumps the cursor back to
-        the id slot. The dialog stays open."""
-        if not self._sort_pending:
-            return
-        was_default = self._sort_by == "id" and self._sort_dir == "asc"
-        self._sort_cursor = 0
-        if was_default:
-            self.emit(self.dirty)
-            return
-        if self._selected_ids:
-            self._selected_ids.clear()
-            if self._multi_select_active:
-                self._details.set_multi_select(True, 0)
-        self.set_sort("id", "asc")
-
-    # ------------------------------------------------------------------
-    # Filter dialog
-    # ------------------------------------------------------------------
-    #
-    # The three dialogs (sort, filter, delete) are mutually exclusive — ``request_filter`` and
-    # ``request_sort`` both dismiss whichever other one is open. ``s`` / ``f`` keybindings on each dialog
-    # wire the user-visible side of that swap. ``d`` is one-way — it requires a non-empty selection and
-    # so doesn't make sense to invoke from inside another dialog.
-
-    def request_filter(self) -> None:
-        """Open the filter dialog. Cancels any pending sort / edit / delete so the four dialogs never
-        co-exist. Idempotent when the dialog is already open."""
-        if self._filter_pending:
-            return
-        self._sort_pending = False
-        self._edit_pending = False
-        self._delete_pending = False
-        self._delete_choice_cursor = 0
-        self._delete_single_target_id = None
-        self._filter_pending = True
-        self.emit(self.dirty)
-
-    def cancel_filter(self) -> None:
-        """Dismiss the filter dialog without applying anything beyond the toggles the user already made
-        (those land immediately — see ``filter_toggle_current``). State on each category persists across
-        open/close cycles."""
-        if not self._filter_pending:
-            return
-        self._filter_pending = False
-        self.emit(self.dirty)
-
-    def filter_tab(self, direction: int = 1) -> None:
-        """Cycle the active category. Only useful when more than one category exists; with the current
-        single-category lineup this is a no-op."""
-        if not self._filter_pending or len(self._filter_categories) <= 1:
-            return
-        new = (self._filter_active_idx + direction) % len(self._filter_categories)
-        if new == self._filter_active_idx:
-            return
-        self._filter_active_idx = new
-        self.emit(self.dirty)
-
-    def filter_move_cursor(self, direction: int) -> None:
-        """Move the cursor within the active category. The action is delegated to the category VM, so
-        future non-MultiSelect categories can interpret it differently (or ignore it)."""
-        if not self._filter_pending:
-            return
-        category = self.filter_active_category
-        if isinstance(category, MultiSelectFilterViewModel):
-            category.move_cursor(direction)
-            self.emit(self.dirty)
-
-    def filter_toggle_current(self) -> None:
-        """Toggle the cursor's option in the active category. When the toggle actually changes filter
-        state we drop any selection and refetch — the new window may not contain the same rows the user
-        had picked. Other category types (text, range, …) would wire their own equivalent here."""
-        if not self._filter_pending:
-            return
-        category = self.filter_active_category
-        if isinstance(category, MultiSelectFilterViewModel):
-            if category.toggle_cursor():
-                self._on_filter_changed()
-            else:
-                self.emit(self.dirty)
-
-    def filter_reset(self) -> None:
-        """Restore every category to its default (no-filter) state. If any category was already
-        non-default the dialog refetches and clears selections; otherwise it's a cheap repaint."""
-        if not self._filter_pending:
-            return
-        any_dirty = any(not c.is_default for c in self._filter_categories)
-        for c in self._filter_categories:
-            c.reset()
-        if any_dirty:
-            self._on_filter_changed()
-        else:
-            self.emit(self.dirty)
-
-    def _on_filter_changed(self) -> None:
-        """Drop the selection set, push the new count to the details VM, and trigger a refetch. Used by
-        every filter mutator that actually shifts the predicate."""
-        if self._selected_ids:
-            self._selected_ids.clear()
-            if self._multi_select_active:
-                self._details.set_multi_select(True, 0)
-        # The fetch emits its own dirty (via ``_request_fetch``), which also paints the toggled marker —
-        # no extra emit needed here.
-        self._request_fetch()
-
-    # ------------------------------------------------------------------
-    # Edit dialog (and dispatched actions)
-    # ------------------------------------------------------------------
-    #
-    # The edit dialog sits in the same screen slot as sort / filter / delete and joins the four-way
-    # mutex. It's a horizontal choices list — the view dispatches the highlighted choice through one
-    # of the ``edit_*`` methods below. Two of those choices (``change topic`` and ``change type``) need
-    # external work (a modal screen) which lives on the view side; the VM exposes the mutator that
-    # applies the chosen value via ``apply_change_topic`` / ``apply_change_type``. The other two
-    # choices (``edit title`` / ``edit content``) are pure focus shortcuts — the view handles them
-    # directly by focusing a TextArea in the details panel; the VM is only consulted for the
-    # ``dismiss + drop the bar`` half via ``cancel_edit``.
-
-    def request_edit(self) -> None:
-        """Open the edit dialog. Single-select mode targets the cursor entry (frozen at open time into
-        ``_edit_single_target_id`` so cursor moves while the bar is open don't repoint actions). Multi-
-        select mode targets ``_selected_ids``; no-op when empty (no rows to act on). Closes the other
-        three dialogs. Idempotent when already open."""
-        if self._multi_select_active:
-            if not self._selected_ids:
-                return
-            target_id: int | None = None
-        else:
-            if not self._entries:
-                return
-            target_id = self._entries[self._cursor].id
-        if self._edit_pending:
-            return
-        self._sort_pending = False
-        self._filter_pending = False
-        self._delete_pending = False
-        self._delete_choice_cursor = 0
-        self._delete_single_target_id = None
-        self._edit_pending = True
-        self._edit_cursor = 0
-        self._edit_single_target_id = target_id
-        self.emit(self.dirty)
-
-    def cancel_edit(self) -> None:
-        """Dismiss the edit dialog without doing anything."""
-        if not self._edit_pending:
-            return
-        self._edit_pending = False
-        self._edit_cursor = 0
-        self._edit_single_target_id = None
-        self.emit(self.dirty)
-
-    def move_edit_cursor(self, direction: int) -> None:
-        """Move the edit-action cursor left (-1) or right (+1) with wrap. No-op when closed."""
-        if not self._edit_pending:
-            return
-        opts = self.edit_options
-        if not opts:
-            return
-        new = (self._edit_cursor + direction) % len(opts)
-        if new == self._edit_cursor:
-            return
-        self._edit_cursor = new
-        self.emit(self.dirty)
-
-    def edit_target_ids(self) -> set[int]:
-        """Resolved targets for edit-bar actions. Mirrors ``delete_target_ids`` but pulls from
-        ``_edit_single_target_id`` in single-select mode."""
-        if self._multi_select_active:
-            return set(self._selected_ids)
-        if self._edit_single_target_id is None:
-            return set()
-        return {self._edit_single_target_id}
-
-    async def apply_change_topic(self, new_topic_id: int) -> None:
+    async def change_topic_on_selected_entries(self, new_topic_id: int) -> None:
         """Reassign the topic of every target entry to ``new_topic_id``, then refetch.
 
         Refetch (rather than in-place mutation of cached rows) so any topic filter the user has active
@@ -896,7 +398,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         disappear from the window. Selection is preserved across the refetch only for entries that
         survive into the new window (``_selected_ids &= visible ids`` — see ``_post_change_refetch``).
         """
-        targets = self.edit_target_ids()
+        targets = self._selected_target_ids()
         if not targets:
             return
         async with self._session_factory() as session:
@@ -906,35 +408,51 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         _logger.info("Re-topicked %d entries to topic %d", len(targets), new_topic_id)
         self._post_change_refetch()
 
-    async def apply_change_type(self, new_type: EntryType) -> None:
+    async def change_type_on_selected_entries(self, new_type: EntryType) -> None:
         """Reassign the type of every target entry, then refetch. Same selection-preservation rule as
-        ``apply_change_topic``."""
-        targets = self.edit_target_ids()
+        ``change_topic_on_selected_entries``."""
+        targets = self._selected_target_ids()
         if not targets:
             return
         async with self._session_factory() as session:
             for entry_id in targets:
                 await update_entry(session, entry_id, entry_type=new_type)
             await session.commit()
-        _logger.info(
-            "Retyped %d entries to %s", len(targets), new_type.value,
-        )
+        _logger.info("Retyped %d entries to %s", len(targets), new_type.value)
         self._post_change_refetch()
 
-    def _post_change_refetch(self) -> None:
-        """Refetch the window and intersect ``_selected_ids`` against what survived. Selection-by-id
-        survives sort moves (entry stays in window, just at a different row) but drops anything that
-        fell outside the active filter or got pushed past the 500-row window by a reorder.
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-        Fires through the normal debounced fetch path — the 50ms debounce is imperceptible after a
-        modal-dialog action, and the ``on_complete`` callback runs the selection intersection right
-        after ``_process_fetched_data`` lands so the post-work sees the fresh window.
-        """
+    def _selected_target_ids(self) -> set[int]:
+        """Resolve "the selection" to a concrete set of entry ids. In multi-select mode that's
+        ``_selected_ids``; in single-select mode it's the cursor's entry id (empty if the window is
+        empty). Shared by all three bulk-action methods."""
+        if self._multi_select_active:
+            return set(self._selected_ids)
+        if not self._entries:
+            return set()
+        return {self._entries[self._cursor].id}
+
+    def _clear_selection(self) -> None:
+        """Drop ``_selected_ids`` and push the new (zero) count to the details VM. No-op when the set
+        is already empty. Used by mutators that reshuffle the window (sort / filter changes)."""
+        if not self._selected_ids:
+            return
+        self._selected_ids.clear()
+        if self._multi_select_active:
+            self._details.set_multi_select(True, 0)
+
+    def _post_change_refetch(self) -> None:
+        """Refetch and intersect ``_selected_ids`` against the new window. Fires through the normal
+        debounced fetch path — the 50ms debounce is imperceptible after a modal action — and uses the
+        ``on_complete`` callback so the selection intersection runs against the fresh window."""
         self._request_fetch(on_complete=self._intersect_selection_with_window)
 
     def _intersect_selection_with_window(self) -> None:
-        """Drop any selected ids no longer visible in the loaded window. Fired as the
-        ``on_complete`` of a post-change refetch."""
+        """Drop any selected ids no longer visible in the loaded window. Fired as the ``on_complete``
+        of a post-change refetch."""
         if not self._selected_ids:
             return
         visible = {e.id for e in self._entries}
@@ -943,13 +461,6 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
             self._selected_ids.intersection_update(visible)
             if self._multi_select_active:
                 self._details.set_multi_select(True, len(self._selected_ids))
-
-    def _entry_type_filter(self) -> list[EntryType] | None:
-        """Project the type-filter category onto the DB op's ``entry_types`` parameter. ``None`` when the
-        category is at default (all types selected)."""
-        if self._type_filter.is_default:
-            return None
-        return [EntryType(v) for v in self._type_filter.selected]
 
     def _sync_details(self) -> None:
         """Push the cursor's entry (or ``None``) into the detail sub-VM.
@@ -969,7 +480,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
 
         The transition into ``LINKED_FLASHCARDS`` calls this directly (``transition_to``) so the
         right-hand table seeds itself with the current cursor entry on entry. The transition out
-        pushes ``None`` to wipe the window and cancel any in-flight fetch.
+        pushes ``None`` to wipe the window and invalidate any in-flight fetch.
         """
         if self._state is not self.State.LINKED_FLASHCARDS:
             return
@@ -1022,7 +533,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         return {
             "topic_ids": self._filter_ids,
             "search": self._search or None,
-            "entry_types": self._entry_type_filter(),
+            "entry_types": list(self._entry_types) if self._entry_types is not None else None,
             "sort_by": self._sort_by,
             "sort_dir": self._sort_dir,
         }
