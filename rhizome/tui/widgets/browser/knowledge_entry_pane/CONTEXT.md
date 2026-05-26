@@ -226,16 +226,18 @@ without re-pressing `e`. On apply, the change persists via
 the pane refetches.
 
 **Selection-preserving refetch.** `apply_change_topic` and
-`apply_change_type` go through `_post_change_refetch`, which awaits
-`_fetch()` directly (bypassing `_request_fetch`'s task-restart
-machinery) and then intersects `_selected_ids` against the new
-window's visible ids. Selections survive sort moves (entry still in
-window, just at a different row) but get dropped when an entry
-falls outside the active filter or gets pushed past the 500-row
-window by a reorder. Edge: an entry that still matches the filter
-but lands past the 500-row window is also dropped from the
-selection — matches `load_more`'s behaviour of not reaching back for
-selected-but-unloaded rows.
+`apply_change_type` go through `_post_change_refetch`, which kicks
+off a normal `_request_fetch` and passes
+`_intersect_selection_with_window` as the `on_complete` callback.
+The base class runs the callback synchronously right after
+`_process_fetched_data` lands, so the intersection sees the fresh
+window. Selections survive sort moves (entry still in window, just
+at a different row) but get dropped when an entry falls outside the
+active filter or gets pushed past the 500-row window by a reorder.
+Edge: an entry that still matches the filter but lands past the
+500-row window is also dropped from the selection — matches
+`load_more`'s behaviour of not reaching back for selected-but-
+unloaded rows.
 
 `edit title` and `edit content` are sub-trivial: dismiss the edit
 bar (via `cancel_edit`) and focus `#details-title` /

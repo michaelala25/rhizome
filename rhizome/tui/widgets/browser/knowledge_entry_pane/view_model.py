@@ -3,8 +3,8 @@
 Shows ``KnowledgeEntry`` rows matching the orchestrator's topic filter (plus its own search/sort state) in
 a fixed-size window. Total counts and pagination are kept deliberately simple for the MVP: a single
 LIMIT-N window with a "showing N of M" hint, and an explicit ``load_more`` for the next page. Once we want
-true virtualized scroll, the seam is at ``_fetch`` — swap the offset-based call for a keyset-paginated one
-and the rest of the VM keeps working.
+true virtualized scroll, the seam is at ``_query_window`` — swap the offset-based call for a keyset-
+paginated one and the rest of the VM keeps working.
 
 Filter, search, and sort are all "reset" operations: changing any of them discards the current window and
 refetches from offset 0, resetting the row cursor. ``load_more`` is an "append" operation — it extends the
@@ -416,8 +416,9 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
           * **Multi-select state** — preserved. The selection set is keyed by entry id, has no
             visual coupling to the state, and there's nothing in the planned ``LINKED_FLASHCARDS``
             view that would invalidate it.
-          * **In-flight fetches** — preserved. ``_run_fetch`` is task-identity gated and the entries
-            list is owned by this VM, not the layout.
+          * **In-flight fetches** — preserved. The base class's fetch-id gating handles any race
+            between an outgoing fetch and the new state; the entries list is owned by this VM, not
+            the layout.
 
         Emits a single ``dirty`` at the end so the view re-renders against the new state. The view
         is expected to branch its layout on ``vm.state``; this method does not touch the view side.
@@ -903,7 +904,7 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
                 await update_entry(session, entry_id, topic_id=new_topic_id)
             await session.commit()
         _logger.info("Re-topicked %d entries to topic %d", len(targets), new_topic_id)
-        await self._post_change_refetch()
+        self._post_change_refetch()
 
     async def apply_change_type(self, new_type: EntryType) -> None:
         """Reassign the type of every target entry, then refetch. Same selection-preservation rule as
@@ -918,30 +919,30 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
         _logger.info(
             "Retyped %d entries to %s", len(targets), new_type.value,
         )
-        await self._post_change_refetch()
+        self._post_change_refetch()
 
-    async def _post_change_refetch(self) -> None:
+    def _post_change_refetch(self) -> None:
         """Refetch the window and intersect ``_selected_ids`` against what survived. Selection-by-id
         survives sort moves (entry stays in window, just at a different row) but drops anything that
         fell outside the active filter or got pushed past the 500-row window by a reorder.
 
-        Bypasses ``_request_fetch`` so we can run the selection-intersection in the same flow without
-        racing the task-restart machinery. ``_run_fetch``'s loading-state / task-identity guards aren't
-        needed here because we're explicitly waiting for the fetch before continuing."""
-        self._is_loading = True
-        self.emit(self.dirty)
-        try:
-            await self._fetch()
-        finally:
-            self._is_loading = False
-        # Preserve only selected ids still visible in the loaded window.
+        Fires through the normal debounced fetch path — the 50ms debounce is imperceptible after a
+        modal-dialog action, and the ``on_complete`` callback runs the selection intersection right
+        after ``_process_fetched_data`` lands so the post-work sees the fresh window.
+        """
+        self._request_fetch(on_complete=self._intersect_selection_with_window)
+
+    def _intersect_selection_with_window(self) -> None:
+        """Drop any selected ids no longer visible in the loaded window. Fired as the
+        ``on_complete`` of a post-change refetch."""
+        if not self._selected_ids:
+            return
         visible = {e.id for e in self._entries}
         survived = self._selected_ids & visible
         if survived != self._selected_ids:
             self._selected_ids.intersection_update(visible)
             if self._multi_select_active:
                 self._details.set_multi_select(True, len(self._selected_ids))
-        self.emit(self.dirty)
 
     def _entry_type_filter(self) -> list[EntryType] | None:
         """Project the type-filter category onto the DB op's ``entry_types`` parameter. ``None`` when the
@@ -988,27 +989,19 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
 
         No-op if a fetch is already in flight (we don't want to race with a reset fetch) or if there's
         nothing more to load. Doesn't move the cursor.
+
+        Doesn't go through ``_request_fetch`` — that resets the window from offset 0. We share
+        ``_query_window`` with ``_fetch`` (same query, different offset), capture the current
+        ``_fetch_id`` synchronously, and gate the append on ``_still_current`` so a reset operation
+        landing mid-flight doesn't have us extend its new window with stale tail rows.
         """
         if self._is_loading or not self._has_more:
             return
-        # We deliberately do NOT go through ``_request_fetch`` here — that cancels and resets, which
-        # would lose the appended rows. Instead we do the fetch inline and mutate ``_entries`` directly.
-        # If a "reset" operation lands while this is mid-flight, ``set_filter`` / ``set_search`` /
-        # ``set_sort`` will overwrite ``_entries`` and the appended rows from this call become harmless
-        # dead writes — they never get emitted because the dirty after assignment lost the race with the
-        # reset's dirty. (Mild waste of a query; acceptable for the MVP. A future revision could track an
-        # append-task identity the same way ``_run_fetch`` does.)
-        async with self._session_factory() as session:
-            more = await list_entries_paginated(
-                session,
-                topic_ids=self._filter_ids,
-                search=self._search or None,
-                entry_types=self._entry_type_filter(),
-                sort_by=self._sort_by,
-                sort_dir=self._sort_dir,
-                limit=self._limit,
-                offset=len(self._entries),
-            )
+        my_id = self._fetch_id
+        kwargs = self._query_kwargs()
+        more = await self._query_window(kwargs, offset=len(self._entries))
+        if not self._still_current(my_id):
+            return
         self._entries.extend(more)
         # If this page came back short, we know there's nothing further.
         if len(more) < self._limit:
@@ -1019,49 +1012,60 @@ class KnowledgeEntryBrowserPaneViewModel(BrowserPaneViewModel):
     # BrowserPaneViewModel contract
     # ------------------------------------------------------------------
 
-    async def _fetch(self) -> None:
-        """Reload the window + total against current filter/search/sort.
+    def _query_kwargs(self) -> dict[str, Any]:
+        """Snapshot the DB-query inputs into a plain dict. Captured synchronously at the call site
+        (no await inside) so all queries derived from one snapshot see locally-consistent state, even
+        if mutators run between the snapshot and the eventual query.
 
-        Runs two queries: the windowed SELECT first (so the view can paint rows as soon as possible)
-        followed by the COUNT for the "N of M" hint. Each query uses its own session so we don't pin a
-        connection across both; both share the same cancellation point at the await.
-        """
-        # Reset the total to "not yet known" — keeps the hint honest while we refetch, instead of showing
-        # the stale value from the previous filter.
-        self._total = None
-        self._has_more = False
+        Shared by ``_fetch`` (full reload) and ``load_more`` (append) so they always agree on what
+        the "current query" is."""
+        return {
+            "topic_ids": self._filter_ids,
+            "search": self._search or None,
+            "entry_types": self._entry_type_filter(),
+            "sort_by": self._sort_by,
+            "sort_dir": self._sort_dir,
+        }
 
+    async def _query_window(
+        self, kwargs: dict[str, Any], offset: int,
+    ) -> list[KnowledgeEntry]:
+        """Run the windowed SELECT at ``offset`` against a captured kwargs snapshot."""
         async with self._session_factory() as session:
-            self._entries = await list_entries_paginated(
+            return await list_entries_paginated(
                 session,
-                topic_ids=self._filter_ids,
-                search=self._search or None,
-                entry_types=self._entry_type_filter(),
-                sort_by=self._sort_by,
-                sort_dir=self._sort_dir,
                 limit=self._limit,
-                offset=0,
+                offset=offset,
+                **kwargs,
             )
-        # Conservative initial estimate; the COUNT below either confirms or corrects it. If we hit the
-        # limit exactly, there *might* be more.
-        self._has_more = len(self._entries) >= self._limit
-        # Clamp the cursor to the new window (it may have shrunk).
+
+    async def _fetch(self) -> tuple[list[KnowledgeEntry], int]:
+        """Reload window + total against current filter/search/sort. Stateless: returns the data, lets
+        ``_process_fetched_data`` apply it. Runs both queries (windowed SELECT and COUNT) before
+        returning — the view paints once at the end, which is a tiny UX hit relative to the simplicity
+        of the single-result contract."""
+        kwargs = self._query_kwargs()
+        rows = await self._query_window(kwargs, offset=0)
+        async with self._session_factory() as session:
+            total = await count_entries_filtered(
+                session,
+                topic_ids=kwargs["topic_ids"],
+                search=kwargs["search"],
+                entry_types=kwargs["entry_types"],
+            )
+        return rows, total
+
+    def _process_fetched_data(
+        self, result: tuple[list[KnowledgeEntry], int],
+    ) -> None:
+        """Apply a ``_fetch`` result to local state: replace the window, set the total, reconcile
+        ``_has_more``, clamp the cursor, and re-point the detail / linked-flashcards sub-VMs at the
+        (possibly different) entry under the cursor."""
+        rows, total = result
+        self._entries = rows
+        self._total = total
+        self._has_more = len(self._entries) < self._total
         if self._cursor >= len(self._entries):
             self._cursor = max(0, len(self._entries) - 1)
-        # Re-point the detail panel at the (possibly different) entry now under the cursor. Done before
-        # the dirty emit so the table rebuild and the detail repaint happen in the same Textual frame.
         self._sync_details()
         self._sync_linked_flashcards()
-        self.emit(self.dirty)
-
-        async with self._session_factory() as session:
-            self._total = await count_entries_filtered(
-                session,
-                topic_ids=self._filter_ids,
-                search=self._search or None,
-                entry_types=self._entry_type_filter(),
-            )
-        # Reconcile has_more against the authoritative count.
-        self._has_more = len(self._entries) < self._total
-        # Don't emit dirty here — the base class's _run_fetch finally clause emits one final dirty after
-        # _fetch returns, which covers this.

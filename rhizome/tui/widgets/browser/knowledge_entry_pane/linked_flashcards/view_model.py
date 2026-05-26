@@ -10,16 +10,22 @@ sub-VM here.
 Lifecycle
 ---------
 The parent only feeds entry ids while it's in ``State.LINKED_FLASHCARDS`` — when transitioning
-*away* it pushes ``set_entry_id(None)`` to clear the window and cancel any in-flight fetch. On
-transitioning *back* it pushes the current cursor entry's id. The VM itself doesn't read the parent
-state; it just reacts to whatever id (or None) it's given.
+*away* it pushes ``set_entry_id(None)`` to clear the window and invalidate any in-flight fetch.
+On transitioning *back* it pushes the current cursor entry's id. The VM itself doesn't read the
+parent state; it just reacts to whatever id (or None) it's given.
 
-Fetch / cancellation
---------------------
-Same task-identity guard as ``BrowserPaneViewModel._run_fetch``: each spawned task stamps itself
-into ``_current_task`` and only that task is allowed to flip ``is_loading`` back off. A superseded
-task's ``finally`` quietly bows out. ``set_entry_id`` and ``set_search`` both go through
-``_request_fetch`` which cancels any in-flight task before spawning the next.
+Fetch strategy
+--------------
+Mirrors ``BrowserPaneViewModel``'s split — stateless ``_fetch`` returns ``(rows, total)``;
+``_process_fetched_data`` applies them — but skips the debounce. Per-entry flashcard list + count
+queries are sub-millisecond, and ``set_entry_id`` fires on every parent cursor move (dozens of
+calls per second under fast scrolling); a 50ms debounce would be perceptible. Instead, in-flight
+tasks aren't cancelled — cancelling a SQLAlchemy async session mid-query trips a fragile cleanup
+path in the aiosqlite dialect that surfaces ``CancelledError`` out of the pool's
+``_finalize_fairy`` and trashes the TUI. Each spawned task captures ``self._fetch_id`` at start
+and the result is discarded if the id no longer matches. Stale tasks complete their queries and
+exit silently. The wasted DB work is real but cheap (sub-ms × scroll rate) and well below the
+cost of contorting around SQLAlchemy's cancellation semantics.
 """
 
 from __future__ import annotations
@@ -49,7 +55,7 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
     """Sub-VM driving the linked-flashcards table.
 
     Owns: the current target entry id, the loaded flashcard window, total + has-more, the search
-    query, the row cursor, and the loading / cancellation bookkeeping. All mutators are sync — they
+    query, the row cursor, and the loading / staleness bookkeeping. All mutators are sync — they
     either spawn a background fetch (``_request_fetch``) or update local state and emit ``dirty``.
     """
 
@@ -65,13 +71,12 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
 
         # ``None`` means "no target entry" — used both at boot and when the parent transitions away
         # from ``LINKED_FLASHCARDS``. In that state ``_flashcards`` is forced empty and no fetch
-        # runs. This is the only "no data" sentinel the VM has; an entry id that resolves to zero
-        # flashcards is a separate, legal state (loaded + empty).
+        # runs. An entry id that resolves to zero flashcards is a separate, legal state (loaded +
+        # empty).
         self._entry_id: int | None = None
 
-        # Loaded window. ``_total`` is ``None`` until the first count query lands (mirrors the
-        # entries pane's two-stage fetch). ``_has_more`` is true when the loaded window doesn't
-        # cover the full result set.
+        # Loaded window. ``_total`` is ``None`` until the first count query lands. ``_has_more`` is
+        # true when the loaded window doesn't cover the full result set.
         self._flashcards: list[Flashcard] = []
         self._total: int | None = None
         self._has_more: bool = False
@@ -86,11 +91,10 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         # change, or when the window shrinks below it.
         self._cursor: int = 0
 
-        # Loading + task-identity guard. Same pattern as ``BrowserPaneViewModel``: only the *current*
-        # task is allowed to flip ``_is_loading`` off, so a superseded task's ``finally`` quietly
-        # bows out.
+        # Loading + fetch-identity guard. Each spawned task captures ``self._fetch_id`` at start;
+        # only the most-recent task's result is applied. No cancellation — see the module docstring.
         self._is_loading: bool = False
-        self._current_task: asyncio.Task[None] | None = None
+        self._fetch_id: int = 0
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -138,28 +142,30 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def set_entry_id(self, entry_id: int | None) -> None:
-        """Set the target entry whose flashcards to show. ``None`` clears the pane and cancels any
+        """Set the target entry whose flashcards to show. ``None`` clears the pane and invalidates any
         in-flight fetch — used by the parent when transitioning out of ``LINKED_FLASHCARDS``.
 
-        Idempotent: a call with the same id we already hold is a no-op (no cancel, no refetch). The
-        cursor and window reset on a real change; search persists across entry-id changes since
-        it's a per-pane preference.
+        Idempotent: a call with the same id we already hold is a no-op (no refetch). The cursor and
+        window reset on a real change; search persists across entry-id changes since it's a per-pane
+        preference.
         """
         if entry_id == self._entry_id:
             return
+
         self._entry_id = entry_id
         self._cursor = 0
+
         if entry_id is None:
-            # No target — wipe the window inline. Cancel any in-flight so a late callback doesn't
-            # paint stale rows.
-            if self._current_task is not None and not self._current_task.done():
-                self._current_task.cancel()
+            # No target — wipe the window inline. Bump the fetch id so any in-flight task arriving
+            # later observes the mismatch and gets discarded.
+            self._fetch_id += 1
             self._flashcards = []
             self._total = 0
             self._has_more = False
             self._is_loading = False
             self.emit(self.dirty)
             return
+
         self._request_fetch()
 
     def set_search(self, query: str) -> None:
@@ -168,12 +174,15 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         new = query or ""
         if new == self._search:
             return
+
         self._search = new
         self._cursor = 0
+
         if self._entry_id is None:
             # Nothing to fetch yet — just stash the query so it'll apply once an entry lands.
             self.emit(self.dirty)
             return
+
         self._request_fetch()
 
     def set_cursor(self, index: int) -> None:
@@ -189,8 +198,10 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
             new = 0
         else:
             new = max(0, min(index, len(self._flashcards) - 1))
+
         if new == self._cursor:
             return
+
         self._cursor = new
         self.emit(self.dirty)
 
@@ -198,91 +209,116 @@ class LinkedFlashcardsPaneViewModel(ViewModelBase):
         """Append the next page of flashcards to the current window. No-op if a fetch is in flight,
         no entry is set, or nothing further is available. Doesn't move the cursor.
 
-        Mirrors ``KnowledgeEntryBrowserPaneViewModel.load_more`` — bypasses ``_request_fetch`` so a
-        reset operation that lands mid-flight wins by overwriting ``_flashcards`` after this call
-        appends its tail (a mild wasted query for the MVP; lift later if it actually matters).
+        Shares ``_query_window`` with ``_fetch`` (same query, different offset). Captures the current
+        ``_fetch_id`` synchronously and gates the append on ``_still_current`` so a concurrent
+        ``set_entry_id`` / ``set_search`` doesn't leave us extending the new window with stale tail
+        rows.
         """
         if self._is_loading or not self._has_more or self._entry_id is None:
             return
-        async with self._session_factory() as session:
-            more = await list_flashcards_for_entry(
-                session,
-                self._entry_id,
-                search=self._search or None,
-                limit=self._limit,
-                offset=len(self._flashcards),
-            )
+
+        my_id = self._fetch_id
+        kwargs = self._query_kwargs()
+        more = await self._query_window(kwargs, offset=len(self._flashcards))
+        if not self._still_current(my_id):
+            return
+
         self._flashcards.extend(more)
         if len(more) < self._limit:
             self._has_more = False
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
-    # Fetch machinery (mirrors BrowserPaneViewModel)
+    # Fetch machinery (mirrors BrowserPaneViewModel, sans debounce)
     # ------------------------------------------------------------------
 
+    def _still_current(self, my_id: int) -> bool:
+        """True iff the captured fetch id still matches the latest. Used internally to gate
+        ``_process_fetched_data``; ``load_more`` uses it to gate its own append."""
+        return my_id == self._fetch_id
+
+    def _query_kwargs(self) -> dict[str, Any]:
+        """Snapshot the DB-query inputs into a plain dict. Captured synchronously at the call site
+        (no await inside) so all queries derived from one snapshot see locally-consistent state, even
+        if mutators run between the snapshot and the eventual query.
+
+        Shared by ``_fetch`` (full reload) and ``load_more`` (append) so they always agree on what
+        the "current query" is."""
+        return {
+            "entry_id": self._entry_id,
+            "search": self._search or None,
+        }
+
+    async def _query_window(
+        self, kwargs: dict[str, Any], offset: int,
+    ) -> list[Flashcard]:
+        """Run the windowed SELECT at ``offset`` against a captured kwargs snapshot. Caller must
+        ensure ``kwargs['entry_id']`` is not None."""
+        async with self._session_factory() as session:
+            return await list_flashcards_for_entry(
+                session,
+                kwargs["entry_id"],
+                search=kwargs["search"],
+                limit=self._limit,
+                offset=offset,
+            )
+
     def _request_fetch(self) -> None:
-        """Cancel any in-flight fetch and spawn a fresh one. The cancelled task's ``finally`` block
-        sees it's no longer the current task and bows out without touching state."""
-        if self._current_task is not None and not self._current_task.done():
-            self._current_task.cancel()
+        """Bump the fetch id and spawn a new task. Any in-flight task continues running but its
+        result is discarded via ``_still_current``. See module docstring for why we don't cancel."""
+        self._fetch_id += 1
+        my_id = self._fetch_id
         self._is_loading = True
         self.emit(self.dirty)
-        self._current_task = asyncio.create_task(self._run_fetch())
+        asyncio.create_task(self._run_fetch(my_id))
 
-    async def _run_fetch(self) -> None:
-        """Wrap ``_fetch`` with task-identity guards and ``is_loading`` bookkeeping. Only the most
-        recently-spawned task flips ``_is_loading`` back off; superseded tasks no-op."""
-        my_task = asyncio.current_task()
+    async def _run_fetch(self, my_id: int) -> None:
+        """Wrap ``_fetch`` with the fetch-identity guard and ``is_loading`` bookkeeping. Mirrors the
+        base class's ``_debounced_fetch`` minus the debounce phase."""
         try:
-            await self._fetch()
-        except asyncio.CancelledError:
-            # Superseded by a later set_entry_id / set_search; ``_entry_id`` already reflects the
-            # successor's target, and a fresh task is in flight to fill the new window.
-            raise
+            result = await self._fetch()
         except Exception:
             _logger.exception(
                 "LinkedFlashcardsPaneViewModel._fetch raised; pane will remain in error "
                 "state until next entry-id / search change",
             )
-        finally:
-            if my_task is self._current_task:
+            if self._still_current(my_id):
                 self._is_loading = False
                 self.emit(self.dirty)
+            return
 
-    async def _fetch(self) -> None:
-        """Reload the window + total against the current entry id and search.
+        if not self._still_current(my_id):
+            return
 
-        Two-stage like the entries pane: windowed SELECT first so rows can paint as soon as
-        possible, then a separate COUNT for the "showing N of M" hint with ``_has_more`` reconciled
-        against the authoritative count. ``_entry_id`` is captured by the surrounding ``set_*``
-        mutator before this coroutine ever starts; cancellation drops us out before we touch state.
-        """
-        assert self._entry_id is not None  # set_entry_id(None) takes the wipe-and-return path
-        eid = self._entry_id
-
-        self._total = None
-        self._has_more = False
-
-        async with self._session_factory() as session:
-            self._flashcards = await list_flashcards_for_entry(
-                session,
-                eid,
-                search=self._search or None,
-                limit=self._limit,
-                offset=0,
-            )
-        self._has_more = len(self._flashcards) >= self._limit
-        if self._cursor >= len(self._flashcards):
-            self._cursor = max(0, len(self._flashcards) - 1)
+        self._is_loading = False
+        self._process_fetched_data(result)
         self.emit(self.dirty)
 
+    async def _fetch(self) -> tuple[list[Flashcard], int]:
+        """Reload the window + total against the current entry id and search. Stateless: returns
+        ``(rows, total)`` for ``_process_fetched_data`` to apply.
+
+        Returns ``([], 0)`` if the entry id is None at task start — possible if ``set_entry_id(None)``
+        snuck in before the task ran. The base class's staleness gate would also discard the result,
+        but short-circuiting here avoids issuing a query against a null id."""
+        kwargs = self._query_kwargs()
+        if kwargs["entry_id"] is None:
+            return [], 0
+        rows = await self._query_window(kwargs, offset=0)
         async with self._session_factory() as session:
-            self._total = await count_flashcards_for_entry(
-                session,
-                eid,
-                search=self._search or None,
+            total = await count_flashcards_for_entry(
+                session, kwargs["entry_id"], search=kwargs["search"],
             )
+        return rows, total
+
+    def _process_fetched_data(
+        self, result: tuple[list[Flashcard], int],
+    ) -> None:
+        """Apply a ``_fetch`` result: replace the window, set the total, reconcile ``_has_more``, and
+        clamp the cursor."""
+        rows, total = result
+        self._flashcards = rows
+        self._total = total
         self._has_more = len(self._flashcards) < self._total
-        # Don't emit dirty here — ``_run_fetch``'s finally emits one more after _fetch returns,
-        # which covers this last reconciliation.
+        if self._cursor >= len(self._flashcards):
+            self._cursor = max(0, len(self._flashcards) - 1)

@@ -6,22 +6,57 @@ rendering. The base class nails down the parts that every pane needs to share wi
   * a stable ``title`` for the tab bar
   * a single ``set_filter(topic_ids)`` entry point the orchestrator calls when the topic-tree selection
     changes
-  * a cancel-on-supersede policy so fast multi-selection on the tree doesn't leave stale fetches racing each
-    other
+  * a debounced cancel-on-supersede policy so fast multi-selection on the tree doesn't leave stale fetches
+    racing each other
   * an ``is_loading`` flag the view can mirror
 
-Subclasses implement ``_fetch()`` — an async coroutine that reads from ``self._filter_ids`` (and any
-subclass-specific filter state), writes results to subclass-owned attributes, and emits ``dirty`` as it sees
-fit. The base class wraps every ``_fetch`` call in a task whose identity it tracks; only the most
-recently-spawned task gets to flip ``is_loading`` back off when it finishes, so superseded tasks no-op even
-if they manage to return before the new one starts.
+Fetch lifecycle
+---------------
+Each spawned fetch task runs through two phases:
+
+  1. **Debounce** — ``asyncio.sleep(DEBOUNCE_SECONDS)``. Cancellable: a new ``_request_fetch`` arriving in
+     this window cancels the prior task (safe — nothing's holding a DB connection yet) and spawns a fresh
+     one. Bursts of input collapse into a single eventual query.
+  2. **Query** — the subclass's ``_fetch`` runs. NOT cancellable: cancelling a SQLAlchemy async session
+     mid-query triggers a fragile cleanup path in the aiosqlite dialect that surfaces ``CancelledError``
+     out of ``_finalize_fairy`` and trashes the TUI. Instead, a new ``_request_fetch`` arriving here lets
+     the in-flight query finish; its result is discarded by the base class because the captured fetch id
+     no longer matches.
+
+Subclass contract
+-----------------
+Subclasses implement two methods:
+
+  * ``async _fetch() -> Any`` — a **stateless** query. Snapshot whatever state the query needs (via the
+    convention of ``_query_kwargs()``) synchronously at the top, then run the DB work and return a result
+    the subclass's ``_process_fetched_data`` knows how to consume. ``_fetch`` must not write to subclass
+    state — that's ``_process_fetched_data``'s job.
+  * ``_process_fetched_data(result) -> None`` — synchronously apply the returned result to subclass state.
+    Called by the base class only when the task that produced ``result`` is still the current one; never
+    by stale orphaned tasks. The base emits ``dirty`` after this returns, so the implementation doesn't
+    need to.
+
+The fetch-id machinery that decides "still current?" lives entirely in the base. Subclasses participating
+only in the main fetch path never touch ``_fetch_id`` or ``_still_current``. (Subclass ad-hoc append
+operations like ``load_more`` are an exception — they need to gate their own writes against the same id;
+see the ``KnowledgeEntryBrowserPaneViewModel.load_more`` for the pattern.)
+
+Future direction (not implemented)
+----------------------------------
+An **adaptive debounce** would extend the debounce window each time a new ``_request_fetch`` arrives while
+the prior task is already in query phase (so the cancellation couldn't be honoured). The window grows
+until it exceeds the input cadence, at which point every new request lands inside a cancellable debounce
+and no wasted queries ever start. Steady-state semantics would shift from "continuous rate-limited
+updates" to "update only when the user settles." Worth considering if real workloads start showing wasted
+DB work; not worth the complexity (separate debounce/query handles, expansion ceiling, accept/reset
+accounting) for the current pattern.
 """
 
 from __future__ import annotations
 
 import asyncio
 from abc import abstractmethod
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from rhizome.logs import get_logger
 
@@ -31,8 +66,8 @@ _logger = get_logger("browser.pane")
 
 
 class BrowserPaneViewModel(ViewModelBase):
-    """Abstract pane VM. Concrete subclasses must override ``_fetch`` and ``title``, plus expose whatever
-    data attributes the corresponding view needs to render.
+    """Abstract pane VM. Concrete subclasses must override ``_fetch``, ``_process_fetched_data``, and
+    ``title``, plus expose whatever data attributes the corresponding view needs to render.
 
     Filter semantics
     ----------------
@@ -45,19 +80,16 @@ class BrowserPaneViewModel(ViewModelBase):
 
     The orchestrator (``BrowserViewModel``) handles subtree expansion before calling here, so panes never
     run the CTE themselves.
-
-    Cancellation
-    ------------
-    ``set_filter`` is synchronous (it's called from sync ``SELECTION_CHANGED`` subscribers) and spawns the
-    real work in a background task. If a fetch is already in flight when ``set_filter`` is called again, the
-    previous task is cancelled before the new one starts. The cancellation is cooperative: the in-flight
-    ``_fetch`` will surface ``asyncio.CancelledError`` from whatever await point it was sitting on (typically
-    the DB call), which is fine — by then ``_filter_ids`` has been overwritten, so any state the cancelled
-    fetch would have committed is already stale.
     """
 
     # Subclasses override.
     TITLE: str = "<untitled pane>"
+
+    # Length of the cancellable debounce window before a fetch's actual DB work begins. Sized to absorb
+    # bursts of input (filter toggles via spacebar, multi-select tree changes, etc.) without being long
+    # enough to feel laggy on a single deliberate change. Subclasses can override if their input cadence
+    # warrants a different setting.
+    DEBOUNCE_SECONDS: float = 0.05
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
@@ -69,7 +101,18 @@ class BrowserPaneViewModel(ViewModelBase):
         # even when the requested filter happens to equal the default.
         self._filter_applied: bool = False
         self._is_loading: bool = False
+        # Monotonic fetch id stamped onto each spawned task. The base class only commits a task's result
+        # to state when ``self._fetch_id`` still equals the id captured at task start; orphaned tasks bow
+        # out silently. Bumped synchronously inside ``_request_fetch`` so successor tasks immediately
+        # invalidate prior ones even before the prior ones get scheduled.
+        self._fetch_id: int = 0
+        # The most recently spawned task. Other (orphaned) tasks may still be running in their query
+        # phase, but only this one is tracked for cancellation purposes.
         self._current_task: asyncio.Task[None] | None = None
+        # True while ``_current_task`` is still in its debounce ``asyncio.sleep`` (i.e. cancellation is
+        # safe). Flipped to False synchronously at the transition into the query phase. ``_request_fetch``
+        # consults this to decide whether to cancel-and-respawn or orphan-and-spawn.
+        self._current_in_debounce: bool = False
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -98,8 +141,8 @@ class BrowserPaneViewModel(ViewModelBase):
         dirty emit). This matters under lazy propagation in the orchestrator — switching to a pane that's
         already showing data for the current filter should be instant, not paint a loading flash.
 
-        Coalescing across rapid distinct filters is provided by cancellation in ``_request_fetch``, not by
-        debouncing here (panes shouldn't need to know about input cadence).
+        Coalescing across rapid distinct filters is handled by the debounce in ``_request_fetch``; panes
+        don't need to know about input cadence.
         """
         new_filter: frozenset[int] | None = (
             None if topic_ids is None else frozenset(topic_ids)
@@ -110,54 +153,113 @@ class BrowserPaneViewModel(ViewModelBase):
         self._filter_applied = True
         self._request_fetch()
 
-    def _request_fetch(self) -> None:
-        """Cancel any in-flight fetch and spawn a fresh one.
+    def _still_current(self, my_id: int) -> bool:
+        """True iff the captured fetch id still matches the latest. Used internally to gate
+        ``_process_fetched_data``; subclasses generally don't need it, but ad-hoc append operations
+        (``load_more``) can use it to gate their own writes against a concurrent supersede."""
+        return my_id == self._fetch_id
 
-        Subclasses call this after mutating their own sort/search/etc. state to trigger a refetch with the
-        new parameters. The orchestrator drives the same machinery via ``set_filter``.
+    def _request_fetch(self, on_complete: Callable[[], None] | None = None) -> None:
+        """Bump the fetch id and (re)schedule a debounced fetch.
 
-        The cancelled task's ``finally`` block sees it's no longer the current task (because we're about to
-        overwrite ``_current_task`` synchronously) and quietly bows out without touching state.
+        Two cases for the prior task:
+
+        - **In debounce**: cancel it. Cancelling an ``asyncio.sleep`` is safe — nothing's holding a DB
+          connection yet.
+        - **In query phase** (or already done): orphan it. We can't safely cancel a task parked inside a
+          SQLAlchemy session (see module docstring). It'll run to completion; its result is discarded by
+          the base class because the captured fetch id no longer matches.
+
+        Order matters: bump ``_fetch_id`` *before* cancelling, so the cancelled task's cleanup observes
+        the new id immediately.
+
+        ``on_complete`` (optional) fires synchronously right after ``_process_fetched_data`` succeeds and
+        before the final ``dirty`` emit. Used by callers that need post-refetch bookkeeping (e.g. the
+        knowledge-entry pane intersects ``_selected_ids`` with the surviving window after a bulk edit).
+        Not invoked if the task is superseded or ``_fetch`` raises.
         """
-        if self._current_task is not None and not self._current_task.done():
+        self._fetch_id += 1
+        new_id = self._fetch_id
+
+        if (
+            self._current_task is not None
+            and not self._current_task.done()
+            and self._current_in_debounce
+        ):
             self._current_task.cancel()
 
+        # The task we're about to spawn will start in debounce. Set the flag synchronously so a
+        # subsequent ``_request_fetch`` in the same event-loop tick (before the new task actually starts
+        # running) still sees the correct state.
+        self._current_in_debounce = True
         self._is_loading = True
         self.emit(self.dirty)
 
-        self._current_task = asyncio.create_task(self._run_fetch())
+        self._current_task = asyncio.create_task(self._debounced_fetch(new_id, on_complete))
 
-    async def _run_fetch(self) -> None:
-        """Wrap ``_fetch`` with task-identity guards and ``is_loading`` bookkeeping."""
-        my_task = asyncio.current_task()
+    async def _debounced_fetch(
+        self,
+        my_id: int,
+        on_complete: Callable[[], None] | None,
+    ) -> None:
+        """Run a fetch with a debounce window in front. See module docstring for the two-phase lifecycle.
+
+        The transition out of debounce flips ``_current_in_debounce`` only if we're still the current
+        task — otherwise a successor has already claimed the flag and we'd corrupt its bookkeeping.
+        """
         try:
-            await self._fetch()
+            await asyncio.sleep(self.DEBOUNCE_SECONDS)
         except asyncio.CancelledError:
-            # We were superseded by a later set_filter. Don't touch state — the successor has already
-            # overwritten ``_filter_ids`` and re-emitted dirty, and a fresh task is about to do the work.
-            raise
+            # Superseded during the cancellable debounce window. The successor has already bumped
+            # ``_fetch_id`` and set ``_current_in_debounce`` for itself; nothing for us to do.
+            return
+
+        # Defensive: there are no awaits between ``_request_fetch`` returning and this point being reached
+        # without the cancellation above firing, so a successor shouldn't be able to sneak in here. Check
+        # anyway.
+        if not self._still_current(my_id):
+            return
+        self._current_in_debounce = False
+
+        try:
+            result = await self._fetch()
         except Exception:
             _logger.exception(
                 "%s._fetch raised; pane will remain in error state until next set_filter",
                 type(self).__name__,
             )
-        finally:
-            # Only the *current* task — i.e. not one that was cancelled and superseded — is allowed to flip
-            # loading off. This is the whole point of stamping a task token.
-            if my_task is self._current_task:
+            if self._still_current(my_id):
                 self._is_loading = False
                 self.emit(self.dirty)
+            return
+
+        if not self._still_current(my_id):
+            return
+
+        self._is_loading = False
+        self._process_fetched_data(result)
+        if on_complete is not None:
+            on_complete()
+        self.emit(self.dirty)
 
     @abstractmethod
-    async def _fetch(self) -> None:
-        """Perform the actual data load for the current filter state.
+    async def _fetch(self) -> Any:
+        """Stateless query: read whatever subclass state is needed (synchronously, before any await), run
+        the DB work, and return a result. Must not write to subclass state — that's
+        ``_process_fetched_data``'s job. The return type is subclass-defined; commonly a small tuple or
+        dict carrying rows and a total count.
 
-        Concrete implementations read ``self._filter_ids`` (and any subclass-owned filter/sort/search state),
-        do their DB work via ``self._session_factory``, and write results into subclass-owned attributes.
-        They may emit ``dirty`` as often as they like for progressive rendering — the base class will emit a
-        final ``dirty`` after this coroutine returns regardless.
+        The base class handles staleness: if this task gets superseded mid-flight, the returned value is
+        thrown away without ``_process_fetched_data`` ever seeing it.
+        """
+        raise NotImplementedError
 
-        Implementations don't need to handle ``asyncio.CancelledError`` specially; letting it propagate out
-        of the await point is the right behavior. The base class catches it.
+    @abstractmethod
+    def _process_fetched_data(self, result: Any) -> None:
+        """Apply a result returned by ``_fetch`` to subclass state.
+
+        Called by the base only when this task is still current — implementations don't need to check
+        staleness. A final ``dirty`` is emitted by the base after this returns, so implementations
+        generally shouldn't emit ``dirty`` themselves.
         """
         raise NotImplementedError
