@@ -1,24 +1,27 @@
 """LinkedFlashcardsPanelViewModel — sub-VM for the right-hand flashcard table shown when the parent
 tab is in ``State.LINKED_FLASHCARDS``.
 
-The tab is **cursor-driven**: the parent pushes the highlighted entry's id via ``set_entry_id``
-whenever the entries-table cursor moves; this VM owns the per-entry flashcard window, its total /
-has-more bookkeeping, its own search query, and an internal row cursor. The view is read-only for
-this iteration (just up/down navigation), so there's no multi-select, selection set, or detail
-sub-VM here.
+The panel is **selection-driven**: the parent pushes a frozenset of entry ids via ``set_entry_ids``
+whenever the underlying selection changes (cursor move in single-select mode, multi-select toggle
+or set mutation in multi-select mode). This VM owns the union-of-entries flashcard window, its
+total / has-more bookkeeping, its own search query, and an internal row cursor. The view is read-
+only for this iteration (just up/down navigation), so there's no multi-select, selection set, or
+detail sub-VM here.
 
 Lifecycle
 ---------
-The parent only feeds entry ids while it's in ``State.LINKED_FLASHCARDS`` — when transitioning
-*away* it pushes ``set_entry_id(None)`` to clear the window and invalidate any in-flight fetch.
-On transitioning *back* it pushes the current cursor entry's id. The VM itself doesn't read the
-parent state; it just reacts to whatever id (or None) it's given.
+The parent only feeds non-empty sets while it's in ``State.LINKED_FLASHCARDS`` — when transitioning
+*away* it pushes ``set_entry_ids(frozenset())`` to clear the window and invalidate any in-flight
+fetch. On transitioning *back* it pushes the current selection (cursor entry in single-select,
+``_selected_ids`` in multi-select). The VM itself doesn't read the parent state; it just reacts to
+whatever set it's given. An empty set is a legal terminal state — render an empty table; no DB
+query is issued.
 
 Fetch strategy
 --------------
 Mirrors ``BrowserTabViewModel``'s split — stateless ``_fetch`` returns ``(rows, total)``;
 ``_process_fetched_data`` applies them — but skips the debounce. Per-entry flashcard list + count
-queries are sub-millisecond, and ``set_entry_id`` fires on every parent cursor move (dozens of
+queries are sub-millisecond, and ``set_entry_ids`` fires on every parent cursor move (dozens of
 calls per second under fast scrolling); a 50ms debounce would be perceptible. Instead, in-flight
 tasks aren't cancelled — cancelling a SQLAlchemy async session mid-query trips a fragile cleanup
 path in the aiosqlite dialect that surfaces ``CancelledError`` out of the pool's
@@ -31,12 +34,12 @@ cost of contorting around SQLAlchemy's cancellation semantics.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Iterable
 
 from rhizome.db import Flashcard
 from rhizome.db.operations import (
-    count_flashcards_for_entry,
-    list_flashcards_for_entry,
+    count_flashcards_for_entries,
+    list_flashcards_for_entries,
 )
 from rhizome.logs import get_logger
 
@@ -69,11 +72,12 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
         self._session_factory = session_factory
         self._limit = limit
 
-        # ``None`` means "no target entry" — used both at boot and when the parent transitions away
-        # from ``LINKED_FLASHCARDS``. In that state ``_flashcards`` is forced empty and no fetch
-        # runs. An entry id that resolves to zero flashcards is a separate, legal state (loaded +
-        # empty).
-        self._entry_id: int | None = None
+        # The frozenset of entry ids whose union of linked flashcards we render. Empty at boot and
+        # whenever the parent transitions away from ``LINKED_FLASHCARDS`` or sits in multi-select
+        # with no entries selected — in that state ``_flashcards`` is forced empty and no fetch
+        # runs. A non-empty set that resolves to zero linked flashcards is a separate, legal state
+        # (loaded + empty).
+        self._entry_ids: frozenset[int] = frozenset()
 
         # Loaded window. ``_total`` is ``None`` until the first count query lands. ``_has_more`` is
         # true when the loaded window doesn't cover the full result set.
@@ -101,8 +105,10 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     @property
-    def entry_id(self) -> int | None:
-        return self._entry_id
+    def entry_ids(self) -> frozenset[int]:
+        """The frozenset of entry ids backing the union query. Empty when the parent is in
+        ``ENTRIES`` state, in multi-select with no entries selected, or pre-bootstrap."""
+        return self._entry_ids
 
     @property
     def flashcards(self) -> list[Flashcard]:
@@ -141,21 +147,27 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
     # Mutators
     # ------------------------------------------------------------------
 
-    def set_entry_id(self, entry_id: int | None) -> None:
-        """Set the target entry whose flashcards to show. ``None`` clears the tab and invalidates any
-        in-flight fetch — used by the parent when transitioning out of ``LINKED_FLASHCARDS``.
+    def set_entry_ids(self, entry_ids: Iterable[int]) -> None:
+        """Replace the target set of entry ids whose union of linked flashcards to show. Pass
+        ``frozenset()`` (or any empty iterable) to wipe the panel and invalidate any in-flight
+        fetch — used by the parent when transitioning out of ``LINKED_FLASHCARDS`` and when
+        multi-select is on with nothing selected.
 
-        Idempotent: a call with the same id we already hold is a no-op (no refetch). The cursor and
-        window reset on a real change; search persists across entry-id changes since it's a per-tab
+        Idempotent: a call with the same set we already hold is a no-op (no refetch). The cursor
+        and window reset on a real change; search persists across set changes since it's a per-tab
         preference.
+
+        Set identity is what drives refetch decisions — order doesn't matter. Use ``frozenset`` so
+        Python's ``==`` does the right thing without us reaching for ``sorted()`` comparisons.
         """
-        if entry_id == self._entry_id:
+        new = frozenset(entry_ids)
+        if new == self._entry_ids:
             return
 
-        self._entry_id = entry_id
+        self._entry_ids = new
         self._cursor = 0
 
-        if entry_id is None:
+        if not new:
             # No target — wipe the window inline. Bump the fetch id so any in-flight task arriving
             # later observes the mismatch and gets discarded.
             self._fetch_id += 1
@@ -170,7 +182,7 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
 
     def set_search(self, query: str) -> None:
         """Replace the active question/answer search. Empty string clears the search. Resets the
-        window + cursor; refetches against the current entry id (if any)."""
+        window + cursor; refetches against the current entry-id set (if any)."""
         new = query or ""
         if new == self._search:
             return
@@ -178,8 +190,8 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
         self._search = new
         self._cursor = 0
 
-        if self._entry_id is None:
-            # Nothing to fetch yet — just stash the query so it'll apply once an entry lands.
+        if not self._entry_ids:
+            # Nothing to fetch yet — just stash the query so it'll apply once a non-empty set lands.
             self.emit(self.dirty)
             return
 
@@ -207,14 +219,14 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
 
     async def load_more(self) -> None:
         """Append the next page of flashcards to the current window. No-op if a fetch is in flight,
-        no entry is set, or nothing further is available. Doesn't move the cursor.
+        the entry-id set is empty, or nothing further is available. Doesn't move the cursor.
 
         Shares ``_query_window`` with ``_fetch`` (same query, different offset). Captures the current
         ``_fetch_id`` synchronously and gates the append on ``_still_current`` so a concurrent
-        ``set_entry_id`` / ``set_search`` doesn't leave us extending the new window with stale tail
+        ``set_entry_ids`` / ``set_search`` doesn't leave us extending the new window with stale tail
         rows.
         """
-        if self._is_loading or not self._has_more or self._entry_id is None:
+        if self._is_loading or not self._has_more or not self._entry_ids:
             return
 
         my_id = self._fetch_id
@@ -243,9 +255,10 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
         if mutators run between the snapshot and the eventual query.
 
         Shared by ``_fetch`` (full reload) and ``load_more`` (append) so they always agree on what
-        the "current query" is."""
+        the "current query" is. We snapshot ``entry_ids`` as a sorted tuple so the kwargs dict is
+        hashable-shaped and stable across calls — the DB op only needs an iterable."""
         return {
-            "entry_id": self._entry_id,
+            "entry_ids": tuple(sorted(self._entry_ids)),
             "search": self._search or None,
         }
 
@@ -253,11 +266,12 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
         self, kwargs: dict[str, Any], offset: int,
     ) -> list[Flashcard]:
         """Run the windowed SELECT at ``offset`` against a captured kwargs snapshot. Caller must
-        ensure ``kwargs['entry_id']`` is not None."""
+        ensure ``kwargs['entry_ids']`` is non-empty (the DB op no-ops on empty, but skipping the
+        call entirely saves a session round-trip)."""
         async with self._session_factory() as session:
-            return await list_flashcards_for_entry(
+            return await list_flashcards_for_entries(
                 session,
-                kwargs["entry_id"],
+                kwargs["entry_ids"],
                 search=kwargs["search"],
                 limit=self._limit,
                 offset=offset,
@@ -295,19 +309,20 @@ class LinkedFlashcardsPanelViewModel(ViewModelBase):
         self.emit(self.dirty)
 
     async def _fetch(self) -> tuple[list[Flashcard], int]:
-        """Reload the window + total against the current entry id and search. Stateless: returns
-        ``(rows, total)`` for ``_process_fetched_data`` to apply.
+        """Reload the window + total against the current entry-id set and search. Stateless:
+        returns ``(rows, total)`` for ``_process_fetched_data`` to apply.
 
-        Returns ``([], 0)`` if the entry id is None at task start — possible if ``set_entry_id(None)``
-        snuck in before the task ran. The base class's staleness gate would also discard the result,
-        but short-circuiting here avoids issuing a query against a null id."""
+        Returns ``([], 0)`` if the entry-id set is empty at task start — possible if
+        ``set_entry_ids(frozenset())`` snuck in before the task ran. The base class's staleness
+        gate would also discard the result, but short-circuiting here avoids issuing a query
+        against an empty set."""
         kwargs = self._query_kwargs()
-        if kwargs["entry_id"] is None:
+        if not kwargs["entry_ids"]:
             return [], 0
         rows = await self._query_window(kwargs, offset=0)
         async with self._session_factory() as session:
-            total = await count_flashcards_for_entry(
-                session, kwargs["entry_id"], search=kwargs["search"],
+            total = await count_flashcards_for_entries(
+                session, kwargs["entry_ids"], search=kwargs["search"],
             )
         return rows, total
 

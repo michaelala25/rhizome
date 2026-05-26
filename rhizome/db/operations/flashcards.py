@@ -1,6 +1,7 @@
 """CRUD operations for flashcards."""
 
 from datetime import datetime, timezone
+from typing import Iterable
 
 from fsrs import Card, Rating, Scheduler, State
 from sqlalchemy import func, or_, select
@@ -75,16 +76,22 @@ async def list_flashcards_by_entries(
     return list(result.scalars().unique().all())
 
 
-def _apply_linked_flashcard_filters(stmt, *, entry_id: int, search: str | None):
-    """Shared filter for the windowed + count variants of ``list_flashcards_for_entry``. ``entry_id``
-    pins the join; ``search`` runs case-insensitive LIKE against question + answer text (no testing
-    notes — they're authoring metadata, not user-facing content). Ephemeral-session flashcards are
-    excluded the same way ``list_flashcards_by_entries`` excludes them."""
+def _apply_linked_flashcard_filters(
+    stmt, *, entry_ids: Iterable[int], search: str | None,
+):
+    """Shared filter for the windowed + count variants of ``list_flashcards_for_entries``.
+    ``entry_ids`` is matched against ``FlashcardEntry.entry_id`` via ``IN (...)`` so a single
+    flashcard linked to several of the provided entries shows up once (the SELECT-DISTINCT /
+    COUNT-DISTINCT on the caller dedupes). ``search`` runs case-insensitive LIKE against question +
+    answer text (no testing notes — they're authoring metadata, not user-facing content).
+    Ephemeral-session flashcards are excluded the same way ``list_flashcards_by_entries`` excludes
+    them. Callers must check for an empty iterable themselves (the empty-IN predicate would be a no-
+    op in SQL, but our convention is "empty = no rows" — same as ``topic_ids`` / ``entry_types``)."""
     stmt = (
         stmt.join(FlashcardEntry, Flashcard.id == FlashcardEntry.flashcard_id)
         .outerjoin(ReviewSession, Flashcard.session_id == ReviewSession.id)
         .where(
-            FlashcardEntry.entry_id == entry_id,
+            FlashcardEntry.entry_id.in_(entry_ids),
             (ReviewSession.id.is_(None)) | (ReviewSession.ephemeral == False),  # noqa: E712
         )
     )
@@ -99,37 +106,49 @@ def _apply_linked_flashcard_filters(stmt, *, entry_id: int, search: str | None):
     return stmt
 
 
-async def list_flashcards_for_entry(
+async def list_flashcards_for_entries(
     session: AsyncSession,
-    entry_id: int,
+    entry_ids: Iterable[int],
     *,
     search: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[Flashcard]:
-    """Windowed flashcards linked to a single entry, optionally narrowed by a question/answer search.
+    """Windowed flashcards linked to **any** of the given entries (union), optionally narrowed by a
+    question/answer search.
 
-    Mirrors the shape of ``entries.list_entries_paginated`` so the browser pane's flashcard sub-VM can
-    reuse the same page-then-count pattern. Stable order by ``id`` (no user-pickable sort axis yet —
-    add one alongside the eventual flashcard-sort dialog).
+    Mirrors the shape of ``entries.list_entries_paginated`` so the browser tab's flashcard sub-VM
+    can reuse the same page-then-count pattern. Stable order by ``id`` (no user-pickable sort axis
+    yet — add one alongside the eventual flashcard-sort dialog).
+
+    A flashcard that links to more than one of ``entry_ids`` shows up exactly once thanks to the
+    ``DISTINCT`` on the SELECT. ``entry_ids=[]`` returns ``[]`` without issuing a query — same
+    empty-iterable convention as the entries ops.
     """
-    stmt = select(Flashcard).options(selectinload(Flashcard.session))
-    stmt = _apply_linked_flashcard_filters(stmt, entry_id=entry_id, search=search)
+    ids = list(entry_ids)
+    if not ids:
+        return []
+    stmt = select(Flashcard).options(selectinload(Flashcard.session)).distinct()
+    stmt = _apply_linked_flashcard_filters(stmt, entry_ids=ids, search=search)
     stmt = stmt.order_by(Flashcard.id.asc()).limit(limit).offset(offset)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
-async def count_flashcards_for_entry(
+async def count_flashcards_for_entries(
     session: AsyncSession,
-    entry_id: int,
+    entry_ids: Iterable[int],
     *,
     search: str | None = None,
 ) -> int:
-    """Count companion to ``list_flashcards_for_entry``. Shares the filter helper so the count matches
-    the window exactly."""
+    """Count companion to ``list_flashcards_for_entries``. Shares the filter helper so the count
+    matches the window exactly. ``COUNT(DISTINCT Flashcard.id)`` so a flashcard linked to multiple
+    of ``entry_ids`` is counted once. Empty iterable → 0 without a query."""
+    ids = list(entry_ids)
+    if not ids:
+        return 0
     stmt = select(func.count(func.distinct(Flashcard.id))).select_from(Flashcard)
-    stmt = _apply_linked_flashcard_filters(stmt, entry_id=entry_id, search=search)
+    stmt = _apply_linked_flashcard_filters(stmt, entry_ids=ids, search=search)
     result = await session.execute(stmt)
     return result.scalar_one()
 

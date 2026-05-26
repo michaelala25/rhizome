@@ -238,12 +238,12 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
 
         # Seed / wipe the linked-flashcards sub-VM. ``_sync_linked_flashcards`` is state-gated, so
         # we set ``_state`` first and let the sync helper do the right thing: in ``LINKED_FLASHCARDS``
-        # it pushes the cursor entry id; back in ``ENTRIES`` we explicitly call ``set_entry_id(None)``
-        # to invalidate any in-flight fetch and free the loaded window.
+        # it pushes the current selection; back in ``ENTRIES`` we explicitly push the empty set to
+        # invalidate any in-flight fetch and free the loaded window.
         if new_state is self.State.LINKED_FLASHCARDS:
             self._sync_linked_flashcards()
         else:
-            self._linked_flashcards.set_entry_id(None)
+            self._linked_flashcards.set_entry_ids(frozenset())
 
         self.emit(self.dirty)
 
@@ -331,7 +331,8 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
     def toggle_multi_select(self) -> None:
         """Flip multi-select mode. Turning the mode **off** abandons the current selection (clears
         ``_selected_ids``); turning it on starts with an empty set. Pushes the resulting state into
-        the details VM so the side panel can freeze its edits."""
+        the details VM so the side panel can freeze its edits, and re-syncs the linked-flashcards
+        sub-VM because the panel's target set changes shape (cursor entry → live selection)."""
         self._multi_select_active = not self._multi_select_active
         if not self._multi_select_active:
             self._selected_ids.clear()
@@ -339,6 +340,7 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
             self._multi_select_active,
             len(self._selected_ids),
         )
+        self._sync_linked_flashcards()
         self.emit(self.dirty)
 
     def toggle_current_selection(self) -> None:
@@ -352,6 +354,7 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         else:
             self._selected_ids.add(entry_id)
         self._details.set_multi_select(True, len(self._selected_ids))
+        self._sync_linked_flashcards()
         self.emit(self.dirty)
 
     def add_current_to_selection(self) -> None:
@@ -366,6 +369,7 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
             return
         self._selected_ids.add(entry_id)
         self._details.set_multi_select(True, len(self._selected_ids))
+        self._sync_linked_flashcards()
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
@@ -462,12 +466,16 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
 
     def _clear_selection(self) -> None:
         """Drop ``_selected_ids`` and push the new (zero) count to the details VM. No-op when the set
-        is already empty. Used by mutators that reshuffle the window (sort / filter changes)."""
+        is already empty. Used by mutators that reshuffle the window (sort / filter changes).
+
+        Re-syncs the linked-flashcards sub-VM since in multi-select mode the panel's target set just
+        emptied; in single-select the sync call no-ops because the cursor entry hasn't moved."""
         if not self._selected_ids:
             return
         self._selected_ids.clear()
         if self._multi_select_active:
             self._details.set_multi_select(True, 0)
+        self._sync_linked_flashcards()
 
     def _post_change_refetch(self) -> None:
         """Refetch and intersect ``_selected_ids`` against the new window. Fires through the normal
@@ -477,7 +485,8 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
 
     def _intersect_selection_with_window(self) -> None:
         """Drop any selected ids no longer visible in the loaded window. Fired as the ``on_complete``
-        of a post-change refetch."""
+        of a post-change refetch. Re-syncs the linked-flashcards sub-VM when the set shrinks (in
+        multi-select; no-op in single-select since the cursor entry didn't change)."""
         if not self._selected_ids:
             return
         visible = {e.id for e in self._entries}
@@ -486,6 +495,7 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
             self._selected_ids.intersection_update(visible)
             if self._multi_select_active:
                 self._details.set_multi_select(True, len(self._selected_ids))
+            self._sync_linked_flashcards()
 
     def _sync_details(self) -> None:
         """Push the cursor's entry (or ``None``) into the detail sub-VM.
@@ -499,20 +509,37 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
         self._details.set_entry(self._entries[self._cursor])
 
     def _sync_linked_flashcards(self) -> None:
-        """Push the cursor's entry id (or ``None``) into the linked-flashcards sub-VM — but only
-        while we're actually in ``State.LINKED_FLASHCARDS``. The sub-VM does no work when the
-        tab isn't rendering it, so skipping the call in ``ENTRIES`` avoids spurious fetches.
+        """Push the active selection of entry ids into the linked-flashcards sub-VM — but only while
+        we're actually in ``State.LINKED_FLASHCARDS``. The sub-VM does no work when the tab isn't
+        rendering it, so skipping the call in ``ENTRIES`` avoids spurious fetches.
 
-        The transition into ``LINKED_FLASHCARDS`` calls this directly (``transition_to``) so the
-        right-hand table seeds itself with the current cursor entry on entry. The transition out
-        pushes ``None`` to wipe the window and invalidate any in-flight fetch.
+        The set we push depends on multi-select mode:
+
+        * **single-select** — the cursor's entry id wrapped in a one-element set, or the empty set
+          when the window is empty / cursor is out of bounds.
+        * **multi-select** — the live ``_selected_ids`` (which may be empty: the user can flip the
+          mode on without picking anything, or clear back to empty).
+
+        The sub-VM's ``set_entry_ids`` is idempotent against the existing set so chatter under
+        cursor moves while multi-select is on (set unchanged → no work) is free; the same call
+        guards the transition out by pushing the empty set.
         """
         if self._state is not self.State.LINKED_FLASHCARDS:
             return
+        self._linked_flashcards.set_entry_ids(self._linked_flashcards_target_ids())
+
+    def _linked_flashcards_target_ids(self) -> frozenset[int]:
+        """Resolve "what entries should the panel show flashcards for". In multi-select that's the
+        live selection set; in single-select it's the cursor's entry id (empty if the window is
+        empty / cursor is out of bounds). Distinct from ``_selected_target_ids`` because the bulk-
+        edit actions always want a non-empty target in single-select mode (the cursor entry) while
+        the panel sync wants the genuine "current selection" — and in multi-select an empty set is
+        a legal display state."""
+        if self._multi_select_active:
+            return frozenset(self._selected_ids)
         if not self._entries or self._cursor >= len(self._entries):
-            self._linked_flashcards.set_entry_id(None)
-            return
-        self._linked_flashcards.set_entry_id(self._entries[self._cursor].id)
+            return frozenset()
+        return frozenset({self._entries[self._cursor].id})
 
     def _on_details_saved(self) -> None:
         """Detail panel just persisted a buffered edit. The in-memory ``KnowledgeEntry`` at the cursor

@@ -88,6 +88,17 @@ list — the title/content of the cursor's entry stay visible (the
 cursor still drives `set_entry`) but the user can't make edits until
 they exit multi-select.
 
+The same mode toggle also re-syncs the linked-flashcards panel. In
+single-select the panel queries flashcards linked to the cursor entry
+(one-element set); in multi-select it queries the union over
+`_selected_ids` (deduped — a flashcard linked to multiple selected
+entries appears once). An empty selection in multi-select mode is a
+legal terminal state and renders an empty panel with a "no entries
+selected" status line. The sub-VM's `set_entry_ids(frozenset)` is
+idempotent, so cursor moves while multi-select is on are no-ops at
+the sub-VM (the selection set didn't change), and the redundant
+sync call from `set_cursor` costs nothing.
+
 ## Dialog orchestration
 
 The four pop-up dialogs (delete / sort / filter / edit) all share one

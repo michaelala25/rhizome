@@ -295,21 +295,26 @@ class LinkedFlashcardsPanelView(Vertical):
     def _format_status(self) -> str:
         if self._vm.is_loading:
             return "loading…"
-        if self._vm.entry_id is None:
-            # The parent tab only feeds an entry id while in ``LINKED_FLASHCARDS``, so this branch
-            # only fires when the entries window is empty (no row to highlight).
-            return "no entry highlighted"
+        n_entries = len(self._vm.entry_ids)
+        if n_entries == 0:
+            # Empty set — either the entries window is empty (no cursor to read from), or the user
+            # is in multi-select with nothing selected. Both surface as "no entries selected" since
+            # the panel is showing the same empty state in either case.
+            return "no entries selected"
         total = self._vm.total
         loaded = len(self._vm.flashcards)
+        # In the multi-entry case lead with the selection count so the user can see how many
+        # entries the union is over without looking elsewhere.
+        prefix = f"{n_entries} entries · " if n_entries > 1 else ""
         if total is None:
-            return "no flashcards linked" if loaded == 0 else f"{loaded} loaded"
+            return f"{prefix}no flashcards linked" if loaded == 0 else f"{prefix}{loaded} loaded"
         if loaded < total:
-            return f"showing {loaded} of {total}"
+            return f"{prefix}showing {loaded} of {total}"
         if total == 0:
-            return "no flashcards linked"
+            return f"{prefix}no flashcards linked"
         if total == 1:
-            return "1 linked flashcard"
-        return f"{total} linked flashcards"
+            return f"{prefix}1 linked flashcard"
+        return f"{prefix}{total} linked flashcards"
 
     # ------------------------------------------------------------------
     # Cross-region focus (driven by the parent tab's alt+left/right)
