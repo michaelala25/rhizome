@@ -35,21 +35,25 @@ This matches `docs/design-principles.md` and the established
 
 ## Components
 
-- **view.py — `BrowserView`**: top-level Horizontal widget. Takes an
-  externally-constructed `BrowserViewModel` (caller-owned, matching the
-  chat-tab MVVM convention used by `AgentMessageView`, etc.). Layout:
-  topic tree on the left (25%) inside a bordered tab, tab bar + active
-  tab on the right (75%). Tab visibility is delegated to a Textual
-  `ContentSwitcher` — every tab view is mounted up front, switching tabs
-  flips `switcher.current`. `Ctrl+Left/Right` cycle tabs via
+- **view.py — `BrowserView`**: deliberately thin top-level Horizontal
+  widget. Composes the topic-tree panel on the left (one widget — see
+  `topic_tree_panel/`) and the tab bar + `ContentSwitcher` on the right;
+  every tab view is mounted up front so switching tabs is just a
+  `switcher.current` flip. `Ctrl+Left/Right` cycle tabs via
   `vm.prev_tab` / `vm.next_tab`. `on_mount` calls `await self._vm.start()`
-  after child widgets have subscribed, then focuses the tree. Fixed
-  `height: 30` because `1fr` collapses to 0 inside the chat tab's
-  `VerticalScroll` feed (no remaining space to claim when the container
-  derives its size from children). Borders use `$foreground-muted` for a
-  dim grey outline. `BrowserView.focus()` is overridden to route to the
-  tree (Horizontal isn't focusable), so `vm.request_focus()` from chat-tab
+  after child widgets have subscribed, then focuses the tree (via
+  `panel.focus_tree()`). Fixed `height: 40` because `1fr` collapses to 0
+  inside the chat tab's `VerticalScroll` feed (no remaining space to claim
+  when the container derives its size from children).
+  `BrowserView.focus()` is overridden to route to the tree inside the
+  panel (Horizontal isn't focusable), so `vm.request_focus()` from chat-tab
   feed nav lands on the tree.
+
+  Cross-region focus is dispatched against two top-level regions — the
+  panel and the active tab. The view doesn't reach inside either: it
+  calls `panel.nav_left/nav_right/focus_tree` and `tab.nav_left/nav_right/
+  nav_up/nav_down/focus_first` and reacts to their return values (see the
+  "Cross-region focus navigation" section below for the full contract).
 
   Tab-VM → tab-view mapping lives in the private `_view_for_tab`
   dispatch in this file — `isinstance` against the concrete VM class.
@@ -57,33 +61,46 @@ This matches `docs/design-principles.md` and the established
   `KnowledgeEntryBrowserTabView`); when we add more, extend the dispatch
   or move to a per-VM `make_view()` factory.
 
-- **view_model.py — `BrowserViewModel`**: top-level orchestrator. Sets
-  `is_navigable = True` so the chat tab's `ctrl+up`/`ctrl+down` feed nav
-  can land on the browser. Owns the
-  tree VM and a fixed-at-construction list of tab VMs (the tab bar — pass
-  `tabs=None` for the production default from `_default_tabs`, or pass a
-  list in tests to override). Subscribes to the tree's `SELECTION_CHANGED`
-  and hands `tree.expanded_filter_ids()` straight to the **active** tab —
-  the recursive-CTE expansion now lives inside `toggle_selection` itself
-  (cascade-on-toggle), so the orchestrator's selection handler is a sync
-  read with no background task or cancellation dance. Inactive tabs
-  catch up lazily on `switch_tab`. `next_tab`/`prev_tab` cycle with
+- **view_model.py — `BrowserViewModel`**: deliberately thin top-level
+  orchestrator. Sets `is_navigable = True` so the chat tab's
+  `ctrl+up`/`ctrl+down` feed nav can land on the browser. Owns the
+  topic-tree panel VM (which in turn owns the tree, actions menu, and
+  summary — see `topic_tree_panel/`) and a fixed-at-construction list of
+  tab VMs (pass `tabs=None` for the production default from
+  `_default_tabs`, or pass a list in tests to override). Subscribes to
+  `panel.filter_changed` and hands `panel.current_filter` straight to the
+  **active** tab — inactive tabs catch up lazily on `switch_tab` via the
+  idempotent `set_topic_filter`. `next_tab`/`prev_tab` cycle with
   wrap-around. Single `dirty` group fires on `switch_tab`. Call `await
-  start()` once after mounting to seed the active tab with the empty
-  filter. (The tree view loads its own roots on mount; the VM doesn't
-  cache tree shape, so there's nothing for the orchestrator to await.)
+  start()` once after mounting to seed the active tab with the panel's
+  current (empty) filter.
 
-- **topic_summary.py — `TopicSummaryViewModel` + `TopicSummaryView`**: read-only
-  summary panel below the topic tree on the left rail. Shows the cursor-
-  highlighted topic's name + id + description plus direct/subtree counts of
-  knowledge entries and flashcards. The VM is a `QueryBackedViewModel`, so
-  fast cursor scrolling collapses into a single eventual fetch via the
-  standard debounce. The orchestrator drives input by subscribing to the
-  tree's new `CURSOR_CHANGED` callback group and calling
-  `summary.set_topic_id(tree.cursor_topic_id)`; `set_topic_id` is idempotent
-  and bypasses the debounce path for `None` (synchronous clear). Subtree
-  counts use `expand_subtrees` + `count_entries_filtered` /
-  `count_flashcards_by_topics` (new op added for this panel).
+  The orchestrator never reaches into `panel.tree` / `panel.summary` etc.
+  — the panel is its only neighbour on the left, the tabs its only
+  neighbours on the right.
+
+- **topic_tree_panel/** — the left rail bundled as a single panel
+  (view + VM + the panel-internal `topic_tree_actions.py` + its own
+  `CONTEXT.md`). Owns the action menu, topic tree, and topic summary
+  plus their internal wiring (cursor → summary; selection → re-emit as
+  `filter_changed`). Exposes a small contract to the orchestrator
+  (`filter_changed`, `current_filter`) and to `BrowserView` (`nav_left`,
+  `nav_right`, `focus_tree`). All rail CSS — width, expansion-on-focus,
+  vertical rule between actions and tree, summary border — lives on the
+  panel view.
+
+- **topic_summary.py — `TopicSummaryViewModel` + `TopicSummaryView`**:
+  read-only summary panel for the cursor-highlighted topic, mounted by
+  the topic-tree panel below the body row. Shows name + id + description
+  plus direct/subtree counts of knowledge entries and flashcards. The VM
+  is a `QueryBackedViewModel`, so fast cursor scrolling collapses into a
+  single eventual fetch via the standard debounce. Driven by the panel
+  VM, which subscribes to `tree.cursor_changed` and calls
+  `summary.set_topic_id(tree.cursor_topic_id)`; `set_topic_id` is
+  idempotent and bypasses the debounce path for `None` (synchronous
+  clear). Subtree counts use `expand_subtrees` +
+  `count_entries_filtered` / `count_flashcards_by_topics`.
+
 
 - **topic_tree.py — `BrowserTopicTreeViewModel` + `BrowserTopicTreeView`**:
   multi-select topic tree. **VM owns** selection (`_selected_ids`),
@@ -276,11 +293,11 @@ available to any caller):
 ## Cross-region focus navigation (alt+arrow)
 
 This is a **view-side concern** — no VM knows or cares which sub-region
-is focused. `BrowserView` owns two top-level regions (topic tree on the
-left, active tab on the right) and delegates everything *inside* the tab
-to four `nav_<dir>` methods that resolve a single step in the focus
-graph by name. The graph is flat — explicit if-chains, no per-sub-widget
-delegation — so adding/changing an edge is a one-line change.
+is focused. `BrowserView` owns two top-level regions (the topic-tree
+panel on the left, the active tab on the right) and delegates everything
+*inside* each to a small `nav_*` / `focus_*` surface. Each side resolves
+a single step in its own focus graph; `BrowserView` interprets the
+return value to decide whether to advance to the next top-level region.
 
 `BrowserView` binds `alt+left` / `alt+right` / `alt+up` / `alt+down`
 with `priority=True` (so they fire even when a `TextArea` inside the
@@ -288,12 +305,26 @@ details panel is focused — otherwise the TextArea's own word-nav and
 paragraph-jump bindings would swallow them). Dispatch by `screen.focused`
 location:
 
-- focus in tree, `alt+right` → `active_tab_view.focus_first()`;
-  `alt+left` / `alt+up` / `alt+down` → no-op.
+- focus in panel, `alt+left` → `panel.nav_left()`; the panel is the
+  leftmost top-level region, so `False` is a hard no-op.
+- focus in panel, `alt+right` → `panel.nav_right()`; `False` (focus was
+  already in the tree, the panel's rightmost sub-region) means "advance
+  into the active tab" — `BrowserView` calls `tab.focus_first()`.
+- focus in panel, `alt+up` / `alt+down` → no-op (no focusable region
+  above or below the panel body).
 - focus elsewhere, `alt+<dir>` → `tab.nav_<dir>()`. For `nav_left`, the
-  return value `"topic_tree"` asks `BrowserView` to focus the tree;
-  every other return is a `bool` indicating whether the focus moved
-  (informational — `BrowserView` doesn't react to it directly).
+  return value `"topic_tree"` asks `BrowserView` to focus the tree
+  inside the panel (via `panel.focus_tree()`); every other return is a
+  `bool` indicating whether the focus moved (informational — `BrowserView`
+  doesn't react to it directly).
+
+**Panel surface** (called by `BrowserView`):
+
+```python
+def focus_tree(self) -> None:          # focus the topic tree specifically
+def nav_left(self) -> bool:            # tree → actions; False at actions edge
+def nav_right(self) -> bool:           # actions → tree; False at tree edge
+```
 
 **Tab-view interface** (convention; no formal Protocol yet — duck-typed
 via `hasattr` until we have a second tab to share the contract with):
@@ -334,6 +365,6 @@ module:
   to zero topics" — a legal terminal state that returns zero rows.
 
 Both `BrowserTabViewModel.set_topic_filter` and `list_entries_paginated` honor
-this distinction. The orchestrator's `_current_filter` and the tab's
+this distinction. `TopicTreePanelViewModel.current_filter` and the tab's
 `_filter_ids` are both `frozenset[int] | None` to make the type echo the
 semantics.
