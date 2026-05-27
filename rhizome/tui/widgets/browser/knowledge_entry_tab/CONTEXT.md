@@ -283,62 +283,20 @@ membership in `_relink_selected_ids` and recomputes
 
 The right-hand side of the tab body behaves as two "tabs" — entry
 details (in `ENTRIES`) and the linked-flashcards table (in
-`LINKED_FLASHCARDS`). The user moves between them by clicking a small
-`_NavArrow` widget that brackets the panel: `>` at the rightmost edge
-when on the entry-details tab (advance to linked flashcards), and `<`
-at the left edge of the linked-flashcards panel when on it (go back to
-entry details).
+`LINKED_FLASHCARDS`). The user cycles between them with the `tab`
+key, bound on `KnowledgeEntryBrowserTabView` to
+`action_tab_cycle_mode`, which two-state-toggles the VM via
+`vm.transition_to(...)`. The `tab` binding is gated by the same
+`_typing_active` check used by the other global tab keys so it
+doesn't swallow keystrokes while an `Input` / `TextArea` is focused.
+The keybinding is surfaced in the permanent `#tab-keybindings` hint
+row at the bottom of the tab. `l` (relink) still transitively swaps
+to `LINKED_FLASHCARDS` as a side effect of entering relink mode.
 
-`_NavArrow` subclasses Textual's `Button`, so hover / active / press
-feedback comes for free — the subclass just wipes Button's chrome
-(border, padding, min-width, bold text) so it renders as a
-3-cell-wide × 25-row-tall dark strip with the arrow glyph centred.
-Backgrounds: `#151515` idle → `#1d1d1d` on `:hover` → `#252525` for
-the brief `.-active` flash Button manages itself; glyph colours track
-in parallel (`#383838` / `#505050` / `#606060`). The chrome wipe goes
-through Button's own `compact=True` constructor flag — that toggles
-the `-textual-compact` class whose `border: none !important` beats
-the raised-bezel `border-top`/`border-bottom` baked into Button's
-`.-style-default`. Our colour selectors also have to chain
-`.-style-default` to match Button's specificity (`(0,2,1)`) — without
-that, Button's `:hover` rule paints `$surface-darken-1` (darker than
-its idle) and our hover actively darkens the strip. `can_focus =
-False` keeps the Tab key from landing on the arrow (it's mouse-only
-by design).
-
-Each `_NavArrow` is wrapped in a 3-cell-wide `Vertical` slot
-(`#nav-left` / `#nav-right`, class `.nav-arrow-slot`) whose
-`align: center middle` does the vertical centring inside the panel
-area; the slot also carries the `-state-*`-keyed visibility rule, so
-only the arrow pointing toward the *other* tab shows. The wrapper is
-load-bearing: Textual's `align-vertical` aligns the *bounding box of
-all children together* (`_arrange.py:104-113`), not each child
-individually, so with `height: 1fr` siblings filling the row the
-bounding box already equals the container and the alignment offset
-clamps to zero. A single-child wrapper sidesteps that.
-
-`KnowledgeEntryBrowserTabView.on_button_pressed` listens for the
-`Button.Pressed` message bubbling up from either arrow and calls
-`swap_tab` — direction doesn't matter (only one arrow is visible at a
-time, and the swap is a two-state toggle). `swap_tab` itself is a
-thin wrapper around `vm.transition_to(...)`. There's no keyboard
-binding for this swap right now (`ctrl+f` was removed) — `l` still
-enters relink mode, which transitively swaps to `LINKED_FLASHCARDS`.
-
-Layout chrome around the panel area:
-
-- A vertical `Rule` (`#tab-body-rule`) sits between the entries
-  column and the nav-left slot. In `ENTRIES` (nav-left hidden) it
-  lands flush against the entries side; in `LINKED_FLASHCARDS` the
-  nav-left slot ends up on the *left* of the rule, visually grouping
-  with the entries side ("go back to entries" reads as part of the
-  left panel).
-- The entries column carries a 1-char `margin-right` so the rule
-  and the right-hand panel area don't sit flush against the table.
-- `#nav-left` carries a 1-char `margin-left` so the arrow doesn't
-  sit flush against the rule. The right slot doesn't need a matching
-  gap on its outer edge because the outer tab view's
-  `padding: 0 1` already provides it.
+A vertical `Rule` (`#tab-body-rule`) sits between the entries column
+and the right-hand panel area, and the entries column carries a
+1-char `margin-right` so the rule doesn't sit flush against the
+table.
 
 ## Keybindings line
 
