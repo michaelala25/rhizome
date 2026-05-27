@@ -1,4 +1,4 @@
-"""Public exports for the shared ``SortDialog`` browser widget."""
+"""Shared sort-axis picker dialog for browser tabs."""
 
 from .view import SortDialog
 from .view_model_mixin import SortableViewModelMixin, SortDirection

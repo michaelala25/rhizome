@@ -1,22 +1,42 @@
-"""KnowledgeEntryBrowserTabView — DataTable + details + status row + four pop-up dialogs (delete /
-sort / filter / edit).
+"""Knowledge-entry tab view. DataTable + right pane (details ↔ linked-flashcards) + bottom dialog
+slot. Owns the dialog mutex, the global tab keys, and the cross-region focus graph.
 
-The tab view owns *interaction state*: which dialog is currently visible, where each dialog's
-cursor lives, focus management on show/hide. The VM (see ``view_model.py``) owns *data facts* (the
-loaded window, sort/search/filter values, selection) and the bulk-action API the dialogs eventually
-invoke. The dialogs talk to the VM through that narrow surface (``set_sort``, ``set_type_filter``,
-``delete_selected_entries``, ``change_topic_on_selected_entries``,
-``change_type_on_selected_entries``) and Textual's focus mechanics carry keystrokes the rest of the
-way.
+Dialog mutex: a single ``_active_dialog`` slot toggled via ``show_dialog`` / ``hide_dialog`` /
+``toggle_dialog``. Mutators flip the ``-visible`` class on the chosen widget, call its
+``prepare_for_show()`` hook, and run focus rescue (focus the new dialog, or fall back to the
+entries table on hide). State transitions auto-dismiss any open dialog.
 
-Per-widget code lives in sibling modules — ``delete_dialog.py``, ``filter_dialog.py``,
-``edit_dialog.py``, ``entry_content_preview.py``. The search bar is the shared generic
-``SearchInput`` from ``rhizome.tui.widgets.search_input``, parameterised on
-``KnowledgeEntryBrowserTabViewModel``; the sort dialog is the shared generic ``SortDialog``
-from ``rhizome.tui.widgets.browser.sort_dialog``, specialised inline here as
-``_EntriesSortDialog`` to surface the multi-select warning. This module keeps the tab
-container itself plus the ``_EntriesTable`` subclass, which is tightly coupled to the tab's
-dialog orchestration and focus walk.
+Cross-region focus graph (driven by ``BrowserView``'s ``alt+arrow`` priority bindings via
+``nav_<dir>``). The dialog node collapses all four dialogs to one ``"dialog"`` name; ``nav_left``
+returns the sentinel ``"topic_tree"`` for edges that escape the tab.
+
+| Node                        | Widget id                          | Present when                                                  |
+|-----------------------------|------------------------------------|---------------------------------------------------------------|
+| entry_search                | search-input                       | always                                                        |
+| entry_table                 | entries-table                      | always                                                        |
+| dialog                      | currently-shown dialog             | ``_active_dialog is not None``                                |
+| entry_title                 | details-title                      | ``ENTRIES`` and not multi-select-frozen                       |
+| entry_content               | details-content                    | ``ENTRIES`` and not multi-select-frozen                       |
+| entry_modification_accept   | details-choices                    | ``ENTRIES``, not frozen, and ``details.is_dirty``             |
+| flashcard_search            | linked-flashcards-search-input     | ``LINKED_FLASHCARDS``                                         |
+| flashcard_table             | linked-flashcards-table            | ``LINKED_FLASHCARDS``                                         |
+| relink_choices              | linked-flashcards-relink-choices   | ``LINKED_FLASHCARDS`` and ``linked_flashcards.is_relink_dirty`` |
+
+Edges per direction (target gated on ``_node_present``; fall-throughs use ``or``):
+
+- alt+up:    dialog→entry_table · entry_table→entry_search · flashcard_table→flashcard_search ·
+             relink_choices→flashcard_table · entry_modification_accept→entry_content ·
+             entry_content→entry_title · entry_title→entry_search
+- alt+down:  entry_search→entry_table · flashcard_search→flashcard_table ·
+             entry_table→dialog · flashcard_table→(relink_choices or dialog) ·
+             relink_choices→dialog · entry_title→entry_content ·
+             entry_content→(entry_modification_accept or dialog) ·
+             entry_modification_accept→dialog
+- alt+left:  entry_search/entry_table/dialog→"topic_tree" sentinel · entry_title→entry_search ·
+             entry_content/entry_modification_accept→entry_table · flashcard_search→entry_search ·
+             flashcard_table/relink_choices→entry_table
+- alt+right: entry_search→entry_title (ENTRIES) / flashcard_search (LINKED_FLASHCARDS) ·
+             entry_table→entry_content (ENTRIES) / flashcard_table (LINKED_FLASHCARDS)
 """
 
 from __future__ import annotations
@@ -46,11 +66,7 @@ from .view_model import KnowledgeEntryBrowserTabViewModel
 
 
 class _EntriesSortDialog(SortDialog[KnowledgeEntryBrowserTabViewModel]):
-    """Knowledge-entry-tab specialisation of ``SortDialog``. Surfaces a "Applying clears your
-    selection." warning inline with the keybinding hint while multi-select is on — applying a
-    sort clears the selection (rows reshuffle and selection-by-position loses meaning), so we
-    give the user a heads-up before they commit.
-    """
+    """Surfaces an inline "Applying clears your selection." warning while multi-select is on."""
 
     def _extra_hint(self) -> Text | None:
         if self._vm.multi_select_active:
@@ -61,12 +77,8 @@ _DialogName = Literal["delete", "sort", "filter", "edit"]
 
 
 class _EntriesTable(MultiSelectableDataTable[KnowledgeEntryBrowserTabViewModel]):
-    """Entries-tab specialisation of ``MultiSelectableDataTable``. The base owns the
-    ``space`` / ``shift+up`` / ``shift+down`` multi-select keybindings; this subclass adds
-    auto-load-more pagination on cursor-down at the bottom edge. The global tab keys
-    (``d`` / ``s`` / ``f`` / ``e`` / ``l`` / ``m``) live on
-    ``KnowledgeEntryBrowserTabView`` so they fire from either table.
-    """
+    """Entries-tab DataTable. Inherits ``space`` / ``shift+up`` / ``shift+down`` from the base
+    mixin; adds auto-load-more on cursor-down at the bottom edge."""
 
     def __init__(
         self,
@@ -78,16 +90,9 @@ class _EntriesTable(MultiSelectableDataTable[KnowledgeEntryBrowserTabViewModel])
         self._tab = tab
 
     async def action_cursor_down(self) -> None:
-        """Cursor-down with auto-load at the bottom edge: if the user is on the last loaded
-        row and the VM still has more to fetch, await ``load_more`` first so the next
-        ``super().action_cursor_down`` has somewhere to land. ``load_more`` is a no-op when
-        nothing further is available or a fetch is already in flight, so this is safe to
-        call without re-checking those conditions.
-
-        The cursor advance happens *after* the await — by then the VM has appended rows +
-        emitted dirty, ``_refresh`` ran in ``extend`` mode, and the table has the new rows
-        mounted.
-        """
+        # Await ``load_more`` first (no-op if nothing available / fetch in flight) so the
+        # subsequent ``super().action_cursor_down`` has a fresh row to land on. By the time the
+        # await returns, ``_refresh`` has run in ``extend`` mode and the rows are mounted.
         if (
             self._vm.has_more
             and self.row_count > 0
@@ -98,15 +103,7 @@ class _EntriesTable(MultiSelectableDataTable[KnowledgeEntryBrowserTabViewModel])
 
 
 class KnowledgeEntryBrowserTabView(Vertical):
-    """Tab view for ``KnowledgeEntryBrowserTabViewModel``: search bar + DataTable + status row,
-    a details panel on the right (in ``ENTRIES``) or a linked-flashcards table (in
-    ``LINKED_FLASHCARDS``), and four pop-up dialogs (delete / sort / filter / edit) along the
-    bottom.
-
-    Owns the dialog mutex via ``_active_dialog`` and the ``toggle_dialog`` / ``show_dialog`` /
-    ``hide_dialog`` methods. The dialog widgets and the entries-table key bindings ask the tab to
-    swap dialogs; the tab handles visibility (``-visible`` class) and focus rescue.
-    """
+    """Tab container. See module docstring for the dialog mutex and focus-graph contracts."""
 
     DEFAULT_CSS = """
     KnowledgeEntryBrowserTabView {
@@ -122,11 +119,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         margin: 0 0 0 0;
         color: #3a3a3a;
     }
-    /* Left column of the tab body: search bar over the entries
-       table. Width is set per-state below (60% in ENTRIES, 50% in
-       LINKED_FLASHCARDS); the table fills its parent column. A 1-char
-       right margin keeps the right-hand panel area (nav arrow + view)
-       from sitting flush against the entries table. */
+    /* Left column width is set per-state (60% ENTRIES, 50% LINKED_FLASHCARDS); 1-char right
+       margin so the rule + right pane don't sit flush against the table. */
     KnowledgeEntryBrowserTabView #table-column {
         height: 1fr;
         layout: vertical;
@@ -137,10 +131,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         height: 1fr;
         margin: 1 0 0 0;
     }
-    /* Entry-content preview sits below the entries table in the left column. Hidden by default
-       (the ``ENTRIES`` state has the editable details panel on the right doing the same job); the
-       ``-state-linked-flashcards`` rule below flips it on and rebalances the column to 2fr/1fr
-       table/preview. */
+    /* Content preview only shows in LINKED_FLASHCARDS (the details panel covers it in ENTRIES). */
     KnowledgeEntryBrowserTabView #entry-content-preview {
         display: none;
     }
@@ -153,9 +144,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         height: 1fr;
         margin: 1 0 0 0;
     }
-    /* Multi-select wash: keep the zebra alternation but shift both rows
-       darker, so the table reads as muted-but-structured and the bright-
-       green selected rows pop. */
+    /* Multi-select wash: keep zebra alternation but shift both rows darker so selected (bright
+       green) rows pop. */
     KnowledgeEntryBrowserTabView #entries-table.-multi-select {
         background: $surface-darken-2;
     }
@@ -163,8 +153,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         background: $surface-darken-1 50%;
     }
     /* State-driven layout swap. Both right-hand views are mounted up front; the ``-state-*``
-       class toggles which is visible and the corresponding widths. The visible right-hand view
-       takes the remaining space (``1fr``). */
+       class toggles which is visible. */
     KnowledgeEntryBrowserTabView.-state-entries #table-column {
         width: 60%;
     }
@@ -187,8 +176,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
     KnowledgeEntryBrowserTabView.-state-linked-flashcards EntryDetailsView {
         display: none;
     }
-    /* Status row at the bottom of ``#table-column`` so it aligns with the linked-flashcards docked
-       status row inside its own column. */
+    /* Status row sits in #table-column so it aligns with the linked-flashcards docked status. */
     KnowledgeEntryBrowserTabView #tab-status {
         height: 1;
         color: $foreground-muted;
@@ -237,9 +225,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
     KnowledgeEntryBrowserTabView #filter-dialog:focus {
         border-top: solid $accent;
     }
-    /* The filter dialog is a Vertical with three rows: type row, flashcard row (a Horizontal
-       containing the radios Static + the compact One-of Input), and hint row. Each Static row is
-       1 line; with the dialog's own top border this lands at the 4-line total declared above. */
+    /* Filter dialog: type row · flashcard row (radios + compact One-of input) · hint row. */
     KnowledgeEntryBrowserTabView #filter-dialog #type-row,
     KnowledgeEntryBrowserTabView #filter-dialog #hint-row {
         height: 1;
@@ -259,9 +245,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         padding: 0;
         margin: 0;
         border: none;
-        /* Slightly-lightened background so the input area reads as a distinct field even when
-           unfocused. ``background-tint`` overlays the parent surface rather than replacing it, so
-           the dialog's own colour bleeds through correctly. */
+        /* ``background-tint`` overlays rather than replacing so the dialog's own colour shows
+           through; lightens the field even when unfocused. */
         background: transparent;
         background-tint: $foreground 8%;
     }
@@ -286,10 +271,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
     KnowledgeEntryBrowserTabView #edit-bar:focus {
         border-top: solid $accent;
     }
-    /* Permanent keybindings line at the very bottom of the tab. Left-aligned, single line, lists
-       the global mode/navigation keys so they're discoverable without an explicit help toggle.
-       A thin Rule sits above it as a visual separator from whichever dialog (or the status row)
-       sits directly above. */
+    /* Permanent keybindings line + separator rule at the very bottom of the tab. */
     KnowledgeEntryBrowserTabView #tab-keybindings-rule {
         margin: 1 0 0 0;
         color: #3a3a3a;
@@ -301,12 +283,10 @@ class KnowledgeEntryBrowserTabView(Vertical):
     }
     """
 
-    # Max display width for the title column. Anything longer is truncated by ``DataTable`` (with an
-    # ellipsis).
+    # Title column width — DataTable truncates longer with an ellipsis.
     _TITLE_COLUMN_WIDTH = 50
 
-    # Maps dialog name → (widget id, widget class). Used by ``toggle_dialog`` /
-    # ``_refresh_dialog_visibility`` to dispatch generically.
+    # Dialog-name → widget selector. Driven generically by ``_refresh_dialog_visibility``.
     _DIALOG_WIDGETS: tuple[tuple[_DialogName, str], ...] = (
         ("delete", "#delete-confirm"),
         ("sort", "#sort-bar"),
@@ -314,11 +294,9 @@ class KnowledgeEntryBrowserTabView(Vertical):
         ("edit", "#edit-bar"),
     )
 
-    # Global tab keys — fire from either table (and from anywhere else in the tab that isn't an
-    # ``Input`` / ``TextArea``). Bound here rather than on ``_EntriesTable`` so the linked-
-    # flashcards table picks them up for free. Each open dialog has its own ``d`` / ``s`` / ``f``
-    # / ``e`` bindings for sibling swap; the focused widget's bindings take precedence over an
-    # ancestor's, so the dialog rules still win while a dialog is focused.
+    # Global tab keys — bound here (not on _EntriesTable) so the linked-flashcards table picks them
+    # up for free. Each open dialog's own ``d``/``s``/``f``/``e`` bindings still win while focused
+    # (focused widget's bindings take precedence over an ancestor's).
     BINDINGS = [
         Binding("d", "tab_toggle_dialog('delete')", show=False),
         Binding("s", "tab_toggle_dialog('sort')", show=False),
@@ -336,19 +314,14 @@ class KnowledgeEntryBrowserTabView(Vertical):
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        # Which dialog (if any) is currently visible. The mutex: at most one is shown at a time.
-        # Mutators run through ``toggle_dialog`` / ``hide_dialog`` so visibility, focus, and
-        # ``prepare_for_show`` stay coordinated.
+        # Dialog mutex — at most one visible. Mutators run through ``toggle_dialog`` /
+        # ``hide_dialog`` so visibility, focus, and ``prepare_for_show`` stay coordinated.
         self._active_dialog: _DialogName | None = None
-        # Tracks the VM's state at the last refresh so a state transition can auto-dismiss any open
-        # dialog (dialogs that depend on the current state — selection actions, sort axes — aren't
-        # generally meaningful across a layout switch).
+        # VM state at last refresh — used to auto-dismiss the dialog on transitions.
         self._last_state: KnowledgeEntryBrowserTabViewModel.State | None = None
-        # Signature of the entries list at the last refresh — a tuple of entry ids in display order.
-        # Used by ``_refresh`` to decide between a full ``clear()`` + rebuild (when row identity has
-        # actually changed: refetch, delete, load_more) and a cheap in-place ``update_cell_at`` pass
-        # (when only styles or markers changed: mode toggle, selection toggle, post-edit content
-        # mutation). The in-place path preserves ``DataTable``'s scroll position and cursor.
+        # Tuple of entry ids at last refresh — drives the three ``_refresh`` paths
+        # (``extend`` / ``inplace`` / ``rebuild``). ``inplace`` and ``extend`` preserve DataTable's
+        # scroll position and cursor.
         self._last_row_signature: tuple[int, ...] | None = None
 
     def compose(self):
@@ -356,9 +329,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
             self._vm, self,
             id="entries-table", cursor_type="row", zebra_stripes=True,
         )
-        # The leading "sel" column is always present (we can't add or drop columns cleanly after
-        # construction). When multi-select is off the column renders empty; when on, each row shows
-        # ``[ ]`` or ``[x]``.
+        # Leading "sel" column is always present (DataTable doesn't support clean post-construction
+        # column add/drop). Empty cells outside multi-select; ``[ ]`` / ``[x]`` inside.
         table.add_column("sel", width=3)
         table.add_column("id")
         table.add_column("title", width=self._TITLE_COLUMN_WIDTH)
@@ -371,31 +343,24 @@ class KnowledgeEntryBrowserTabView(Vertical):
                     self._vm, id="search-input",
                 )
                 yield table
-                # Preview only renders in ``LINKED_FLASHCARDS`` — CSS toggles ``display`` based on
-                # the parent's ``-state-*`` class.
                 yield _EntryContentPreview(self._vm, id="entry-content-preview")
                 yield Static("", id="tab-status")
 
             yield Rule(orientation="vertical", line_style="solid", id="tab-body-rule")
-            # Both right-hand views are mounted up front and shown / hidden via the ``-state-*``
-            # class on the parent. Mounting them once avoids the cost of re-subscribing each
-            # child view's ``vm.dirty`` callback on every state flip.
+            # Both right-hand views mount up front; CSS ``-state-*`` flips visibility. Mounting
+            # once avoids re-subscribing each child's vm.dirty on every state flip.
             yield EntryDetailsView(self._vm.details)
             yield LinkedFlashcardsPanelView(self._vm.linked_flashcards)
         yield _DeleteConfirm(self._vm, self, id="delete-confirm")
         yield _EntriesSortDialog(self._vm, on_close=self.hide_dialog, id="sort-bar")
         yield _FilterDialog(self._vm, self, id="filter-dialog")
         yield _EditBar(self._vm, self, id="edit-bar")
-        # Permanent keybindings line at the very bottom — surfaces the global mode/navigation
-        # keys so they're discoverable without an explicit help toggle. The Rule above acts as a
-        # visual separator from whichever dialog (or status row) sits directly above.
         yield Rule(line_style="solid", id="tab-keybindings-rule")
         yield Static(self._keybindings_text(), id="tab-keybindings")
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
-        # If the VM already has data (it was bootstrapped before the view mounted), paint it on
-        # first frame instead of waiting for the next dirty.
+        # Paint immediately if the VM was bootstrapped before mount.
         self._refresh()
 
     def on_unmount(self) -> None:
@@ -406,10 +371,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
     # ------------------------------------------------------------------
 
     def _keybindings_text(self) -> str:
-        """Permanent left-aligned listing of the tab's global mode/navigation keys. The keybinding
-        glyph renders a touch brighter than the action label so it pops out of the row; per-dialog
-        keys (← / → / enter / esc inside an open dialog) are documented by the dialog widgets
-        themselves."""
+        # Per-dialog keys (← / → / enter / esc inside an open dialog) are documented by the dialog
+        # widgets themselves.
         rows = [
             ("e", "edit"),
             ("f", "filter"),
@@ -425,18 +388,13 @@ class KnowledgeEntryBrowserTabView(Vertical):
         )
 
     # ------------------------------------------------------------------
-    # Global tab actions (d / s / f / e / l / m) — see ``BINDINGS`` above
+    # Global tab actions (d / s / f / e / l / m / tab) — see ``BINDINGS``
     # ------------------------------------------------------------------
     #
-    # Each defers to the existing dialog / relink / multi-select methods. The gate skips the action
-    # when an ``Input`` / ``TextArea`` is focused so typing doesn't trip the keybinding (defensive —
-    # Input/TextArea already consume printable keys via their own ``_on_key`` handlers, but the
-    # check makes the intent explicit and survives any future refactor that changes their key
-    # plumbing).
+    # Each gates on ``_typing_active`` so typing inside an editable field doesn't trip the binding.
+    # Defensive — Input/TextArea consume printable keys themselves — but makes intent explicit.
 
     def _typing_active(self) -> bool:
-        """Whether the currently-focused widget is an editable text field. Used by the global tab
-        actions to bail rather than swallow a keystroke meant for the editor."""
         focused = self.screen.focused if self.screen else None
         return isinstance(focused, (Input, TextArea))
 
@@ -456,8 +414,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         self._vm.toggle_multi_select()
 
     def action_tab_cycle_mode(self) -> None:
-        """Flip between the entry-details and linked-flashcards right-panel modes. Two-state
-        toggle for now; if a third state lands, replace with an explicit picker."""
+        # Two-state toggle for now; replace with an explicit picker if a third state lands.
         if self._typing_active():
             return
         current = self._vm.state
@@ -473,39 +430,32 @@ class KnowledgeEntryBrowserTabView(Vertical):
     # ------------------------------------------------------------------
 
     def toggle_dialog(self, name: _DialogName) -> None:
-        """Toggle the named dialog. If it's already shown, hide it; otherwise show it (hiding any
-        other). Called from the entries table's key bindings (d/e/f/s) and from sibling-dialog swap
-        actions."""
         if self._active_dialog == name:
             self.hide_dialog()
         else:
             self.show_dialog(name)
 
     def show_dialog(self, name: _DialogName) -> None:
-        """Show the named dialog and hide any other. No-op if it's already showing."""
         if self._active_dialog == name:
             return
         self._active_dialog = name
         self._refresh_dialog_visibility()
 
     def hide_dialog(self) -> None:
-        """Hide whichever dialog is currently shown (if any). Refocuses the entries table."""
         if self._active_dialog is None:
             return
         self._active_dialog = None
         self._refresh_dialog_visibility()
 
     def _refresh_dialog_visibility(self) -> None:
-        """Apply the ``-visible`` class to the active dialog (and remove it from the others), then
-        run focus rescue: focus the newly-active dialog, or fall back to the entries table when
-        nothing's active. Called whenever ``_active_dialog`` flips."""
+        # Toggle ``-visible`` on the active dialog (and clear it on the others), run each newly-
+        # active widget's ``prepare_for_show`` hook, then focus it; fall back to the entries table
+        # when nothing's active.
         for name, widget_id in self._DIALOG_WIDGETS:
             try:
-                # ``Widget`` (rather than ``Static``) because the filter dialog is a ``Vertical``
-                # container — the other three dialogs are still Statics, but the loop is generic.
+                # Widget (not Static) because _FilterDialog is a Vertical container.
                 widget = self.query_one(widget_id, Widget)
             except Exception:
-                # Compose hasn't finished yet — skip; mount-time _refresh will catch up.
                 continue
             is_visible = name == self._active_dialog
             widget.set_class(is_visible, "-visible")
@@ -518,8 +468,6 @@ class KnowledgeEntryBrowserTabView(Vertical):
             try:
                 self.query_one("#entries-table", DataTable).focus()
             except Exception:
-                # Table may have been unmounted (e.g. tab swap mid-close); let focus settle wherever
-                # Textual puts it.
                 pass
 
     # ------------------------------------------------------------------
@@ -527,9 +475,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
     # ------------------------------------------------------------------
 
     def toggle_relink_mode(self) -> None:
-        """View-layer wrapper around the VM's relink mutators. Closes any open dialog (mutex lives
-        here, not the VM) and then routes to ``enter_relink_mode`` or ``exit_relink_mode`` on the
-        VM based on the panel's current state. Called from the entries-table ``l`` binding."""
+        # Wraps the VM's enter/exit; closes any open dialog first (mutex lives view-side).
         self.hide_dialog()
         if self._vm.linked_flashcards.relink_mode:
             self._vm.exit_relink_mode()
@@ -541,9 +487,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
     # ------------------------------------------------------------------
 
     def selection_target_count(self) -> int:
-        """Count of entries the current "selected" action would act on. In multi-select mode that's
-        ``selected_ids``; in single-select mode it's the cursor entry (or zero if the window is
-        empty)."""
+        """Count of entries a selected-action would act on: ``selected_ids`` in multi-select; the
+        cursor entry (or zero if the window is empty) in single-select."""
         if self._vm.multi_select_active:
             return len(self._vm.selected_ids)
         return 1 if self._vm.entries else 0
@@ -555,35 +500,23 @@ class KnowledgeEntryBrowserTabView(Vertical):
     def _refresh(self) -> None:
         table = self.query_one("#entries-table", DataTable)
         mode = self._vm.multi_select_active
-        # ``-multi-select`` triggers the CSS that darkens the zebra-row palette while the user is
-        # picking.
         table.set_class(mode, "-multi-select")
 
-        # Apply the state class. The CSS rules keyed off ``.-state-entries`` /
-        # ``.-state-linked-flashcards`` swap which right-hand view is visible and the corresponding
-        # left-column width (60/40 vs 50/50).
         state = self._vm.state
         self.set_class(state is self._vm.State.ENTRIES, "-state-entries")
         self.set_class(state is self._vm.State.LINKED_FLASHCARDS, "-state-linked-flashcards")
 
-        # State transition closes whichever dialog is open — its targets / sort axes / filter
-        # options aren't generally meaningful across a layout switch, and the user is doing a bigger
-        # navigation gesture than a dialog dismissal.
+        # State transitions auto-dismiss any open dialog — its targets/axes/options aren't generally
+        # meaningful across a layout switch.
         if self._last_state is not None and state != self._last_state:
             if self._active_dialog is not None:
                 self.hide_dialog()
         self._last_state = state
 
-        # Three refresh paths, picked by comparing the new id-tuple to the previously-rendered one:
-        #
-        #   * ``extend`` — old tuple is a prefix of the new one, length grew. ``load_more`` appends
-        #     rows; we ``add_row`` only the new tail. No ``clear``, no cursor restore, scroll stays
-        #     where the user left it.
-        #   * ``inplace`` — same tuple. Pure style/marker churn (multi-select toggle, selection
-        #     toggle, post-edit content mutation). ``update_cell_at`` per cell preserves scroll +
-        #     cursor.
-        #   * ``rebuild`` — anything else (refetch, delete, reorder). ``clear`` + ``add_row``,
-        #     restore cursor.
+        # Three refresh paths:
+        #   * ``extend`` — id-tuple grew with the old as prefix (``load_more``): add_row the tail.
+        #   * ``inplace`` — same id-tuple (style/marker churn): update_cell_at, preserves cursor.
+        #   * ``rebuild`` — anything else (refetch / delete / reorder): clear + add_row + restore.
         new_signature = tuple(e.id for e in self._vm.entries)
         old_signature = self._last_row_signature
         if new_signature == old_signature:
@@ -604,13 +537,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         for i in range(start, len(self._vm.entries)):
             entry = self._vm.entries[i]
             type_str = entry.entry_type.value if entry.entry_type is not None else "—"
-            # Three colouring regimes:
-            #   * not multi-select: zebra-pair text (odd rows dim) so the stripe background shows
-            #     through evenly.
-            #   * multi-select, not selected: same zebra-pair pattern but with both colours shifted
-            #     darker — so the whole table reads as muted-but-structured.
-            #   * multi-select, selected: bright green + bold to pop against the dimmed sea around
-            #     them.
+            # Three colour regimes: non-multi (zebra), multi-non-selected (darker zebra),
+            # multi-selected (bright green + bold).
             selected = mode and entry.id in self._vm.selected_ids
             if selected:
                 style = "bold #5fd75f"
@@ -619,16 +547,13 @@ class KnowledgeEntryBrowserTabView(Vertical):
             else:
                 style = "#a0a0a0" if i % 2 else ""
             marker = ("[x]" if selected else "[ ]") if mode else ""
-            # Topic column shows the topic name followed by " [{id}]" in a fixed dim grey — matches
-            # the topic tree's hint style. The defensive fallback to ``topic_id`` is here in case
-            # something ever lands an entry whose topic FK isn't loaded.
+            # Topic name + " [id]" in dim grey — matches the topic tree's hint style.
             topic_name = entry.topic.name if entry.topic is not None else "?"
             topic_cell = Text.assemble(
                 (topic_name, style),
                 (f" [{entry.topic_id}]", "#787878"),
             )
-            # Flashcard ids are sorted for stable display order — the ``flashcard_entries``
-            # collection is loaded via ``selectinload``, which doesn't promise any particular order.
+            # Sort flashcard ids for stable display — selectinload doesn't promise order.
             fc_ids = sorted(fe.flashcard_id for fe in entry.flashcard_entries)
             fc_str = ", ".join(str(i) for i in fc_ids) if fc_ids else "—"
             cells = (
@@ -646,11 +571,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
                 table.add_row(*cells, key=str(entry.id))
         self._last_row_signature = new_signature
 
-        # After a rebuild, ``table.clear()`` reset the table cursor to row 0. Push the VM's cursor
-        # back into the table so the highlight lands on the row the VM expects. ``move_cursor``
-        # fires ``RowHighlighted``, which round-trips into ``vm.set_cursor`` — the
-        # early-return-on-equality there keeps this from looping. On ``extend`` / ``inplace`` the
-        # cursor was never disturbed, so we skip.
+        # Restore the VM cursor after rebuild (``clear`` reset it). ``move_cursor`` fires
+        # RowHighlighted → vm.set_cursor; the VM's equality early-return kills the loop in one trip.
         if (
             path == "rebuild"
             and self._vm.entries
@@ -662,22 +584,11 @@ class KnowledgeEntryBrowserTabView(Vertical):
         status.update(self._format_status())
 
     # ------------------------------------------------------------------
-    # Cross-region focus (driven by ``BrowserView``'s alt+arrow bindings)
+    # Cross-region focus — see module docstring for the full graph table
     # ------------------------------------------------------------------
-    #
-    # The tab participates in a directional focus graph spanning the topic tree, the entries-side
-    # widgets (search, table, title, content, modification-accept), the dialogs, and the linked-
-    # flashcards-side widgets (search, table). ``nav_<dir>`` resolves a single step in the named
-    # direction by:
-    #   1. Naming the currently-focused node via ``_focused_node``.
-    #   2. Looking up its outgoing edge for the direction in the explicit if-chain below.
-    #   3. Focusing the target via ``_focus_node`` (which gates on present-ness).
-    #
-    # ``nav_left`` returns the sentinel ``"topic_tree"`` for transitions that escape the tab —
-    # ``BrowserView`` catches that and focuses the tree. Every other case returns a bool.
 
-    # Node-name → ``query_one`` selector for the focusable widget that represents that node. The
-    # dialog node is handled separately because its target widget depends on ``_active_dialog``.
+    # Node name → focusable widget id. The dialog node is handled separately because its target
+    # depends on ``_active_dialog``.
     _NODE_TO_WIDGET_ID: dict[str, str] = {
         "entry_table": "entries-table",
         "entry_search": "search-input",
@@ -690,15 +601,12 @@ class KnowledgeEntryBrowserTabView(Vertical):
     }
 
     def focus_first(self) -> None:
-        """Entry point when ``BrowserView`` enters the tab from the tree. Always lands on the
-        entries table — the leftmost region in the focus graph — regardless of whether a dialog
-        happens to be open. The user can step into the dialog from there with alt+down."""
+        """Entry point when ``BrowserView`` hands focus to the tab. Always lands on the entries
+        table (leftmost in the focus graph) regardless of dialog state."""
         self.query_one("#entries-table", DataTable).focus()
 
     def _focused_node(self) -> str | None:
-        """Name the currently-focused widget within the tab, or ``None`` if focus is outside the
-        tab / on something we don't route. Dialogs collapse to a single ``"dialog"`` name (the
-        outgoing edges are the same regardless of which of the four is shown)."""
+        # All four dialogs collapse to one ``"dialog"`` node — their outgoing edges are identical.
         focused = self.screen.focused if self.screen else None
         if focused is None:
             return None
@@ -729,10 +637,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         return None
 
     def _node_present(self, node: str) -> bool:
-        """Whether ``node`` is currently in the focus graph. Transitions to absent nodes silently
-        no-op. The frozen details panel (multi-select on the entries side) is treated as absent —
-        the TextAreas are read-only and the choices widget is hidden, so there's nothing useful
-        to land on."""
+        """Whether ``node`` is in the focus graph right now. The multi-select-frozen details panel
+        is treated as absent (TextAreas are read-only, choices widget is hidden)."""
         if node == "dialog":
             return self._active_dialog is not None
         state = self._vm.state
@@ -756,9 +662,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         return node in ("entry_table", "entry_search")
 
     def _focus_node(self, node: str) -> bool:
-        """Focus the widget corresponding to ``node``. Returns ``False`` and skips the focus call
-        if the node isn't currently in the graph (i.e. its widget is hidden by the state class or
-        the multi-select freeze)."""
+        """Focus ``node``'s widget. Returns False (no focus call) when the node is absent."""
         if not self._node_present(node):
             return False
         if node == "dialog":
@@ -807,25 +711,20 @@ class KnowledgeEntryBrowserTabView(Vertical):
         if node == "entry_table":
             return self._focus_node("dialog")
         if node == "flashcard_table":
-            # Mirrors entry_content's fall-through: relink Accept/Cancel takes priority while
-            # dirty, otherwise drop to the dialog if one is open.
+            # Mirrors entry_content: accept/cancel wins while dirty, else fall through to dialog.
             return self._focus_node("relink_choices") or self._focus_node("dialog")
         if node == "relink_choices":
             return self._focus_node("dialog")
         if node == "entry_title":
             return self._focus_node("entry_content")
         if node == "entry_content":
-            # Fall through: accept/cancel takes priority while the panel is dirty; otherwise drop
-            # to the dialog if one is open. Both targets are gated by ``_node_present``, so this
-            # is just two short-circuited focus attempts.
             return self._focus_node("entry_modification_accept") or self._focus_node("dialog")
         if node == "entry_modification_accept":
             return self._focus_node("dialog")
         return False
 
     def nav_left(self) -> bool | str:
-        """Returns ``True`` if focus moved inside the tab, the sentinel ``"topic_tree"`` to ask
-        ``BrowserView`` to hand focus to the tree, or ``False`` if there's no outgoing edge."""
+        """Returns ``"topic_tree"`` sentinel for edges that escape the tab, otherwise a bool."""
         node = self._focused_node()
         if node is None or not self._node_present(node):
             return False
@@ -861,12 +760,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         return False
 
     # ------------------------------------------------------------------
-    # Edit-dialog choice dispatch
+    # Edit-dialog choice dispatch — called from _EditBar with the chosen label
     # ------------------------------------------------------------------
-    #
-    # Called from ``_EditBar.action_select`` with the chosen option string. Two of the choices
-    # (``change topic`` / ``change type``) open modal screens; ``edit title`` / ``edit content``
-    # focus a TextArea in the details panel; ``delete`` swaps to the delete confirm dialog.
 
     async def handle_edit_choice(self, choice: str) -> None:
         if choice == "change topic":
@@ -881,10 +776,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
             self.show_dialog("delete")
 
     async def _dispatch_change_topic(self) -> None:
-        """Open ``TopicSelectorScreen``; on dismiss apply the choice via the VM. No-op if there's
-        nothing to act on (empty selection or empty window)."""
-        # Local import to avoid circulating tui.screens through the widget module at import time —
-        # matches the pattern already used in commit_proposal/view.py.
+        # Local import — avoid circulating tui.screens through this widget module at import time.
         from rhizome.tui.screens.topic_selector import TopicSelectorScreen
 
         if self.selection_target_count() == 0:
@@ -892,7 +784,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
 
         def on_dismiss(result: tuple[int, str] | None) -> None:
             if result is None:
-                # User cancelled — keep the edit bar open so they can pick a different action.
+                # Cancelled — refocus the edit bar so the user can pick a different action.
                 try:
                     self.query_one("#edit-bar", _EditBar).focus()
                 except Exception:
@@ -909,9 +801,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         )
 
     async def _dispatch_change_type(self) -> None:
-        """Open the inline ``_TypePickerScreen``; on dismiss apply via the VM. Lands the modal's
-        cursor on the cursor entry's current type (single-select only — multi-select has no single
-        "current" to land on)."""
+        # Lands the modal's cursor on the cursor entry's current type (single-select only).
         if self.selection_target_count() == 0:
             return
 
@@ -933,8 +823,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         self.app.push_screen(_TypePickerScreen(current=current), callback=on_dismiss)
 
     def _dispatch_focus_details_field(self, widget_id: str) -> None:
-        """Edit title / edit content: dismiss the edit bar and focus the target TextArea in the
-        details panel. Single-select only — the option list excludes these in multi-select mode."""
+        # Single-select only — the option list excludes these in multi-select.
         self.hide_dialog()
         try:
             target = self.query_one(f"#{widget_id}", TextArea)
@@ -950,12 +839,8 @@ class KnowledgeEntryBrowserTabView(Vertical):
         self,
         event: DataTable.RowHighlighted,
     ) -> None:
-        """Table cursor moved — push the row index into the VM.
-
-        The VM's ``set_cursor`` no-ops if the index is unchanged, so this is safe to fire from
-        programmatic ``move_cursor`` calls during ``_refresh`` (and from the initial mount, where
-        the table seeds its cursor to row 0).
-        """
+        # ``set_cursor`` no-ops on equal index, so safe to fire from the programmatic
+        # ``move_cursor`` in ``_refresh`` and from the initial seed-to-row-0 on mount.
         if event.data_table.id != "entries-table":
             return
         self._vm.set_cursor(event.cursor_row)
@@ -964,8 +849,6 @@ class KnowledgeEntryBrowserTabView(Vertical):
         if self._vm.is_loading:
             return "loading…"
         if self._vm.multi_select_active:
-            # Multi-select takes over the status line — the "N of M" hint is still useful but
-            # secondary, so we lead with the selection count.
             count = len(self._vm.selected_ids)
             noun = "entry" if count == 1 else "entries"
             return f"multi-select: {count} {noun} selected (m to exit, space to toggle)"

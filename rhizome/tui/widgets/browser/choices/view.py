@@ -1,25 +1,15 @@
-"""ChoiceList — shared base for browser-tab dialogs that present a navigable list of named
-choices (Accept/Cancel, Confirm/Cancel, edit-action picker, etc.).
+"""Shared base widget for browser-tab choice dialogs.
 
-The widget owns the cursor and the navigation/dispatch wiring; subclasses customise rendering
-via three optional hooks (``_render_header``, ``_render_lead``, ``_render_hint``,
-``_render_choice``) and declare their action handlers via the ``CHOICES`` class attr (or the
-``choices()`` method for dynamic option lists).
+A ``ChoiceList`` renders a list of named choices, owns the cursor + arrow nav + enter/escape,
+and dispatches the selected choice to an action method on the subclass.
 
-CHOICES contract
-----------------
-``CHOICES: dict[str, str]`` maps each label to the name of an action method on the same
-class. On ``enter``, the widget looks up the cursor's label, resolves the action name via
-``getattr(self, action_name)``, and invokes it. The action method takes no arguments; it can
-be sync or async. This mirrors Textual's own ``BINDINGS`` action-string convention.
+``CHOICES: dict[label, action_method_name]`` mirrors Textual's ``BINDINGS`` action-string
+convention. On ``enter``, the cursor's label is resolved to ``getattr(self, action_name)`` and
+invoked (sync or async). Override ``choices()`` for a dynamic option set.
 
-For widgets whose label set is dynamic (e.g. an edit picker whose options depend on
-multi-select state), override ``choices()`` to return the dict; the default reads from the
-class-level ``CHOICES``.
-
-Sibling-dialog swap keys (``s`` / ``f`` / ``e`` / ``d``) are *not* bound here. They bubble to
-the parent tab's BINDINGS, which owns the dialog mutex — matches the convention established
-by ``SortDialog``.
+Subclass customisation hooks: ``LEAD`` / ``HINT`` / ``ORIENTATION`` class attrs, or the
+``_render_header`` / ``_render_lead`` / ``_render_hint`` / ``_render_choice`` methods for
+state-driven content. Override ``action_cancel`` to dismiss the dialog on escape.
 """
 
 from __future__ import annotations
@@ -37,17 +27,13 @@ VM = TypeVar("VM", bound=ViewModelBase)
 
 
 class ChoiceList(Static, Generic[VM], can_focus=True):
-    # Subclass declares ``{label: action_method_name}``. Static for fixed choice lists; override
-    # ``choices()`` to compute dynamically.
+    """Focusable list of named choices that dispatches to subclass action methods."""
+
     CHOICES: ClassVar[dict[str, str]] = {}
-    # ``"horizontal"`` separates choices with three spaces on a single line;
-    # ``"vertical"`` stacks them across newlines.
     ORIENTATION: ClassVar[Literal["horizontal", "vertical"]] = "horizontal"
-    # Static inline prefix before the first choice (rendered ``dim``). Override
-    # ``_render_lead()`` for dynamic / state-driven content instead.
+    # Inline prefix before the first choice, rendered ``dim``.
     LEAD: ClassVar[str | None] = None
-    # Static hint line under the choices (rendered ``dim``). Override ``_render_hint()`` for
-    # dynamic / state-driven content instead.
+    # Hint line below the choices, rendered ``dim``.
     HINT: ClassVar[str | None] = None
 
     BINDINGS = [
@@ -76,17 +62,16 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
 
     def on_focus(self) -> None:
-        # Cursor brightness tracks focus — re-render. Can't use a CSS ``:focus`` rule because
-        # the per-segment Rich styles in ``_render_choice`` carry their own colour that would
-        # override widget-level fg.
+        # Cursor brightness tracks focus; a CSS ``:focus`` rule wouldn't reach the per-segment
+        # Rich styles in ``_render_choice``.
         self.call_after_refresh(self._refresh)
 
     def on_blur(self) -> None:
         self.call_after_refresh(self._refresh)
 
     def prepare_for_show(self) -> None:
-        """Reset the cursor to the first choice. Called by the parent's dialog orchestrator on
-        each show transition so a fresh open starts on a predictable position."""
+        """Reset cursor to the first choice. Call from the parent dialog orchestrator on each
+        show so a fresh open lands on the most-likely-default action."""
         self._cursor = 0
         self._refresh()
 
@@ -95,29 +80,21 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
     # ------------------------------------------------------------------
 
     def choices(self) -> dict[str, str]:
-        """Return the active label → action-name map. Default returns the class-level
-        ``CHOICES``; override to compute dynamically."""
+        """Active label → action-name map. Override for dynamic option sets."""
         return self.CHOICES
 
     def _render_header(self) -> Text | None:
-        """Optional line(s) rendered *above* the choices (e.g. scoping prose for a
-        destructive confirmation). Default returns ``None``."""
+        """Optional line(s) above the choices (e.g. scoping prose for a destructive confirm)."""
         return None
 
     def _render_lead(self) -> Text | None:
-        """Optional inline prefix rendered immediately before the first choice. Default
-        returns ``LEAD`` styled ``dim``; override to compute dynamically."""
         return Text(self.LEAD, style="dim") if self.LEAD is not None else None
 
     def _render_hint(self) -> Text | None:
-        """Optional dim hint line rendered *below* the choices. Default returns ``HINT``
-        styled ``dim``; override to compute dynamically."""
         return Text(self.HINT, style="dim") if self.HINT is not None else None
 
     def _render_choice(self, label: str, selected: bool) -> Text:
-        """Render one choice. Default is the standard ``► <bold-label>`` (cursor) / ``  <dim-
-        label>`` (other) pattern; override for a different visual (e.g. colour-only without
-        a marker)."""
+        """``► bold`` for the cursor, ``  dim`` for others. Override for a different visual."""
         cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
         text = Text()
         if selected:
@@ -152,8 +129,7 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
         self._refresh()
 
     async def action_confirm(self) -> None:
-        """Dispatch the cursor's choice via ``getattr(self, action_name)()``. Action methods
-        can be sync or async; we ``await`` the return if it's awaitable."""
+        """Resolve and invoke the cursor's action method (sync or async)."""
         labels = list(self.choices().keys())
         if not labels or self._cursor >= len(labels):
             return
@@ -166,8 +142,7 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
             await result
 
     def action_cancel(self) -> None:
-        """Default ``escape`` handler — no-op. Subclasses override to dismiss the dialog
-        (``self._tab.hide_dialog()``) or call ``vm.cancel()`` etc."""
+        """Default ``escape`` handler — no-op. Subclasses override to dismiss the dialog."""
 
     # ------------------------------------------------------------------
     # Render
@@ -175,8 +150,7 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
 
     def _refresh(self) -> None:
         labels = list(self.choices().keys())
-        # Clamp the cursor in case ``choices()`` shrank under us (e.g. multi-select toggled on
-        # while the cursor was on an option that only exists in single-select).
+        # Clamp in case ``choices()`` shrank under us (dynamic option sets).
         if labels and self._cursor >= len(labels):
             self._cursor = len(labels) - 1
 
@@ -197,8 +171,6 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
         if hint is not None:
             text.append("\n")
             text.append(hint)
-        # ``self.update`` swaps the rendered content. Not named ``_render`` because that's a
-        # Textual-internal name on Static (returns the cached Visual); shadowing it would
-        # make Textual try to use the ``rich.text.Text`` as a Visual and blow up in
-        # ``to_strips``.
+        # Not named ``_render`` — that's a Textual-internal hook on ``Static`` returning the
+        # cached Visual; shadowing it would crash ``to_strips`` with our ``rich.text.Text``.
         self.update(text)

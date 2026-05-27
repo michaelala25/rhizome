@@ -1,24 +1,8 @@
-"""TopicSummaryViewModel + TopicSummaryView — read-only summary panel for the cursor-highlighted topic.
+"""Read-only summary panel for the cursor-highlighted topic — sits below the tree in the left rail.
 
-Sits below the topic tree in the left rail of the browser. The orchestrator pushes the tree's cursor
-topic id into the VM via ``set_topic_id``; the VM fetches the topic row plus direct/subtree entry and
-flashcard counts and exposes them for the view to render.
-
-VM is a ``QueryBackedViewModel`` so we get the standard debounce + supersede-on-restart behaviour for
-free — fast cursor scrolling through the tree collapses into a single eventual query rather than
-hammering the DB with one fetch per arrow keypress.
-
-Counts come in two flavours per resource type:
-
-  * **direct** — rows whose ``topic_id`` equals the cursor topic. Cheap (one indexed COUNT each).
-  * **subtree** — rows whose ``topic_id`` is anywhere in the subtree rooted at the cursor topic. Pays
-    one extra recursive-CTE expansion (``expand_subtrees``) plus an ``IN``-COUNT each. For leaf topics
-    the subtree is a single id so the counts coincide; we still run the query — distinguishing leaves
-    statically would require an extra ``find_parent_topic_ids`` and the equivalence is harmless.
-
-Empty state: when ``set_topic_id(None)`` is called (or the tree has no cursor), the VM clears its
-loaded fields and the view shows a placeholder. ``set_topic_id`` is idempotent — no-op + no fetch if
-the id is unchanged.
+The panel VM pushes the tree's cursor id in via ``set_topic_id``; the VM fetches the topic row plus
+direct and subtree counts for entries and flashcards. Inherits ``QueryBackedViewModel``'s debounce
+so fast cursor scrolls collapse into one eventual query.
 """
 
 from __future__ import annotations
@@ -49,7 +33,6 @@ _logger = get_logger("browser.topic_summary")
 
 @dataclass(frozen=True)
 class _Summary:
-    """Snapshot returned by ``_fetch`` and applied by ``_process_fetched_data``."""
     topic: Topic | None
     direct_entries: int
     subtree_entries: int
@@ -58,12 +41,8 @@ class _Summary:
 
 
 class TopicSummaryViewModel(QueryBackedViewModel):
-    """VM for the topic summary panel.
-
-    Single input — ``_topic_id`` — and a snapshot of summary fields produced by ``_fetch``. The
-    orchestrator drives the input via ``set_topic_id`` (sync, idempotent); everything else is the
-    standard ``QueryBackedViewModel`` machinery.
-    """
+    """Single input (``_topic_id``) plus a summary snapshot from ``_fetch``. Everything else is the
+    standard ``QueryBackedViewModel`` machinery."""
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
@@ -88,11 +67,7 @@ class TopicSummaryViewModel(QueryBackedViewModel):
     # ------------------------------------------------------------------
 
     def set_topic_id(self, topic_id: int | None) -> None:
-        """Set the cursor topic id and (re)schedule a fetch. Idempotent on the same id.
-
-        ``None`` clears the panel synchronously — there's no DB work to do, so we skip the
-        debounce/fetch path and just emit dirty.
-        """
+        """Idempotent on the same id. ``None`` clears synchronously (no DB work)."""
         if topic_id == self._topic_id:
             return
         self._topic_id = topic_id
@@ -135,23 +110,15 @@ class TopicSummaryViewModel(QueryBackedViewModel):
         self._summary = result
 
 
-# Dim grey for labels; the values themselves render in default foreground so they read as the "data".
+# Dim grey for labels; values render in default fg so they read as the "data".
 _LABEL_STYLE = "rgb(120,120,120)"
 _PLACEHOLDER_STYLE = "italic rgb(120,120,120)"
 
 
 class TopicSummaryView(Vertical):
-    """View for ``TopicSummaryViewModel``.
-
-    A vertical stack of ``Static`` lines rendered from the VM's ``summary``. Full repaint on every
-    ``dirty`` — the content is tiny (five short lines) so there's no incremental-update advantage to
-    chase.
-
-    The description can be multi-line; we render it on its own ``Static`` with markup wrapping so a
-    longer description grows the panel vertically rather than overflowing. The other rows are single-
-    line. If you embed this somewhere with a strict height budget, the parent CSS should set
-    ``overflow: hidden`` or ``height: auto`` as appropriate.
-    """
+    """Vertical stack of ``Static`` lines rendered from ``vm.summary``. Full repaint on every
+    ``dirty`` — content is five short lines, no incremental update worth chasing. The description
+    grows vertically via its own wrapping ``Static``; parent CSS sets the overflow policy."""
 
     DEFAULT_CSS = """
     TopicSummaryView {

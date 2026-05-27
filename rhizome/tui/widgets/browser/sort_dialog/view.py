@@ -1,30 +1,23 @@
 """SortDialog — generic sort-axis picker over any ``SortableViewModelMixin`` VM.
 
-Renders horizontally, mirroring the data table's column order: each entry from the VM's
-``sort_options()`` laid out left-to-right. The active sort is decorated with an arrow
-(``↑`` / ``↓``) and brackets; the cursor option is shown in a bold accent colour (no ``►``
-prefix — keeping the row at a fixed width avoids labels jumping around as the cursor moves).
-A second line carries the keybinding hint, optionally extended with a subclass-supplied
-inline supplemental hint via the ``_extra_hint`` hook.
+Layout: one horizontal row of axes (in `vm.sort_options()` order) plus a keybinding hint row.
+The active axis is decorated with an arrow + brackets; the cursor option renders bold (gold
+on focus, grey off-focus). Labels stay fixed-width — no `►` prefix that would shift columns.
 
 Keys
 ----
-  * ``left`` / ``right`` move the cursor (with wrap)
-  * ``enter`` applies (toggles direction when on the active axis, otherwise switches to that
-    axis ascending). Dialog stays open so the user can keep tweaking.
-  * ``r`` resets to the first option ascending. The VM controls the option order, so the
-    first option doubles as the canonical "default sort".
-  * ``escape`` dismisses without applying. Routes to the constructor-provided ``on_close``
-    callback so the dialog stays decoupled from any specific container API — sibling-dialog
-    swap keys (``d`` / ``f`` / ``e`` / ``s``) are deliberately *not* bound here so they
-    bubble to the parent's bindings; the parent owns the dialog mutex and decides what its
-    siblings are.
+  * ``left`` / ``right`` — move cursor (wrap)
+  * ``enter`` — apply: toggle direction on the active axis, otherwise switch to the cursor
+    axis ascending. Dialog stays open.
+  * ``r`` — reset to ``sort_options()[0]`` ascending.
+  * ``escape`` — dismiss via the constructor-supplied ``on_close`` callback.
 
-Extending
----------
-Subclasses can override ``_extra_hint() -> Text | None`` to supply a state-driven inline
-warning appended to the keybinding hint row. The base returns ``None``; the entries-tab uses
-this to surface a "Applying clears your selection." warning while multi-select is on.
+Sibling-dialog swap keys (``d`` / ``s`` / ``f`` / ``e``) are intentionally unbound so they
+bubble to the parent's BINDINGS, which owns the dialog mutex.
+
+Subclasses may override ``_extra_hint() -> Text | None`` to append a state-driven warning to
+the hint row (used by the entries tab to flag "Applying clears your selection." during
+multi-select).
 """
 
 from __future__ import annotations
@@ -57,12 +50,7 @@ class SortDialog(Static, Generic[VM], can_focus=True):
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        # Called from ``escape``. Decouples the dialog from the parent's exact dismissal API
-        # (a tab might call ``hide_dialog``; a screen might pop itself; either way the dialog
-        # just hands control back).
         self._on_close = on_close
-        # Cursor index into ``vm.sort_options()``. Landed on the currently-active sort axis at
-        # ``prepare_for_show``; moves with ←/→.
         self._cursor: int = 0
 
     def on_mount(self) -> None:
@@ -79,10 +67,8 @@ class SortDialog(Static, Generic[VM], can_focus=True):
         self.call_after_refresh(self._refresh)
 
     def prepare_for_show(self) -> None:
-        """Land the cursor on the currently-active sort axis so the most common action
-        (toggle direction of the active sort) is one ``enter`` away. Falls back to index 0 if
-        the active axis isn't surfaced (e.g. the VM trimmed an axis the user previously had
-        selected)."""
+        """Land the cursor on the active axis so toggling direction is one ``enter`` away.
+        Falls back to index 0 if the active axis isn't currently surfaced."""
         options = self._vm.sort_options()
         try:
             self._cursor = options.index(self._vm.sort_by)
@@ -90,9 +76,7 @@ class SortDialog(Static, Generic[VM], can_focus=True):
             self._cursor = 0
 
     def _extra_hint(self) -> Text | None:
-        """Optional supplemental hint appended inline to the keybinding hint row. Default
-        returns ``None``; subclasses override to surface state-driven warnings (e.g. "Applying
-        clears your selection." while multi-select is on)."""
+        """Optional inline hint appended to the keybinding row. Default ``None``."""
         return None
 
     def _refresh(self) -> None:
@@ -104,9 +88,8 @@ class SortDialog(Static, Generic[VM], can_focus=True):
             options.index(self._vm.sort_by) if self._vm.sort_by in options else -1
         )
         arrow = "↑" if self._vm.sort_dir == "asc" else "↓"
-        # Cursor colour: bright gold on focus, dim grey otherwise. The active axis itself
-        # always renders in the default fg so the arrow + brackets carry the "this is the
-        # live sort" signal.
+        # Active axis renders in default fg so the arrow + brackets carry the "live sort"
+        # signal; cursor highlight is layered on top via a brighter style.
         cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
 
         text = Text()
@@ -117,7 +100,7 @@ class SortDialog(Static, Generic[VM], can_focus=True):
             if is_cursor:
                 style = cursor_color
             elif is_active:
-                style = ""  # default fg
+                style = ""
             else:
                 style = "#787878"
             text.append(label, style=style)
@@ -149,8 +132,6 @@ class SortDialog(Static, Generic[VM], can_focus=True):
         self._refresh()
 
     def action_apply(self) -> None:
-        """Header-click semantic: same axis → toggle direction; different axis → switch to
-        that axis ascending. Dialog stays open so the user can keep tweaking."""
         options = self._vm.sort_options()
         if not options:
             return
@@ -162,8 +143,6 @@ class SortDialog(Static, Generic[VM], can_focus=True):
         self._vm.set_sort(chosen, new_dir)
 
     def action_reset(self) -> None:
-        """Restore the default sort (first surfaced option, ascending). Lands the cursor on
-        that option regardless of whether the sort actually changes — the dialog stays open."""
         options = self._vm.sort_options()
         if not options:
             return

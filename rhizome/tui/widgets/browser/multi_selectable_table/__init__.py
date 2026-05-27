@@ -1,4 +1,4 @@
-"""Public exports for the multi-selectable browser-table widget + its VM mixin."""
+"""Multi-select scaffolding for browser-tab tables: widget + VM mixin."""
 
 from .view import MultiSelectableDataTable
 from .view_model_mixin import MultiSelectableViewModelMixin

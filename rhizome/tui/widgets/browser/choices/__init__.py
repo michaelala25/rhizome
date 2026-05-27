@@ -1,4 +1,4 @@
-"""Public exports for the shared ``ChoiceList`` browser widget."""
+"""Shared ``ChoiceList`` base widget for browser-tab dialogs."""
 
 from .view import ChoiceList
 

@@ -1,23 +1,15 @@
-"""LinkedFlashcardsPanelView — flashcard ``DataTable`` + search bar + status row, rendering one
-section in non-relink mode and two sections separated by a visual boundary in relink mode.
+"""View for the linked-flashcards panel. Search bar / ``DataTable`` / relink Accept-Cancel /
+answer preview / status row.
 
-In **non-relink**, the table shows just the flashcards linked to the current entry-id set —
-the classic cursor-driven panel. The "sel" column renders empty.
+In **non-relink** the table shows the linked flashcards only; the "sel" column renders empty.
+In **relink** the layout is ``[*pinned, boundary, *pool]``, the "sel" column carries
+``[x]``/``[ ]`` markers, the ``-relink`` class flips on the darker palette, and selected rows
+render bright green + bold. The pool paginates via ``vm.load_more``; ``space`` toggles the
+cursor row's relink-set membership (no-op on the boundary, gated by the VM).
 
-In **relink**, the table layout is:
-
-    [pinned linked row 0]
-    [pinned linked row 1]
-    ...
-    [pinned linked row N-1]
-    [─ boundary row ─]            ← lands but no-op on toggle
-    [remaining pool row 0]
-    [remaining pool row 1]
-    ...
-
-The "sel" column carries [x]/[ ] markers, the entries-side darkened palette flips on via the
-``-relink`` class, and selected rows render bright green + bold. The remaining pool paginates via
-``load_more``; ``space`` toggles the cursor row's relink-set membership (no-op on boundary).
+The relink Accept/Cancel widget reveals between the table and the answer preview when
+``vm.is_relink_dirty`` is True, via a CSS class toggle (see ``_RelinkChoicesList`` and
+``_refresh``).
 """
 
 from __future__ import annotations
@@ -35,25 +27,20 @@ from ...choices import ChoiceList
 
 from .view_model import LinkedFlashcardsPanelViewModel
 
-# Sentinel slipped into the row-signature tuple at the boundary position so signature comparisons
-# can distinguish "structurally identical" from "boundary moved" (e.g. linked count changed).
-# Negative is safe — flashcard ids are positive autoincrement ints.
+# Boundary sentinel for the row-signature tuple. Negative is safe — flashcard ids are positive
+# autoincrement ints, so the sentinel can't collide with a real row's signature.
 _BOUNDARY_SIG: int = -1
 
-# Row key for the boundary row in the DataTable. String to disambiguate from numeric flashcard
-# id keys (which are also strings via ``str(fc.id)``).
+# Boundary row key (string so it can't collide with flashcard-id keys, which are ``str(fc.id)``).
 _BOUNDARY_ROW_KEY = "__boundary__"
 
 
 class _LinkedFlashcardsTable(DataTable):
-    """``DataTable`` subclass with auto-load-more-at-bottom (drives the relink-mode pool
-    pagination) and a ``space`` binding for relink toggle. The cursor still needs to round-trip
-    through ``vm.set_cursor`` so the VM's persisted cursor stays in sync across refetches
-    (mirrors the entries-side wiring)."""
+    """``DataTable`` with auto-load-more at the bottom edge (pool pagination) and a ``space``
+    binding for the relink-set toggle. Cursor round-trips through ``vm.set_cursor`` to keep the
+    VM's cursor in sync across refetches (mirrors the entries-side wiring)."""
 
     BINDINGS = [
-        # Mirrors the ``space`` binding on ``_EntriesTable``. VM no-ops outside relink, on the
-        # boundary row, or when the display is empty.
         Binding("space", "toggle_relink_selection", show=False),
     ]
 
@@ -66,9 +53,8 @@ class _LinkedFlashcardsTable(DataTable):
         self._vm = view_model
 
     async def action_cursor_down(self) -> None:
-        """Cursor-down with auto-load at the bottom edge. Relink-mode pool paginates via
-        ``vm.load_more``; it's a no-op outside relink, when nothing further is available, or when
-        a fetch is in flight, so this is safe to call unconditionally at the bottom edge."""
+        """Cursor-down with auto-load at the bottom edge. ``vm.load_more`` is a no-op outside
+        relink / when no more is available / mid-fetch, so calling at the edge is safe."""
         if (
             self._vm.remaining_has_more
             and self.row_count > 0
@@ -82,13 +68,8 @@ class _LinkedFlashcardsTable(DataTable):
 
 
 class _FlashcardAnswerPreview(TextArea):
-    """Read-only scrollable preview of the cursor flashcard's question, answer + testing notes.
-    Non-navigable (``can_focus=False``) — mouse-wheel scroll works, keyboard nav doesn't land
-    here.
-
-    Subscribes to the VM's ``dirty`` (which fires on cursor moves, refetches, and toggles). Reads
-    ``cursor_flashcard`` on each fire — ``None`` when on the boundary row or display is empty.
-    """
+    """Read-only scrollable preview of the cursor flashcard's question + answer + testing notes.
+    ``can_focus=False`` so keyboard nav skips it (mouse-wheel scroll still works)."""
 
     can_focus = False
 
@@ -133,10 +114,11 @@ class _FlashcardAnswerPreview(TextArea):
 
 
 class _RelinkChoicesList(ChoiceList[LinkedFlashcardsPanelViewModel]):
-    """Accept / Cancel choices for committing or discarding a relink edit. Visible only when
-    ``vm.is_relink_dirty`` is True; hidden via the ``.-visible`` CSS class toggle managed by
-    the parent panel's ``_refresh``. Escape always cancels regardless of cursor — matches the
-    "easy out" convention from the entry-details choices list."""
+    """Accept / Cancel for a pending relink. Visibility driven by ``vm.is_relink_dirty`` via the
+    ``.-visible`` class toggle in the parent's ``_refresh``. The widget is mounted once and
+    survives multiple show/hide cycles, so its cursor persists across them (no
+    ``prepare_for_show`` reset). Escape always cancels regardless of cursor (easy-out
+    convention)."""
 
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
     LEAD = "Relink: "
@@ -153,13 +135,9 @@ class _RelinkChoicesList(ChoiceList[LinkedFlashcardsPanelViewModel]):
 
 
 class LinkedFlashcardsPanelView(Vertical):
-    """Right-hand companion to the entries table when the parent tab is in
-    ``State.LINKED_FLASHCARDS``. Columns: sel / id / question / answer.
-
-    Layout: search bar over the flashcard table, an answer preview below, and a docked one-line
-    status row at the bottom (matches the entries-tab layout). In relink mode a boundary row
-    separates the pinned linked flashcards from the paginated remaining pool.
-    """
+    """Right-hand panel for ``State.LINKED_FLASHCARDS``. Columns: sel / id / question / answer.
+    Layout: search → table → relink Accept/Cancel (toggled by CSS) → answer preview → docked
+    status row."""
 
     DEFAULT_CSS = """
     LinkedFlashcardsPanelView {
@@ -184,17 +162,16 @@ class LinkedFlashcardsPanelView(Vertical):
         text-style: dim;
         padding: 0 1;
     }
-    /* Relink wash: shifted darker so the relink pinned/selected rows pop. Mirrors the entries-
-       table ``-multi-select`` class. */
+    /* Relink wash — darker so the selected rows pop. Mirrors the entries table's
+       ``-multi-select`` class. */
     LinkedFlashcardsPanelView #linked-flashcards-table.-relink {
         background: $surface-darken-2;
     }
     LinkedFlashcardsPanelView #linked-flashcards-table.-relink > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
-    /* Relink Accept/Cancel choices — mounted between the table and the answer preview, visible
-       only when ``vm.is_relink_dirty`` is True (``.-visible`` class managed by ``_refresh``).
-       Mirrors the entry-details choices styling: thin top border that flips accent on focus. */
+    /* Relink Accept/Cancel — visibility driven by ``.-visible`` class on dirty/clean transition.
+       Thin top border that flips accent on focus (mirrors the entry-details choices). */
     LinkedFlashcardsPanelView #linked-flashcards-relink-choices {
         height: 3;
         margin: 1 0 0 0;
@@ -211,8 +188,8 @@ class LinkedFlashcardsPanelView(Vertical):
     }
     """
 
-    # Question / answer columns are capped at 40 chars each — the right tab is 50% wide, so a
-    # longer column would force the other to collapse. ``DataTable`` ellipsises anything wider.
+    # Cap question / answer columns at 40 chars; the right panel is 50% of the tab width and a
+    # wider column would force the other to collapse. ``DataTable`` ellipsises overflow.
     _TEXT_COLUMN_WIDTH = 40
 
     def __init__(
@@ -222,16 +199,12 @@ class LinkedFlashcardsPanelView(Vertical):
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        # Row-signature edge detector — same three-path refresh as the entries tab (rebuild /
-        # extend / inplace) so cursor + scroll survive non-structural changes. ``None`` forces
-        # the first refresh through the rebuild path. The boundary row appears in the signature
-        # as ``_BOUNDARY_SIG`` so a transition into/out of relink (changing display shape)
-        # forces a rebuild.
+        # Row-signature edge detector — three-path refresh (rebuild / extend / inplace) so the
+        # cursor + scroll survive non-structural changes. Boundary appears in the signature as
+        # ``_BOUNDARY_SIG`` so relink mode flips force a rebuild.
         self._last_row_signature: tuple[int, ...] | None = None
-        # Tracks the relink-dirty state at the last refresh so a dirty→clean transition can
-        # trigger focus-orphan rescue (the choices widget would otherwise be left focused while
-        # hidden). False at boot, since the widget isn't visible until the user toggles
-        # something off-baseline.
+        # Tracked across refreshes for focus-orphan rescue: dirty→clean hides the choices widget
+        # out from under any focus that was on it.
         self._last_relink_dirty: bool = False
 
     def compose(self):
@@ -241,9 +214,8 @@ class LinkedFlashcardsPanelView(Vertical):
             cursor_type="row",
             zebra_stripes=True,
         )
-        # Leading "sel" column always present (we can't add or drop columns cleanly after
-        # construction). Rendered empty outside relink; in relink each row shows [ ] or [x]
-        # (boundary row stays blank). Mirrors the entries-table pattern.
+        # "sel" column always present (DataTable can't drop columns cleanly). Empty outside
+        # relink; ``[ ]`` / ``[x]`` markers in relink (boundary row stays blank).
         table.add_column("sel", width=3)
         table.add_column("id")
         table.add_column("question", width=self._TEXT_COLUMN_WIDTH)
@@ -252,9 +224,8 @@ class LinkedFlashcardsPanelView(Vertical):
             self._vm, id="linked-flashcards-search-input",
         )
         yield table
-        # Mounted unconditionally; visibility is driven by ``vm.is_relink_dirty`` via the
-        # ``.-visible`` class so the widget can subscribe to the VM at mount time and survive
-        # multiple dirty→clean→dirty cycles without re-mounting.
+        # Mounted unconditionally so its VM subscription survives across show/hide cycles;
+        # visibility flipped by the ``.-visible`` CSS class in ``_refresh``.
         yield _RelinkChoicesList(self._vm, id="linked-flashcards-relink-choices")
         yield _FlashcardAnswerPreview(self._vm, id="linked-flashcards-answer-preview")
         yield Static("", id="linked-flashcards-status")
@@ -275,11 +246,9 @@ class LinkedFlashcardsPanelView(Vertical):
         relink = self._vm.relink_mode
         table.set_class(relink, "-relink")
 
-        # Build the row signature for change detection. Linked ids first; in relink, append the
-        # boundary sentinel and the remaining ids. Any change to either section's ids — including
-        # the linked-set reshuffling on entry-cursor move — forces a rebuild via signature
-        # mismatch; ``load_more`` shows up as a prefix-match → extend; pure style churn (relink
-        # toggle landing on selection) → inplace.
+        # Row signature: linked ids, then (in relink) boundary + remaining ids. Drives the
+        # three-path refresh — any structural change forces rebuild, ``load_more`` is a prefix
+        # match → extend, and a pure relink toggle is signature-equal → inplace cell updates.
         linked_sig = tuple(fc.id for fc in self._vm.linked_flashcards)
         if relink:
             new_signature: tuple[int, ...] = (
@@ -315,7 +284,6 @@ class LinkedFlashcardsPanelView(Vertical):
                 cells = self._render_boundary_row()
                 row_key = _BOUNDARY_ROW_KEY
             else:
-                # Resolve which section this index belongs to and pick the right flashcard.
                 if relink and i > boundary_idx:
                     fc = self._vm.remaining_flashcards[i - boundary_idx - 1]
                 else:
@@ -332,9 +300,8 @@ class LinkedFlashcardsPanelView(Vertical):
 
         self._last_row_signature = new_signature
 
-        # Restore the cursor after a rebuild — ``clear()`` reset the table to row 0.
-        # ``move_cursor`` round-trips via ``RowHighlighted`` → ``vm.set_cursor``; the equality
-        # early-return there breaks the loop.
+        # Restore cursor after a rebuild (``clear()`` resets to row 0). ``move_cursor`` fires
+        # ``RowHighlighted`` → ``vm.set_cursor``; the VM's equality early-return breaks the loop.
         if (
             path == "rebuild"
             and len(new_signature) > 0
@@ -345,16 +312,15 @@ class LinkedFlashcardsPanelView(Vertical):
         status = self.query_one("#linked-flashcards-status", Static)
         status.update(self._format_status())
 
-        # Relink Accept/Cancel choices visibility. Toggling via a CSS class avoids re-mounting
-        # the widget on every dirty→clean→dirty cycle (preserves its VM subscription).
+        # Relink Accept/Cancel visibility. Class toggle (not unmount) so the VM subscription
+        # survives across show/hide cycles.
         choices = self.query_one("#linked-flashcards-relink-choices", _RelinkChoicesList)
         dirty_now = self._vm.is_relink_dirty
         was_dirty = self._last_relink_dirty
         choices.set_class(dirty_now, "-visible")
-        # Focus-orphan rescue: if the choices widget was just hidden out from under a focused
-        # state, ``screen.focused`` is now pointing at a ``display: none`` widget and the next
-        # keystroke goes nowhere visible. Re-route focus to the table so the user can keep
-        # navigating. Mirrors the entry-details rescue.
+        # Focus-orphan rescue: on dirty→clean the choices widget is hidden out from under any
+        # focus that was on it; ``screen.focused`` would then point at a ``display: none`` widget
+        # and the next keystroke would go nowhere visible. Re-route to the table.
         if was_dirty and not dirty_now and self.screen is not None:
             if self.screen.focused is choices:
                 try:
@@ -366,13 +332,8 @@ class LinkedFlashcardsPanelView(Vertical):
     def _render_flashcard_row(
         self, fc, *, zebra_index: int, relink: bool,
     ) -> tuple[Text, Text, Text, Text]:
-        """Build the four cells for a real flashcard row.
-
-        Three colour regimes (mirrors the entries table):
-          * non-relink: zebra-pair (odd rows dim, even default).
-          * relink, not selected: darker zebra pair so the selected rows stand out.
-          * relink, selected: bold green to pop against the dimmed sea.
-        """
+        """Build the four cells for a flashcard row. Three colour regimes (mirrors entries):
+        non-relink zebra; relink-unselected darker zebra; relink-selected bold green."""
         selected = relink and fc.id in self._vm.relink_selected_ids
         if selected:
             style = "bold #5fd75f"
@@ -389,9 +350,8 @@ class LinkedFlashcardsPanelView(Vertical):
         )
 
     def _render_boundary_row(self) -> tuple[Text, Text, Text, Text]:
-        """The visual partition between pinned linked rows and the remaining pool. All cells use
-        a dim separator glyph so the row reads as "this is a divider, not a row you'd act on".
-        Cursor lands here but ``toggle_current_relink_selection`` no-ops (VM-side guard)."""
+        """The pinned/pool divider. Dim ``─`` glyphs so the row reads as a separator. Cursor
+        lands here but ``toggle_current_relink_selection`` no-ops (VM guards on cursor section)."""
         sep_style = "#3a3a3a"
         return (
             Text("───", style=sep_style),
@@ -404,10 +364,7 @@ class LinkedFlashcardsPanelView(Vertical):
         if self._vm.is_loading:
             return "loading…"
         if self._vm.relink_mode:
-            # Selection count under the current relink state. The two-number framing (selected /
-            # remaining-pool-total) tells the user both "what would link if I committed" and
-            # "how big the pool is". Boundary-row landing is silent here — no point telling the
-            # user "you're on the boundary".
+            # Two-number framing: selected (what would link on commit) + pool size.
             count = len(self._vm.relink_selected_ids)
             noun = "flashcard" if count == 1 else "flashcards"
             pool = self._vm.remaining_total
@@ -442,9 +399,8 @@ class LinkedFlashcardsPanelView(Vertical):
         self,
         event: DataTable.RowHighlighted,
     ) -> None:
-        """Push the cursor back into the VM. Mirrors the entries-tab handler; the VM
-        early-returns when the index is unchanged, so this is safe to fire from programmatic
-        ``move_cursor`` calls during ``_refresh``."""
+        """Push the cursor back into the VM. VM's equality early-return is what breaks the loop
+        with the programmatic ``move_cursor`` in ``_refresh``."""
         if event.data_table.id != "linked-flashcards-table":
             return
         self._vm.set_cursor(event.cursor_row)

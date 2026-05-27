@@ -1,28 +1,26 @@
 """MultiSelectableViewModelMixin — selection-set state machine for VMs whose windowed list
-supports a "multi-select mode" the user can toggle on/off.
+supports a togglable "multi-select mode".
 
-The mixin owns the small, well-bounded state machine: a ``multi_select_active`` flag, an id-
-keyed ``_selected_ids`` set, and the three mutators (``toggle_multi_select``,
-``toggle_current_selection``, ``add_current_to_selection``) plus the supporting
-``selected_target_ids`` resolver and the window-shrink helpers
-(``_clear_selection`` / ``_intersect_selection_with_visible_ids``). Concrete VMs:
+Owns a ``multi_select_active`` flag, an id-keyed ``_selected_ids`` set, the three mutators
+called by ``MultiSelectableDataTable``, a ``selected_target_ids()`` resolver shared by bulk-
+action mutators, and two lifecycle helpers for window churn.
 
-  - Implement ``_selectable_items()`` and ``_item_id(item)`` so the mixin can find the
+Concrete-VM contract
+--------------------
+  - Implement ``_selectable_items()`` and ``_item_id(item)`` so the mixin can resolve the
     cursor's id without knowing the concrete attribute names.
-  - Declare a ``cursor`` property (almost always already present).
+  - Declare a ``cursor`` property (almost always already present for navigation).
   - Override ``_on_selection_changed()`` to push the new state down to sub-VMs / sibling UI
-    (e.g. a details panel's freeze toggle, a linked-flashcards sub-VM's target set).
-  - Call ``_clear_selection()`` from mutators that reshuffle the window
-    (sort / filter / search changes).
+    (e.g. a details-panel freeze toggle, a linked sub-VM's target set). Default no-op.
+  - Call ``_clear_selection()`` from mutators that reshuffle the window (sort / filter /
+    search) — selection-by-position loses meaning after a reshuffle.
   - Call ``_intersect_selection_with_visible_ids(visible_ids)`` from a post-refetch
-    ``on_complete`` callback to drop any ids that no longer survive the new window.
+    ``on_complete`` callback so a bulk action doesn't leave behind ids the new window
+    can't render.
 
-Inheritance convention
-----------------------
-Mix in at the leaf, not on an intermediate base — same rule as
-``SearchableViewModelMixin`` / ``SortableViewModelMixin``. The mixin's ``__init__`` runs
-cooperatively via ``super().__init__()`` and only adds two private attributes, so it slots
-into any existing MRO that ends at ``ViewModelBase`` without surprises.
+Inheritance: mix in at the leaf VM, not on an intermediate base — same rule as the sibling
+Searchable / Sortable mixins. The mixin's ``__init__`` is cooperative (``super().__init__()``)
+and only adds two private attributes.
 """
 
 from __future__ import annotations
@@ -37,8 +35,8 @@ class MultiSelectableViewModelMixin(ViewModelBase):
     def __init__(self) -> None:
         super().__init__()
         self._multi_select_active: bool = False
-        # Keyed by item id, not row index, so the selection survives ``load_more``, refetches,
-        # and post-action window mutations. Empty in single-select; never grows then either.
+        # Keyed by item id, not row index, so selection survives ``load_more``, refetches,
+        # and post-action window mutations.
         self._selected_ids: set[int] = set()
 
     # ------------------------------------------------------------------
@@ -47,8 +45,8 @@ class MultiSelectableViewModelMixin(ViewModelBase):
 
     @abstractmethod
     def _selectable_items(self) -> list[Any]:
-        """The current windowed list. The mixin only reads via index; the items themselves
-        are opaque (the mixin asks ``_item_id`` for the key)."""
+        """The current windowed list. Items are opaque to the mixin; it asks ``_item_id``
+        for the key."""
 
     @abstractmethod
     def _item_id(self, item: Any) -> int:
@@ -57,17 +55,15 @@ class MultiSelectableViewModelMixin(ViewModelBase):
     @property
     @abstractmethod
     def cursor(self) -> int:
-        """Current row index into ``_selectable_items()``. Concrete VMs almost always already
-        own this for navigation purposes; the mixin reads it to locate the cursor's id."""
+        """Row index into ``_selectable_items()``."""
 
     # ------------------------------------------------------------------
-    # Optional hook — concrete VM overrides to thread state down to sub-VMs / sibling UI
+    # Optional hook — concrete VM overrides to sync sub-VMs / sibling UI
     # ------------------------------------------------------------------
 
     def _on_selection_changed(self) -> None:
         """Called whenever ``multi_select_active`` flips or ``_selected_ids`` changes. The
-        hook is argless; the concrete override reads ``self.multi_select_active`` /
-        ``self.selected_ids`` directly. Default no-op."""
+        override reads ``self.multi_select_active`` / ``self.selected_ids`` directly."""
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -79,8 +75,7 @@ class MultiSelectableViewModelMixin(ViewModelBase):
 
     @property
     def selected_ids(self) -> frozenset[int]:
-        """Read-only view of the current selection set. Frozenset rather than the raw mutable
-        set so accidental external mutation is impossible."""
+        # Frozenset so accidental external mutation is impossible.
         return frozenset(self._selected_ids)
 
     def is_selected(self, item_id: int) -> bool:
@@ -89,19 +84,18 @@ class MultiSelectableViewModelMixin(ViewModelBase):
     def selected_target_ids(self) -> set[int]:
         """Resolve "the selection" to a concrete set of ids. In multi-select that's
         ``_selected_ids``; in single-select it's the cursor's item id (empty if the window
-        is empty). Shared by every bulk-action mutator the concrete VM writes."""
+        is empty). Shared by every bulk-action mutator on the concrete VM."""
         if self._multi_select_active:
             return set(self._selected_ids)
         item_id = self._cursor_item_id()
         return {item_id} if item_id is not None else set()
 
     # ------------------------------------------------------------------
-    # Mutators — called by the ``MultiSelectableDataTable`` widget
+    # Mutators — called by ``MultiSelectableDataTable``
     # ------------------------------------------------------------------
 
     def toggle_multi_select(self) -> None:
-        """Flip multi-select mode. Turning *off* abandons the current selection (clears the
-        set); turning *on* starts with an empty set."""
+        """Flip multi-select mode. Turning off abandons the current selection."""
         self._multi_select_active = not self._multi_select_active
         if not self._multi_select_active:
             self._selected_ids.clear()
@@ -109,8 +103,7 @@ class MultiSelectableViewModelMixin(ViewModelBase):
         self.emit(self.dirty)
 
     def toggle_current_selection(self) -> None:
-        """Flip membership of the cursor's item in the selection. No-op outside multi-select
-        or on an empty window."""
+        """Flip the cursor row's membership. No-op outside multi-select or on an empty window."""
         item_id = self._cursor_item_id()
         if item_id is None or not self._multi_select_active:
             return
@@ -122,10 +115,9 @@ class MultiSelectableViewModelMixin(ViewModelBase):
         self.emit(self.dirty)
 
     def add_current_to_selection(self) -> None:
-        """Idempotent add of the cursor's item — the half of ``toggle_current_selection``
-        that ``shift+up`` / ``shift+down`` uses for range-select sugar. Held-key repeat
-        across already-selected rows is a no-op, which is the right behaviour for sweeping
-        the cursor through an extending range."""
+        """Idempotent add for ``shift+up`` / ``shift+down`` range-select sugar. Held-key
+        repeat across already-selected rows is a no-op — the right behaviour for sweeping
+        through an extending range."""
         item_id = self._cursor_item_id()
         if item_id is None or not self._multi_select_active:
             return
@@ -140,18 +132,16 @@ class MultiSelectableViewModelMixin(ViewModelBase):
     # ------------------------------------------------------------------
 
     def _clear_selection(self) -> None:
-        """Drop ``_selected_ids`` and notify. No-op when already empty. Use from mutators
-        that reshuffle the window (sort, filter, search): selection-by-position loses
-        meaning after a reshuffle."""
+        """Drop the selection and notify. No-op when already empty. Use from window-
+        reshuffling mutators (sort / filter / search)."""
         if not self._selected_ids:
             return
         self._selected_ids.clear()
         self._on_selection_changed()
 
     def _intersect_selection_with_visible_ids(self, visible: set[int]) -> None:
-        """Drop any selected ids no longer present in the visible window. Use from a post-
-        refetch ``on_complete`` callback so a bulk action doesn't leave behind ids that the
-        new window can't render."""
+        """Drop selected ids no longer present in the visible window. Use from a post-
+        refetch ``on_complete`` callback."""
         if not self._selected_ids:
             return
         if self._selected_ids.issubset(visible):

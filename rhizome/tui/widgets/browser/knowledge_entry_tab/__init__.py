@@ -1,4 +1,4 @@
-"""Knowledge-entry browser tab (MVVM)."""
+"""Knowledge-entry browser tab — paginated DataTable with details / linked-flashcards panes."""
 
 from .view import KnowledgeEntryBrowserTabView
 from .view_model import DEFAULT_PAGE_LIMIT, KnowledgeEntryBrowserTabViewModel

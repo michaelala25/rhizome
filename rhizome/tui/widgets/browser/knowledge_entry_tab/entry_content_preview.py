@@ -1,8 +1,6 @@
-"""Read-only scrollable preview of the cursor entry's ``content`` field.
-
-Non-navigable (``can_focus=False``) so the keyboard never lands here; mouse-wheel scroll still
-works. Only rendered when the parent tab is in ``State.LINKED_FLASHCARDS`` (CSS-driven via the
-``-state-*`` class on the tab); in ``ENTRIES`` the details panel covers the same job.
+"""Read-only preview of the cursor entry's ``content``. Visible only in ``LINKED_FLASHCARDS``
+(the editable details panel covers the same job in ``ENTRIES``). Non-focusable — keyboard never
+lands here; mouse-wheel scroll still works.
 """
 
 from __future__ import annotations
@@ -15,10 +13,9 @@ from .view_model import KnowledgeEntryBrowserTabViewModel
 
 
 class _EntryContentPreview(TextArea):
-    """Subscribes to the tab VM's ``dirty`` (refetches, post-save repaints) and the details VM's
-    ``dirty`` (cursor moves — ``set_cursor`` routes through ``details.set_entry`` which fires the
-    details dirty, but does **not** fire the tab dirty itself). Re-reads ``entries[cursor]`` on
-    each fire and rebuilds the text."""
+    """Subscribes to both the tab VM's ``dirty`` (refetches, post-save repaints) and the details
+    VM's ``dirty`` (cursor moves — ``set_cursor`` fires only the details dirty, see view_model.py
+    for why). Re-reads ``entries[cursor]`` on each fire."""
 
     can_focus = False
 

@@ -1,5 +1,22 @@
-"""Two-axis filter picker (entry-type + flashcard-presence). Sits in the same screen slot as the
-other dialogs."""
+"""Two-axis filter dialog: entry-type multi-select over a mutually-exclusive flashcard-presence
+radio.
+
+Layout: ``Vertical`` with three rows — type row, flashcard row (a ``Horizontal`` containing the
+radios Static + the compact ``_OneOfInput`` + a close-bracket Static), and hint row. Cursor model
+is two-axis (``_row`` / ``_col``); the flashcard row has one extra column past the three real
+radios for the "One of" pseudo-option.
+
+"One of" sub-flow: ``space`` on it sets ``_one_of_selected`` view-side, clears the VM filter (the
+two axes are mutually exclusive at the dialog layer), and focuses the input. ``enter`` parses the
+buffer via ``_parse_id_list`` and pushes the tuple via ``vm.set_flashcard_ids_filter``; empty
+parsed result clears the filter but keeps the mode. ``escape`` clears the buffer, drops the
+``_one_of_selected`` flag, and wipes both VM axes. Switching to a real radio preserves the buffer
+but flips the flag off.
+
+Keys: ``↑``/``↓`` row · ``←``/``→`` within row (wrap) · ``space`` toggle · ``r`` clears both axes
+and the One-of buffer · ``f``/``escape`` dismiss · ``s``/``e`` swap. Both rows push to the VM
+immediately on toggle — no separate "apply".
+"""
 
 from __future__ import annotations
 
@@ -18,38 +35,28 @@ if TYPE_CHECKING:
     from .view import KnowledgeEntryBrowserTabView
 
 
-# Entry-type filter options (first filter row). Mirrors ``EntryType`` enum order.
+# Entry-type filter options (row 0). Mirrors ``EntryType`` enum order.
 _TYPE_OPTIONS: tuple[EntryType, ...] = tuple(EntryType)
 
-# Flashcard-presence filter options (second filter row). Mutually exclusive — exactly one is the
-# active value at any time. ``None`` is the "no filter active" baseline (default). Label / value
-# pairs:
-#   * "None"           → has_flashcards=None   (no filter applied — default)
-#   * "Any"            → has_flashcards=True   (entries with at least one linked flashcard)
-#   * "No flashcards"  → has_flashcards=False  (entries with none)
+# Flashcard-presence radio options (row 1). Maps label → ``vm.has_flashcards`` value.
 _FLASHCARD_OPTIONS: tuple[tuple[str, bool | None], ...] = (
     ("None", None),
     ("Any", True),
     ("No flashcards", False),
 )
 
-# Label for the fourth flashcard-filter option: "One of: <buffer>". The option is view-side only
-# for now — when active, the radio bullet is on this label and a compact Input next to it accepts
-# the buffer. Selecting any of the other three radios disables "One of" but preserves the buffer
-# so the user can return to it. The VM is untouched by this option at present.
+# Fourth flashcard-filter option label. Backed by ``vm.flashcard_ids`` (not ``has_flashcards``).
 _ONE_OF_LABEL = "One of:"
 
-# Lead-in column width for the two filter-row labels — wide enough for the longer of the two
-# ("filter by flashcards:") with a 2-space gutter, so the option columns line up vertically.
+# Lead-in width — wide enough for "filter by flashcards:" + 2-space gutter so option columns line
+# up vertically across rows.
 _FILTER_LEAD_WIDTH = len("filter by flashcards:") + 2
 
 
 class _OneOfInput(Input):
-    """Compact single-row input mounted next to the "One of:" radio. Adds an escape binding that
-    routes back to the parent dialog so escape clears+exits without Textual's default Input
-    behaviour swallowing the keystroke.
-
-    The placeholder also serves as the format hint — comma-separated integer ids."""
+    """Compact one-row input for the "One of:" radio. Custom escape binding routes through the
+    parent dialog so escape clears+exits without Input's default swallowing the keystroke. The
+    placeholder doubles as the format hint."""
 
     BINDINGS = [
         Binding("escape", "handle_escape", show=False),
@@ -68,28 +75,7 @@ class _OneOfInput(Input):
 
 
 class _FilterDialog(Vertical, can_focus=True):
-    """Layout: three children stacked vertically.
-      * Row 0 — ``filter by type:`` (multi-select checkboxes mirroring ``EntryType``). Selection
-        state derives directly from ``vm.entry_types`` (``None`` = all types selected).
-      * Row 1 — ``filter by flashcards:`` (mutually-exclusive radio: None / Any / No flashcards /
-        One of: <input>). The first three derive from ``vm.has_flashcards``; the fourth lives
-        view-side as ``_one_of_selected`` + ``_one_of_buffer`` and isn't yet wired to the VM.
-      * Row 2 — hint line.
-
-    "One of:" semantics: pressing ``space`` on it activates the radio (clears any prior VM
-    flashcard filter, since the two are mutually exclusive) and focuses the compact Input. Inside
-    the Input, ``enter`` submits (buffer + selection preserved, focus back to dialog) and
-    ``escape`` cancels (buffer cleared, selection reverts to None, focus back to dialog).
-    Selecting one of the other three radios disables "One of" but preserves the buffer for later
-    re-use.
-
-    Keys: ``up`` / ``down`` move the cursor between rows; ``left`` / ``right`` move within a row
-    (wrap); ``space`` toggles the option under the cursor (multi-toggle on row 0; radio-select on
-    row 1); ``r`` clears both filter axes (and the One-of buffer); ``f`` / ``escape`` dismiss;
-    ``s`` / ``e`` swap dialogs.
-
-    Both rows push to the VM immediately on toggle — no separate "apply" key.
-    """
+    """See the module docstring for layout, the "One of" sub-flow, and the keybindings."""
 
     BINDINGS = [
         Binding("up", "cursor_up", show=False),
@@ -99,8 +85,7 @@ class _FilterDialog(Vertical, can_focus=True):
         Binding("space", "toggle", show=False),
         Binding("r", "reset", show=False),
         Binding("s", "swap_to('sort')", show=False),
-        # ``f`` toggles the dialog closed (symmetric with the ``f``-opens-it binding on the entries
-        # table).
+        # Symmetric with the ``f``-opens-it binding on the entries table.
         Binding("f", "cancel", show=False),
         Binding("e", "swap_to('edit')", show=False),
         Binding("escape", "cancel", show=False),
@@ -115,16 +100,12 @@ class _FilterDialog(Vertical, can_focus=True):
         super().__init__(**kwargs)
         self._vm = view_model
         self._tab = tab
-        # Two-axis cursor: ``_row`` picks the filter row (0 = type, 1 = flashcards), ``_col`` is the
-        # column within that row. Rows have different option counts, so ``_col`` is clamped on row
-        # change. The flashcards row's last column (index == len(_FLASHCARD_OPTIONS)) is the
-        # view-side "One of" pseudo-option.
+        # ``_row`` ∈ {0, 1}; ``_col`` clamped to the active row's length on row change. The
+        # flashcards row has one extra column past the real radios for the "One of" pseudo-option.
         self._row: int = 0
         self._col: int = 0
-        # "One of" view-side state. ``_one_of_selected`` overrides the VM-derived bullet on the
-        # flashcards row; ``_one_of_buffer`` is the current text. Both persist across the dialog's
-        # open/close lifecycle (the dialog is mounted once and reused) — the buffer survives even
-        # when the user switches the radio to another option so they can return to it later.
+        # "One of" view-side state. The buffer persists across radio switches and dialog
+        # open/close cycles so the user can return to it later.
         self._one_of_selected: bool = False
         self._one_of_buffer: str = ""
 
@@ -138,7 +119,7 @@ class _FilterDialog(Vertical, can_focus=True):
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
-        # Input starts disabled (greyed out) since "One of" isn't selected by default.
+        # Input starts disabled — "One of" isn't selected by default.
         self.query_one("#one-of-input", _OneOfInput).disabled = True
         self._refresh()
 
@@ -152,17 +133,14 @@ class _FilterDialog(Vertical, can_focus=True):
         self.call_after_refresh(self._refresh)
 
     def prepare_for_show(self) -> None:
-        """Park the cursor at row 0, col 0 on each open. The active selections (VM filters + the
-        view-side ``_one_of_*`` state) persist across opens by design."""
+        # Active selections (VM filters + view-side _one_of_*) persist across opens by design.
         self._row = 0
         self._col = 0
 
     def _row_lengths(self) -> tuple[int, int]:
-        # Row 1 now has one extra column for the "One of" pseudo-option.
         return (len(_TYPE_OPTIONS), len(_FLASHCARD_OPTIONS) + 1)
 
     def _one_of_col(self) -> int:
-        """Index of the "One of" pseudo-option on the flashcards row."""
         return len(_FLASHCARD_OPTIONS)
 
     def _refresh(self) -> None:
@@ -173,33 +151,28 @@ class _FilterDialog(Vertical, can_focus=True):
             hint = self.query_one("#hint-row", Static)
             input_widget = self.query_one("#one-of-input", _OneOfInput)
         except Exception:
-            # compose() hasn't finished yet — on_mount's call will catch up.
             return
         cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
         type_row.update(self._render_type_row(cursor_color))
         radios.update(self._render_flashcard_radios(cursor_color))
         close_bracket.update(self._render_close_bracket())
         hint.update(self._render_hint())
-        # Sync the Input's enabled/value state with the view-side flags. Skip the value-mirror when
-        # the input has focus so we don't clobber what the user is typing mid-keystroke.
+        # Sync Input enabled/value. Skip the value-mirror under focus — don't clobber typing.
         input_widget.disabled = not self._one_of_selected
         if not input_widget.has_focus and input_widget.value != self._one_of_buffer:
             input_widget.value = self._one_of_buffer
 
     def _selected_types(self) -> set[EntryType]:
-        """Derive the current type selection from ``vm.entry_types``. ``None`` = all selected."""
         if self._vm.entry_types is None:
             return set(_TYPE_OPTIONS)
         return set(self._vm.entry_types)
 
     def _type_filter_active(self) -> bool:
-        """True when the type filter is narrowing the view (not "all types selected")."""
         return self._selected_types() != set(_TYPE_OPTIONS)
 
     def _flashcard_filter_active(self) -> bool:
-        """True when the flashcard-presence filter is narrowing the view. ``_one_of_selected``
-        covers the case where the user has chosen "One of" but not yet submitted a buffer (so the
-        VM axes are both still ``None``) — we still want the row header to read as active."""
+        # ``_one_of_selected`` covers the case where the user has chosen "One of" but not yet
+        # submitted a buffer (both VM axes still None) — we still want the row header active.
         return (
             self._one_of_selected
             or self._vm.has_flashcards is not None
@@ -225,18 +198,16 @@ class _FilterDialog(Vertical, can_focus=True):
         return text
 
     def _render_flashcard_radios(self, cursor_color: str) -> Text:
-        """Render the three real radio options + the "One of:" label. The compact Input itself is
-        a sibling widget — this Static only renders text up through the "One of:" label and a
-        trailing space; the Input lays out to the right inside the Horizontal."""
+        """Renders text up through the "One of:" label + trailing "["; the Input + close-bracket
+        are sibling widgets laid out by the parent Horizontal."""
         text = Text()
         active = self._vm.has_flashcards
         lead_style = "bold #5fd75f" if self._flashcard_filter_active() else "dim"
         text.append(_pad_lead("filter by flashcards:"), style=lead_style)
         for i, (label, value) in enumerate(_FLASHCARD_OPTIONS):
             is_cursor = self._row == 1 and self._col == i
-            # When "One of" is active, none of the real radios are selected (the bullet jumps to
-            # the One-of pseudo-option) — we suppress the VM-derived bullet rather than rely on
-            # ``vm.has_flashcards`` being None, since "None" is a legitimate VM value too.
+            # When "One of" is active the bullet jumps to the pseudo-option — explicitly suppress
+            # the VM-derived bullet, since ``has_flashcards=None`` is also a legitimate VM state.
             is_sel = (not self._one_of_selected) and value == active
             marker = "(•)" if is_sel else "( )"
             marker_style = "#5fd75f" if is_sel and value is not None else (
@@ -247,8 +218,7 @@ class _FilterDialog(Vertical, can_focus=True):
             text.append(" ")
             text.append(label, style=label_style)
             text.append("    ")
-        # "One of:" pseudo-option — bullet driven by ``_one_of_selected``. Trailing "[" demarcates
-        # the start of the input area; the closing "]" lives in its own Static after the Input.
+        # "One of:" pseudo-option. Trailing "[" demarcates the start of the input field.
         is_cursor = self._row == 1 and self._col == self._one_of_col()
         marker = "(•)" if self._one_of_selected else "( )"
         marker_style = "#5fd75f" if self._one_of_selected else "#787878"
@@ -266,8 +236,8 @@ class _FilterDialog(Vertical, can_focus=True):
         return Text("]", style=bracket_style)
 
     def _render_hint(self) -> Text:
-        # Hint line — extended with the selection-clearing warning while multi-select is on
-        # (mirrors ``_SortBar``'s pattern).
+        # Extended with the selection-clearing warning while multi-select is on (same pattern as
+        # ``_EntriesSortDialog._extra_hint``).
         hint = Text()
         hint.append(
             "↑/↓ row • ←/→ move • space toggle • r reset • f/esc dismiss",
@@ -299,19 +269,8 @@ class _FilterDialog(Vertical, can_focus=True):
         self._refresh()
 
     def action_toggle(self) -> None:
-        """Dispatch ``space`` based on the active row.
-
-        Row 0 (types) — flip the cursor's option in the selection, then push the new filter to the
-        VM. The VM's ``set_type_filter`` collapses "all selected" back to ``None``.
-
-        Row 1 (flashcards):
-          * One of the three real radios — radio-select: the cursor's option becomes the active
-            value. Disables "One of" but preserves the buffer.
-          * The "One of" pseudo-option — activates it (clearing any prior VM flashcard filter,
-            since the two are mutually exclusive) and focuses the compact Input. Re-pressing
-            ``space`` on it while already active just re-focuses the input — useful for resuming
-            edits after a submit.
-        """
+        # Row 0: multi-toggle on the cursor's type; ``set_type_filter`` collapses all-selected → None.
+        # Row 1: radio-select on the cursor's option, or activate the "One of" pseudo-option.
         if self._row == 0:
             target = _TYPE_OPTIONS[self._col]
             selected = self._selected_types()
@@ -322,7 +281,7 @@ class _FilterDialog(Vertical, can_focus=True):
             if selected == set(_TYPE_OPTIONS):
                 self._vm.set_type_filter(None)
             else:
-                # Preserve enum-definition order so the kwargs snapshot is stable across toggles.
+                # Preserve enum order so the kwargs snapshot is stable across toggles.
                 self._vm.set_type_filter(tuple(t for t in _TYPE_OPTIONS if t in selected))
             return
         if self._col == self._one_of_col():
@@ -333,13 +292,10 @@ class _FilterDialog(Vertical, can_focus=True):
             self._vm.set_flashcard_filter(value)
 
     def _activate_one_of(self) -> None:
-        """Flip the radio to "One of" and focus the input. Idempotent on the selection flag — used
-        both for the initial activation and for re-entry on subsequent ``space`` presses."""
+        # Idempotent on the flag — also used to re-focus the input on subsequent ``space`` presses.
         if not self._one_of_selected:
             self._one_of_selected = True
-            # Clear any prior VM-side flashcard filter — the two are mutually exclusive at the
-            # display layer, and leaving a stale VM value would render an incoherent state if the
-            # user later clicks back to the VM-derived radios.
+            # Clear the VM filter — the two axes are mutually exclusive at the display layer.
             self._vm.set_flashcard_filter(None)
         self._refresh()
         input_widget = self.query_one("#one-of-input", _OneOfInput)
@@ -347,50 +303,34 @@ class _FilterDialog(Vertical, can_focus=True):
         input_widget.focus()
 
     def submit_one_of(self, value: str) -> None:
-        """Called from the input on ``enter``. Persist the buffer, parse it into a tuple of ids,
-        and push the result to the VM. Focus returns to the dialog so the user can resume cursor
-        navigation. The selection stays on "One of".
-
-        Parsing is lenient: split on commas, strip whitespace, drop empty tokens, drop tokens that
-        don't parse as ``int``. An empty result (either an empty buffer or all-garbage) clears
-        the VM filter rather than applying the empty-set "no rows" sentinel — submitting nothing
-        is a more natural "stop filtering" signal than escape, which also clears the buffer.
-        """
+        """``enter`` inside the input: parse via ``_parse_id_list`` and push to the VM. Empty
+        parsed result clears the filter but stays in "One of" mode — submitting nothing reads as
+        "stop filtering", not "no rows match"."""
         self._one_of_buffer = value
         ids = _parse_id_list(value)
         if ids:
             self._vm.set_flashcard_ids_filter(ids)
         else:
-            # No usable ids → clear the VM-side filter, but stay in "One of" mode so the user can
-            # keep editing. Mirrors how the search bar treats an empty query.
             self._vm.set_flashcard_ids_filter(None)
         self._refresh()
         self.focus()
 
     def cancel_one_of(self) -> None:
-        """Called from the input on ``escape``. Per the spec: clears the buffer and reverts the
-        chosen filter to None. Focus returns to the dialog."""
+        """``escape`` inside the input: clear the buffer + flag, drop both VM axes, return focus."""
         self._one_of_buffer = ""
         self._one_of_selected = False
-        # Drop both flashcard-filter axes — escape is the "back to no filter" exit.
         self._vm.set_flashcard_filter(None)
         self._refresh()
         self.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # _OneOfInput is the only Input mounted under this dialog; checking the type is enough to
-        # distinguish from events bubbling from sibling subtrees (which won't reach here anyway,
-        # since events bubble up — but the check guards against any future re-parenting).
+        # _OneOfInput is the only Input under this dialog — guard against future re-parenting.
         if isinstance(event.input, _OneOfInput):
             self.submit_one_of(event.value)
 
     def action_reset(self) -> None:
-        """Clear both filter axes at once (and the One-of buffer). Lands the cursor back at row 0 /
-        col 0 so subsequent keystrokes start from a predictable position.
-
-        ``set_flashcard_filter(None)`` wipes both the ``has_flashcards`` and ``flashcard_ids``
-        axes thanks to the mutual-exclusion invariant in the VM, so we don't need a separate
-        call to clear the ids axis."""
+        # ``set_flashcard_filter(None)`` wipes both axes thanks to the VM's mutual-exclusion
+        # invariant, so no separate call to clear the ids axis is needed.
         self._vm.set_type_filter(None)
         self._vm.set_flashcard_filter(None)
         self._one_of_selected = False
@@ -407,15 +347,12 @@ class _FilterDialog(Vertical, can_focus=True):
 
 
 def _pad_lead(label: str) -> str:
-    """Right-pad a filter-row lead-in to the shared column width so the option columns line up
-    vertically across rows."""
     return label.ljust(_FILTER_LEAD_WIDTH)
 
 
 def _parse_id_list(text: str) -> tuple[int, ...]:
-    """Parse a comma-separated list of integer ids from the One-of buffer. Tokens that don't
-    parse as ``int`` (or are empty after stripping) are dropped silently — keeps the UX lenient
-    so a stray comma or partial edit doesn't reject the whole submission."""
+    """Parse a comma-separated id list. Tokens that don't parse as ``int`` (or are empty after
+    strip) are dropped silently — a stray comma or partial edit doesn't reject the submission."""
     out: list[int] = []
     for token in text.split(","):
         token = token.strip()

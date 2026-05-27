@@ -1,38 +1,29 @@
 """TopicTreePanelView — the browser's left rail: action menu + topic tree + summary.
 
-Owns the rail CSS and the cross-region focus contract that ``BrowserView`` dispatches against.
 Layout::
 
     ┌─ TopicTreePanelView ────────────┐
     │ Topics                          │  ← #browser-tree-title
     │ ┌─ #browser-tree-body ────────┐ │
-    │ │ actions │  topic tree       │ │  ← horizontal row, ``height: 1fr``
+    │ │ actions │  topic tree       │ │  ← horizontal row, height: 1fr
     │ └─────────┴───────────────────┘ │
-    │ ──────────────────────────────  │  ← #browser-tree-summary border-top
-    │ Topic summary                   │  ← #browser-tree-summary (auto height, capped)
+    │ Topic summary                   │  ← #browser-tree-summary (auto height, capped at 50%)
     └─────────────────────────────────┘
 
-Rail expansion: when the actions menu is focused, ``TopicTreeActionsView.on_focus`` toggles the
-``-actions-expanded`` class on *this* widget (via a ``screen.query_one("TopicTreePanelView")``
-lookup; type-name string to avoid a circular import). The CSS then widens the rail and switches
-the rule colour to its focus-bright variant. ``BrowserView`` doesn't participate — the right pane
-uses ``width: 1fr`` so it absorbs the difference automatically.
+Rail expansion: the actions widget toggles ``-actions-expanded`` on this view when it gains/loses
+focus, which CSS uses to widen the rail. ``BrowserView`` doesn't participate — the right pane's
+``width: 1fr`` absorbs the difference.
 
-Cross-region focus contract — ``BrowserView`` calls these on the panel without knowing what's
-inside:
+Cross-region focus surface called by ``BrowserView``:
 
-  * ``focus_tree()`` — focus the topic tree specifically. Called when the active tab's
-    ``nav_left`` returns the ``"topic_tree"`` sentinel (i.e. focus arriving back from the right
-    pane should land on the tree, not the actions menu).
-  * ``nav_left() -> bool`` — internal left move within the panel. Returns ``True`` if it moved
-    focus (tree → actions); ``False`` if focus is already at the leftmost sub-region (actions),
-    signalling ``BrowserView`` to no-op (the panel is the leftmost top-level region).
-  * ``nav_right() -> bool`` — internal right move within the panel. Returns ``True`` (actions →
-    tree) or ``False`` if focus is already at the rightmost sub-region (the tree), signalling
-    ``BrowserView`` to advance into the next top-level region (the active tab's leftmost cell).
+  * ``focus_tree()`` — focus the topic tree (target of the tab's ``"topic_tree"`` sentinel from
+    ``alt+left``).
+  * ``nav_left() -> bool`` — tree → actions; ``False`` if already in actions (leftmost edge, panel
+    is the leftmost top-level region — ``BrowserView`` no-ops).
+  * ``nav_right() -> bool`` — actions → tree; ``False`` if already in the tree (``BrowserView``
+    advances into the active tab via ``tab.focus_first()``).
 
-The panel doesn't expose ``nav_up`` / ``nav_down`` — there's no focusable sub-region stacked above
-or below; ``BrowserView`` no-ops alt+up/alt+down while focus is in the panel.
+No ``nav_up`` / ``nav_down`` — nothing focusable sits above or below the body row.
 """
 
 from __future__ import annotations
@@ -49,8 +40,7 @@ from .view_model import TopicTreePanelViewModel
 
 
 class TopicTreePanelView(Vertical):
-    """View for ``TopicTreePanelViewModel``. See module docstring for the layout, expansion
-    behaviour, and cross-region focus contract."""
+    """View for ``TopicTreePanelViewModel``. See module docstring."""
 
     DEFAULT_CSS = """
     TopicTreePanelView {
@@ -58,9 +48,8 @@ class TopicTreePanelView(Vertical):
         border: solid #3a3a3a;
         padding: 0;
     }
-    /* While the actions menu is focused, widen the rail by ~1.66x so the full action labels
-       (rendered in place of the single-letter shorthand) fit. The right pane uses ``width: 1fr``
-       so it absorbs the difference automatically. */
+    /* Widen when the actions menu is focused so the full labels (rendered in place of the
+       single-letter shorthand) fit. */
     TopicTreePanelView.-actions-expanded {
         width: 33%;
     }
@@ -75,8 +64,8 @@ class TopicTreePanelView(Vertical):
     TopicTreePanelView #browser-tree-body {
         height: 1fr;
     }
-    /* Vertical rule between the actions menu and the tree. Lives on the tree (not the menu) so it
-       spans the full body height regardless of how few action rows the menu currently renders. */
+    /* Vertical rule between the actions menu and the tree lives on the tree (not the menu) so
+       it spans the full body height regardless of how few action rows the menu renders. */
     TopicTreePanelView BrowserTopicTreeView {
         padding: 1 0 0 1;
         height: 1fr;
@@ -103,20 +92,13 @@ class TopicTreePanelView(Vertical):
 
     def compose(self):
         yield Static("Topics", id="browser-tree-title")
-        # Body row: actions menu on the left, topic tree on the right. The menu is narrow when
-        # blurred (just single-letter shorthand) and widens — along with the entire panel — when
-        # focused. The vertical rule between the two lives on the tree's ``border-left`` so it
-        # spans the full body height.
         with Horizontal(id="browser-tree-body"):
             yield TopicTreeActionsView(self._vm.tree_actions, id="browser-tree-actions")
             yield BrowserTopicTreeView(self._vm.tree)
-        # Topic summary panel for the cursor-highlighted topic. Sits below the body, growing to fit
-        # its (multi-line description) content; ``max-height: 50%`` keeps a long description from
-        # squeezing the tree out of view.
         yield TopicSummaryView(self._vm.summary, id="browser-tree-summary")
 
     # ------------------------------------------------------------------
-    # Cross-region focus navigation (called from BrowserView)
+    # Cross-region focus surface (called from BrowserView)
     # ------------------------------------------------------------------
 
     def focus_tree(self) -> None:
@@ -132,19 +114,13 @@ class TopicTreePanelView(Vertical):
                 return True
             except Exception:
                 return False
-        # Focus is already at the actions menu (or somewhere unexpected) — leftmost edge.
         return False
 
     def nav_right(self) -> bool:
         if self._focus_is_in_actions():
             self.focus_tree()
             return True
-        # Focus in the tree — rightmost sub-region of the panel.
         return False
-
-    # ------------------------------------------------------------------
-    # Internal focus introspection
-    # ------------------------------------------------------------------
 
     def _focus_is_in_tree(self) -> bool:
         focused = self.screen.focused if self.screen else None

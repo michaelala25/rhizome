@@ -1,9 +1,7 @@
 """Edit-action picker (``_EditBar``) and the inline ``_TypePickerScreen`` modal it spawns.
 
-The bar sits in the same screen slot as the other dialogs (the tab runs the mutex). The picker
-modal is co-located here rather than under ``tui/screens/`` — it's tiny and only used by the bar's
-``change type`` dispatch, so the extra indirection isn't worth it. Lift it if a second consumer
-appears.
+The type picker is co-located rather than living under ``tui/screens/`` because it's tiny and only
+used here; lift it if a second consumer appears.
 """
 
 from __future__ import annotations
@@ -25,10 +23,9 @@ if TYPE_CHECKING:
     from .view import KnowledgeEntryBrowserTabView
 
 
-# Edit-dialog action choices, ordered left-to-right as shown to the user. ``edit title`` /
-# ``edit content`` only appear in single-select mode (they refocus the corresponding details
-# TextArea, which has no useful meaning for a bulk edit). Order matters: the destructive ``delete``
-# sits last so the cursor never lands on it without an explicit rightward step.
+# Edit-bar choices, ordered left-to-right. ``edit title`` / ``edit content`` are single-select
+# only (no useful "the" entry to focus into in multi-select). ``delete`` sits last so the cursor
+# never lands on it without an explicit rightward step.
 _EDIT_OPTIONS_SINGLE: tuple[str, ...] = (
     "change topic",
     "change type",
@@ -44,8 +41,7 @@ _EDIT_OPTIONS_MULTI: tuple[str, ...] = (
 
 
 class _TypePickerScreen(ModalScreen[EntryType | None]):
-    """Modal screen for picking an ``EntryType``. Three options laid out vertically; arrows / enter
-    / escape. Dismisses with the chosen ``EntryType`` (caller applies it) or ``None`` on cancel."""
+    """Vertical EntryType picker. Arrows / enter / escape. Dismisses with the chosen type or None."""
 
     DEFAULT_CSS = """
     _TypePickerScreen {
@@ -77,8 +73,7 @@ class _TypePickerScreen(ModalScreen[EntryType | None]):
     def __init__(self, *, current: EntryType | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._options: tuple[EntryType, ...] = tuple(EntryType)
-        # Land the cursor on the current type when there is one, so the most common "I want to
-        # change to something other than this" flow is one ``down`` away.
+        # Land on the current type so the common "change to something else" flow is one keystroke.
         if current is not None and current in self._options:
             self._cursor = self._options.index(current)
         else:
@@ -125,15 +120,11 @@ class _TypePickerScreen(ModalScreen[EntryType | None]):
 
 
 class _EditBar(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
-    """Horizontal edit-action picker. Options come from the local constant pair
-    (``_EDIT_OPTIONS_SINGLE`` / ``_EDIT_OPTIONS_MULTI``); multi-select hides the per-entry
-    edit shortcuts since they have no useful meaning for a bulk edit. All options route
-    through ``tab.handle_edit_choice(label)`` — two of them open modal screens, two are pure
-    focus shortcuts to the details panel.
+    """Horizontal edit-action picker. Options come from ``_EDIT_OPTIONS_*``; every label
+    dispatches through ``tab.handle_edit_choice(label)``.
 
-    Visual differs from the standard ``ChoiceList`` render: no ``►`` marker, colour-only
-    cursor distinction (gold-on-focus / grey-on-blur vs ``#787878`` for non-cursor) so the
-    horizontal row stays compact across 3–5 options.
+    Custom per-choice render: no ``►`` marker, colour-only cursor distinction (gold-on-focus,
+    grey-on-blur) so the horizontal row stays compact across 3-5 options.
     """
 
     HINT = "← / → move • enter select • e/esc dismiss"
@@ -148,9 +139,8 @@ class _EditBar(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
         self._tab = tab
 
     def choices(self) -> dict[str, str]:
-        # All labels route through ``_dispatch``, which reads the cursor to recover which one
-        # was picked. Acceptable cost for keeping the base widget free of "method-receives-
-        # label" plumbing.
+        # All labels route through ``_dispatch``, which reads the cursor to recover the label —
+        # keeps the base widget free of method-receives-label plumbing.
         options = (
             _EDIT_OPTIONS_MULTI
             if self._vm.multi_select_active

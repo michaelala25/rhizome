@@ -1,18 +1,10 @@
-"""BrowserTabViewModel — abstract base for tabs in the browser widget.
+"""Abstract base for tabs in the browser widget — adds tab identity and topic-filter wiring on top
+of ``QueryBackedViewModel`` (which already provides the debounce + fetch-id staleness kernel).
 
-Each concrete tab (knowledge entries, flashcards, reviews, ...) owns its own data, sort/filter
-state, and rendering. The base class nails down the parts that every tab needs to share with the
-orchestrator:
-
-  * a stable ``title`` for the tab bar
-  * a single ``set_topic_filter(topic_ids)`` entry point the orchestrator calls when the topic-tree
-    selection changes
-
-Most of the heavy lifting — debounce + fetch-id staleness gating — lives on
-``QueryBackedViewModel``, the kernel this class inherits from. ``BrowserTabViewModel`` is a thin
-layer on top: it adds the tab identity (``title``) and the topic-filter API the orchestrator
-talks to. Other VMs (the linked-flashcards panel, for instance) that need the fetch protocol but
-aren't tabs inherit from ``QueryBackedViewModel`` directly.
+Concrete tabs own their data, sort/filter state, and rendering. The base only nails down what the
+orchestrator needs: a stable ``TITLE`` for the tab bar and ``set_topic_filter`` for routing the
+tree's selection. Non-tab VMs that need the same fetch kernel (e.g. the linked-flashcards panel)
+inherit from ``QueryBackedViewModel`` directly rather than from this class.
 """
 
 from __future__ import annotations
@@ -23,34 +15,21 @@ from ..query_backed_view_model import QueryBackedViewModel
 
 
 class BrowserTabViewModel(QueryBackedViewModel):
-    """Abstract tab VM. Concrete subclasses must override ``_fetch``, ``_process_fetched_data``,
-    and ``TITLE``, plus expose whatever data attributes the corresponding view needs to render.
+    """Abstract tab VM. Subclasses override ``TITLE``, ``_fetch``, and ``_process_fetched_data``.
 
-    Filter semantics
-    ----------------
-    ``set_topic_filter(topic_ids)`` accepts:
-      * ``None`` — "no topic filter" (show everything). This is the boot state and the state after
-        the user clears their tree selection.
-      * a (possibly empty) iterable of topic IDs — the *already-expanded* union of subtrees from
-        the user's tree selection. An empty iterable means "no rows match" (selection was made but
-        is empty after expansion, which is a legal terminal state).
-
-    The orchestrator (``BrowserViewModel``) handles subtree expansion before calling here, so tabs
-    never run the CTE themselves.
+    ``set_topic_filter`` takes the *already-expanded* union of topic ids (the orchestrator runs the
+    subtree CTE). ``None`` means "no filter, show everything"; an empty iterable means "selection
+    expanded to zero rows" — both are legal, distinct terminal states preserved end-to-end.
     """
 
-    # Subclasses override.
     TITLE: str = "<untitled tab>"
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        # ``None`` ≠ empty iterable; see filter semantics above.
         self._filter_ids: frozenset[int] | None = None
-        # ``True`` once ``set_topic_filter`` has been called at least once. Used to distinguish
-        # "filter is already None" from "filter has never been applied" — the first
-        # ``set_topic_filter`` must fetch even when the requested filter happens to equal the
-        # default.
+        # Distinguishes "filter is None by default" from "filter has never been set" — the first
+        # call must fetch even when the requested filter happens to equal the default.
         self._filter_applied: bool = False
 
     # ------------------------------------------------------------------
@@ -70,19 +49,10 @@ class BrowserTabViewModel(QueryBackedViewModel):
     # ------------------------------------------------------------------
 
     def set_topic_filter(self, topic_ids: Iterable[int] | None) -> None:
-        """Set the active topic filter and (re)fetch if it actually changed.
-
-        Idempotent: calling with the same filter the tab already holds is a no-op (no cancel, no
-        fetch, no dirty emit). This matters under lazy propagation in the orchestrator —
-        switching to a tab that's already showing data for the current filter should be instant,
-        not paint a loading flash.
-
-        Coalescing across rapid distinct filters is handled by the debounce in
-        ``QueryBackedViewModel._request_fetch``; tabs don't need to know about input cadence.
-        """
-        new_filter: frozenset[int] | None = (
-            None if topic_ids is None else frozenset(topic_ids)
-        )
+        """Set the active topic filter and (re)fetch if it actually changed. Idempotent on equal
+        filters — needed so the orchestrator's lazy tab catch-up doesn't paint a loading flash when
+        switching to a tab that already matches the current filter."""
+        new_filter: frozenset[int] | None = None if topic_ids is None else frozenset(topic_ids)
         if self._filter_applied and new_filter == self._filter_ids:
             return
         self._filter_ids = new_filter

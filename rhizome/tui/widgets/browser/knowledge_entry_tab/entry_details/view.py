@@ -1,5 +1,5 @@
-"""EntryDetailsView (+ private ``_ChoicesList``) — the title/content side panel that sits to the right of
-the entry table in ``KnowledgeEntryBrowserTabView``. See ``view_model.py`` for the VM contract.
+"""``EntryDetailsView`` (+ private ``_ChoicesList``) — title/content side panel to the right of the
+entry table in ``KnowledgeEntryBrowserTabView``. See ``view_model.py`` for the VM contract.
 """
 
 from __future__ import annotations
@@ -14,11 +14,9 @@ from .view_model import EntryDetailsViewModel
 
 
 class _ChoicesList(ChoiceList[EntryDetailsViewModel]):
-    """Horizontal Accept/Cancel choices for committing or discarding a details edit. Visible
-    only while the parent view's ``vm.is_dirty`` is True; hidden via the ``.-visible`` CSS
-    class managed by the parent's ``_refresh``. Escape always cancels regardless of cursor —
-    matches the relink Accept/Cancel widget on the linked-flashcards panel.
-    """
+    """Horizontal Accept/Cancel for committing or discarding a details edit. Visible only while
+    ``vm.is_dirty`` (parent toggles the ``.-visible`` class in its ``_refresh``). Escape always
+    cancels regardless of cursor position."""
 
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
     LEAD = "Edit: "
@@ -35,13 +33,11 @@ class _ChoicesList(ChoiceList[EntryDetailsViewModel]):
 
 
 class EntryDetailsView(Vertical):
-    """View for ``EntryDetailsViewModel``. Title ``Input`` over a content ``TextArea`` over a
-    hidden-when-clean choices list.
+    """View for ``EntryDetailsViewModel``: title ``TextArea`` over content ``TextArea`` over
+    hidden-when-clean ``_ChoicesList``.
 
-    Subscribes to ``vm.dirty`` and mirrors VM state into all three widgets each refresh, guarding each
-    assignment with a value-equality check so we don't trigger unnecessary ``Changed`` events (which Textual
-    dispatches async and which we'd otherwise have to filter back out — see ``on_input_changed`` for the
-    stale-event filter that handles the residual case).
+    Subscribes to ``vm.dirty`` and mirrors VM state into all three widgets each refresh, with an
+    equality guard on each assignment so we don't trigger spurious ``TextArea.Changed`` round-trips.
     """
 
     DEFAULT_CSS = """
@@ -93,27 +89,19 @@ class EntryDetailsView(Vertical):
     ) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
-        # Tracks the previous ``is_dirty`` so ``_refresh`` can detect the dirty→clean transition and rescue
-        # focus from the about-to-hide choices widget. Without this Textual leaves ``screen.focused`` on a
-        # ``display: none`` widget and the next keystroke goes nowhere visible.
+        # Tracks the previous ``is_dirty`` so ``_refresh`` can detect transitions: clean→dirty (reset
+        # the choice cursor) and dirty→clean (rescue focus before the choices widget is hidden).
         self._was_dirty: bool = False
 
     def compose(self):
-        # Both title and content are ``TextArea`` so long titles wrap rather than overflowing horizontally.
-        # ``soft_wrap=True`` is the default but we name it for clarity; ``show_line_numbers=False`` keeps
-        # both fields looking like editable boxes rather than code editors.
-        yield TextArea(
-            id="details-title", show_line_numbers=False, soft_wrap=True,
-        )
-        yield TextArea(
-            id="details-content", show_line_numbers=False, soft_wrap=True,
-        )
+        # Title is a ``TextArea`` so long titles wrap rather than overflowing. ``show_line_numbers=False``
+        # keeps both fields looking like editable boxes rather than code editors.
+        yield TextArea(id="details-title", show_line_numbers=False, soft_wrap=True)
+        yield TextArea(id="details-content", show_line_numbers=False, soft_wrap=True)
         yield _ChoicesList(self._vm, id="details-choices")
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
-        # Paint whatever the VM was holding at construction (typically nothing, but the tab VM may have
-        # called ``set_entry`` before mount).
         self._refresh()
 
     def on_unmount(self) -> None:
@@ -131,19 +119,14 @@ class EntryDetailsView(Vertical):
         target_title = self._vm.title
         target_content = self._vm.content
 
-        # Equality-guard each assignment — both because Textual's ``Changed`` events are cheap-but-not-free
-        # and because we want to minimize the round-trip into our own change handlers.
         if title_area.text != target_title:
             title_area.text = target_title
         if content_area.text != target_content:
             content_area.text = target_content
 
-        # Freeze the edit surfaces while the tab is in multi-select mode. The cursor still moves through
-        # entries so we keep the text current, but ``read_only=True`` blocks user keystrokes and we hide the
-        # Accept/Cancel choices entirely. ``is_dirty`` is treated as effectively False from the view's
-        # perspective — there's no way to act on the buffers — so any stale buffer divergence carried into
-        # multi-select mode is invisible to the user. (It'll be reseeded on the next ``set_entry`` from the
-        # tab VM's normal cursor sync.)
+        # Multi-select freeze: cursor still moves entries through (text stays current) but keystrokes
+        # are blocked and the choices stay hidden. Any stale buffer divergence is invisible since
+        # ``is_dirty`` is treated as False below, and the next ``set_entry`` reseeds anyway.
         frozen = self._vm.multi_select_active
         if title_area.read_only != frozen:
             title_area.read_only = frozen
@@ -152,16 +135,15 @@ class EntryDetailsView(Vertical):
 
         is_dirty_now = self._vm.is_dirty and not frozen
         if is_dirty_now:
-            # Reset the choice cursor on each clean→dirty transition so each fresh open lands on
-            # Accept regardless of where the user left it previously.
+            # On clean→dirty, reset the choice cursor so each fresh open lands on Accept.
             if not self._was_dirty:
                 choices.prepare_for_show()
             choices.add_class("-visible")
         else:
-            # On the dirty→clean (or dirty→frozen) transition, if focus was on the choices widget it's about
-            # to be display:none'd — move it back to the content area first so the user lands somewhere
-            # sensible. Frozen also lands here, but the parent tab's focus guard generally keeps focus on
-            # the table while frozen, so this branch is belt-and-braces.
+            # Focus-orphan rescue: on dirty→clean, if focus is on the choices widget it's about to be
+            # ``display: none``'d — move it to the content area first so the user lands somewhere
+            # sensible. (Frozen also lands here, but the tab usually parks focus on the table while
+            # frozen, so this is belt-and-braces.)
             if (
                 self._was_dirty
                 and self.screen is not None
@@ -176,10 +158,8 @@ class EntryDetailsView(Vertical):
     # ------------------------------------------------------------------
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        # Both title and content are ``TextArea``s — dispatch by id. No stale-event filter needed
-        # (``TextArea.Changed`` carries no snapshotted text field — the handler reads ``text_area.text``
-        # live, which always reflects the latest synchronous assignment). The VM mutators' equality
-        # early-return absorbs the round-trip from our own ``_refresh`` assignments.
+        # Dispatch by id since both fields are ``TextArea``s. ``text_area.text`` is read live, and the
+        # VM mutators' equality guards absorb the round-trip from our own ``_refresh`` assignments.
         wid = event.text_area.id
         if wid == "details-title":
             self._vm.set_title(event.text_area.text)

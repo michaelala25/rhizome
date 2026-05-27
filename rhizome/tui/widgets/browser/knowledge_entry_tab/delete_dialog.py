@@ -1,5 +1,5 @@
-"""Delete confirmation dialog. Targets the multi-select selection or the cursor entry depending on
-mode (the VM's ``delete_selected_entries`` resolves this internally)."""
+"""Delete confirmation dialog. Targets are whatever ``vm.delete_selected_entries`` resolves
+(live selection in multi-select; cursor entry in single-select)."""
 
 from __future__ import annotations
 
@@ -15,8 +15,7 @@ if TYPE_CHECKING:
 
 
 class _DeleteConfirm(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
-    """Two stacked choices (Confirm / Cancel) under a one-line header describing the action
-    (entry count + the no-flashcards-harmed promise). Cursor brightness tracks focus."""
+    """Vertical Confirm/Cancel. Header surfaces the count + the no-flashcards-harmed note."""
 
     CHOICES = {"Confirm": "_confirm", "Cancel": "_cancel"}
     ORIENTATION = "vertical"
@@ -43,9 +42,7 @@ class _DeleteConfirm(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
     def _render_header(self) -> Text | None:
         count = self._tab.selection_target_count()
         noun = "entry" if count == 1 else "entries"
-        # In single-select mode the lead-in is just "Delete this entry?" — "selected" reads
-        # weird when there's no visible selection mark. Multi-select keeps the existing
-        # phrasing.
+        # Drop "selected" in single-select — reads weird with no visible selection mark.
         scope_word = "selected " if self._vm.multi_select_active else ""
         text = Text()
         text.append(f"Delete {count} {scope_word}{noun}? ", style="bold")
