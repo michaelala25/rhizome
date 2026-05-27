@@ -38,6 +38,7 @@ from rhizome.db.operations import (
 from rhizome.logs import get_logger
 
 from ...search_input import SearchableViewModelMixin
+from ..sort_dialog import SortableViewModelMixin
 from ..tab_base import BrowserTabViewModel
 from .entry_details import EntryDetailsViewModel
 from .linked_flashcards import LinkedFlashcardsPanelViewModel
@@ -50,7 +51,11 @@ _logger = get_logger("browser.knowledge_entry_tab")
 DEFAULT_PAGE_LIMIT = 500
 
 
-class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel, SearchableViewModelMixin):
+class KnowledgeEntryBrowserTabViewModel(
+    BrowserTabViewModel,
+    SearchableViewModelMixin,
+    SortableViewModelMixin["EntrySortKey"],
+):
     """Concrete tab VM for browsing knowledge entries."""
 
     TITLE = "Knowledge Entries"
@@ -165,6 +170,14 @@ class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel, SearchableViewModel
     @property
     def sort_dir(self) -> Literal["asc", "desc"]:
         return self._sort_dir
+
+    # Sort axes surfaced in the ``SortDialog`` — ordered left-to-right the way they're laid out
+    # (matches the data table's column order). The DB op accepts a wider set; we deliberately
+    # surface the four most useful axes. The first option doubles as the dialog's reset target.
+    _SORT_OPTIONS: tuple[EntrySortKey, ...] = ("id", "title", "type", "topic")
+
+    def sort_options(self) -> tuple[EntrySortKey, ...]:
+        return self._SORT_OPTIONS
 
     @property
     def entry_types(self) -> tuple[EntryType, ...] | None:

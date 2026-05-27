@@ -9,12 +9,14 @@ invoke. The dialogs talk to the VM through that narrow surface (``set_sort``, ``
 ``change_type_on_selected_entries``) and Textual's focus mechanics carry keystrokes the rest of the
 way.
 
-Per-widget code lives in sibling modules — ``delete_dialog.py``, ``sort_dialog.py``,
-``filter_dialog.py``, ``edit_dialog.py``, ``entry_content_preview.py``. The search bar is the
-shared generic ``SearchInput`` from ``rhizome.tui.widgets.search_input``, parameterised on
-``KnowledgeEntryBrowserTabViewModel``. This module keeps the tab container itself plus the
-``_EntriesTable`` subclass, which is tightly coupled to the tab's dialog orchestration and
-focus walk.
+Per-widget code lives in sibling modules — ``delete_dialog.py``, ``filter_dialog.py``,
+``edit_dialog.py``, ``entry_content_preview.py``. The search bar is the shared generic
+``SearchInput`` from ``rhizome.tui.widgets.search_input``, parameterised on
+``KnowledgeEntryBrowserTabViewModel``; the sort dialog is the shared generic ``SortDialog``
+from ``rhizome.tui.widgets.browser.sort_dialog``, specialised inline here as
+``_EntriesSortDialog`` to surface the multi-select warning. This module keeps the tab
+container itself plus the ``_EntriesTable`` subclass, which is tightly coupled to the tab's
+dialog orchestration and focus walk.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from textual.widgets import DataTable, Input, Rule, Static, TextArea
 from rhizome.db.models import EntryType
 
 from ...search_input import SearchInput
+from ..sort_dialog import SortDialog
 
 from .delete_dialog import _DeleteConfirm
 from .edit_dialog import _EditBar, _TypePickerScreen
@@ -38,8 +41,20 @@ from .entry_content_preview import _EntryContentPreview
 from .entry_details import EntryDetailsView
 from .filter_dialog import _FilterDialog
 from .linked_flashcards import LinkedFlashcardsPanelView
-from .sort_dialog import _SortBar
 from .view_model import KnowledgeEntryBrowserTabViewModel
+
+
+class _EntriesSortDialog(SortDialog[KnowledgeEntryBrowserTabViewModel]):
+    """Knowledge-entry-tab specialisation of ``SortDialog``. Surfaces a "Applying clears your
+    selection." warning inline with the keybinding hint while multi-select is on — applying a
+    sort clears the selection (rows reshuffle and selection-by-position loses meaning), so we
+    give the user a heads-up before they commit.
+    """
+
+    def _extra_hint(self) -> Text | None:
+        if self._vm.multi_select_active:
+            return Text("Applying clears your selection.", style="#ff8787")
+        return None
 
 _DialogName = Literal["delete", "sort", "filter", "edit"]
 
@@ -391,7 +406,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
             yield EntryDetailsView(self._vm.details)
             yield LinkedFlashcardsPanelView(self._vm.linked_flashcards)
         yield _DeleteConfirm(self._vm, self, id="delete-confirm")
-        yield _SortBar(self._vm, self, id="sort-bar")
+        yield _EntriesSortDialog(self._vm, on_close=self.hide_dialog, id="sort-bar")
         yield _FilterDialog(self._vm, self, id="filter-dialog")
         yield _EditBar(self._vm, self, id="edit-bar")
         # Permanent keybindings line at the very bottom — surfaces the global mode/navigation

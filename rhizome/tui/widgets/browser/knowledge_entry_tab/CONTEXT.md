@@ -45,9 +45,8 @@ components living in their own subdirectories.
   `nav_<dir>` graph walkers; see "Cross-region focus" below.
 
   Per-widget code lives in sibling modules — `delete_dialog.py`,
-  `sort_dialog.py`, `filter_dialog.py`, `edit_dialog.py`,
-  `entry_content_preview.py`. Each owns the widget class plus the
-  constants/helpers it uses (e.g. `_SORT_OPTIONS` in `sort_dialog.py`,
+  `filter_dialog.py`, `edit_dialog.py`, `entry_content_preview.py`.
+  Each owns the widget class plus the constants/helpers it uses (e.g.
   `_EDIT_OPTIONS_SINGLE` / `_EDIT_OPTIONS_MULTI` and
   `_TypePickerScreen` in `edit_dialog.py`, `_OneOfInput` /
   `_TYPE_OPTIONS` / `_FLASHCARD_OPTIONS` / `_parse_id_list` in
@@ -57,7 +56,15 @@ components living in their own subdirectories.
   `rhizome.tui.widgets.search_input`; `KnowledgeEntryBrowserTabViewModel`
   mixes in `SearchableViewModelMixin` to satisfy the widget's type
   bound, and the instance is constructed as
-  `SearchInput[KnowledgeEntryBrowserTabViewModel](self._vm, …)`.
+  `SearchInput[KnowledgeEntryBrowserTabViewModel](self._vm, …)`. The
+  sort dialog is the shared generic `SortDialog` from
+  `rhizome.tui.widgets.browser.sort_dialog`, specialised inline as
+  `_EntriesSortDialog` (overrides `_extra_hint` to surface the
+  "Applying clears your selection." warning while multi-select is on);
+  `KnowledgeEntryBrowserTabViewModel` mixes in
+  `SortableViewModelMixin[EntrySortKey]`. The instance is constructed
+  with `on_close=self.hide_dialog`, decoupling the dialog from the
+  tab's exact dismissal API.
 
   See "Cross-region focus" below for the full `alt+arrow` graph the
   tab implements via `nav_up` / `nav_down` / `nav_left` / `nav_right`.
@@ -425,16 +432,14 @@ mutator + property, thread a new kwarg through `_query_kwargs` /
 
 ### Sort
 
-Pressing `s` opens `_SortBar`. The dialog surfaces four axes — `id`,
-`title`, `type`, `topic` — mirroring the data table's column order
-left-to-right. The cursor lands on the currently-active axis on open
-(via `prepare_for_show`); `left` / `right` move with wrap; `enter`
-applies, computing the toggle locally — same axis → flip direction,
-different axis → switch ascending — and calls `vm.set_sort(by, dir)`.
-`r` resets to `id` ascending. `s` / `escape` dismiss; `f` / `e` swap.
-
-The active sort renders with an arrow + brackets (`↑[id]`); the
-cursor option is shown in bold gold on focus / bold grey otherwise.
+Pressing `s` opens `_EntriesSortDialog`, a thin specialisation of the
+shared generic `SortDialog` (see
+`widgets/browser/sort_dialog/CONTEXT.md` for the dialog's full
+behaviour contract — cursor-and-arrow rendering, `enter` toggle
+semantic, `r` reset, `escape` dismiss). The tab's VM mixes in
+`SortableViewModelMixin[EntrySortKey]` and surfaces four axes via
+`sort_options()` — `id`, `title`, `type`, `topic` — mirroring the
+data table's column order left-to-right.
 
 The DB op handles the two non-column axes: `type` uses a `CASE`
 expression (locks the semantic order fact → exposition → overview
@@ -444,9 +449,15 @@ for case-insensitive alpha.
 
 `vm.set_sort` clears the selection (a new sort means a new `LIMIT
 500` window, and tracking selections across reshuffled windows is
-more complexity than the feature warrants). The multi-select dialog
-hint surfaces this in red while picking; the mode itself stays on,
-just with an empty set.
+more complexity than the feature warrants). `_EntriesSortDialog`
+overrides `_extra_hint` to surface the "Applying clears your
+selection." warning inline with the dialog's keybinding hint while
+multi-select is on; the mode itself stays on, just with an empty set.
+
+Sibling-dialog swap keys (`d` / `f` / `e`) are *not* bound on the
+generic `SortDialog` — they bubble to the tab's BINDINGS, which owns
+the dialog mutex. `s` likewise bubbles to the tab's `s`-toggle, which
+closes the active sort dialog.
 
 ### Delete
 

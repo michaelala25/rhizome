@@ -131,6 +131,18 @@ This matches `docs/design-principles.md` and the established
   against the new selection / cursor state). No structural sync happens
   through `dirty` — structural changes always come from user events.
 
+- **sort_dialog/ — `SortDialog` + `SortableViewModelMixin`** (see the
+  subdir's own `CONTEXT.md`): shared sort-axis picker for browser
+  tabs. Generic on the VM (bound to `SortableViewModelMixin`) and on
+  the sort-key type. Concrete tabs mix in
+  `SortableViewModelMixin[ConcreteSortKey]` at the leaf and implement
+  `sort_options()` / `set_sort()` / `sort_by` / `sort_dir`; when they
+  need a state-driven inline warning beyond the keybinding hints,
+  they subclass `SortDialog` and override `_extra_hint`. Sibling-
+  dialog swap keys (`d` / `f` / `e` / `s`) deliberately bubble to the
+  parent tab's BINDINGS so the dialog stays decoupled from any
+  specific tab's siblings.
+
 - **tab_base.py — `BrowserTabViewModel(QueryBackedViewModel)`** (abstract):
   the tab contract. Thin layer on top of `QueryBackedViewModel` (see
   `widgets/CONTEXT.md`) that adds tab identity (`TITLE`, `title` property)
