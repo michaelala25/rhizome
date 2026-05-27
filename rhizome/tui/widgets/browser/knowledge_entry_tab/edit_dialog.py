@@ -18,6 +18,7 @@ from textual.widgets import Static
 
 from rhizome.db.models import EntryType
 
+from ..choices import ChoiceList
 from .view_model import KnowledgeEntryBrowserTabViewModel
 
 if TYPE_CHECKING:
@@ -123,31 +124,19 @@ class _TypePickerScreen(ModalScreen[EntryType | None]):
         self.dismiss(None)
 
 
-class _EditBar(Static, can_focus=True):
-    """Renders horizontally: option list on one line, hint on the next. Options come from a local
-    constant pair (``_EDIT_OPTIONS_SINGLE`` / ``_EDIT_OPTIONS_MULTI``); multi-select hides the
-    per-entry edit shortcuts since they have no useful meaning for a bulk edit.
+class _EditBar(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
+    """Horizontal edit-action picker. Options come from the local constant pair
+    (``_EDIT_OPTIONS_SINGLE`` / ``_EDIT_OPTIONS_MULTI``); multi-select hides the per-entry
+    edit shortcuts since they have no useful meaning for a bulk edit. All options route
+    through ``tab.handle_edit_choice(label)`` — two of them open modal screens, two are pure
+    focus shortcuts to the details panel.
 
-    Keys: ``left`` / ``right`` move the cursor (wrap); ``enter`` dispatches the highlighted choice;
-    ``e`` / ``escape`` dismiss; ``s`` / ``f`` / ``d`` swap to the corresponding sibling dialog.
-
-    Dispatch sits on the tab (``handle_edit_choice``) because two of the choices — ``change topic``
-    and ``change type`` — open modal screens, and the other two (``edit title`` / ``edit content``)
-    are pure focus shortcuts to the details panel. The bar's job is to forward the highlighted
-    choice string.
+    Visual differs from the standard ``ChoiceList`` render: no ``►`` marker, colour-only
+    cursor distinction (gold-on-focus / grey-on-blur vs ``#787878`` for non-cursor) so the
+    horizontal row stays compact across 3–5 options.
     """
 
-    BINDINGS = [
-        Binding("left", "cursor_left", show=False),
-        Binding("right", "cursor_right", show=False),
-        Binding("enter", "select", show=False),
-        # ``e`` toggles the dialog closed.
-        Binding("e", "cancel", show=False),
-        Binding("escape", "cancel", show=False),
-        Binding("s", "swap_to('sort')", show=False),
-        Binding("f", "swap_to('filter')", show=False),
-        Binding("d", "swap_to('delete')", show=False),
-    ]
+    HINT = "← / → move • enter select • e/esc dismiss"
 
     def __init__(
         self,
@@ -155,86 +144,36 @@ class _EditBar(Static, can_focus=True):
         tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
-        self._vm = view_model
+        super().__init__(view_model, **kwargs)
         self._tab = tab
-        # Cursor index into the active options list (mode-dependent).
-        self._cursor: int = 0
 
-    def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._refresh()
-
-    def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
-
-    def on_focus(self) -> None:
-        self.call_after_refresh(self._refresh)
-
-    def on_blur(self) -> None:
-        self.call_after_refresh(self._refresh)
-
-    def prepare_for_show(self) -> None:
-        self._cursor = 0
-
-    def _options(self) -> tuple[str, ...]:
-        return (
+    def choices(self) -> dict[str, str]:
+        # All labels route through ``_dispatch``, which reads the cursor to recover which one
+        # was picked. Acceptable cost for keeping the base widget free of "method-receives-
+        # label" plumbing.
+        options = (
             _EDIT_OPTIONS_MULTI
             if self._vm.multi_select_active
             else _EDIT_OPTIONS_SINGLE
         )
+        return {opt: "_dispatch" for opt in options}
 
-    def _refresh(self) -> None:
-        # Clamp cursor in case the options list shrank under us (e.g. multi-select toggled on while
-        # the dialog was open and the cursor was on a single-only option).
-        opts = self._options()
-        if opts and self._cursor >= len(opts):
-            self._cursor = len(opts) - 1
-        self.update(self._render_bar())
-
-    def _render_bar(self) -> Text:
-        cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
-        text = Text()
-        # Lead-in: "edit N entries:" / "edit this entry:" — gives the user a clear scope reminder
-        # while they navigate.
-        count = self._tab.selection_target_count()
-        if self._vm.multi_select_active:
-            noun = "entry" if count == 1 else "entries"
-            text.append(f"edit {count} {noun}:  ", style="dim")
-        else:
-            text.append("edit this entry:  ", style="dim")
-        options = self._options()
-        for i, opt in enumerate(options):
-            is_cursor = i == self._cursor
-            style = cursor_color if is_cursor else "#787878"
-            text.append(opt, style=style)
-            if i < len(options) - 1:
-                text.append("   ")
-        text.append("\n")
-        text.append("← / → move • enter select • e/esc dismiss", style="dim")
-        return text
-
-    def action_cursor_left(self) -> None:
-        opts = self._options()
-        if opts:
-            self._cursor = (self._cursor - 1) % len(opts)
-            self._refresh()
-
-    def action_cursor_right(self) -> None:
-        opts = self._options()
-        if opts:
-            self._cursor = (self._cursor + 1) % len(opts)
-            self._refresh()
-
-    async def action_select(self) -> None:
-        """Forward the highlighted choice string to the tab for dispatch."""
-        opts = self._options()
-        if not opts or self._cursor < 0 or self._cursor >= len(opts):
-            return
-        await self._tab.handle_edit_choice(opts[self._cursor])
+    async def _dispatch(self) -> None:
+        labels = list(self.choices().keys())
+        if self._cursor < len(labels):
+            await self._tab.handle_edit_choice(labels[self._cursor])
 
     def action_cancel(self) -> None:
         self._tab.hide_dialog()
 
-    def action_swap_to(self, name: str) -> None:
-        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
+    def _render_lead(self) -> Text | None:
+        count = self._tab.selection_target_count()
+        if self._vm.multi_select_active:
+            noun = "entry" if count == 1 else "entries"
+            return Text(f"edit {count} {noun}:  ", style="dim")
+        return Text("edit this entry:  ", style="dim")
+
+    def _render_choice(self, label: str, selected: bool) -> Text:
+        cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
+        style = cursor_color if selected else "#787878"
+        return Text(label, style=style)

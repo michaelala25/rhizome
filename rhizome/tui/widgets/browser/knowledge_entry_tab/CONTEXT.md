@@ -242,17 +242,16 @@ When the relink selection diverges from the originally-linked
 baseline (`is_relink_dirty` on the panel VM), a focusable
 Accept/Cancel widget reveals between the table and the answer
 preview. Mirrors the entry-details Accept/Cancel pattern: a
-`_RelinkChoicesList(Static, can_focus=True)` mounted unconditionally
-in `compose`, with its visibility toggled via the `.-visible` CSS
-class in `_refresh` based on `vm.is_relink_dirty`.
-
-Bindings: `←` / `→` move the cursor (VM-owned via
-`relink_choice_cursor`), `enter` dispatches `vm.accept_relink()` or
-`vm.cancel_relink()` by cursor position, `esc` is a shortcut for
-Cancel.
-
-The cursor (0 = Accept, 1 = Cancel) is reset to Accept on every
-selection toggle so the user picks up the most likely action.
+`_RelinkChoicesList(ChoiceList[LinkedFlashcardsPanelViewModel])`
+mounted unconditionally in `compose`, with its visibility toggled
+via the `.-visible` CSS class in `_refresh` based on
+`vm.is_relink_dirty`. The base `ChoiceList` widget
+(`widgets/browser/choices/`) owns the cursor, arrow nav, and the
+standard `► Accept   Cancel` rendering; the subclass declares
+`CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}` and
+implements those two methods plus `action_cancel`. The cursor is
+local widget state and resets to Accept via `prepare_for_show()` on
+each show transition.
 
 The choices widget is **not** in the tab's `alt+arrow` focus graph —
 reach it via the `tab` key or click. The mode owns `←` / `→` for
@@ -461,12 +460,17 @@ closes the active sort dialog.
 
 ### Delete
 
-Pressing `d` opens `_DeleteConfirm`, mounted between the tab body
-and the docked status line. The dialog reads `tab.selection_target_count()`
-to render the header (`Delete N selected entries?` in multi-select,
-`Delete 1 entry?` in single-select). Up/down moves the Confirm/Cancel
-cursor (owned locally by the widget); enter dispatches; escape
-dismisses; `s` / `f` / `e` swap.
+Pressing `d` opens `_DeleteConfirm`, a thin
+`ChoiceList[KnowledgeEntryBrowserTabViewModel]` subclass mounted
+between the tab body and the docked status line. The base widget
+(`widgets/browser/choices/`) owns cursor / arrow nav / standard
+`► Confirm` rendering; the subclass declares
+`CHOICES = {"Confirm": "_confirm", "Cancel": "_cancel"}`,
+`ORIENTATION = "vertical"` (stacked), and overrides `_render_header`
+to surface the count prose (`Delete N selected entries?` in
+multi-select / `Delete 1 entry?` in single-select). Sibling-swap keys
+(`s` / `f` / `e`) bubble to the tab's BINDINGS like every other
+ChoiceList-based dialog.
 
 On confirm the dialog awaits `vm.delete_selected_entries()` and then
 hides itself. The VM resolves the target set via the internal
@@ -488,8 +492,10 @@ no-ops when nothing's targetable.
 
 ### Edit
 
-Pressing `e` opens `_EditBar`. The option list lives on the view side
-as module-level constants:
+Pressing `e` opens `_EditBar`, a `ChoiceList` subclass with dynamic
+choices and a custom per-choice renderer (no `►` marker — colour-only
+distinction so the horizontal row stays compact across 3-5 options).
+The option list lives on the view side as module-level constants:
 
 - **multi-select** (`_EDIT_OPTIONS_MULTI`): `change topic` ·
   `change type` · `delete`
@@ -501,8 +507,11 @@ the details panel is frozen and there's no single entry to refocus
 onto. `delete` always sits last so the cursor never lands on the
 destructive action without an explicit rightward step.
 
-On `enter`, `_EditBar.action_select` calls `tab.handle_edit_choice(opt)`
-with the option string. The tab dispatches:
+All labels map to a single `_dispatch` action method (via
+`choices()` override returning `{label: "_dispatch"}` for every
+label); `_dispatch` reads `self._cursor` to recover the selected
+label and forwards it to `tab.handle_edit_choice(label)`. The tab
+dispatches:
 
 - `change topic` / `change type` push a modal screen
   (`TopicSelectorScreen` / `_TypePickerScreen`); on dismiss, the

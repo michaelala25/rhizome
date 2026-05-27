@@ -31,6 +31,7 @@ from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Static, TextArea
 
 from ....search_input import SearchInput
+from ...choices import ChoiceList
 
 from .view_model import LinkedFlashcardsPanelViewModel
 
@@ -131,83 +132,21 @@ class _FlashcardAnswerPreview(TextArea):
             self.text = target
 
 
-class _RelinkChoicesList(Static, can_focus=True):
-    """Accept / Cancel choices for committing or discarding a relink edit.
+class _RelinkChoicesList(ChoiceList[LinkedFlashcardsPanelViewModel]):
+    """Accept / Cancel choices for committing or discarding a relink edit. Visible only when
+    ``vm.is_relink_dirty`` is True; hidden via the ``.-visible`` CSS class toggle managed by
+    the parent panel's ``_refresh``. Escape always cancels regardless of cursor — matches the
+    "easy out" convention from the entry-details choices list."""
 
-    Visible only when ``vm.is_relink_dirty`` is True; hidden via the ``.-visible`` CSS class
-    toggle managed by the parent panel's ``_refresh``. Cursor is owned by the VM
-    (``relink_choice_cursor``) so the highlighted choice survives repaints. Mirrors the
-    Accept/Cancel choices list on the entry details panel — same focusable-static pattern, just
-    horizontal because there are only two options.
-    """
+    CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
+    LEAD = "Relink: "
+    HINT = "← / → move • enter confirm • esc cancels"
 
-    BINDINGS = [
-        Binding("left", "choice_left", show=False),
-        Binding("right", "choice_right", show=False),
-        Binding("enter", "choice_confirm", show=False),
-        # Escape acts as Cancel — matches the "easy out" convention from the entry details
-        # choices list. Doesn't depend on cursor position.
-        Binding("escape", "cancel", show=False),
-    ]
+    async def _accept(self) -> None:
+        await self._vm.accept_relink()
 
-    def __init__(
-        self,
-        view_model: LinkedFlashcardsPanelViewModel,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(**kwargs)
-        self._vm = view_model
-
-    def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._refresh()
-
-    def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
-
-    def on_focus(self) -> None:
-        # Cursor brightness tracks focus — mirrors ``_DeleteConfirm`` on the entries side.
-        self.call_after_refresh(self._refresh)
-
-    def on_blur(self) -> None:
-        self.call_after_refresh(self._refresh)
-
-    def _refresh(self) -> None:
-        self.update(self._render_bar())
-
-    def _render_bar(self) -> Text:
-        cursor_idx = self._vm.relink_choice_cursor
-        cursor_color = "bold #ffd700" if self.has_focus else "bold #6a6a6a"
-        text = Text()
-        text.append("Relink: ", style="dim")
-        labels = ("Accept", "Cancel")
-        for i, label in enumerate(labels):
-            chosen = i == cursor_idx
-            if chosen:
-                text.append("► ", style=cursor_color)
-                text.append(label, style="bold")
-            else:
-                text.append("  ")
-                text.append(label, style="dim")
-            if i < len(labels) - 1:
-                text.append("   ")
-        text.append("\n")
-        text.append(
-            "← / → move • enter confirm • esc cancels", style="dim",
-        )
-        return text
-
-    def action_choice_left(self) -> None:
-        self._vm.move_relink_choice_cursor(-1)
-
-    def action_choice_right(self) -> None:
-        self._vm.move_relink_choice_cursor(1)
-
-    async def action_choice_confirm(self) -> None:
-        if self._vm.relink_choice_cursor == 0:
-            await self._vm.accept_relink()
-        else:
-            self._vm.cancel_relink()
+    def _cancel(self) -> None:
+        self._vm.cancel_relink()
 
     def action_cancel(self) -> None:
         self._vm.cancel_relink()

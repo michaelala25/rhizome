@@ -124,12 +124,6 @@ class LinkedFlashcardsPanelViewModel(QueryBackedViewModel, SearchableViewModelMi
         self._relink_mode: bool = False
         self._relink_selected_ids: set[int] = set()
 
-        # Relink-choices cursor: 0 = Accept, 1 = Cancel. The view renders an Accept/Cancel
-        # widget below the table when ``is_relink_dirty`` is True; this cursor backs which choice
-        # is highlighted. Reset to 0 (Accept) on every entry into a dirty state so the user
-        # picks up the action they're most likely to take.
-        self._relink_choice_cursor: int = 0
-
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
@@ -197,11 +191,6 @@ class LinkedFlashcardsPanelViewModel(QueryBackedViewModel, SearchableViewModelMi
         if not self._relink_mode:
             return False
         return self._relink_selected_ids != self._relink_baseline_ids()
-
-    @property
-    def relink_choice_cursor(self) -> int:
-        """0 = Accept, 1 = Cancel."""
-        return self._relink_choice_cursor
 
     def cursor_section(self) -> Literal["linked", "boundary", "remaining", "empty"]:
         """Which display section the cursor currently sits in. Drives view-side gating
@@ -390,15 +379,6 @@ class LinkedFlashcardsPanelViewModel(QueryBackedViewModel, SearchableViewModelMi
             self._relink_selected_ids.remove(fc.id)
         else:
             self._relink_selected_ids.add(fc.id)
-        # Reset the choices cursor to Accept whenever the dirty state may have flipped on. If
-        # the toggle returns the set to clean (e.g. the user toggled the same row twice), the
-        # cursor reset is harmless — the choices widget is hidden either way.
-        self._relink_choice_cursor = 0
-        self.emit(self.dirty)
-
-    def move_relink_choice_cursor(self, delta: int) -> None:
-        """Step the Accept/Cancel cursor by ``delta`` (typically ±1). Wraps."""
-        self._relink_choice_cursor = (self._relink_choice_cursor + delta) % 2
         self.emit(self.dirty)
 
     async def accept_relink(self) -> None:
@@ -448,7 +428,6 @@ class LinkedFlashcardsPanelViewModel(QueryBackedViewModel, SearchableViewModelMi
         if not self.is_relink_dirty:
             return
         self._relink_selected_ids = self._relink_baseline_ids()
-        self._relink_choice_cursor = 0
         self.emit(self.dirty)
 
     async def load_more(self) -> None:

@@ -131,6 +131,18 @@ This matches `docs/design-principles.md` and the established
   against the new selection / cursor state). No structural sync happens
   through `dirty` — structural changes always come from user events.
 
+- **choices/ — `ChoiceList`** (see the subdir's own `CONTEXT.md`):
+  shared base for browser-tab dialogs that present a navigable list
+  of named choices (Accept/Cancel, Confirm/Cancel, edit picker,
+  relink confirm). Owns cursor + arrow nav + enter/escape + focus-
+  brightness rendering. Subclasses declare `CHOICES: dict[str, str]`
+  (label → action method name, mirroring Textual's `BINDINGS`
+  action-string convention) plus optional `LEAD` / `HINT` / `_render_header`
+  / `_render_choice` overrides. No VM mixin — action methods vary
+  too much across consumers to justify a centralized contract.
+  Sibling-dialog swap keys (`d` / `f` / `e` / `s`) bubble to the
+  parent tab's BINDINGS like with `SortDialog`.
+
 - **sort_dialog/ — `SortDialog` + `SortableViewModelMixin`** (see the
   subdir's own `CONTEXT.md`): shared sort-axis picker for browser
   tabs. Generic on the VM (bound to `SortableViewModelMixin`) and on
@@ -211,18 +223,15 @@ This matches `docs/design-principles.md` and the established
   before navigating away.
 
   **Choices list.** When `is_dirty` is true, a `_ChoicesList`
-  (lead-in "Edit:" label, horizontal Accept / Cancel, dim hint line)
-  reveals below the content area. It's a focusable `Static` that owns
-  its own choice cursor (dialog UI state is a view concern; the VM
-  exposes only `accept` / `cancel`). Bindings: left/right (move the
-  local cursor), enter (dispatches `vm.accept()` or `vm.cancel()` by
-  cursor position), and escape (shortcut for cancel). The parent
-  view's `_refresh` calls `prepare_for_show()` on the clean→dirty
-  transition so each fresh open lands on Accept. When clean, the
-  widget is hidden via a `.-visible` class toggle. Visual shape
-  mirrors the relink Accept/Cancel widget in the linked-flashcards
-  panel — top border that flips accent on focus, bright-gold cursor
-  arrow on focus.
+  (`ChoiceList[EntryDetailsViewModel]` subclass with `LEAD = "Edit: "`
+  and `CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}`) reveals
+  below the content area. The base `ChoiceList`
+  (`widgets/browser/choices/`) owns the cursor, arrow nav, and the
+  standard `► Label` rendering; the subclass just wires the two
+  action methods and `action_cancel`. The parent view's `_refresh`
+  calls `prepare_for_show()` on the clean→dirty transition so each
+  fresh open lands on Accept. When clean, the widget is hidden via a
+  `.-visible` class toggle.
 
   **Accept path**: opens a session, calls `update_entry` + `commit`,
   then mutates the in-memory `KnowledgeEntry` instance in place so the
