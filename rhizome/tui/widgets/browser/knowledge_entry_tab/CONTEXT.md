@@ -35,11 +35,23 @@ components living in their own subdirectories.
   `_SearchInput` over the entries `DataTable`) and a 40%
   `EntryDetailsView`. The DataTable is a thin `_EntriesTable`
   subclass that owns the `m` (toggle multi-select) / `space` (toggle
-  current row) keybindings. Implements the tab-view focus contract
-  (`focus_first` / `focus_next_region` / `focus_prev_region`) and
-  delegates the details region's internal cycle to `EntryDetailsView`.
-  `focus_next_region` short-circuits the table → details transition
-  while multi-select is active so `alt+right` keeps focus on the table.
+  current row) keybindings — kept in `view.py` because its bindings
+  drive the tab's dialog mutex and focus walk directly. Implements the
+  tab-view focus contract (`focus_first` / `focus_next_region` /
+  `focus_prev_region`) and delegates the details region's internal cycle
+  to `EntryDetailsView`. `focus_next_region` short-circuits the table →
+  details transition while multi-select is active so `alt+right` keeps
+  focus on the table.
+
+  Per-widget code lives in sibling modules — `search_input.py`,
+  `delete_dialog.py`, `sort_dialog.py`, `filter_dialog.py`,
+  `edit_dialog.py`, `entry_content_preview.py`. Each owns the widget
+  class plus the constants/helpers it uses (e.g. `_SORT_OPTIONS` in
+  `sort_dialog.py`, `_EDIT_OPTIONS_SINGLE` / `_EDIT_OPTIONS_MULTI` and
+  `_TypePickerScreen` in `edit_dialog.py`, `_OneOfInput` /
+  `_TYPE_OPTIONS` / `_FLASHCARD_OPTIONS` / `_parse_id_list` in
+  `filter_dialog.py`). The dialog widgets reference the tab via
+  `TYPE_CHECKING` to avoid an import cycle.
 
 ## Search
 
