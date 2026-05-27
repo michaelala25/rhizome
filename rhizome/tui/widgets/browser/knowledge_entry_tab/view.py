@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.widget import Widget
-from textual.widgets import DataTable, Static, TextArea
+from textual.widgets import DataTable, Rule, Static, TextArea
 
 from rhizome.db.models import EntryType
 
@@ -75,9 +75,6 @@ class _EntriesTable(DataTable):
         # multi-select if on, flips into ``LINKED_FLASHCARDS`` if not already, and turns on the
         # panel's relink selection. Pressing again exits relink (stays in LINKED_FLASHCARDS).
         Binding("l", "toggle_relink", show=False),
-        # ``h`` toggles the help section at the bottom of the tab. View-side concern — no VM
-        # plumbing — see ``KnowledgeEntryBrowserTabView.toggle_help``.
-        Binding("h", "toggle_help", show=False),
     ]
 
     def __init__(
@@ -140,9 +137,6 @@ class _EntriesTable(DataTable):
 
     def action_toggle_relink(self) -> None:
         self._tab.toggle_relink_mode()
-
-    def action_toggle_help(self) -> None:
-        self._tab.toggle_help()
 
 
 class KnowledgeEntryBrowserTabView(Vertical):
@@ -327,24 +321,17 @@ class KnowledgeEntryBrowserTabView(Vertical):
     KnowledgeEntryBrowserTabView #edit-bar:focus {
         border-top: solid $accent;
     }
-    /* Help section at the very bottom of the tab. The hint is always present (1 line); the
-       full help expands above it when ``_help_visible`` flips on. View-side state, mirrors
-       the FlashcardReview pattern visually. */
-    KnowledgeEntryBrowserTabView #tab-help {
-        height: auto;
-        text-align: center;
+    /* Permanent keybindings line at the very bottom of the tab. Left-aligned, single line, lists
+       the global mode/navigation keys so they're discoverable without an explicit help toggle.
+       A thin Rule sits above it as a visual separator from whichever dialog (or the status row)
+       sits directly above. */
+    KnowledgeEntryBrowserTabView #tab-keybindings-rule {
         margin: 1 0 0 0;
-        color: rgb(80,80,80);
-        padding: 0 1;
-        display: none;
+        color: #3a3a3a;
     }
-    KnowledgeEntryBrowserTabView #tab-help.-visible {
-        display: block;
-    }
-    KnowledgeEntryBrowserTabView #tab-help-hint {
-        height: 1;
-        text-align: right;
-        color: rgb(80,80,80);
+    KnowledgeEntryBrowserTabView #tab-keybindings {
+        height: auto;
+        text-align: left;
         padding: 0 1;
     }
     """
@@ -383,11 +370,6 @@ class KnowledgeEntryBrowserTabView(Vertical):
         # (when only styles or markers changed: mode toggle, selection toggle, post-edit content
         # mutation). The in-place path preserves ``DataTable``'s scroll position and cursor.
         self._last_row_signature: tuple[int, ...] | None = None
-        # Help section toggled by ``h`` on the entries table. View-side state — pure UI, no
-        # data-model meaning, so it lives on the view rather than the VM. Mirrors the
-        # FlashcardReview help pattern visually (a permanent hint at the very bottom plus an
-        # expandable full-bindings list above it).
-        self._help_visible: bool = False
 
     def compose(self):
         table = _EntriesTable(
@@ -421,68 +403,42 @@ class KnowledgeEntryBrowserTabView(Vertical):
         yield _SortBar(self._vm, self, id="sort-bar")
         yield _FilterDialog(self._vm, self, id="filter-dialog")
         yield _EditBar(self._vm, self, id="edit-bar")
-        # Help section at the very bottom. Order matters: the full help sits above the hint
-        # so when it expands it pushes the hint down rather than displacing it. Hint is
-        # always 1 line; full help is display: none until ``_help_visible`` flips on.
-        yield Static("", id="tab-help")
-        yield Static("", id="tab-help-hint")
+        # Permanent keybindings line at the very bottom — surfaces the global mode/navigation
+        # keys so they're discoverable without an explicit help toggle. The Rule above acts as a
+        # visual separator from whichever dialog (or status row) sits directly above.
+        yield Rule(line_style="solid", id="tab-keybindings-rule")
+        yield Static(self._keybindings_text(), id="tab-keybindings")
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
         # If the VM already has data (it was bootstrapped before the view mounted), paint it on
         # first frame instead of waiting for the next dirty.
         self._refresh()
-        # Initial help hint paint — independent of VM state, so a dedicated call instead of
-        # piggybacking on ``_refresh`` (which fires only on ``vm.dirty``).
-        self._refresh_help()
 
     def on_unmount(self) -> None:
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
 
     # ------------------------------------------------------------------
-    # Help section (view-side)
+    # Bottom keybindings line
     # ------------------------------------------------------------------
 
-    def toggle_help(self) -> None:
-        """Flip the help section. View-side state, so this skips ``vm.dirty`` — it just updates
-        the two help widgets directly."""
-        self._help_visible = not self._help_visible
-        self._refresh_help()
-
-    def _refresh_help(self) -> None:
-        """Paint the help hint (always 1 line) and the full help (expanded only when
-        ``_help_visible``). Called from ``on_mount`` for initial paint and from
-        ``toggle_help`` when ``h`` is pressed. Mirrors the FlashcardReview pattern: the hint
-        blanks while the full is expanded, and the full reveals via the ``.-visible`` class."""
-        try:
-            hint = self.query_one("#tab-help-hint", Static)
-            full = self.query_one("#tab-help", Static)
-        except Exception:
-            # Compose hasn't finished yet — first ``on_mount`` will catch up.
-            return
-        if self._help_visible:
-            hint.update("")
-            full.update(self._help_text())
-            full.add_class("-visible")
-        else:
-            hint.update("[bold]h[/]  show help")
-            full.remove_class("-visible")
-
-    def _help_text(self) -> str:
-        """Compact horizontal row of non-obvious bindings. Surface the global mode/navigation
-        keys; per-dialog keys (← / → / enter / esc inside an open dialog) are documented by the
-        dialog widgets themselves."""
+    def _keybindings_text(self) -> str:
+        """Permanent left-aligned listing of the tab's global mode/navigation keys. The keybinding
+        glyph renders a touch brighter than the action label so it pops out of the row; per-dialog
+        keys (← / → / enter / esc inside an open dialog) are documented by the dialog widgets
+        themselves."""
         rows = [
-            ("h", "hide help"),
+            ("e", "edit"),
+            ("f", "filter"),
+            ("s", "sort"),
+            ("d", "delete"),
+            ("l", "link flashcards"),
             ("m", "multi-select"),
-            ("space", "toggle row"),
-            ("shift+↑/↓", "range-select"),
-            ("d / s / f / e", "delete / sort / filter / edit"),
-            ("ctrl+f", "linked flashcards"),
-            ("l", "relink mode"),
-            ("alt+←/→", "focus next/prev region"),
+            ("alt+left/right", "navigate"),
         ]
-        return "    ".join(f"[bold]{key}[/]  {label}" for key, label in rows)
+        return "   ".join(
+            f"[#a0a0a0]{key}[/] [#707070]{label}[/]" for key, label in rows
+        )
 
     # ------------------------------------------------------------------
     # Dialog orchestration
