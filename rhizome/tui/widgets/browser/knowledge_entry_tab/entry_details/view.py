@@ -133,7 +133,7 @@ class EntryDetailsView(Vertical):
         min-height: 3;
         max-height: 6;
         padding: 0 1;
-        margin: 0 0 1 0;
+        margin: 0 0 0 0;
     }
     EntryDetailsView #details-title:focus {
         border: solid $accent;

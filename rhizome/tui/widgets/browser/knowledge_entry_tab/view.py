@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.widget import Widget
-from textual.widgets import DataTable, Rule, Static, TextArea
+from textual.widgets import Button, DataTable, Rule, Static, TextArea
 
 from rhizome.db.models import EntryType
 
@@ -67,10 +67,6 @@ class _EntriesTable(DataTable):
         Binding("s", "toggle_dialog('sort')", show=False),
         Binding("f", "toggle_dialog('filter')", show=False),
         Binding("e", "toggle_dialog('edit')", show=False),
-        # ``ctrl+f`` flips the tab between ``ENTRIES`` (default) and ``LINKED_FLASHCARDS`` views.
-        # First-pass binding — the user can refine the keystroke later. Lives on the table (not
-        # the parent tab with priority) so it doesn't compete with ``ctrl+f`` in editing surfaces.
-        Binding("ctrl+f", "toggle_state", show=False),
         # ``l`` enters / toggles relink mode. One motion from anywhere in the entries tab: drops
         # multi-select if on, flips into ``LINKED_FLASHCARDS`` if not already, and turns on the
         # panel's relink selection. Pressing again exits relink (stays in LINKED_FLASHCARDS).
@@ -125,18 +121,89 @@ class _EntriesTable(DataTable):
     def action_toggle_dialog(self, name: str) -> None:
         self._tab.toggle_dialog(name)  # type: ignore[arg-type]
 
-    def action_toggle_state(self) -> None:
-        # Two-state toggle for now; if a third state lands, replace this with an explicit picker.
-        current = self._vm.state
-        target = (
-            self._vm.State.LINKED_FLASHCARDS
-            if current is self._vm.State.ENTRIES
-            else self._vm.State.ENTRIES
-        )
-        self._vm.transition_to(target)
-
     def action_toggle_relink(self) -> None:
         self._tab.toggle_relink_mode()
+
+
+class _NavArrow(Button):
+    """Clickable navigation arrow between the two right-panel tabs (entry details ↔ linked
+    flashcards).
+
+    Subclasses ``Button`` so hover / active / press feedback is handled by the framework — the
+    default chrome is wiped out via Textual's own ``compact=True`` constructor flag (which toggles
+    the ``-textual-compact`` class, carrying a ``border: none !important`` rule that beats the
+    raised-bezel ``border-top``/``border-bottom`` Button paints by default).
+    ``KnowledgeEntryBrowserTabView.on_button_pressed`` listens for the resulting ``Pressed``
+    message and dispatches to ``swap_tab`` regardless of which arrow fired (the swap is a
+    two-state toggle).
+
+    Vertical centring within the panel area is delegated to the wrapping ``#nav-left`` /
+    ``#nav-right`` ``Vertical`` slots in ``KnowledgeEntryBrowserTabView.compose`` — those slots
+    also carry the ``-state-*``-keyed visibility rule so only the arrow pointing toward the
+    *other* tab is shown at a time. (Textual's ``align-vertical`` aligns the *bounding box* of
+    all children rather than each child individually — see ``_arrange.py:104-113`` — so with
+    ``height: 1fr`` siblings the bounding box already fills the row and the alignment is a
+    no-op. A wrapper container with a single child is the only way to actually centre.)
+
+    A note on the CSS knobs (Button gets surprisingly opinionated):
+      * ``background`` — the colour of the strip itself.
+      * ``color``      — the colour of the rendered glyph (``<`` / ``>``).
+      * ``text-style: none`` — Button defaults to ``bold``; we want a plain glyph.
+      * ``tint`` on ``.-active`` — Button's own ``.-active`` rule paints
+        ``tint: $background 30%`` over the strip, which washes any explicit colour back toward
+        the surface. ``tint: black 0%`` neutralises it.
+      * Button's CSS has ``border: none; border-top: tall ...; border-bottom: tall ...`` baked
+        into ``.-style-default``. ``border: none`` from a less-specific selector loses; the
+        ``compact=True`` route is the clean fix.
+      * Width below 3 squashes the centred glyph — Button enforces a meaningful content area.
+    """
+
+    # The arrows are mouse-only by design — no keyboard binding routes focus here, so opt out of
+    # Tab-key focus too. Avoids a stray focus ring landing on the arrow when the user tabs through
+    # the panel.
+    can_focus = False
+
+    DEFAULT_CSS = """
+    _NavArrow {
+        /* Layout-only props. Button only sets ``width: auto / min-width: 16 / height: auto`` at
+           this specificity, so a plain ``_NavArrow`` selector wins on cascade order. */
+        width: 3;
+        height: 25;
+        min-width: 1;
+        min-height: 1;
+        padding: 0;
+        margin: 0;
+        text-style: none;
+        content-align: center middle;
+    }
+    /* Colour rules below have to chain ``.-style-default`` to match the specificity of Button's
+       own ``Button.-style-default[:hover|.-active]`` rules. Without it Button wins (extra class
+       in the selector) and our hover background is silently replaced by ``$surface-darken-1``
+       — *darker* than our idle, which is why hover looked too dark. With matching specificity
+       we win on cascade order: subclass DEFAULT_CSS appends after the parent's (see
+       ``DOMNode._get_default_css`` — the MRO-ordered tie-breaker). */
+    _NavArrow.-style-default {
+        background: #151515;
+        color: #383838;
+    }
+    _NavArrow.-style-default:hover {
+        background: #1d1d1d;
+        color: #505050;
+    }
+    _NavArrow.-style-default.-active {
+        background: #252525;
+        color: #606060;
+        tint: black 0%;
+    }
+    """
+
+    def __init__(self, glyph: str, **kwargs: Any) -> None:
+        # ``compact=True`` is Textual's own escape hatch from Button's raised-bezel chrome —
+        # toggles the ``-textual-compact`` class whose ``border: none !important`` rule beats the
+        # ``border-top: tall ...`` / ``border-bottom: tall ...`` baked into ``.-style-default``.
+        # Without it, no amount of ``border: none`` in our DEFAULT_CSS wins the specificity fight
+        # and you get a bright line at the very top of the strip.
+        super().__init__(glyph, compact=True, **kwargs)
 
 
 class KnowledgeEntryBrowserTabView(Vertical):
@@ -160,12 +227,19 @@ class KnowledgeEntryBrowserTabView(Vertical):
         layout: horizontal;
         height: 1fr;
     }
+    KnowledgeEntryBrowserTabView #tab-body-rule {
+        margin: 0 0 0 0;
+        color: #3a3a3a;
+    }
     /* Left column of the tab body: search bar over the entries
        table. Width is set per-state below (60% in ENTRIES, 50% in
-       LINKED_FLASHCARDS); the table fills its parent column. */
+       LINKED_FLASHCARDS); the table fills its parent column. A 1-char
+       right margin keeps the right-hand panel area (nav arrow + view)
+       from sitting flush against the entries table. */
     KnowledgeEntryBrowserTabView #table-column {
         height: 1fr;
         layout: vertical;
+        margin-right: 1;
     }
     KnowledgeEntryBrowserTabView #entries-table {
         width: 1fr;
@@ -197,30 +271,56 @@ class KnowledgeEntryBrowserTabView(Vertical):
     KnowledgeEntryBrowserTabView #entries-table.-multi-select > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
-    /* State-driven layout swap. Both right-hand views are mounted up
-       front; the ``-state-*`` class toggles which is visible and the
-       corresponding widths. */
+    /* State-driven layout swap. Both right-hand views (plus the two nav-arrow slots that
+       bracket them) are mounted up front; the ``-state-*`` class toggles which combination is
+       visible and the corresponding widths. The visible right-hand view takes the remaining
+       space (``1fr``) so the fixed-width arrow slot lays out cleanly beside it. Each slot is a
+       3-cell-wide ``Vertical`` whose ``align: center middle`` vertically centres the
+       fixed-height ``_NavArrow`` inside the panel area — Textual has no per-child cross-axis
+       self-alignment, so the wrapper is doing real work. */
+    KnowledgeEntryBrowserTabView .nav-arrow-slot {
+        width: 3;
+        height: 1fr;
+        align: center middle;
+        background: transparent;
+    }
+    KnowledgeEntryBrowserTabView #nav-left,
+    KnowledgeEntryBrowserTabView #nav-right {
+        display: none;
+    }
+    /* 1-cell gap between the vertical rule and the nav-left slot so the arrow doesn't sit
+       flush against the divider. Only the left slot needs it — the right slot has the outer
+       tab's ``padding: 0 1`` doing the same job on the other side. */
+    KnowledgeEntryBrowserTabView #nav-left {
+        margin-left: 1;
+    }
     KnowledgeEntryBrowserTabView.-state-entries #table-column {
         width: 60%;
     }
     KnowledgeEntryBrowserTabView.-state-entries EntryDetailsView {
-        width: 40%;
+        width: 1fr;
         height: 1fr;
         display: block;
     }
     KnowledgeEntryBrowserTabView.-state-entries LinkedFlashcardsPanelView {
         display: none;
     }
+    KnowledgeEntryBrowserTabView.-state-entries #nav-right {
+        display: block;
+    }
     KnowledgeEntryBrowserTabView.-state-linked-flashcards #table-column {
         width: 50%;
     }
     KnowledgeEntryBrowserTabView.-state-linked-flashcards LinkedFlashcardsPanelView {
-        width: 50%;
+        width: 1fr;
         height: 1fr;
         display: block;
     }
     KnowledgeEntryBrowserTabView.-state-linked-flashcards EntryDetailsView {
         display: none;
+    }
+    KnowledgeEntryBrowserTabView.-state-linked-flashcards #nav-left {
+        display: block;
     }
     /* Status row at the bottom of ``#table-column`` so it aligns with the linked-flashcards docked
        status row inside its own column. */
@@ -394,11 +494,22 @@ class KnowledgeEntryBrowserTabView(Vertical):
                 yield _EntryContentPreview(self._vm, id="entry-content-preview")
                 yield Static("", id="tab-status")
 
-            # Both right-hand views are mounted up front and shown / hidden via the ``-state-*``
-            # class on the parent. Mounting them once avoids the cost of re-subscribing each child
-            # view's ``vm.dirty`` callback on every state flip.
+            yield Rule(orientation="vertical", line_style="solid", id="tab-body-rule")
+            # Both right-hand views (and the two nav-arrow slots that bracket them) are mounted
+            # up front and shown / hidden via the ``-state-*`` class on the parent. Mounting them
+            # once avoids the cost of re-subscribing each child view's ``vm.dirty`` callback on
+            # every state flip. The slots are 3-cell-wide Verticals whose ``align: center
+            # middle`` vertically centres the fixed-height arrow inside the panel area (Textual
+            # has no per-child cross-axis self-alignment, so the wrapper is doing real work).
+            # ``nav-left`` is visible only in ``LINKED_FLASHCARDS`` (click to go back to
+            # ``ENTRIES``); ``nav-right`` is visible only in ``ENTRIES`` (click to advance to
+            # ``LINKED_FLASHCARDS``).
+            with Vertical(id="nav-left", classes="nav-arrow-slot"):
+                yield _NavArrow("<")
             yield EntryDetailsView(self._vm.details)
             yield LinkedFlashcardsPanelView(self._vm.linked_flashcards)
+            with Vertical(id="nav-right", classes="nav-arrow-slot"):
+                yield _NavArrow(">")
         yield _DeleteConfirm(self._vm, self, id="delete-confirm")
         yield _SortBar(self._vm, self, id="sort-bar")
         yield _FilterDialog(self._vm, self, id="filter-dialog")
@@ -493,6 +604,30 @@ class KnowledgeEntryBrowserTabView(Vertical):
                 # Table may have been unmounted (e.g. tab swap mid-close); let focus settle wherever
                 # Textual puts it.
                 pass
+
+    # ------------------------------------------------------------------
+    # Right-panel tab swap (driven by the click-only ``_NavArrow`` widgets)
+    # ------------------------------------------------------------------
+
+    def swap_tab(self) -> None:
+        """Flip between the entry-details and linked-flashcards right-panel tabs. Called from
+        ``on_button_pressed`` when either ``_NavArrow`` is clicked. Two-state toggle for now; if
+        a third state lands, replace with an explicit picker."""
+        current = self._vm.state
+        target = (
+            self._vm.State.LINKED_FLASHCARDS
+            if current is self._vm.State.ENTRIES
+            else self._vm.State.ENTRIES
+        )
+        self._vm.transition_to(target)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Catch presses from the bracketing ``_NavArrow`` buttons. Both arrows toggle the same
+        two-state swap, so direction doesn't matter — only the visible arrow is clickable at any
+        moment, and ``swap_tab`` flips to the opposite state regardless."""
+        if isinstance(event.button, _NavArrow):
+            event.stop()
+            self.swap_tab()
 
     # ------------------------------------------------------------------
     # Relink mode entry point
