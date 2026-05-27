@@ -141,8 +141,9 @@ class _LinkedFlashcardsSearchInput(Input):
 
 
 class _FlashcardAnswerPreview(TextArea):
-    """Read-only scrollable preview of the cursor flashcard's answer + testing notes. Non-
-    navigable (``can_focus=False``) — mouse-wheel scroll works, keyboard nav doesn't land here.
+    """Read-only scrollable preview of the cursor flashcard's question, answer + testing notes.
+    Non-navigable (``can_focus=False``) — mouse-wheel scroll works, keyboard nav doesn't land
+    here.
 
     Subscribes to the VM's ``dirty`` (which fires on cursor moves, refetches, and toggles). Reads
     ``cursor_flashcard`` on each fire — ``None`` when on the boundary row or display is empty.
@@ -167,7 +168,7 @@ class _FlashcardAnswerPreview(TextArea):
             read_only=True, show_line_numbers=False, soft_wrap=True, **kwargs,
         )
         self._vm = view_model
-        self.border_title = "[dim]answer + notes[/]"
+        self.border_title = "[dim]question + answer + notes[/]"
         self.border_title_align = "left"
 
     def on_mount(self) -> None:
@@ -182,7 +183,7 @@ class _FlashcardAnswerPreview(TextArea):
         if fc is None:
             target = ""
         else:
-            parts = ["Answer:", fc.answer_text]
+            parts = ["Question:", fc.question_text, "", "Answer:", fc.answer_text]
             if fc.testing_notes:
                 parts.extend(["", "Testing notes:", fc.testing_notes])
             target = "\n".join(parts)
