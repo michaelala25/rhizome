@@ -9,10 +9,12 @@ invoke. The dialogs talk to the VM through that narrow surface (``set_sort``, ``
 ``change_type_on_selected_entries``) and Textual's focus mechanics carry keystrokes the rest of the
 way.
 
-Per-widget code lives in sibling modules — ``search_input.py``, ``delete_dialog.py``,
-``sort_dialog.py``, ``filter_dialog.py``, ``edit_dialog.py``, ``entry_content_preview.py``. This
-module keeps the tab container itself plus the ``_EntriesTable`` subclass, which is tightly
-coupled to the tab's dialog orchestration and focus walk.
+Per-widget code lives in sibling modules — ``delete_dialog.py``, ``sort_dialog.py``,
+``filter_dialog.py``, ``edit_dialog.py``, ``entry_content_preview.py``. The search bar is the
+shared generic ``SearchInput`` from ``rhizome.tui.widgets.search_input``, parameterised on
+``KnowledgeEntryBrowserTabViewModel``. This module keeps the tab container itself plus the
+``_EntriesTable`` subclass, which is tightly coupled to the tab's dialog orchestration and
+focus walk.
 """
 
 from __future__ import annotations
@@ -28,13 +30,14 @@ from textual.widgets import DataTable, Input, Rule, Static, TextArea
 
 from rhizome.db.models import EntryType
 
+from ...search_input import SearchInput
+
 from .delete_dialog import _DeleteConfirm
 from .edit_dialog import _EditBar, _TypePickerScreen
 from .entry_content_preview import _EntryContentPreview
 from .entry_details import EntryDetailsView
 from .filter_dialog import _FilterDialog
 from .linked_flashcards import LinkedFlashcardsPanelView
-from .search_input import _SearchInput
 from .sort_dialog import _SortBar
 from .view_model import KnowledgeEntryBrowserTabViewModel
 
@@ -372,7 +375,9 @@ class KnowledgeEntryBrowserTabView(Vertical):
         table.add_column("flashcards")
         with Horizontal(id="tab-body"):
             with Vertical(id="table-column"):
-                yield _SearchInput(self._vm, id="search-input")
+                yield SearchInput[KnowledgeEntryBrowserTabViewModel](
+                    self._vm, id="search-input",
+                )
                 yield table
                 # Preview only renders in ``LINKED_FLASHCARDS`` — CSS toggles ``display`` based on
                 # the parent's ``-state-*`` class.

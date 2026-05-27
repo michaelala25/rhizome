@@ -37,6 +37,7 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
+from ...search_input import SearchableViewModelMixin
 from ..tab_base import BrowserTabViewModel
 from .entry_details import EntryDetailsViewModel
 from .linked_flashcards import LinkedFlashcardsPanelViewModel
@@ -49,7 +50,7 @@ _logger = get_logger("browser.knowledge_entry_tab")
 DEFAULT_PAGE_LIMIT = 500
 
 
-class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel):
+class KnowledgeEntryBrowserTabViewModel(BrowserTabViewModel, SearchableViewModelMixin):
     """Concrete tab VM for browsing knowledge entries."""
 
     TITLE = "Knowledge Entries"

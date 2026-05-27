@@ -28,7 +28,9 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
-from textual.widgets import DataTable, Input, Static, TextArea
+from textual.widgets import DataTable, Static, TextArea
+
+from ....search_input import SearchInput
 
 from .view_model import LinkedFlashcardsPanelViewModel
 
@@ -76,68 +78,6 @@ class _LinkedFlashcardsTable(DataTable):
 
     def action_toggle_relink_selection(self) -> None:
         self._vm.toggle_current_relink_selection()
-
-
-class _LinkedFlashcardsSearchInput(Input):
-    """Search box mounted above the flashcards table. Visually + behaviourally identical to the
-    entries-side ``_SearchInput`` (transparent background, ``#3a3a3a`` border that flips accent
-    on focus, right-aligned border-title hint, esc × 2 to clear).
-
-    In relink mode the search filters the remaining pool only — the pinned section stays
-    unconditionally visible. The bar itself doesn't need to know; the VM handles the split.
-    """
-
-    DEFAULT_CSS = """
-    _LinkedFlashcardsSearchInput {
-        background: transparent;
-        border: solid #3a3a3a;
-        height: 3;
-        padding: 0 1;
-    }
-    _LinkedFlashcardsSearchInput:focus {
-        border: solid $accent;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "handle_escape", show=False),
-    ]
-
-    def __init__(
-        self,
-        view_model: LinkedFlashcardsPanelViewModel,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(**kwargs)
-        self._vm = view_model
-        self.armed_for_clear: bool = False
-        self.border_title_align = "right"
-        self._refresh_title()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input is not self:
-            return
-        self._vm.set_search(event.value)
-
-    def action_handle_escape(self) -> None:
-        if self.armed_for_clear:
-            self.value = ""
-            self._vm.set_search("")
-            self.armed_for_clear = False
-        else:
-            self.armed_for_clear = True
-        self._refresh_title()
-
-    def on_key(self, event) -> None:
-        if event.key != "escape" and self.armed_for_clear:
-            self.armed_for_clear = False
-            self._refresh_title()
-
-    def _refresh_title(self) -> None:
-        if self.armed_for_clear:
-            self.border_title = "[bold #ff8787]press esc again to clear[/]"
-        else:
-            self.border_title = "[dim]enter to submit • esc × 2 to clear[/]"
 
 
 class _FlashcardAnswerPreview(TextArea):
@@ -369,7 +309,9 @@ class LinkedFlashcardsPanelView(Vertical):
         table.add_column("id")
         table.add_column("question", width=self._TEXT_COLUMN_WIDTH)
         table.add_column("answer", width=self._TEXT_COLUMN_WIDTH)
-        yield _LinkedFlashcardsSearchInput(self._vm, id="linked-flashcards-search-input")
+        yield SearchInput[LinkedFlashcardsPanelViewModel](
+            self._vm, id="linked-flashcards-search-input",
+        )
         yield table
         # Mounted unconditionally; visibility is driven by ``vm.is_relink_dirty`` via the
         # ``.-visible`` class so the widget can subscribe to the VM at mount time and survive

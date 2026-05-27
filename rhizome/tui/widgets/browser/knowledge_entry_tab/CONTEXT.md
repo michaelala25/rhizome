@@ -31,8 +31,8 @@ components living in their own subdirectories.
 
 - **view.py — `KnowledgeEntryBrowserTabView`**: `Vertical` containing a
   `Horizontal #tab-body` and a docked one-line status row. The body
-  splits into a 60% `#table-column` (a `Vertical` housing the
-  `_SearchInput` over the entries `DataTable`) and a 40%
+  splits into a 60% `#table-column` (a `Vertical` housing the shared
+  generic `SearchInput` over the entries `DataTable`) and a 40%
   `EntryDetailsView`. The DataTable is a thin `_EntriesTable`
   subclass that owns the entries-side selection keybindings (`space`
   toggles the cursor row, `shift+up` / `shift+down` extend the
@@ -44,37 +44,35 @@ components living in their own subdirectories.
   when `BrowserView` enters the tab from the tree) and the
   `nav_<dir>` graph walkers; see "Cross-region focus" below.
 
-  Per-widget code lives in sibling modules — `search_input.py`,
-  `delete_dialog.py`, `sort_dialog.py`, `filter_dialog.py`,
-  `edit_dialog.py`, `entry_content_preview.py`. Each owns the widget
-  class plus the constants/helpers it uses (e.g. `_SORT_OPTIONS` in
-  `sort_dialog.py`, `_EDIT_OPTIONS_SINGLE` / `_EDIT_OPTIONS_MULTI` and
+  Per-widget code lives in sibling modules — `delete_dialog.py`,
+  `sort_dialog.py`, `filter_dialog.py`, `edit_dialog.py`,
+  `entry_content_preview.py`. Each owns the widget class plus the
+  constants/helpers it uses (e.g. `_SORT_OPTIONS` in `sort_dialog.py`,
+  `_EDIT_OPTIONS_SINGLE` / `_EDIT_OPTIONS_MULTI` and
   `_TypePickerScreen` in `edit_dialog.py`, `_OneOfInput` /
   `_TYPE_OPTIONS` / `_FLASHCARD_OPTIONS` / `_parse_id_list` in
   `filter_dialog.py`). The dialog widgets reference the tab via
-  `TYPE_CHECKING` to avoid an import cycle.
+  `TYPE_CHECKING` to avoid an import cycle. The search bar is the
+  shared generic `SearchInput` from
+  `rhizome.tui.widgets.search_input`; `KnowledgeEntryBrowserTabViewModel`
+  mixes in `SearchableViewModelMixin` to satisfy the widget's type
+  bound, and the instance is constructed as
+  `SearchInput[KnowledgeEntryBrowserTabViewModel](self._vm, …)`.
 
   See "Cross-region focus" below for the full `alt+arrow` graph the
   tab implements via `nav_up` / `nav_down` / `nav_left` / `nav_right`.
 
 ## Search
 
-`_SearchInput` sits above the entries table inside `#table-column`.
-Visually mirrors the entry-detail title field — 3-row tight box,
-transparent background, `#3a3a3a` border that flips accent on focus.
-The keybinding hint rides the top border on the right
-(`border_title_align = "right"`): default state `enter to submit •
-esc × 2 to clear` in dim; armed-for-clear state `press esc again to
-clear` in bold red.
-
-State flow: typing buffers the query locally; `enter` propagates to
-`vm.set_search` which triggers a refetch via the existing
-search/sort plumbing. `esc` arms a clear, the second `esc` blanks
-the value and submits the empty query (the natural "no filter"
-state). Any non-`esc` key disarms — sits inside `_SearchInput`
-itself (rather than a parent wrapper) because Input consumes
-character keystrokes before they bubble, so only the focused widget
-sees the "user typed something" signal needed to disarm.
+The search bar above the entries table is an instance of the shared
+generic `SearchInput` widget (see
+`rhizome/tui/widgets/search_input/CONTEXT.md` for its full behaviour
+contract — armed-for-clear escape state machine, border-title hint,
+`enter` submits via `vm.set_search`). The instance is mounted as
+`#search-input` inside `#table-column`.
+`KnowledgeEntryBrowserTabViewModel` opts in by mixing in
+`SearchableViewModelMixin` and implementing `set_search(query)`, which
+triggers a refetch via the existing search/sort plumbing.
 
 Participates in the tab's `alt+arrow` focus graph as the
 `entry_search` node — see "Cross-region focus" below.

@@ -51,6 +51,7 @@ from rhizome.db.operations import (
 from rhizome.logs import get_logger
 
 from ....query_backed_view_model import QueryBackedViewModel
+from ....search_input import SearchableViewModelMixin
 
 _logger = get_logger("browser.linked_flashcards")
 
@@ -60,7 +61,7 @@ _logger = get_logger("browser.linked_flashcards")
 DEFAULT_PAGE_LIMIT = 500
 
 
-class LinkedFlashcardsPanelViewModel(QueryBackedViewModel):
+class LinkedFlashcardsPanelViewModel(QueryBackedViewModel, SearchableViewModelMixin):
     """Sub-VM driving the linked-flashcards table.
 
     Owns: the current target entry id set, the topic filter (pushed down from the parent tab),
