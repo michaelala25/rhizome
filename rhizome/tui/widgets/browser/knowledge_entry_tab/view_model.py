@@ -38,6 +38,7 @@ from rhizome.db.operations import (
 from rhizome.logs import get_logger
 
 from ...search_input import SearchableViewModelMixin
+from ..multi_selectable_table import MultiSelectableViewModelMixin
 from ..sort_dialog import SortableViewModelMixin
 from ..tab_base import BrowserTabViewModel
 from .entry_details import EntryDetailsViewModel
@@ -55,6 +56,7 @@ class KnowledgeEntryBrowserTabViewModel(
     BrowserTabViewModel,
     SearchableViewModelMixin,
     SortableViewModelMixin["EntrySortKey"],
+    MultiSelectableViewModelMixin,
 ):
     """Concrete tab VM for browsing knowledge entries."""
 
@@ -117,12 +119,11 @@ class KnowledgeEntryBrowserTabViewModel(
         # persisted position so it survives repaints. Reset to 0 on any "reset" operation.
         self._cursor: int = 0
 
-        # Multi-select state. When ``_multi_select_active`` is True the view paints a leading marker
-        # column ("[x]"/"[ ]") and the user can toggle selection of the cursor's row. ``_selected_ids``
-        # is keyed by entry id (not row index) so the selection survives ``load_more`` and refetches.
-        # Turning the mode off clears the set ("abandons the selection").
-        self._multi_select_active: bool = False
-        self._selected_ids: set[int] = set()
+        # Multi-select state lives on ``MultiSelectableViewModelMixin`` (mixed in above) —
+        # the flag, the id-keyed selection set, the three mutators, and the
+        # ``selected_target_ids`` / clear / intersect helpers. We provide the abstract
+        # surface (``_selectable_items`` / ``_item_id`` / ``cursor``) further down and
+        # override ``toggle_multi_select`` to drop relink mode on entry.
 
         # The detail panel's VM. We push it the cursor's entry via ``_sync_details`` whenever the cursor
         # moves or the window reloads. The tab view picks the VM up via ``self.details`` to construct its
@@ -222,19 +223,27 @@ class KnowledgeEntryBrowserTabViewModel(
         picker) without reaching into the inherited private attr."""
         return self._session_factory
 
-    @property
-    def multi_select_active(self) -> bool:
-        return self._multi_select_active
+    # ``multi_select_active`` / ``selected_ids`` / ``is_selected`` are provided by
+    # ``MultiSelectableViewModelMixin``.
 
-    @property
-    def selected_ids(self) -> set[int]:
-        """Live reference to the selected-id set. Callers must not mutate it — use
-        ``toggle_current_selection`` / ``toggle_multi_select`` instead. Matches the trust convention used
-        by ``entries`` (also returned by reference)."""
-        return self._selected_ids
+    # ------------------------------------------------------------------
+    # Multi-select abstract surface
+    # ------------------------------------------------------------------
 
-    def is_selected(self, entry_id: int) -> bool:
-        return entry_id in self._selected_ids
+    def _selectable_items(self) -> list[KnowledgeEntry]:
+        return self._entries
+
+    def _item_id(self, item: KnowledgeEntry) -> int:
+        return item.id
+
+    def _on_selection_changed(self) -> None:
+        """Push the new multi-select state to sub-VMs whenever the flag flips or the
+        selection set changes. Argless per mixin contract; reads VM state directly."""
+        self._details.set_multi_select(
+            self._multi_select_active,
+            len(self._selected_ids),
+        )
+        self._sync_linked_flashcards()
 
     # ------------------------------------------------------------------
     # Mutators
@@ -396,24 +405,13 @@ class KnowledgeEntryBrowserTabViewModel(
         self.emit(self.dirty)
 
     def toggle_multi_select(self) -> None:
-        """Flip multi-select mode. Turning the mode **off** abandons the current selection (clears
-        ``_selected_ids``); turning it on starts with an empty set. Pushes the resulting state into
-        the details VM so the side panel can freeze its edits, and re-syncs the linked-flashcards
-        sub-VM because the panel's target set changes shape (cursor entry → live selection).
-
-        Entering multi-select exits any active relink — relink is a single-select-only mode, so its
-        precondition just vanished."""
-        self._multi_select_active = not self._multi_select_active
+        """Flip multi-select mode (mixin owns the flag flip + selection clear + the
+        ``_on_selection_changed`` push to sub-VMs + the ``dirty`` emit). We add the
+        relink-exit step on entry — relink is a single-select-only mode, so its
+        precondition vanishes the moment multi-select turns on."""
         if not self._multi_select_active:
-            self._selected_ids.clear()
-        else:
             self._linked_flashcards.exit_relink_mode()
-        self._details.set_multi_select(
-            self._multi_select_active,
-            len(self._selected_ids),
-        )
-        self._sync_linked_flashcards()
-        self.emit(self.dirty)
+        super().toggle_multi_select()
 
     def enter_relink_mode(self) -> None:
         """Combined-motion entry to relink mode from anywhere in the entries tab.
@@ -429,15 +427,15 @@ class KnowledgeEntryBrowserTabViewModel(
         should call ``exit_relink_mode`` instead — this is one-directional on purpose so the
         ``l`` binding can sit on the entries table as an unambiguous "go to relink".)"""
         if self._multi_select_active:
+            # Inline the multi-select exit (rather than calling ``toggle_multi_select``) so
+            # we get one final ``dirty`` emit at the bottom of ``enter_relink_mode`` instead
+            # of two. The mixin's ``_on_selection_changed`` hook still does the sub-VM
+            # propagation (``_details.set_multi_select(False, 0)`` + the linked-flashcards
+            # re-sync that's needed when we're already in ``LINKED_FLASHCARDS`` and the
+            # ``transition_to`` below would be a no-op).
             self._multi_select_active = False
             self._selected_ids.clear()
-            self._details.set_multi_select(False, 0)
-            # Re-sync the panel so it re-resolves to the cursor entry (was the union of
-            # ``_selected_ids``). Needed for the case where we're already in
-            # ``LINKED_FLASHCARDS`` — the ``transition_to`` below would be a no-op and skip
-            # its own sync. ``_sync_linked_flashcards`` itself is state-guarded so calling it
-            # before the transition is safe when state is still ``ENTRIES`` (it no-ops).
-            self._sync_linked_flashcards()
+            self._on_selection_changed()
         if self._state is not self.State.LINKED_FLASHCARDS:
             self.transition_to(self.State.LINKED_FLASHCARDS)
         self._linked_flashcards.enter_relink_mode()
@@ -450,40 +448,15 @@ class KnowledgeEntryBrowserTabViewModel(
         self._linked_flashcards.exit_relink_mode()
         self.emit(self.dirty)
 
-    def toggle_current_selection(self) -> None:
-        """Toggle membership of the cursor's entry in the selection set. No-op when multi-select is off or
-        the window is empty — those are the cases where the action has no meaning."""
-        if not self._multi_select_active or not self._entries:
-            return
-        entry_id = self._entries[self._cursor].id
-        if entry_id in self._selected_ids:
-            self._selected_ids.remove(entry_id)
-        else:
-            self._selected_ids.add(entry_id)
-        self._details.set_multi_select(True, len(self._selected_ids))
-        self._sync_linked_flashcards()
-        self.emit(self.dirty)
-
-    def add_current_to_selection(self) -> None:
-        """Idempotent add of the cursor's entry to the selection set — the half of
-        ``toggle_current_selection`` that ``shift+up``/``shift+down`` uses for range-select. Held-key
-        repeat across already-selected rows is a no-op, which is the right behaviour for sweeping the
-        cursor through an extending range."""
-        if not self._multi_select_active or not self._entries:
-            return
-        entry_id = self._entries[self._cursor].id
-        if entry_id in self._selected_ids:
-            return
-        self._selected_ids.add(entry_id)
-        self._details.set_multi_select(True, len(self._selected_ids))
-        self._sync_linked_flashcards()
-        self.emit(self.dirty)
+    # ``toggle_current_selection`` and ``add_current_to_selection`` are provided by
+    # ``MultiSelectableViewModelMixin`` — they read the cursor's id via the abstract
+    # surface above and fire ``_on_selection_changed`` + ``dirty`` themselves.
 
     # ------------------------------------------------------------------
     # Bulk actions on the selection
     # ------------------------------------------------------------------
     #
-    # "The selection" is whatever ``_selected_target_ids`` resolves: the explicit ``_selected_ids``
+    # "The selection" is whatever ``selected_target_ids`` resolves: the explicit ``_selected_ids``
     # set in multi-select mode, the cursor's entry id in single-select mode. The three action methods
     # below all share that resolution and no-op against an empty result, so a stray invocation against
     # an empty window or empty selection is safe.
@@ -501,7 +474,7 @@ class KnowledgeEntryBrowserTabViewModel(
         ``_has_more``. No refetch — we know exactly which rows went away. In multi-select mode the
         mode stays on so the visual context is preserved.
         """
-        targets = self._selected_target_ids()
+        targets = self.selected_target_ids()
         if not targets:
             return
 
@@ -534,7 +507,7 @@ class KnowledgeEntryBrowserTabViewModel(
         disappear from the window. Selection is preserved across the refetch only for entries that
         survive into the new window (``_selected_ids &= visible ids`` — see ``_post_change_refetch``).
         """
-        targets = self._selected_target_ids()
+        targets = self.selected_target_ids()
         if not targets:
             return
         async with self._session_factory() as session:
@@ -547,7 +520,7 @@ class KnowledgeEntryBrowserTabViewModel(
     async def change_type_on_selected_entries(self, new_type: EntryType) -> None:
         """Reassign the type of every target entry, then refetch. Same selection-preservation rule as
         ``change_topic_on_selected_entries``."""
-        targets = self._selected_target_ids()
+        targets = self.selected_target_ids()
         if not targets:
             return
         async with self._session_factory() as session:
@@ -561,48 +534,22 @@ class KnowledgeEntryBrowserTabViewModel(
     # Helpers
     # ------------------------------------------------------------------
 
-    def _selected_target_ids(self) -> set[int]:
-        """Resolve "the selection" to a concrete set of entry ids. In multi-select mode that's
-        ``_selected_ids``; in single-select mode it's the cursor's entry id (empty if the window is
-        empty). Shared by all three bulk-action methods."""
-        if self._multi_select_active:
-            return set(self._selected_ids)
-        if not self._entries:
-            return set()
-        return {self._entries[self._cursor].id}
-
-    def _clear_selection(self) -> None:
-        """Drop ``_selected_ids`` and push the new (zero) count to the details VM. No-op when the set
-        is already empty. Used by mutators that reshuffle the window (sort / filter changes).
-
-        Re-syncs the linked-flashcards sub-VM since in multi-select mode the panel's target set just
-        emptied; in single-select the sync call no-ops because the cursor entry hasn't moved."""
-        if not self._selected_ids:
-            return
-        self._selected_ids.clear()
-        if self._multi_select_active:
-            self._details.set_multi_select(True, 0)
-        self._sync_linked_flashcards()
+    # ``selected_target_ids`` / ``_clear_selection`` /
+    # ``_intersect_selection_with_visible_ids`` are provided by
+    # ``MultiSelectableViewModelMixin`` — the resolver, the window-reshuffle helper, and the
+    # post-refetch survivor filter respectively.
 
     def _post_change_refetch(self) -> None:
-        """Refetch and intersect ``_selected_ids`` against the new window. Fires through the normal
-        debounced fetch path — the 50ms debounce is imperceptible after a modal action — and uses the
-        ``on_complete`` callback so the selection intersection runs against the fresh window."""
-        self._request_fetch(on_complete=self._intersect_selection_with_window)
+        """Refetch and intersect ``_selected_ids`` against the new window. Fires through the
+        normal debounced fetch path — the 50ms debounce is imperceptible after a modal
+        action — and uses the ``on_complete`` callback so the selection intersection runs
+        against the fresh window."""
+        self._request_fetch(on_complete=self._intersect_selection_after_refetch)
 
-    def _intersect_selection_with_window(self) -> None:
-        """Drop any selected ids no longer visible in the loaded window. Fired as the ``on_complete``
-        of a post-change refetch. Re-syncs the linked-flashcards sub-VM when the set shrinks (in
-        multi-select; no-op in single-select since the cursor entry didn't change)."""
-        if not self._selected_ids:
-            return
-        visible = {e.id for e in self._entries}
-        survived = self._selected_ids & visible
-        if survived != self._selected_ids:
-            self._selected_ids.intersection_update(visible)
-            if self._multi_select_active:
-                self._details.set_multi_select(True, len(self._selected_ids))
-            self._sync_linked_flashcards()
+    def _intersect_selection_after_refetch(self) -> None:
+        """Adapter around the mixin's ``_intersect_selection_with_visible_ids``: builds the
+        visible-id set from the freshly-loaded ``_entries`` window."""
+        self._intersect_selection_with_visible_ids({e.id for e in self._entries})
 
     def _sync_details(self) -> None:
         """Push the cursor's entry (or ``None``) into the detail sub-VM.
@@ -638,7 +585,7 @@ class KnowledgeEntryBrowserTabViewModel(
     def _linked_flashcards_target_ids(self) -> frozenset[int]:
         """Resolve "what entries should the panel show flashcards for". In multi-select that's the
         live selection set; in single-select it's the cursor's entry id (empty if the window is
-        empty / cursor is out of bounds). Distinct from ``_selected_target_ids`` because the bulk-
+        empty / cursor is out of bounds). Distinct from ``selected_target_ids`` because the bulk-
         edit actions always want a non-empty target in single-select mode (the cursor entry) while
         the panel sync wants the genuine "current selection" — and in multi-select an empty set is
         a legal display state."""

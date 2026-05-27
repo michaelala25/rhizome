@@ -160,6 +160,18 @@ This matches `docs/design-principles.md` and the established
   Sibling-dialog swap keys (`d` / `f` / `e` / `s`) bubble to the
   parent tab's BINDINGS like with `SortDialog`.
 
+- **multi_selectable_table/ — `MultiSelectableDataTable` + `MultiSelectableViewModelMixin`**
+  (see the subdir's own `CONTEXT.md`): shared scaffolding for browser-
+  tab tables with a multi-select mode. The widget adds `space` /
+  `shift+up` / `shift+down` bindings to `DataTable`; the mixin owns
+  the small selection-set state machine on the VM (`multi_select_active`
+  flag, id-keyed `_selected_ids`, the three mutators, the
+  `selected_target_ids` resolver, and the post-refetch survivor
+  filter). Concrete VMs mix in at the leaf and implement
+  `_selectable_items()` / `_item_id(item)` plus the `cursor` property
+  + optional `_on_selection_changed` hook. Auto-load-more pagination
+  is **not** included — orthogonal concern, lives on subclasses.
+
 - **sort_dialog/ — `SortDialog` + `SortableViewModelMixin`** (see the
   subdir's own `CONTEXT.md`): shared sort-axis picker for browser
   tabs. Generic on the VM (bound to `SortableViewModelMixin`) and on

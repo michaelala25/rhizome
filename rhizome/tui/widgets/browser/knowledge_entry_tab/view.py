@@ -33,6 +33,7 @@ from textual.widgets import DataTable, Input, Rule, Static, TextArea
 from rhizome.db.models import EntryType
 
 from ...search_input import SearchInput
+from ..multi_selectable_table import MultiSelectableDataTable
 from ..sort_dialog import SortDialog
 
 from .delete_dialog import _DeleteConfirm
@@ -59,23 +60,13 @@ class _EntriesSortDialog(SortDialog[KnowledgeEntryBrowserTabViewModel]):
 _DialogName = Literal["delete", "sort", "filter", "edit"]
 
 
-class _EntriesTable(DataTable):
-    """``DataTable`` subclass that owns the entries-specific selection keybindings (``space`` to
-    toggle the cursor row, ``shift+up`` / ``shift+down`` for range-select sugar). The global tab
-    keys (``d`` / ``s`` / ``f`` / ``e`` / ``l`` / ``m``) live on
+class _EntriesTable(MultiSelectableDataTable[KnowledgeEntryBrowserTabViewModel]):
+    """Entries-tab specialisation of ``MultiSelectableDataTable``. The base owns the
+    ``space`` / ``shift+up`` / ``shift+down`` multi-select keybindings; this subclass adds
+    auto-load-more pagination on cursor-down at the bottom edge. The global tab keys
+    (``d`` / ``s`` / ``f`` / ``e`` / ``l`` / ``m``) live on
     ``KnowledgeEntryBrowserTabView`` so they fire from either table.
     """
-
-    BINDINGS = [
-        Binding("space", "toggle_selection", show=False),
-        # ``shift+up`` / ``shift+down`` are range-select sugar: add the cursor row to the selection
-        # (idempotent) and step the cursor in one keystroke. Held-key terminal repeat makes "hold
-        # shift, hold down" sweep a contiguous block. No-op outside multi-select (the VM guards).
-        # Bound here rather than as ``"shift+up,shift+down"`` action pairs because each direction
-        # needs its own cursor step.
-        Binding("shift+down", "select_down", show=False),
-        Binding("shift+up", "select_up", show=False),
-    ]
 
     def __init__(
         self,
@@ -83,33 +74,19 @@ class _EntriesTable(DataTable):
         tab: "KnowledgeEntryBrowserTabView",
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
-        self._vm = view_model
+        super().__init__(view_model, **kwargs)
         self._tab = tab
 
-    def action_toggle_selection(self) -> None:
-        self._vm.toggle_current_selection()
-
-    async def action_select_down(self) -> None:
-        """Add the current row to the selection, then step the cursor down. Cursor step uses
-        ``action_cursor_down`` (our overridden async version, which also handles the load-more-at-
-        bottom case) so the usual ``RowHighlighted`` event fires and the VM cursor stays in sync."""
-        self._vm.add_current_to_selection()
-        await self.action_cursor_down()
-
-    def action_select_up(self) -> None:
-        self._vm.add_current_to_selection()
-        self.action_cursor_up()
-
     async def action_cursor_down(self) -> None:
-        """Cursor-down with auto-load at the bottom edge: if the user is on the last loaded row and
-        the VM still has more to fetch, await ``load_more`` first so the next
-        ``super().action_cursor_down`` has somewhere to land. ``load_more`` is a no-op when nothing
-        further is available or a fetch is already in flight, so this is safe to call without
-        re-checking those conditions.
+        """Cursor-down with auto-load at the bottom edge: if the user is on the last loaded
+        row and the VM still has more to fetch, await ``load_more`` first so the next
+        ``super().action_cursor_down`` has somewhere to land. ``load_more`` is a no-op when
+        nothing further is available or a fetch is already in flight, so this is safe to
+        call without re-checking those conditions.
 
-        The cursor advance happens *after* the await — by then the VM has appended rows + emitted
-        dirty, ``_refresh`` ran in ``extend`` mode, and the table has the new rows mounted.
+        The cursor advance happens *after* the await — by then the VM has appended rows +
+        emitted dirty, ``_refresh`` ran in ``extend`` mode, and the table has the new rows
+        mounted.
         """
         if (
             self._vm.has_more

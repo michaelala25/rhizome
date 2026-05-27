@@ -14,9 +14,10 @@ components living in their own subdirectories.
 - **view_model.py — `KnowledgeEntryBrowserTabViewModel`**: subclasses
   `BrowserTabViewModel`. Owns the windowed entries list, `_total`,
   `_has_more`, search/sort/entry-type filter state, the row cursor,
-  multi-select state (`_multi_select_active`, `_selected_ids`), and a
-  child `EntryDetailsViewModel` exposed via `self.details`. Also
-  exports `DEFAULT_PAGE_LIMIT = 500`.
+  and a child `EntryDetailsViewModel` exposed via `self.details`. The
+  multi-select state machine (mode flag + selection set) lives on the
+  `MultiSelectableViewModelMixin` it inherits; see "Multi-select"
+  below. Also exports `DEFAULT_PAGE_LIMIT = 500`.
 
   **Scope discipline:** the VM owns *data facts*. Dialog UI state —
   which dialog is open, dialog cursors, the EDIT_OPTIONS list,
@@ -86,11 +87,21 @@ Participates in the tab's `alt+arrow` focus graph as the
 
 ## Multi-select
 
+The selection-set state machine lives on
+`MultiSelectableViewModelMixin` (see
+`widgets/browser/multi_selectable_table/CONTEXT.md`); the entries VM
+mixes it in at the leaf and supplies the abstract surface
+(`_selectable_items` → `self._entries`, `_item_id` → `e.id`, `cursor`
+property already present) plus the `_on_selection_changed` hook
+(pushes `_details.set_multi_select(...)` + re-syncs the linked-
+flashcards panel target set). `_EntriesTable` subclasses
+`MultiSelectableDataTable` to inherit the `space` /
+`shift+up` / `shift+down` bindings.
+
 The user toggles multi-select with `m` while the entries table is
 focused; once on, `space` adds/removes the cursor row from the
 selection set. Turning multi-select **off** abandons the selection
-(clears `_selected_ids`) — there's no "preserve selection across mode
-flips" affordance.
+— there's no "preserve selection across mode flips" affordance.
 
 Selections are keyed by entry id rather than row index so they survive
 `load_more` calls and filter/search/sort-driven refetches. The view
@@ -101,12 +112,11 @@ darker zebra palette via a `-multi-select` CSS class on the
 `DataTable`. The status line is replaced by a "multi-select: N
 entries selected" hint while the mode is on.
 
-The tab VM pushes the new mode + selection count into the details VM
-via `set_multi_select(active, count)` on every toggle. The details VM
-flips the TextAreas to read-only and hides the Accept/Cancel choices
-list — the title/content of the cursor's entry stay visible (the
-cursor still drives `set_entry`) but the user can't make edits until
-they exit multi-select.
+`toggle_multi_select` is overridden to drop relink mode on entry
+(relink is single-select only); the override calls
+`super().toggle_multi_select()` after the relink exit so the mixin
+still owns the flag flip + selection clear + `_on_selection_changed`
+push + `dirty` emit.
 
 The same mode toggle also re-syncs the linked-flashcards panel. In
 single-select the panel queries flashcards linked to the cursor entry
@@ -474,7 +484,7 @@ ChoiceList-based dialog.
 
 On confirm the dialog awaits `vm.delete_selected_entries()` and then
 hides itself. The VM resolves the target set via the internal
-`_selected_target_ids` helper (the live `_selected_ids` set in
+`selected_target_ids()` helper (the live selection set in
 multi-select, the cursor entry in single-select) and deletes each via
 `delete_entry` inside a single session + commit. The FK on
 `flashcard_entry.entry_id` cascades, so flashcard-to-entry link rows
