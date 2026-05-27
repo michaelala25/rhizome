@@ -34,14 +34,15 @@ components living in their own subdirectories.
   splits into a 60% `#table-column` (a `Vertical` housing the
   `_SearchInput` over the entries `DataTable`) and a 40%
   `EntryDetailsView`. The DataTable is a thin `_EntriesTable`
-  subclass that owns the `m` (toggle multi-select) / `space` (toggle
-  current row) keybindings — kept in `view.py` because its bindings
-  drive the tab's dialog mutex and focus walk directly. Implements the
-  tab-view focus contract (`focus_first` / `focus_next_region` /
-  `focus_prev_region`) and delegates the details region's internal cycle
-  to `EntryDetailsView`. `focus_next_region` short-circuits the table →
-  details transition while multi-select is active so `alt+right` keeps
-  focus on the table.
+  subclass that owns the entries-side selection keybindings (`space`
+  toggles the cursor row, `shift+up` / `shift+down` extend the
+  selection range). The **global tab keys** `d` / `s` / `f` / `e`
+  toggle the four dialogs, `l` toggles relink, `m` toggles multi-
+  select; these live on the tab class itself so they fire from either
+  table. Each action gates on `_typing_active` to skip when an
+  `Input` / `TextArea` is focused. Owns `focus_first` (entry point
+  when `BrowserView` enters the tab from the tree) and the
+  `nav_<dir>` graph walkers; see "Cross-region focus" below.
 
   Per-widget code lives in sibling modules — `search_input.py`,
   `delete_dialog.py`, `sort_dialog.py`, `filter_dialog.py`,
@@ -52,6 +53,9 @@ components living in their own subdirectories.
   `_TYPE_OPTIONS` / `_FLASHCARD_OPTIONS` / `_parse_id_list` in
   `filter_dialog.py`). The dialog widgets reference the tab via
   `TYPE_CHECKING` to avoid an import cycle.
+
+  See "Cross-region focus" below for the full `alt+arrow` graph the
+  tab implements via `nav_up` / `nav_down` / `nav_left` / `nav_right`.
 
 ## Search
 
@@ -72,9 +76,8 @@ itself (rather than a parent wrapper) because Input consumes
 character keystrokes before they bubble, so only the focused widget
 sees the "user typed something" signal needed to disarm.
 
-Excluded from the tab's `alt+left/right` focus walk for now; the
-user engages the bar by clicking (or via Textual's default `tab`
-focus order).
+Participates in the tab's `alt+arrow` focus graph as the
+`entry_search` node — see "Cross-region focus" below.
 
 ## Multi-select
 
@@ -246,10 +249,9 @@ Cancel.
 The cursor (0 = Accept, 1 = Cancel) is reset to Accept on every
 selection toggle so the user picks up the most likely action.
 
-Reachable via `alt+left` / `alt+right` from the entries side: the
-focus walk goes table → choices (only when visible) → end. Returning
-left from choices lands back on the table; returning left from the
-table escapes the panel back to the entries side.
+The choices widget is **not** in the tab's `alt+arrow` focus graph —
+reach it via the `tab` key or click. The mode owns `←` / `→` for
+cursor mutation, `enter` for dispatch, and `esc` as a Cancel shortcut.
 **Focus-orphan rescue**: a dirty→clean transition (e.g. after
 `accept_relink` exits relink mode or `cancel_relink` reverts) hides
 the choices widget out from under any focus that was on it; the
@@ -571,3 +573,79 @@ to support the topic-change path (non-nullable on the model, so
 - **entry_details/ — `EntryDetailsView` + `EntryDetailsViewModel`**:
   buffered-edit side panel. Its own MVVM subdirectory; see its
   `CONTEXT.md`.
+
+## Cross-region focus
+
+`alt+←` / `alt+↑` / `alt+→` / `alt+↓` (driven by `BrowserView`'s
+priority bindings) walk a directional graph over the tab's focusable
+regions. The tab implements `nav_up` / `nav_down` / `nav_left` /
+`nav_right`; each names the currently-focused node via `_focused_node`
+and dispatches to a target via `_focus_node` (which gates on
+`_node_present`). The walkers are intentionally written as explicit
+`if`-chains — no transition table, no generalized graph object — so
+edges are easy to read off the source and easy to change.
+
+Nodes (each maps to one focusable widget id):
+
+| Node                       | Widget id                       | Present when                                                  |
+|----------------------------|---------------------------------|---------------------------------------------------------------|
+| `entry_search`             | `search-input`                  | always                                                        |
+| `entry_table`              | `entries-table`                 | always                                                        |
+| `dialog`                   | the currently-shown dialog      | a dialog is open (`_active_dialog is not None`)               |
+| `entry_title`              | `details-title`                 | `ENTRIES` state, not multi-select-frozen                      |
+| `entry_content`            | `details-content`               | `ENTRIES` state, not multi-select-frozen                      |
+| `entry_modification_accept`| `details-choices`               | `ENTRIES` state, not frozen, and `details.is_dirty`           |
+| `flashcard_search`         | `linked-flashcards-search-input`| `LINKED_FLASHCARDS` state                                     |
+| `flashcard_table`          | `linked-flashcards-table`       | `LINKED_FLASHCARDS` state                                     |
+| `relink_choices`           | `linked-flashcards-relink-choices` | `LINKED_FLASHCARDS` state and `linked_flashcards.is_relink_dirty` |
+
+The topic tree is a sibling region owned by `BrowserView`, not the tab.
+`nav_left` returns the sentinel string `"topic_tree"` for edges that
+escape the tab leftward; `BrowserView` catches that and focuses the
+tree.
+
+Edges (each `node → node` arrow is gated on the target node being
+present; if absent, the keystroke is a silent no-op):
+
+- **`alt+up`**:
+  - `dialog → entry_table`
+  - `entry_table → entry_search`
+  - `flashcard_table → flashcard_search`
+  - `relink_choices → flashcard_table`
+  - `entry_modification_accept → entry_content`
+  - `entry_content → entry_title`
+  - `entry_title → entry_search`
+
+- **`alt+down`**:
+  - `entry_search → entry_table`
+  - `flashcard_search → flashcard_table`
+  - `entry_table → dialog`
+  - `flashcard_table → relink_choices` (fall through to `dialog`
+    when the relink panel isn't dirty)
+  - `relink_choices → dialog`
+  - `entry_title → entry_content`
+  - `entry_content → entry_modification_accept` (fall through to
+    `dialog` when accept is absent)
+  - `entry_modification_accept → dialog`
+
+- **`alt+left`**:
+  - `entry_search → topic_tree` (sentinel)
+  - `entry_table → topic_tree` (sentinel)
+  - `dialog → topic_tree` (sentinel)
+  - `entry_title → entry_search`
+  - `entry_content → entry_table`
+  - `entry_modification_accept → entry_table`
+  - `flashcard_search → entry_search`
+  - `flashcard_table → entry_table`
+  - `relink_choices → entry_table`
+
+- **`alt+right`**:
+  - `entry_search → entry_title` (in `ENTRIES`) / `flashcard_search`
+    (in `LINKED_FLASHCARDS`)
+  - `entry_table → entry_content` (in `ENTRIES`) / `flashcard_table`
+    (in `LINKED_FLASHCARDS`)
+
+The relink Accept/Cancel widget participates as `relink_choices` while
+the relink panel is dirty (analogous to `entry_modification_accept` on
+the entries side). It owns its own `←`/`→`/`enter`/`esc` bindings for
+cursor + action dispatch.

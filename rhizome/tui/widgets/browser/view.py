@@ -123,9 +123,12 @@ class BrowserView(Horizontal):
         # ``priority=True`` so these fire even when a deep descendant (e.g. a ``TextArea`` inside the details
         # panel) is focused — otherwise ``TextArea``'s own ``alt+left``/``alt+right`` word-navigation
         # bindings would swallow the event and our region cycle would only work when focus was on a
-        # non-editor widget.
+        # non-editor widget. ``alt+up``/``alt+down`` are bound at the same priority for the same
+        # reason — TextArea has its own paragraph-jump bindings on these keys.
         Binding("alt+right", "focus_right", priority=True, show=False),
         Binding("alt+left", "focus_left", priority=True, show=False),
+        Binding("alt+up", "focus_up", priority=True, show=False),
+        Binding("alt+down", "focus_down", priority=True, show=False),
     ]
 
     def __init__(self, view_model: BrowserViewModel, **kwargs: Any) -> None:
@@ -230,16 +233,13 @@ class BrowserView(Horizontal):
         self._vm.prev_tab()
 
     # ------------------------------------------------------------------
-    # Cross-region focus navigation (alt+left/right)
+    # Cross-region focus navigation (alt+arrow)
     # ------------------------------------------------------------------
     #
-    # Topology:
-    #
-    #   [Topic tree]  <->  [Active tab's internal cycle]
-    #
-    # ``alt+right`` advances; ``alt+left`` retreats. The browser view only knows about the two top-level
-    # regions (tree, tab) — each tab view is responsible for its own internal sub-region cycle and signals
-    # "I'm at my edge" back to us by returning False from ``focus_next_region`` / ``focus_prev_region``.
+    # ``BrowserView`` owns the two top-level regions — topic tree on the left, active tab on the right — and
+    # delegates everything inside the tab to ``tab.nav_<dir>``. ``alt+right`` from the tree lands focus on
+    # the tab's first region (``focus_first``); ``alt+left`` from the tab can return the sentinel
+    # ``"topic_tree"`` to ask us to focus the tree. Up / down stay inside the tab.
 
     def action_focus_right(self) -> None:
         if self._focus_is_in_tree():
@@ -248,27 +248,34 @@ class BrowserView(Horizontal):
                 tab.focus_first()
             return
         tab = self._active_tab_view()
-        if tab is not None and hasattr(tab, "focus_next_region"):
-            tab.focus_next_region()
-        # If the tab returns False we're at the rightmost edge of the browser — there's nowhere further to
-        # go, so do nothing.
+        if tab is not None and hasattr(tab, "nav_right"):
+            tab.nav_right()
 
     def action_focus_left(self) -> None:
         if self._focus_is_in_tree():
             # Leftmost edge from the tree — hard no-op.
             return
         tab = self._active_tab_view()
-        moved = (
-            tab.focus_prev_region()
-            if tab is not None and hasattr(tab, "focus_prev_region")
-            else False
-        )
-        if not moved:
-            # Tab has nothing more to its left — hand focus back to the tree.
+        result = tab.nav_left() if tab is not None and hasattr(tab, "nav_left") else False
+        if result == "topic_tree":
             try:
                 self.query_one(BrowserTopicTreeView).focus()
             except Exception:
                 pass
+
+    def action_focus_up(self) -> None:
+        if self._focus_is_in_tree():
+            return
+        tab = self._active_tab_view()
+        if tab is not None and hasattr(tab, "nav_up"):
+            tab.nav_up()
+
+    def action_focus_down(self) -> None:
+        if self._focus_is_in_tree():
+            return
+        tab = self._active_tab_view()
+        if tab is not None and hasattr(tab, "nav_down"):
+            tab.nav_down()
 
     def _focus_is_in_tree(self) -> bool:
         focused = self.screen.focused if self.screen else None

@@ -163,11 +163,6 @@ class EntryDetailsView(Vertical):
     }
     """
 
-    # Sub-region cycle for cross-region focus nav (alt+left/right driven from ``BrowserView``). Ordered
-    # left-to-right / top-to-bottom in display order; the choices entry is skipped when its widget is hidden
-    # (clean state).
-    _REGION_IDS = ("details-title", "details-content", "details-choices")
-
     def __init__(
         self,
         view_model: EntryDetailsViewModel,
@@ -252,60 +247,6 @@ class EntryDetailsView(Vertical):
                 content_area.focus()
             choices.remove_class("-visible")
         self._was_dirty = is_dirty_now
-
-    # ------------------------------------------------------------------
-    # Cross-region focus (driven by parent tab's alt+left/right)
-    # ------------------------------------------------------------------
-    #
-    # Internal cycle through ``_REGION_IDS``. The choices region is skipped when its widget is hidden
-    # (``widget.display`` is False while the ``-visible`` class is absent). Methods return True if they
-    # successfully moved focus, False if they were already at the corresponding edge — the parent tab uses
-    # the bool to decide whether to step further (e.g. back to the table).
-
-    def focus_first(self) -> None:
-        """Land on the leftmost sub-region (title). Called by the parent tab when ``BrowserView`` enters
-        the details region from the left."""
-        self.query_one("#details-title", TextArea).focus()
-
-    def focus_next_region(self) -> bool:
-        cur = self._current_region_index()
-        if cur is None:
-            self.focus_first()
-            return True
-        for i in range(cur + 1, len(self._REGION_IDS)):
-            widget = self.query_one(f"#{self._REGION_IDS[i]}")
-            if not widget.display:
-                continue
-            widget.focus()
-            return True
-        return False
-
-    def focus_prev_region(self) -> bool:
-        cur = self._current_region_index()
-        if cur is None:
-            return False
-        for i in range(cur - 1, -1, -1):
-            widget = self.query_one(f"#{self._REGION_IDS[i]}")
-            if not widget.display:
-                continue
-            widget.focus()
-            return True
-        return False
-
-    def _current_region_index(self) -> int | None:
-        """Locate the focused widget within ``_REGION_IDS``. Returns the index, or ``None`` if focus is
-        outside the details panel."""
-        focused = self.screen.focused if self.screen else None
-        if focused is None:
-            return None
-        for i, wid in enumerate(self._REGION_IDS):
-            try:
-                widget = self.query_one(f"#{wid}")
-            except Exception:
-                continue
-            if focused is widget:
-                return i
-        return None
 
     # ------------------------------------------------------------------
     # View → VM

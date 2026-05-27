@@ -34,12 +34,14 @@ focus-orphan rescue, cross-region focus contract).
   `vm.cancel` by `_choice_cursor`), and escape (shortcut for
   cancel). A `prepare_for_show()` hook is called by the parent
   view's `_refresh` on the clean→dirty transition so each fresh
-  open lands on Accept. The view
-  implements the tab sub-region focus contract (`focus_first`,
-  `focus_next_region`, `focus_prev_region`) walking
-  `_REGION_IDS = (title, content, choices)` and skipping hidden
-  regions. When the VM reports `multi_select_active`, the two
-  `TextArea`s are switched to `read_only=True` and the choices list is
-  kept hidden — the entry's title/content remain visible (the tab VM
-  still pushes `set_entry` on cursor moves) but the user can't make
-  changes until multi-select is turned off.
+  open lands on Accept. The three regions (title / content / choices)
+  participate in the parent tab's `alt+arrow` focus graph as the
+  named nodes `entry_title` / `entry_content` /
+  `entry_modification_accept` — see the parent tab's `CONTEXT.md`
+  ("Cross-region focus"). When the VM reports `multi_select_active`,
+  the two `TextArea`s are switched to `read_only=True` and the choices
+  list is kept hidden — the entry's title/content remain visible (the
+  tab VM still pushes `set_entry` on cursor moves) but the user can't
+  make changes until multi-select is turned off. The three details
+  nodes are also excluded from the parent's focus graph while frozen,
+  so `alt+arrow` skips past them.

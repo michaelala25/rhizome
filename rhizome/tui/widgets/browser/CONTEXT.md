@@ -252,47 +252,48 @@ available to any caller):
   internal `_apply_entry_filters` helper so the count matches the window
   exactly (same topic-id and search semantics).
 
-## Cross-region focus navigation (alt+left / alt+right)
+## Cross-region focus navigation (alt+arrow)
 
 This is a **view-side concern** — no VM knows or cares which sub-region
-is focused. The dispatch tree:
+is focused. `BrowserView` owns two top-level regions (topic tree on the
+left, active tab on the right) and delegates everything *inside* the tab
+to four `nav_<dir>` methods that resolve a single step in the focus
+graph by name. The graph is flat — explicit if-chains, no per-sub-widget
+delegation — so adding/changing an edge is a one-line change.
 
-```
-BrowserView
- ├─ Topic tree
- └─ Active tab view
-     ├─ table region
-     └─ details region (EntryDetailsView)
-         ├─ title TextArea
-         ├─ content TextArea
-         └─ choices list  (skipped when hidden)
-```
+`BrowserView` binds `alt+left` / `alt+right` / `alt+up` / `alt+down`
+with `priority=True` (so they fire even when a `TextArea` inside the
+details panel is focused — otherwise the TextArea's own word-nav and
+paragraph-jump bindings would swallow them). Dispatch by `screen.focused`
+location:
 
-`BrowserView` binds `alt+left` / `alt+right` with `priority=True` (so
-they fire even when a `TextArea` inside the details panel is focused —
-otherwise the TextArea's own word-nav bindings would swallow them).
-Dispatch by `screen.focused` location:
-
-- focus in tree, `alt+right` → call `active_tab_view.focus_first()`;
-  `alt+left` → no-op.
-- focus elsewhere, `alt+right` → call `tab.focus_next_region()`; if it
-  returns False (tab is at its rightmost edge) do nothing.
-- focus elsewhere, `alt+left` → call `tab.focus_prev_region()`; if it
-  returns False (tab is at its leftmost edge), focus the tree.
+- focus in tree, `alt+right` → `active_tab_view.focus_first()`;
+  `alt+left` / `alt+up` / `alt+down` → no-op.
+- focus elsewhere, `alt+<dir>` → `tab.nav_<dir>()`. For `nav_left`, the
+  return value `"topic_tree"` asks `BrowserView` to focus the tree;
+  every other return is a `bool` indicating whether the focus moved
+  (informational — `BrowserView` doesn't react to it directly).
 
 **Tab-view interface** (convention; no formal Protocol yet — duck-typed
 via `hasattr` until we have a second tab to share the contract with):
 
 ```python
-def focus_first(self) -> None:           # leftmost sub-region (entry from tree)
-def focus_next_region(self) -> bool:     # True if moved, False at rightmost edge
-def focus_prev_region(self) -> bool:     # True if moved, False at leftmost edge
+def focus_first(self) -> None:        # entry point from tree (alt+right)
+def nav_up(self) -> bool:             # single step up in the focus graph
+def nav_down(self) -> bool:           # single step down
+def nav_left(self) -> bool | str:     # bool, or "topic_tree" sentinel
+def nav_right(self) -> bool:          # single step right
 ```
 
-`KnowledgeEntryBrowserTabView` cycles table → details and delegates the
-details region's internal cycle to `EntryDetailsView`, which walks
-`_REGION_IDS = (title, content, choices)` and skips entries whose
-`widget.display` is False (i.e. the choices entry while clean).
+`KnowledgeEntryBrowserTabView` resolves each step against a named-node
+graph spanning the entries-side widgets (search / table / title /
+content / modification-accept), the dialog slot, and the linked-
+flashcards-side widgets (search / table). Edges are gated on
+*presence* — the details panel's title/content/accept nodes are absent
+in `LINKED_FLASHCARDS` and when multi-select freezes the panel; the
+`flashcard_*` nodes are absent in `ENTRIES`; the dialog node is absent
+when no dialog is open. Transitions to an absent target silently
+no-op. See `knowledge_entry_tab/CONTEXT.md` for the full edge list.
 
 **Focus-orphan rescue**: when Accept/Cancel lands and the choices widget
 hides, `EntryDetailsView._refresh` checks for the dirty→clean transition

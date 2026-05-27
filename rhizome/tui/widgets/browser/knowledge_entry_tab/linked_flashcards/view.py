@@ -553,37 +553,6 @@ class LinkedFlashcardsPanelView(Vertical):
         return f"{prefix}{loaded} linked flashcards"
 
     # ------------------------------------------------------------------
-    # Cross-region focus (driven by the parent tab's alt+left/right)
-    # ------------------------------------------------------------------
-    #
-    # Two sub-regions: the table (always present) and the relink Accept/Cancel choices (only
-    # focusable while ``is_relink_dirty`` is True, i.e. ``.-visible`` is on). The search bar
-    # and the answer preview are excluded from the alt+left/right walk — the search bar by
-    # convention (matches the entries-side search bar), the preview because it isn't focusable
-    # at all.
-
-    def focus_first(self) -> None:
-        """Land on the leftmost focusable sub-region (the table). Called by the parent tab when
-        ``BrowserView`` enters the linked-flashcards region from the entries table."""
-        self.query_one("#linked-flashcards-table", DataTable).focus()
-
-    def focus_next_region(self) -> bool:
-        focused = self.screen.focused if self.screen else None
-        table = self.query_one("#linked-flashcards-table", DataTable)
-        if focused is table and self._vm.is_relink_dirty:
-            self.query_one("#linked-flashcards-relink-choices", _RelinkChoicesList).focus()
-            return True
-        return False
-
-    def focus_prev_region(self) -> bool:
-        focused = self.screen.focused if self.screen else None
-        choices = self.query_one("#linked-flashcards-relink-choices", _RelinkChoicesList)
-        if focused is choices:
-            self.query_one("#linked-flashcards-table", DataTable).focus()
-            return True
-        return False
-
-    # ------------------------------------------------------------------
     # View → VM
     # ------------------------------------------------------------------
 

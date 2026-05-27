@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.widget import Widget
-from textual.widgets import Button, DataTable, Rule, Static, TextArea
+from textual.widgets import Button, DataTable, Input, Rule, Static, TextArea
 
 from rhizome.db.models import EntryType
 
@@ -42,17 +42,13 @@ _DialogName = Literal["delete", "sort", "filter", "edit"]
 
 
 class _EntriesTable(DataTable):
-    """``DataTable`` subclass that owns the multi-select keybindings and the dialog-toggle
-    keybindings.
-
-    Lives here rather than as standalone bindings on the parent view so the keys only fire when the
-    table is focused — ``m`` and ``space`` on the details panel's ``TextArea``s would otherwise have
-    to be suppressed. Selection actions delegate straight to the tab VM; dialog-toggle actions ask
-    the parent tab to show/hide the named dialog.
+    """``DataTable`` subclass that owns the entries-specific selection keybindings (``space`` to
+    toggle the cursor row, ``shift+up`` / ``shift+down`` for range-select sugar). The global tab
+    keys (``d`` / ``s`` / ``f`` / ``e`` / ``l`` / ``m``) live on
+    ``KnowledgeEntryBrowserTabView`` so they fire from either table.
     """
 
     BINDINGS = [
-        Binding("m", "toggle_multi_select", show=False),
         Binding("space", "toggle_selection", show=False),
         # ``shift+up`` / ``shift+down`` are range-select sugar: add the cursor row to the selection
         # (idempotent) and step the cursor in one keystroke. Held-key terminal repeat makes "hold
@@ -61,16 +57,6 @@ class _EntriesTable(DataTable):
         # needs its own cursor step.
         Binding("shift+down", "select_down", show=False),
         Binding("shift+up", "select_up", show=False),
-        # ``d`` / ``s`` / ``f`` / ``e`` toggle the four dialogs. The tab owns which is currently
-        # shown and runs the mutex (showing one hides the others).
-        Binding("d", "toggle_dialog('delete')", show=False),
-        Binding("s", "toggle_dialog('sort')", show=False),
-        Binding("f", "toggle_dialog('filter')", show=False),
-        Binding("e", "toggle_dialog('edit')", show=False),
-        # ``l`` enters / toggles relink mode. One motion from anywhere in the entries tab: drops
-        # multi-select if on, flips into ``LINKED_FLASHCARDS`` if not already, and turns on the
-        # panel's relink selection. Pressing again exits relink (stays in LINKED_FLASHCARDS).
-        Binding("l", "toggle_relink", show=False),
     ]
 
     def __init__(
@@ -82,9 +68,6 @@ class _EntriesTable(DataTable):
         super().__init__(**kwargs)
         self._vm = view_model
         self._tab = tab
-
-    def action_toggle_multi_select(self) -> None:
-        self._vm.toggle_multi_select()
 
     def action_toggle_selection(self) -> None:
         self._vm.toggle_current_selection()
@@ -117,12 +100,6 @@ class _EntriesTable(DataTable):
         ):
             await self._vm.load_more()
         super().action_cursor_down()
-
-    def action_toggle_dialog(self, name: str) -> None:
-        self._tab.toggle_dialog(name)  # type: ignore[arg-type]
-
-    def action_toggle_relink(self) -> None:
-        self._tab.toggle_relink_mode()
 
 
 class _NavArrow(Button):
@@ -449,6 +426,20 @@ class KnowledgeEntryBrowserTabView(Vertical):
         ("edit", "#edit-bar"),
     )
 
+    # Global tab keys — fire from either table (and from anywhere else in the tab that isn't an
+    # ``Input`` / ``TextArea``). Bound here rather than on ``_EntriesTable`` so the linked-
+    # flashcards table picks them up for free. Each open dialog has its own ``d`` / ``s`` / ``f``
+    # / ``e`` bindings for sibling swap; the focused widget's bindings take precedence over an
+    # ancestor's, so the dialog rules still win while a dialog is focused.
+    BINDINGS = [
+        Binding("d", "tab_toggle_dialog('delete')", show=False),
+        Binding("s", "tab_toggle_dialog('sort')", show=False),
+        Binding("f", "tab_toggle_dialog('filter')", show=False),
+        Binding("e", "tab_toggle_dialog('edit')", show=False),
+        Binding("l", "tab_toggle_relink", show=False),
+        Binding("m", "tab_toggle_multi_select", show=False),
+    ]
+
     def __init__(
         self,
         view_model: KnowledgeEntryBrowserTabViewModel,
@@ -545,11 +536,42 @@ class KnowledgeEntryBrowserTabView(Vertical):
             ("d", "delete"),
             ("l", "link flashcards"),
             ("m", "multi-select"),
-            ("alt+left/right", "navigate"),
+            ("alt+←↑→↓", "navigate"),
         ]
         return "   ".join(
             f"[#a0a0a0]{key}[/] [#707070]{label}[/]" for key, label in rows
         )
+
+    # ------------------------------------------------------------------
+    # Global tab actions (d / s / f / e / l / m) — see ``BINDINGS`` above
+    # ------------------------------------------------------------------
+    #
+    # Each defers to the existing dialog / relink / multi-select methods. The gate skips the action
+    # when an ``Input`` / ``TextArea`` is focused so typing doesn't trip the keybinding (defensive —
+    # Input/TextArea already consume printable keys via their own ``_on_key`` handlers, but the
+    # check makes the intent explicit and survives any future refactor that changes their key
+    # plumbing).
+
+    def _typing_active(self) -> bool:
+        """Whether the currently-focused widget is an editable text field. Used by the global tab
+        actions to bail rather than swallow a keystroke meant for the editor."""
+        focused = self.screen.focused if self.screen else None
+        return isinstance(focused, (Input, TextArea))
+
+    def action_tab_toggle_dialog(self, name: str) -> None:
+        if self._typing_active():
+            return
+        self.toggle_dialog(name)  # type: ignore[arg-type]
+
+    def action_tab_toggle_relink(self) -> None:
+        if self._typing_active():
+            return
+        self.toggle_relink_mode()
+
+    def action_tab_toggle_multi_select(self) -> None:
+        if self._typing_active():
+            return
+        self._vm.toggle_multi_select()
 
     # ------------------------------------------------------------------
     # Dialog orchestration
@@ -769,74 +791,202 @@ class KnowledgeEntryBrowserTabView(Vertical):
         status.update(self._format_status())
 
     # ------------------------------------------------------------------
-    # Cross-region focus (driven by ``BrowserView``'s alt+left/right)
+    # Cross-region focus (driven by ``BrowserView``'s alt+arrow bindings)
     # ------------------------------------------------------------------
     #
-    # Two regions at this level: the entries table and the details panel. The details panel has its
-    # own internal cycle (title → content → choices) which we delegate to ``EntryDetailsView``. The
-    # bool returns let the ``BrowserView`` know when the tab is at its leftmost edge so it can roll
-    # focus back to the tree.
+    # The tab participates in a directional focus graph spanning the topic tree, the entries-side
+    # widgets (search, table, title, content, modification-accept), the dialogs, and the linked-
+    # flashcards-side widgets (search, table). ``nav_<dir>`` resolves a single step in the named
+    # direction by:
+    #   1. Naming the currently-focused node via ``_focused_node``.
+    #   2. Looking up its outgoing edge for the direction in the explicit if-chain below.
+    #   3. Focusing the target via ``_focus_node`` (which gates on present-ness).
+    #
+    # ``nav_left`` returns the sentinel ``"topic_tree"`` for transitions that escape the tab —
+    # ``BrowserView`` catches that and focuses the tree. Every other case returns a bool.
+
+    # Node-name → ``query_one`` selector for the focusable widget that represents that node. The
+    # dialog node is handled separately because its target widget depends on ``_active_dialog``.
+    _NODE_TO_WIDGET_ID: dict[str, str] = {
+        "entry_table": "entries-table",
+        "entry_search": "search-input",
+        "entry_title": "details-title",
+        "entry_content": "details-content",
+        "entry_modification_accept": "details-choices",
+        "flashcard_table": "linked-flashcards-table",
+        "flashcard_search": "linked-flashcards-search-input",
+        "relink_choices": "linked-flashcards-relink-choices",
+    }
 
     def focus_first(self) -> None:
-        """Entry point when ``BrowserView`` enters the tab from the tree. Land on the active
-        dialog if there is one (so the user picks up where they left off after a tree side-trip),
-        else the entries table."""
-        if self._active_dialog is not None:
-            try:
-                widget_id = dict(self._DIALOG_WIDGETS)[self._active_dialog]
-                self.query_one(widget_id, Widget).focus()
-                return
-            except Exception:
-                pass
+        """Entry point when ``BrowserView`` enters the tab from the tree. Always lands on the
+        entries table — the leftmost region in the focus graph — regardless of whether a dialog
+        happens to be open. The user can step into the dialog from there with alt+down."""
         self.query_one("#entries-table", DataTable).focus()
 
-    def focus_next_region(self) -> bool:
+    def _focused_node(self) -> str | None:
+        """Name the currently-focused widget within the tab, or ``None`` if focus is outside the
+        tab / on something we don't route. Dialogs collapse to a single ``"dialog"`` name (the
+        outgoing edges are the same regardless of which of the four is shown)."""
         focused = self.screen.focused if self.screen else None
-        table = self.query_one("#entries-table", DataTable)
-        details = self.query_one(EntryDetailsView)
-        linked = self.query_one(LinkedFlashcardsPanelView)
-        # The right-hand region depends on state: details in ENTRIES, linked-flashcards table in
-        # LINKED_FLASHCARDS.
-        right = (
-            linked
-            if self._vm.state is self._vm.State.LINKED_FLASHCARDS
-            else details
-        )
-        if focused is table:
-            # In ``ENTRIES`` + multi-select, the details panel is frozen and has no useful edit
-            # affordances — short-circuit so ``alt+right`` keeps the user on the table.
-            if (
-                self._vm.state is self._vm.State.ENTRIES
-                and self._vm.multi_select_active
-            ):
-                return False
-            right.focus_first()
-            return True
-        if focused is not None and right in focused.ancestors_with_self:
-            return right.focus_next_region()
-        # Defensive fallback: focus was somewhere unexpected. Start the cycle from the leftmost
-        # region.
-        self.focus_first()
-        return True
+        if focused is None:
+            return None
+        if self._active_dialog is not None:
+            widget_id = dict(self._DIALOG_WIDGETS)[self._active_dialog]
+            try:
+                if focused is self.query_one(widget_id, Widget):
+                    return "dialog"
+            except Exception:
+                pass
+        fid = focused.id
+        if fid == "entries-table":
+            return "entry_table"
+        if fid == "search-input":
+            return "entry_search"
+        if fid == "details-title":
+            return "entry_title"
+        if fid == "details-content":
+            return "entry_content"
+        if fid == "details-choices":
+            return "entry_modification_accept"
+        if fid == "linked-flashcards-table":
+            return "flashcard_table"
+        if fid == "linked-flashcards-search-input":
+            return "flashcard_search"
+        if fid == "linked-flashcards-relink-choices":
+            return "relink_choices"
+        return None
 
-    def focus_prev_region(self) -> bool:
-        focused = self.screen.focused if self.screen else None
-        table = self.query_one("#entries-table", DataTable)
-        details = self.query_one(EntryDetailsView)
-        linked = self.query_one(LinkedFlashcardsPanelView)
-        right = (
-            linked
-            if self._vm.state is self._vm.State.LINKED_FLASHCARDS
-            else details
-        )
-        if focused is table:
-            # Tab's leftmost edge — let ``BrowserView`` hand focus to the tree.
+    def _node_present(self, node: str) -> bool:
+        """Whether ``node`` is currently in the focus graph. Transitions to absent nodes silently
+        no-op. The frozen details panel (multi-select on the entries side) is treated as absent —
+        the TextAreas are read-only and the choices widget is hidden, so there's nothing useful
+        to land on."""
+        if node == "dialog":
+            return self._active_dialog is not None
+        state = self._vm.state
+        frozen = self._vm.multi_select_active
+        if node in ("entry_title", "entry_content"):
+            return state is self._vm.State.ENTRIES and not frozen
+        if node == "entry_modification_accept":
+            return (
+                state is self._vm.State.ENTRIES
+                and not frozen
+                and self._vm.details.is_dirty
+            )
+        if node in ("flashcard_table", "flashcard_search"):
+            return state is self._vm.State.LINKED_FLASHCARDS
+        if node == "relink_choices":
+            return (
+                state is self._vm.State.LINKED_FLASHCARDS
+                and self._vm.linked_flashcards.is_relink_dirty
+            )
+        # entry_table / entry_search are always present.
+        return node in ("entry_table", "entry_search")
+
+    def _focus_node(self, node: str) -> bool:
+        """Focus the widget corresponding to ``node``. Returns ``False`` and skips the focus call
+        if the node isn't currently in the graph (i.e. its widget is hidden by the state class or
+        the multi-select freeze)."""
+        if not self._node_present(node):
             return False
-        if focused is not None and right in focused.ancestors_with_self:
-            moved = right.focus_prev_region()
-            if not moved:
-                table.focus()
+        if node == "dialog":
+            assert self._active_dialog is not None  # implied by _node_present
+            widget_id = dict(self._DIALOG_WIDGETS)[self._active_dialog]
+            try:
+                self.query_one(widget_id, Widget).focus()
+                return True
+            except Exception:
+                return False
+        target_id = self._NODE_TO_WIDGET_ID[node]
+        try:
+            self.query_one(f"#{target_id}").focus()
             return True
+        except Exception:
+            return False
+
+    def nav_up(self) -> bool:
+        node = self._focused_node()
+        if node is None or not self._node_present(node):
+            return False
+        if node == "dialog":
+            return self._focus_node("entry_table")
+        if node == "entry_table":
+            return self._focus_node("entry_search")
+        if node == "flashcard_table":
+            return self._focus_node("flashcard_search")
+        if node == "relink_choices":
+            return self._focus_node("flashcard_table")
+        if node == "entry_modification_accept":
+            return self._focus_node("entry_content")
+        if node == "entry_content":
+            return self._focus_node("entry_title")
+        if node == "entry_title":
+            return self._focus_node("entry_search")
+        return False
+
+    def nav_down(self) -> bool:
+        node = self._focused_node()
+        if node is None or not self._node_present(node):
+            return False
+        if node == "entry_search":
+            return self._focus_node("entry_table")
+        if node == "flashcard_search":
+            return self._focus_node("flashcard_table")
+        if node == "entry_table":
+            return self._focus_node("dialog")
+        if node == "flashcard_table":
+            # Mirrors entry_content's fall-through: relink Accept/Cancel takes priority while
+            # dirty, otherwise drop to the dialog if one is open.
+            return self._focus_node("relink_choices") or self._focus_node("dialog")
+        if node == "relink_choices":
+            return self._focus_node("dialog")
+        if node == "entry_title":
+            return self._focus_node("entry_content")
+        if node == "entry_content":
+            # Fall through: accept/cancel takes priority while the panel is dirty; otherwise drop
+            # to the dialog if one is open. Both targets are gated by ``_node_present``, so this
+            # is just two short-circuited focus attempts.
+            return self._focus_node("entry_modification_accept") or self._focus_node("dialog")
+        if node == "entry_modification_accept":
+            return self._focus_node("dialog")
+        return False
+
+    def nav_left(self) -> bool | str:
+        """Returns ``True`` if focus moved inside the tab, the sentinel ``"topic_tree"`` to ask
+        ``BrowserView`` to hand focus to the tree, or ``False`` if there's no outgoing edge."""
+        node = self._focused_node()
+        if node is None or not self._node_present(node):
+            return False
+        if node in ("entry_search", "entry_table", "dialog"):
+            return "topic_tree"
+        if node == "entry_title":
+            return self._focus_node("entry_search")
+        if node in ("entry_content", "entry_modification_accept"):
+            return self._focus_node("entry_table")
+        if node == "flashcard_search":
+            return self._focus_node("entry_search")
+        if node == "flashcard_table":
+            return self._focus_node("entry_table")
+        if node == "relink_choices":
+            return self._focus_node("entry_table")
+        return False
+
+    def nav_right(self) -> bool:
+        node = self._focused_node()
+        if node is None or not self._node_present(node):
+            return False
+        state = self._vm.state
+        if node == "entry_search":
+            if state is self._vm.State.ENTRIES:
+                return self._focus_node("entry_title")
+            if state is self._vm.State.LINKED_FLASHCARDS:
+                return self._focus_node("flashcard_search")
+        if node == "entry_table":
+            if state is self._vm.State.ENTRIES:
+                return self._focus_node("entry_content")
+            if state is self._vm.State.LINKED_FLASHCARDS:
+                return self._focus_node("flashcard_table")
         return False
 
     # ------------------------------------------------------------------
