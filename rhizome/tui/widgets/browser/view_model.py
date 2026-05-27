@@ -1,7 +1,7 @@
 """Orchestrator for the browser widget. Owns the topic-tree panel VM and an ordered list of tab
 VMs plus the active-tab index. Pure coordination — the panel and each tab own their own state.
 
-Filter propagation is **lazy**: on every panel ``filter_changed`` only the active tab is updated.
+Filter propagation is **lazy**: on every tree ``selection_changed`` only the active tab is updated.
 Inactive tabs hold their data and last-applied filter until the user switches to them, at which
 point ``set_topic_filter`` reconciles them. Because that call is idempotent on equal filters,
 switching to an already-current tab is an instant no-op.
@@ -46,7 +46,8 @@ class BrowserViewModel(ViewModelBase):
         self._started: bool = False
 
         # Only inter-VM subscription the orchestrator owns; everything else is direct method calls.
-        self._panel.subscribe(self._panel.filter_changed, self._on_filter_changed)
+        # Subscribed directly on the tree — the panel doesn't re-broadcast under an alias.
+        self._panel.tree.subscribe(self._panel.tree.selection_changed, self._on_filter_changed)
 
         resolved_tabs = _default_tabs(session_factory) if tabs is None else tabs
         for tab in resolved_tabs:
@@ -128,8 +129,8 @@ class BrowserViewModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def _on_filter_changed(self) -> None:
-        # Re-emitted from the tree's SELECTION_CHANGED via the panel. Only the active tab updates;
-        # inactive tabs catch up lazily on switch.
+        # Fired by the tree's SELECTION_CHANGED. Only the active tab updates; inactive tabs catch
+        # up lazily on switch.
         active = self.active_tab
         if active is not None:
             active.set_topic_filter(self._panel.current_filter)

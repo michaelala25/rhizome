@@ -1,66 +1,39 @@
-"""TopicTreeActionsViewModel + TopicTreeActionsView — vertical action menu for the topic tree.
+"""TopicTreeActionsView — vertical action menu for the topic tree.
 
 Sits to the left of the tree inside the panel body. Collapsed by default (single-letter shorthand,
 no cursor marker, narrow rail); on focus, the widget renders full ``► label`` rows and toggles
 ``-actions-expanded`` on the surrounding ``TopicTreePanelView`` so the panel CSS widens the rail.
 
-VM action methods are stubs at this stage — they log the cursor / selection state. Concrete
-dialogs and DB calls land in follow-up passes; the bones here are layout, focus routing, and the
-``ChoiceList`` dispatch protocol.
+This view is intentionally **VM-less** — the menu has no data-model state of its own and exists
+solely to invoke actions on the parent panel view. Each entry in ``CHOICES`` resolves to an action
+method that delegates to a callback supplied at construction time by the panel view (rename /
+create / delete stubs today; real dialogs land in follow-up passes). Mirror Textual's binding
+convention: ``CHOICES`` maps label → action-method name, and the action methods are thin
+wrappers around the injected callbacks.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Awaitable, Callable
 
 from rich.text import Text
 
-from rhizome.logs import get_logger
-
-from ...view_model_base import ViewModelBase
 from ..choices import ChoiceList
-from ..topic_tree import BrowserTopicTreeViewModel
 
-_logger = get_logger("browser.topic_tree_actions")
-
-
-class TopicTreeActionsViewModel(ViewModelBase):
-    """Holds a reference to the tree VM so action stubs can read cursor / selection state directly
-    instead of routing through the orchestrator."""
-
-    def __init__(self, session_factory: Any, tree_vm: BrowserTopicTreeViewModel) -> None:
-        super().__init__()
-        self._session_factory = session_factory
-        self._tree = tree_vm
-
-    @property
-    def tree(self) -> BrowserTopicTreeViewModel:
-        return self._tree
-
-    async def rename_topic(self) -> None:
-        _logger.info("rename_topic stub — cursor=%s", self._tree.cursor_topic_id)
-
-    async def create_topic(self) -> None:
-        _logger.info("create_topic stub — cursor parent=%s", self._tree.cursor_topic_id)
-
-    async def delete_topic(self) -> None:
-        _logger.info(
-            "delete_topic (subtree) stub — cursor=%s, selection=%d",
-            self._tree.cursor_topic_id,
-            len(self._tree.selected_ids),
-        )
+# Action callbacks may be sync or async — ChoiceList.action_confirm awaits if needed.
+ActionCallback = Callable[[], Awaitable[None] | None]
 
 
-class TopicTreeActionsView(ChoiceList[TopicTreeActionsViewModel]):
+class TopicTreeActionsView(ChoiceList[None]):
     """Vertical ``ChoiceList`` rendered to the left of the tree. Overrides ``_render_choice`` to
     show a single-letter shorthand when blurred and the full ``► label`` when focused, and toggles
     the panel's ``-actions-expanded`` class on focus/blur so the rail width follows."""
 
     ORIENTATION = "vertical"
     CHOICES = {
-        "rename": "do_rename",
-        "create": "do_create",
-        "delete": "do_delete",
+        "rename": "_rename",
+        "create": "_create",
+        "delete": "_delete",
     }
 
     DEFAULT_CSS = """
@@ -79,27 +52,32 @@ class TopicTreeActionsView(ChoiceList[TopicTreeActionsViewModel]):
     """
 
     _COLLAPSED_SHORTHAND = {
-        "rename": "R",
-        "create": "C",
-        "delete": "D",
+        "rename": "r",
+        "create": "c",
+        "delete": "d",
     }
 
+    def __init__(
+        self,
+        *,
+        on_rename: ActionCallback,
+        on_create: ActionCallback,
+        on_delete: ActionCallback,
+        **kwargs,
+    ) -> None:
+        super().__init__(view_model=None, **kwargs)
+        self._on_rename = on_rename
+        self._on_create = on_create
+        self._on_delete = on_delete
+
     def _render_choice(self, label: str, selected: bool) -> Text:
-        text = Text()
+        # When focused the base's ``► bold`` / ``  dim`` rendering is exactly what we want; only the
+        # blurred state diverges (single-letter shorthand, no cursor marker — cursor reappears at
+        # its retained index on next focus).
         if self.has_focus:
-            cursor_color = "bold #ffd700"
-            if selected:
-                text.append("► ", style=cursor_color)
-                text.append(label, style="bold")
-            else:
-                text.append("  ")
-                text.append(label, style="dim")
-        else:
-            # Blurred: shorthand only, no cursor marker (cursor reappears at its retained index on
-            # next focus — standard restore-on-focus behaviour).
-            display = self._COLLAPSED_SHORTHAND.get(label, label[:1].upper())
-            text.append(display, style="dim")
-        return text
+            return super()._render_choice(label, selected)
+        display = self._COLLAPSED_SHORTHAND.get(label, label[:1].upper())
+        return Text(display, style="dim")
 
     def on_focus(self) -> None:
         super().on_focus()
@@ -119,12 +97,12 @@ class TopicTreeActionsView(ChoiceList[TopicTreeActionsViewModel]):
             return
         pane.set_class(expanded, "-actions-expanded")
 
-    # ChoiceList.action_confirm resolves these by name via getattr.
-    async def do_rename(self) -> None:
-        await self._vm.rename_topic()
+    # ChoiceList.action_confirm resolves these by name via getattr, then awaits if needed.
+    def _rename(self):
+        return self._on_rename()
 
-    async def do_create(self) -> None:
-        await self._vm.create_topic()
+    def _create(self):
+        return self._on_create()
 
-    async def do_delete(self) -> None:
-        await self._vm.delete_topic()
+    def _delete(self):
+        return self._on_delete()

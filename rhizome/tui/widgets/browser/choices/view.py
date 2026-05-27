@@ -45,9 +45,9 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
         Binding("escape", "cancel", show=False),
     ]
 
-    def __init__(self, view_model: VM, **kwargs: Any) -> None:
+    def __init__(self, view_model: VM | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._vm: VM = view_model
+        self._vm: VM | None = view_model
         self._cursor: int = 0
 
     # ------------------------------------------------------------------
@@ -55,11 +55,16 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
     # ------------------------------------------------------------------
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        # VM-less ChoiceLists (purely view-driven action menus) skip the dirty subscription —
+        # nothing on a data model can change their rendering. Focus-driven repaints still flow
+        # through ``on_focus`` / ``on_blur``.
+        if self._vm is not None:
+            self._vm.subscribe(self._vm.dirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        if self._vm is not None:
+            self._vm.unsubscribe(self._vm.dirty, self._refresh)
 
     def on_focus(self) -> None:
         # Cursor brightness tracks focus; a CSS ``:focus`` rule wouldn't reach the per-segment

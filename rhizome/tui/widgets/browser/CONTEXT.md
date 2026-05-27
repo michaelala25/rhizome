@@ -12,8 +12,8 @@ slash command appends a fresh `BrowserViewModel` to the feed and `BrowserView` b
   over a `ContentSwitcher` of pre-mounted tab views. Owns the `Ctrl+←/→` tab cycle and dispatches
   the `alt+arrow` cross-region focus walk. See the module docstring for the dispatch contract.
 - **view_model.py — `BrowserViewModel`** — orchestrator. Owns the panel VM and a fixed list of
-  tab VMs; subscribes to `panel.filter_changed` and pushes the new filter into the active tab.
-  Inactive tabs catch up lazily on switch via the idempotent `set_topic_filter`.
+  tab VMs; subscribes to `panel.tree.selection_changed` and pushes `panel.current_filter` into
+  the active tab. Inactive tabs catch up lazily on switch via the idempotent `set_topic_filter`.
 - **tab_base.py — `BrowserTabViewModel`** — abstract base every tab inherits from. Adds tab
   identity (`TITLE`) and `set_topic_filter` on top of `QueryBackedViewModel`'s fetch kernel.
 - **topic_tree.py — `BrowserTopicTreeViewModel` + `BrowserTopicTreeView`** — the multi-select
@@ -50,5 +50,6 @@ slash command appends a fresh `BrowserViewModel` to the feed and `BrowserView` b
   returns a bool, or — for tabs — the sentinel string `"topic_tree"` to ask `BrowserView` to land
   focus back on the tree. See `view.py` for the dispatcher and `knowledge_entry_tab/view.py` for
   the tab's node/edge graph.
-- **Panel filter contract is panel-shaped.** The orchestrator subscribes to
-  `panel.filter_changed` and reads `panel.current_filter`. It never reaches into `panel.tree`.
+- **Panel filter contract.** The orchestrator subscribes to `panel.tree.selection_changed` for
+  the event and reads `panel.current_filter` for the value. The composite read lives on the
+  panel; the event is consumed at its source rather than aliased through the panel.

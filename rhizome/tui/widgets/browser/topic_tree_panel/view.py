@@ -33,10 +33,14 @@ from typing import Any
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
 
+from rhizome.logs import get_logger
+
 from ..topic_summary import TopicSummaryView
 from ..topic_tree import BrowserTopicTreeView
 from .topic_tree_actions import TopicTreeActionsView
 from .view_model import TopicTreePanelViewModel
+
+_logger = get_logger("browser.topic_tree_panel")
 
 
 class TopicTreePanelView(Vertical):
@@ -93,9 +97,34 @@ class TopicTreePanelView(Vertical):
     def compose(self):
         yield Static("Topics", id="browser-tree-title")
         with Horizontal(id="browser-tree-body"):
-            yield TopicTreeActionsView(self._vm.tree_actions, id="browser-tree-actions")
+            yield TopicTreeActionsView(
+                on_rename=self._action_rename,
+                on_create=self._action_create,
+                on_delete=self._action_delete,
+                id="browser-tree-actions",
+            )
             yield BrowserTopicTreeView(self._vm.tree)
         yield TopicSummaryView(self._vm.summary, id="browser-tree-summary")
+
+    # ------------------------------------------------------------------
+    # Action stubs invoked by TopicTreeActionsView
+    # ------------------------------------------------------------------
+    # These hook the actions menu into the panel without routing through a VM. Concrete dialogs
+    # and DB calls land in follow-up passes; for now they log the tree's cursor / selection so the
+    # dispatch wiring can be exercised end-to-end.
+
+    async def _action_rename(self) -> None:
+        _logger.info("rename_topic stub — cursor=%s", self._vm.tree.cursor_topic_id)
+
+    async def _action_create(self) -> None:
+        _logger.info("create_topic stub — cursor parent=%s", self._vm.tree.cursor_topic_id)
+
+    async def _action_delete(self) -> None:
+        _logger.info(
+            "delete_topic (subtree) stub — cursor=%s, selection=%d",
+            self._vm.tree.cursor_topic_id,
+            len(self._vm.tree.selected_ids),
+        )
 
     # ------------------------------------------------------------------
     # Cross-region focus surface (called from BrowserView)
