@@ -37,6 +37,7 @@ from rhizome.logs import get_logger
 from ..view_model_base import ViewModelBase
 from .knowledge_entry_tab import KnowledgeEntryBrowserTabViewModel
 from .tab_base import BrowserTabViewModel
+from .topic_summary import TopicSummaryViewModel
 from .topic_tree import BrowserTopicTreeViewModel
 
 _logger = get_logger("browser")
@@ -66,6 +67,7 @@ class BrowserViewModel(ViewModelBase):
         self.is_navigable = True
         self._session_factory = session_factory
         self._tree = BrowserTopicTreeViewModel(session_factory)
+        self._summary = TopicSummaryViewModel(session_factory)
         self._tabs: list[BrowserTabViewModel] = []
         self._active_index: int = 0
         self._started: bool = False
@@ -81,6 +83,12 @@ class BrowserViewModel(ViewModelBase):
             self._tree.selection_changed,
             self._on_selection_changed,
         )
+        # Cursor moves in the tree drive the summary panel. Distinct from selection so we don't
+        # refetch the summary on every checkbox toggle.
+        self._tree.subscribe(
+            self._tree.cursor_changed,
+            self._on_cursor_changed,
+        )
 
         resolved_tabs = _default_tabs(session_factory) if tabs is None else tabs
         for tab in resolved_tabs:
@@ -93,6 +101,10 @@ class BrowserViewModel(ViewModelBase):
     @property
     def tree(self) -> BrowserTopicTreeViewModel:
         return self._tree
+
+    @property
+    def summary(self) -> TopicSummaryViewModel:
+        return self._summary
 
     @property
     def tabs(self) -> list[BrowserTabViewModel]:
@@ -191,3 +203,8 @@ class BrowserViewModel(ViewModelBase):
         active = self.active_tab
         if active is not None:
             active.set_topic_filter(self._current_filter)
+
+    def _on_cursor_changed(self) -> None:
+        """Sync callback fired by the tree on cursor moves. Pushes the new id into the summary VM,
+        which handles idempotency and (re)schedules its own debounced fetch."""
+        self._summary.set_topic_id(self._tree.cursor_topic_id)

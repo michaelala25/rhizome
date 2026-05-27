@@ -31,6 +31,7 @@ from .knowledge_entry_tab import (
     KnowledgeEntryBrowserTabViewModel,
 )
 from .tab_base import BrowserTabViewModel
+from .topic_summary import TopicSummaryView
 from .topic_tree import BrowserTopicTreeView
 from .view_model import BrowserViewModel
 
@@ -90,6 +91,13 @@ class BrowserView(Horizontal):
     }
     BrowserView BrowserTopicTreeView {
         padding: 1 0 0 0;
+        height: 1fr;
+    }
+    BrowserView #browser-tree-summary {
+        height: auto;
+        max-height: 50%;
+        border-top: solid #3a3a3a;
+        padding: 0 0 0 0;
     }
     BrowserView #browser-right-tab {
         width: 80%;
@@ -134,6 +142,11 @@ class BrowserView(Horizontal):
         with Vertical(id="browser-tree-tab"):
             yield Static("Topics", id="browser-tree-title")
             yield BrowserTopicTreeView(self._vm.tree)
+            # Topic summary panel for the cursor-highlighted topic. Sits below the tree, growing to fit
+            # its (multi-line description) content; the tree above gets ``height: 1fr`` so it claims the
+            # remaining vertical space and ``max-height: 50%`` on the summary keeps a long description
+            # from squeezing the tree out of view.
+            yield TopicSummaryView(self._vm.summary, id="browser-tree-summary")
 
         # Right: tab bar over a ContentSwitcher that holds every tab view. The tab lineup is fixed at ctor
         # time (see BrowserViewModel), so we can mount every tab view up front and just toggle which one is

@@ -73,6 +73,18 @@ This matches `docs/design-principles.md` and the established
   filter. (The tree view loads its own roots on mount; the VM doesn't
   cache tree shape, so there's nothing for the orchestrator to await.)
 
+- **topic_summary.py — `TopicSummaryViewModel` + `TopicSummaryView`**: read-only
+  summary panel below the topic tree on the left rail. Shows the cursor-
+  highlighted topic's name + id + description plus direct/subtree counts of
+  knowledge entries and flashcards. The VM is a `QueryBackedViewModel`, so
+  fast cursor scrolling collapses into a single eventual fetch via the
+  standard debounce. The orchestrator drives input by subscribing to the
+  tree's new `CURSOR_CHANGED` callback group and calling
+  `summary.set_topic_id(tree.cursor_topic_id)`; `set_topic_id` is idempotent
+  and bypasses the debounce path for `None` (synchronous clear). Subtree
+  counts use `expand_subtrees` + `count_entries_filtered` /
+  `count_flashcards_by_topics` (new op added for this panel).
+
 - **topic_tree.py — `BrowserTopicTreeViewModel` + `BrowserTopicTreeView`**:
   multi-select topic tree. **VM owns** selection (`_selected_ids`),
   cursor id (`_cursor_topic_id` — authoritative external reference; widget
@@ -97,7 +109,10 @@ This matches `docs/design-principles.md` and the established
   Selection is multi-set with subtree cascade. The VM emits a dedicated
   `SELECTION_CHANGED` callback group for the orchestrator on top of
   standard `dirty`. Both fire exactly once per toggle even though the
-  cascade may add or remove many ids.
+  cascade may add or remove many ids. A parallel `CURSOR_CHANGED` group
+  fires on actual cursor-id changes (alongside `dirty`); consumers like
+  the topic-summary panel listen to it so they don't refetch on every
+  selection-toggle label repaint.
 
   **View owns** the visual tree structure entirely. It subclasses Textual's
   `Tree[Topic]` to inherit navigation, scrolling, and expand/collapse;

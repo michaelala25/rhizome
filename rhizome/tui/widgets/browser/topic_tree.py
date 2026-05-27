@@ -91,15 +91,22 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     """
 
     class Callbacks(Enum):
-        # Standard dirty + focus are inherited; this one is browser-specific. No payload — listeners
+        # Standard dirty + focus are inherited; these are browser-specific. No payload — listeners
         # re-query state via the public accessors.
         SELECTION_CHANGED = "selection_changed"
+        # Fires when the cursor topic id actually changes. Distinct from ``dirty`` (which also fires on
+        # selection-toggle re-renders) so consumers that only care about the highlighted topic — e.g.
+        # the topic-summary panel — don't refetch on every label repaint.
+        CURSOR_CHANGED = "cursor_changed"
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
         self._selection_changed = self._make_group(
             BrowserTopicTreeViewModel.Callbacks.SELECTION_CHANGED
+        )
+        self._cursor_changed = self._make_group(
+            BrowserTopicTreeViewModel.Callbacks.CURSOR_CHANGED
         )
         self._selected_ids: set[int] = set()
         # Cursor topic id is the *authoritative external reference* — kept here so other code can ask "what
@@ -114,6 +121,10 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     @property
     def selection_changed(self):
         return self._selection_changed
+
+    @property
+    def cursor_changed(self):
+        return self._cursor_changed
 
     def is_selected(self, topic_id: int) -> bool:
         return topic_id in self._selected_ids
@@ -200,6 +211,7 @@ class BrowserTopicTreeViewModel(ViewModelBase):
             return
         self._cursor_topic_id = topic_id
         self.emit(self.dirty)
+        self.emit(self._cursor_changed)
 
     # ------------------------------------------------------------------
     # Filter projection

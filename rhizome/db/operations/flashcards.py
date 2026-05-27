@@ -339,6 +339,27 @@ async def count_flashcards_by_topic(
     return result.scalar_one()
 
 
+async def count_flashcards_by_topics(
+    session: AsyncSession,
+    topic_ids: Iterable[int],
+) -> int:
+    """Return the number of flashcards whose ``topic_id`` is in ``topic_ids``.
+
+    Multi-topic generalisation of ``count_flashcards_by_topic`` — used by the browser's topic-summary
+    panel to report the subtree flashcard count for a cursor-highlighted topic. Returns 0 for an empty
+    iterable.
+    """
+    ids = list(topic_ids)
+    if not ids:
+        return 0
+    result = await session.execute(
+        select(func.count())
+        .select_from(Flashcard)
+        .where(Flashcard.topic_id.in_(ids))
+    )
+    return result.scalar_one()
+
+
 def to_fsrs_card(fc: Flashcard) -> Card:
     """Build an in-memory ``fsrs.Card`` from a Flashcard ORM row.
 
