@@ -39,6 +39,8 @@ from rhizome.tui.widgets.chat_pane.interrupts.sql import SqlConfirmation
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
 from rhizome.tui.widgets.chat_pane.interrupts.warning import WarningUserChoices
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.tui.widgets.chat_pane.interrupts.flashcard_review import FlashcardReviewInterrupt
+from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
 from rhizome.tui.widgets.chat_pane.messages.shell import ShellCommandMessage
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.tui.widgets.chat_pane.status import StatusBar
@@ -292,6 +294,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
             return MultiUserChoices(entry)
         if isinstance(entry, SqlConfirmationVM):
             return SqlConfirmation(entry)
+        if isinstance(entry, FlashcardReviewInterruptVM):
+            return FlashcardReviewInterrupt(entry)
         if isinstance(entry, InterruptVMBase):
             raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
         raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")

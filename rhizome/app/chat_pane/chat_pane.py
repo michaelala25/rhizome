@@ -40,6 +40,7 @@ from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.app.chat_pane.status import StatusBarVM
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
@@ -1799,6 +1800,86 @@ class ChatPaneVM(ViewModelBase):
                 "sql-confirmation cancelled"
                 if result is None
                 else f"sql-confirmation resolved: {result!r}"
+            )
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
+
+        @reg.command(name="test-flashcards", help="Spawn a FlashcardReview interrupt with sample data.")
+        async def _test_flashcards() -> None:
+            from types import SimpleNamespace
+            from fsrs import Card
+
+            def _starter_card(card_id: int) -> Card:
+                # Default Card() lands in State.Learning, step 0, due=now — exactly what we want
+                # for manual exercise of the FSRS step ladder.
+                c = Card()
+                c.card_id = card_id
+                return c
+
+            sample_cards = [
+                {"id": 101, "question": "What is the time complexity of binary search?",
+                 "answer": "O(log n) — each comparison halves the remaining search space.",
+                 "fsrs_card": _starter_card(101)},
+                {"id": 102, "question": "Explain the difference between a stack and a queue.",
+                 "answer": "A stack is LIFO: the most recently added element is removed first.\n\n"
+                           "A queue is FIFO: the earliest added element is removed first.",
+                 "fsrs_card": _starter_card(102)},
+                {"id": 103, "question": "What is a hash collision and how is it typically resolved?",
+                 "answer": "A hash collision occurs when two different keys produce the same hash value.\n\n"
+                           "Common resolution strategies:\n"
+                           "• Chaining — each bucket holds a linked list of entries\n"
+                           "• Open addressing — probe for the next available slot",
+                 "fsrs_card": _starter_card(103)},
+                {"id": 204, "question": "What does the CAP theorem state?",
+                 "answer": "A distributed system can provide at most two of:\n\n"
+                           "• Consistency — every read returns the most recent write\n"
+                           "• Availability — every request receives a response\n"
+                           "• Partition tolerance — operates despite network partitions",
+                 "fsrs_card": _starter_card(204)},
+                {"id": 205, "question": "What is the difference between concurrency and parallelism?",
+                 "answer": "Concurrency is about dealing with multiple tasks at once (structure).\n"
+                           "Parallelism is about doing multiple tasks at once (execution).\n\n"
+                           "Concurrency is possible on a single core via interleaving; parallelism "
+                           "requires multiple cores.",
+                 "fsrs_card": _starter_card(205)},
+            ]
+
+            # Inert session factory — the VM holds it only for the optional commit() API, which the
+            # test command never invokes.
+            class _FakeSession:
+                async def __aenter__(self): return self
+                async def __aexit__(self, *_): return False
+                async def commit(self, *_): return
+            def _fake_session_factory(): return _FakeSession()
+
+            # Fake scorer — tweak the mapping to exercise different auto-score outcomes. ID 205 is
+            # intentionally omitted to exercise the failure-fallback path.
+            auto_score_results = {101: 3, 102: 1, 103: 2, 204: 4}
+
+            class _FakeScorer:
+                def __init__(self, results_by_id: dict[int, int]):
+                    self._results_by_id = results_by_id
+                    self.structured_response = None
+                async def ainvoke(self, prompt: str):
+                    await asyncio.sleep(1.5)
+                    results = [
+                        SimpleNamespace(flashcard_id=i, score=s, feedback="")
+                        for i, s in self._results_by_id.items()
+                    ]
+                    self.structured_response = SimpleNamespace(results=results)
+
+            interrupt = FlashcardReviewInterruptVM(
+                cards=sample_cards,
+                session_factory=_fake_session_factory,
+                auto_score_enabled=True,
+                auto_scorer=_FakeScorer(auto_score_results),
+            )
+            result = await self.present_interrupt(interrupt)
+            content = (
+                "flashcards cancelled" if result is None
+                else f"flashcards resolved: completed={result['completed']}, {len(result['cards'])} cards"
             )
             self.append_message(
                 ChatMessageData(role=Role.SYSTEM, content=content),
