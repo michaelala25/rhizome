@@ -5,11 +5,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.text import Text
+
 from textual.containers import Vertical
-from textual.widgets import TextArea
+from textual.widgets import Static, TextArea
 
 from ...choices import ChoiceList
 from .view_model import TopicDetailsViewModel
+
+
+# Dim grey for labels; values render in default fg so they read as the "data".
+_LABEL_STYLE = "rgb(120,120,120)"
 
 
 class _ChoicesList(ChoiceList[TopicDetailsViewModel]):
@@ -69,6 +75,10 @@ class TopicDetailsView(Vertical):
     TopicDetailsView #topic-details-description:focus {
         border: solid $accent;
     }
+    TopicDetailsView #topic-details-counts {
+        height: auto;
+        padding: 0 1;
+    }
     TopicDetailsView #topic-details-choices {
         height: 3;
         margin: 1 0 0 0;
@@ -101,6 +111,7 @@ class TopicDetailsView(Vertical):
         yield TextArea(
             id="topic-details-description", show_line_numbers=False, soft_wrap=True,
         )
+        yield Static("", id="topic-details-counts")
         yield _ChoicesList(self._vm, id="topic-details-choices")
 
     def on_mount(self) -> None:
@@ -127,6 +138,8 @@ class TopicDetailsView(Vertical):
         if desc_area.text != target_desc:
             desc_area.text = target_desc
 
+        self.query_one("#topic-details-counts", Static).update(self._render_counts())
+
         # No topic loaded → read-only and clear. Equality-guarded so we don't fight the user when a
         # topic is live.
         no_topic = self._vm.topic is None
@@ -151,6 +164,19 @@ class TopicDetailsView(Vertical):
                 desc_area.focus()
             choices.remove_class("-visible")
         self._was_dirty = is_dirty_now
+
+    def _render_counts(self) -> Text:
+        if self._vm.topic is None:
+            return Text("", style=_LABEL_STYLE)
+        text = Text()
+        text.append("entries: ", style=_LABEL_STYLE)
+        text.append(str(self._vm.direct_entries))
+        text.append(f" ({self._vm.subtree_entries} in subtree)", style=_LABEL_STYLE)
+        text.append("\n")
+        text.append("flashcards: ", style=_LABEL_STYLE)
+        text.append(str(self._vm.direct_flashcards))
+        text.append(f" ({self._vm.subtree_flashcards} in subtree)", style=_LABEL_STYLE)
+        return text
 
     # ------------------------------------------------------------------
     # View → VM

@@ -17,16 +17,36 @@ Callback groups:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from rhizome.db import Topic
-from rhizome.db.operations import get_topic, update_topic
+from rhizome.db.operations import (
+    count_entries,
+    count_entries_filtered,
+    count_flashcards_by_topic,
+    count_flashcards_by_topics,
+    expand_subtrees,
+    get_topic,
+    update_topic,
+)
 from rhizome.logs import get_logger
 
 from ....query_backed_view_model import QueryBackedViewModel
 
 _logger = get_logger("browser.topic_details")
+
+
+@dataclass(frozen=True)
+class _LoadedTopic:
+    """Output of one ``_fetch``: the topic plus the direct/subtree counts that render below the
+    description. Bundled so a single fetch carries everything the view needs."""
+    topic: Topic | None
+    direct_entries: int
+    subtree_entries: int
+    direct_flashcards: int
+    subtree_flashcards: int
 
 
 class TopicDetailsViewModel(QueryBackedViewModel):
@@ -47,6 +67,12 @@ class TopicDetailsViewModel(QueryBackedViewModel):
         # test is a plain string compare with no extra state.
         self._name_buffer: str = ""
         self._description_buffer: str = ""
+        # Direct + subtree counts, populated alongside the topic on each fetch. Zero when no topic
+        # is loaded.
+        self._direct_entries: int = 0
+        self._subtree_entries: int = 0
+        self._direct_flashcards: int = 0
+        self._subtree_flashcards: int = 0
 
     # ------------------------------------------------------------------
     # Read-only accessors
@@ -80,6 +106,22 @@ class TopicDetailsViewModel(QueryBackedViewModel):
         return "" if self._topic is None else (self._topic.description or "")
 
     @property
+    def direct_entries(self) -> int:
+        return self._direct_entries
+
+    @property
+    def subtree_entries(self) -> int:
+        return self._subtree_entries
+
+    @property
+    def direct_flashcards(self) -> int:
+        return self._direct_flashcards
+
+    @property
+    def subtree_flashcards(self) -> int:
+        return self._subtree_flashcards
+
+    @property
     def is_dirty(self) -> bool:
         """True iff either buffer diverges from the loaded topic. False when no topic is loaded."""
         if self._topic is None:
@@ -103,6 +145,10 @@ class TopicDetailsViewModel(QueryBackedViewModel):
             self._topic = None
             self._name_buffer = ""
             self._description_buffer = ""
+            self._direct_entries = 0
+            self._subtree_entries = 0
+            self._direct_flashcards = 0
+            self._subtree_flashcards = 0
             self.emit(self.dirty)
             return
         self._request_fetch()
@@ -111,19 +157,38 @@ class TopicDetailsViewModel(QueryBackedViewModel):
     # Fetch
     # ------------------------------------------------------------------
 
-    async def _fetch(self) -> Topic | None:
+    async def _fetch(self) -> _LoadedTopic:
         topic_id = self._topic_id
         if topic_id is None:
-            return None
+            return _LoadedTopic(None, 0, 0, 0, 0)
         async with self._session_factory() as session:
-            return await get_topic(session, topic_id)
+            topic = await get_topic(session, topic_id)
+            if topic is None:
+                return _LoadedTopic(None, 0, 0, 0, 0)
+            subtree_ids = await expand_subtrees(session, [topic_id])
+            direct_entries = await count_entries(session, topic_id)
+            subtree_entries = await count_entries_filtered(session, topic_ids=subtree_ids)
+            direct_flashcards = await count_flashcards_by_topic(session, topic_id)
+            subtree_flashcards = await count_flashcards_by_topics(session, subtree_ids)
+        return _LoadedTopic(
+            topic=topic,
+            direct_entries=direct_entries,
+            subtree_entries=subtree_entries,
+            direct_flashcards=direct_flashcards,
+            subtree_flashcards=subtree_flashcards,
+        )
 
-    def _process_fetched_data(self, result: Topic | None) -> None:
+    def _process_fetched_data(self, result: _LoadedTopic) -> None:
         # Discards any in-flight buffer edits on the previous topic — explicit "cursor moved" UX,
         # matching the entry-table's discard-on-nav behaviour.
-        self._topic = result
-        self._name_buffer = "" if result is None else result.name
-        self._description_buffer = "" if result is None else (result.description or "")
+        topic = result.topic
+        self._topic = topic
+        self._name_buffer = "" if topic is None else topic.name
+        self._description_buffer = "" if topic is None else (topic.description or "")
+        self._direct_entries = result.direct_entries
+        self._subtree_entries = result.subtree_entries
+        self._direct_flashcards = result.direct_flashcards
+        self._subtree_flashcards = result.subtree_flashcards
 
     # ------------------------------------------------------------------
     # Buffer mutators — view-side
