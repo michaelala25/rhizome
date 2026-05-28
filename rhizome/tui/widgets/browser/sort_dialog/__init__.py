@@ -1,6 +1,6 @@
 """Shared sort-axis picker dialog for browser tabs."""
 
-from .view import SortDialog
-from .view_model_mixin import SortableViewModelMixin, SortDirection
+from .view import SortMenu
+from .view_model_mixin import SortableVMMixin, SortDirection
 
-__all__ = ["SortDialog", "SortableViewModelMixin", "SortDirection"]
+__all__ = ["SortMenu", "SortableVMMixin", "SortDirection"]

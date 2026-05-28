@@ -24,11 +24,11 @@ from rhizome.db.operations import (
 from rhizome.logs import get_logger
 
 from ...search_input import SearchableViewModelMixin
-from ..multi_selectable_table import MultiSelectableViewModelMixin
-from ..sort_dialog import SortableViewModelMixin
-from ..tab_base import BrowserTabViewModel
-from .entry_details import EntryDetailsViewModel
-from .linked_flashcards import LinkedFlashcardsPanelViewModel
+from ..multi_selectable_table import MultiSelectableVMMixin
+from ..sort_dialog import SortableVMMixin
+from ..tab_base import BrowserTabVM
+from .entry_details import EntryDetailsVM
+from .linked_flashcards import LinkedFlashcardsPanelVM
 
 _logger = get_logger("browser.knowledge_entry_tab")
 
@@ -37,11 +37,11 @@ _logger = get_logger("browser.knowledge_entry_tab")
 DEFAULT_PAGE_LIMIT = 500
 
 
-class KnowledgeEntryBrowserTabViewModel(
-    BrowserTabViewModel,
+class EntryTabVM(
+    BrowserTabVM,
     SearchableViewModelMixin,
-    SortableViewModelMixin["EntrySortKey"],
-    MultiSelectableViewModelMixin,
+    SortableVMMixin["EntrySortKey"],
+    MultiSelectableVMMixin,
 ):
     """Concrete tab VM for browsing knowledge entries."""
 
@@ -72,7 +72,7 @@ class KnowledgeEntryBrowserTabViewModel(
         self._has_more: bool = False
 
         # Search / sort / filter state. ``None`` = no filter; an empty tuple is a legal "no rows
-        # match" terminal state (mirrors ``BrowserTabViewModel.set_topic_filter`` semantics).
+        # match" terminal state (mirrors ``BrowserTabVM.set_topic_filter`` semantics).
         # ``_has_flashcards`` and ``_flashcard_ids`` are a tagged union — see ``set_flashcard_filter``.
         self._search: str = ""
         self._sort_by: EntrySortKey = "id"
@@ -90,12 +90,12 @@ class KnowledgeEntryBrowserTabViewModel(
 
         # Detail panel sub-VM. Subscribe to its SAVED group so we can repaint the DataTable row
         # after an Accept (the in-memory ``KnowledgeEntry`` was mutated in place).
-        self._details = EntryDetailsViewModel(session_factory)
+        self._details = EntryDetailsVM(session_factory)
         self._details.subscribe(self._details.saved, self._on_details_saved)
 
         # Linked-flashcards sub-VM. Fed via ``_sync_linked_flashcards``, which is state-gated so it
         # doesn't fire fetches outside ``LINKED_FLASHCARDS``.
-        self._linked_flashcards = LinkedFlashcardsPanelViewModel(session_factory)
+        self._linked_flashcards = LinkedFlashcardsPanelVM(session_factory)
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -129,7 +129,7 @@ class KnowledgeEntryBrowserTabViewModel(
     def sort_dir(self) -> Literal["asc", "desc"]:
         return self._sort_dir
 
-    # Sort axes surfaced in the ``SortDialog``, ordered to match the table's column order. First
+    # Sort axes surfaced in the ``SortMenu``, ordered to match the table's column order. First
     # entry doubles as the dialog's reset target.
     _SORT_OPTIONS: tuple[EntrySortKey, ...] = ("id", "title", "type", "topic")
 
@@ -153,11 +153,11 @@ class KnowledgeEntryBrowserTabViewModel(
         return self._cursor
 
     @property
-    def details(self) -> EntryDetailsViewModel:
+    def details(self) -> EntryDetailsVM:
         return self._details
 
     @property
-    def linked_flashcards(self) -> LinkedFlashcardsPanelViewModel:
+    def linked_flashcards(self) -> LinkedFlashcardsPanelVM:
         return self._linked_flashcards
 
     @property
@@ -386,7 +386,7 @@ class KnowledgeEntryBrowserTabViewModel(
     # ------------------------------------------------------------------
     #
     # ``selected_target_ids`` / ``_clear_selection`` / ``_intersect_selection_with_visible_ids``
-    # come from ``MultiSelectableViewModelMixin``.
+    # come from ``MultiSelectableVMMixin``.
 
     def _post_change_refetch(self) -> None:
         # Fire through the normal debounced fetch path; the 50ms debounce is imperceptible after
@@ -446,7 +446,7 @@ class KnowledgeEntryBrowserTabViewModel(
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
-    # BrowserTabViewModel contract
+    # BrowserTabVM contract
     # ------------------------------------------------------------------
 
     def _query_kwargs(self) -> dict[str, Any]:

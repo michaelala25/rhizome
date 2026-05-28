@@ -1,5 +1,5 @@
-"""``DeleteDialogView`` — inline confirm-delete dialog that occupies the panel's bottom slot
-in place of ``TopicDetailsView`` while a delete is being confirmed.
+"""``TopicsDeleteMenu`` — inline confirm-delete dialog that occupies the panel's bottom slot
+in place of ``TopicDetails`` while a delete is being confirmed.
 
 A single ``ChoiceList`` subclass: the prompt ("Delete <name> and its entire subtree?") lives in
 ``_render_header``, the choices row sits below. VM-less — the panel feeds the target name via
@@ -16,7 +16,7 @@ from textual.message import Message
 from ..choices import ChoiceList
 
 
-class DeleteDialogView(ChoiceList[None]):
+class TopicsDeleteMenu(ChoiceList[None]):
     """Cancel/Delete row with an inline ``Delete "<name>"?`` header. Cancel is first so the
     default cursor lands there — the user has to deliberately advance to ``Delete`` and press
     enter, which makes fat-fingering away an entire subtree much harder."""
@@ -26,7 +26,7 @@ class DeleteDialogView(ChoiceList[None]):
     HINT = "← / → move • enter confirm • esc cancels"
 
     DEFAULT_CSS = """
-    DeleteDialogView {
+    TopicsDeleteMenu {
         height: auto;
         padding: 1;
         border-top: solid #3a3a3a;

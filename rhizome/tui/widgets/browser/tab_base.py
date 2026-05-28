@@ -14,7 +14,7 @@ from typing import Any, Iterable
 from rhizome.app.query_backed_vm import QueryBackedViewModel
 
 
-class BrowserTabViewModel(QueryBackedViewModel):
+class BrowserTabVM(QueryBackedViewModel):
     """Abstract tab VM. Subclasses override ``TITLE``, ``_fetch``, and ``_process_fetched_data``.
 
     ``set_topic_filter`` takes the *already-expanded* union of topic ids (the orchestrator runs the

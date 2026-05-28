@@ -9,7 +9,7 @@ entries table on hide). State transitions auto-dismiss any open dialog.
 Alt-arrow navigation: the tab owns its own ``alt+arrow`` bindings; each ``action_nav_<dir>``
 resolves one step within the focus graph below via ``nav_<dir>``, and raises ``SkipAction``
 when the step has no in-graph target (or returns the ``"topic_tree"`` sentinel) so the key
-bubbles to ``BrowserView`` for the cross-region hop back to the panel.
+bubbles to ``Browser`` for the cross-region hop back to the panel.
 
 The dialog node collapses all four dialogs to one ``"dialog"`` name.
 
@@ -58,18 +58,18 @@ from rhizome.db.models import EntryType
 
 from ...search_input import SearchInput
 from ..multi_selectable_table import MultiSelectableDataTable
-from ..sort_dialog import SortDialog
+from ..sort_dialog import SortMenu
 
-from .delete_dialog import _DeleteConfirm
-from .edit_dialog import _EditBar, _TypePickerScreen
-from .entry_content_preview import _EntryContentPreview
-from .entry_details import EntryDetailsView
-from .filter_dialog import _FilterDialog
-from .linked_flashcards import LinkedFlashcardsPanelView
-from .view_model import KnowledgeEntryBrowserTabViewModel
+from .delete_dialog import EntriesDeleteMenu
+from .edit_dialog import EditMenu, TypePickerScreen
+from .entry_content_preview import EntryPreview
+from .entry_details import EntryDetails
+from .filter_dialog import FilterMenu
+from .linked_flashcards import LinkedFlashcardsPanel
+from .view_model import EntryTabVM
 
 
-class _EntriesSortDialog(SortDialog[KnowledgeEntryBrowserTabViewModel]):
+class EntriesSortMenu(SortMenu[EntryTabVM]):
     """Surfaces an inline "Applying clears your selection." warning while multi-select is on."""
 
     def _extra_hint(self) -> Text | None:
@@ -80,14 +80,14 @@ class _EntriesSortDialog(SortDialog[KnowledgeEntryBrowserTabViewModel]):
 _DialogName = Literal["delete", "sort", "filter", "edit"]
 
 
-class _EntriesTable(MultiSelectableDataTable[KnowledgeEntryBrowserTabViewModel]):
+class EntryTable(MultiSelectableDataTable[EntryTabVM]):
     """Entries-tab DataTable. Inherits ``space`` / ``shift+up`` / ``shift+down`` from the base
     mixin; adds auto-load-more on cursor-down at the bottom edge."""
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserTabViewModel,
-        tab: "KnowledgeEntryBrowserTabView",
+        view_model: EntryTabVM,
+        tab: "EntryTab",
         **kwargs: Any,
     ) -> None:
         super().__init__(view_model, **kwargs)
@@ -106,43 +106,43 @@ class _EntriesTable(MultiSelectableDataTable[KnowledgeEntryBrowserTabViewModel])
         super().action_cursor_down()
 
 
-class KnowledgeEntryBrowserTabView(Vertical):
+class EntryTab(Vertical):
     """Tab container. See module docstring for the dialog mutex and focus-graph contracts."""
 
     DEFAULT_CSS = """
-    KnowledgeEntryBrowserTabView {
+    EntryTab {
         height: 1fr;
         layout: vertical;
         padding: 0 1;
     }
-    KnowledgeEntryBrowserTabView #tab-body {
+    EntryTab #tab-body {
         layout: horizontal;
         height: 1fr;
     }
-    KnowledgeEntryBrowserTabView #tab-body-rule {
+    EntryTab #tab-body-rule {
         margin: 0 0 0 0;
         color: #3a3a3a;
     }
     /* Left column width is set per-state (60% ENTRIES, 50% LINKED_FLASHCARDS); 1-char right
        margin so the rule + right pane don't sit flush against the table. */
-    KnowledgeEntryBrowserTabView #table-column {
+    EntryTab #table-column {
         height: 1fr;
         layout: vertical;
         margin-right: 1;
     }
-    KnowledgeEntryBrowserTabView #entries-table {
+    EntryTab #entries-table {
         width: 1fr;
         height: 1fr;
         margin: 1 0 0 0;
     }
     /* Content preview only shows in LINKED_FLASHCARDS (the details panel covers it in ENTRIES). */
-    KnowledgeEntryBrowserTabView #entry-content-preview {
+    EntryTab #entry-content-preview {
         display: none;
     }
-    KnowledgeEntryBrowserTabView.-state-linked-flashcards #entries-table {
+    EntryTab.-state-linked-flashcards #entries-table {
         height: 2fr;
     }
-    KnowledgeEntryBrowserTabView.-state-linked-flashcards #entry-content-preview {
+    EntryTab.-state-linked-flashcards #entry-content-preview {
         display: block;
         width: 1fr;
         height: 1fr;
@@ -150,44 +150,44 @@ class KnowledgeEntryBrowserTabView(Vertical):
     }
     /* Multi-select wash: keep zebra alternation but shift both rows darker so selected (bright
        green) rows pop. */
-    KnowledgeEntryBrowserTabView #entries-table.-multi-select {
+    EntryTab #entries-table.-multi-select {
         background: $surface-darken-2;
     }
-    KnowledgeEntryBrowserTabView #entries-table.-multi-select > .datatable--even-row {
+    EntryTab #entries-table.-multi-select > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
     /* State-driven layout swap. Both right-hand views are mounted up front; the ``-state-*``
        class toggles which is visible. */
-    KnowledgeEntryBrowserTabView.-state-entries #table-column {
+    EntryTab.-state-entries #table-column {
         width: 60%;
     }
-    KnowledgeEntryBrowserTabView.-state-entries EntryDetailsView {
+    EntryTab.-state-entries EntryDetails {
         width: 1fr;
         height: 1fr;
         display: block;
     }
-    KnowledgeEntryBrowserTabView.-state-entries LinkedFlashcardsPanelView {
+    EntryTab.-state-entries LinkedFlashcardsPanel {
         display: none;
     }
-    KnowledgeEntryBrowserTabView.-state-linked-flashcards #table-column {
+    EntryTab.-state-linked-flashcards #table-column {
         width: 50%;
     }
-    KnowledgeEntryBrowserTabView.-state-linked-flashcards LinkedFlashcardsPanelView {
+    EntryTab.-state-linked-flashcards LinkedFlashcardsPanel {
         width: 1fr;
         height: 1fr;
         display: block;
     }
-    KnowledgeEntryBrowserTabView.-state-linked-flashcards EntryDetailsView {
+    EntryTab.-state-linked-flashcards EntryDetails {
         display: none;
     }
     /* Status row sits in #table-column so it aligns with the linked-flashcards docked status. */
-    KnowledgeEntryBrowserTabView #tab-status {
+    EntryTab #tab-status {
         height: 1;
         color: $foreground-muted;
         text-style: dim;
         padding: 0 1;
     }
-    KnowledgeEntryBrowserTabView #delete-confirm {
+    EntryTab #delete-confirm {
         height: 4;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -195,13 +195,13 @@ class KnowledgeEntryBrowserTabView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserTabView #delete-confirm.-visible {
+    EntryTab #delete-confirm.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserTabView #delete-confirm:focus {
+    EntryTab #delete-confirm:focus {
         border-top: solid $accent;
     }
-    KnowledgeEntryBrowserTabView #sort-bar {
+    EntryTab #sort-bar {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -209,13 +209,13 @@ class KnowledgeEntryBrowserTabView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserTabView #sort-bar.-visible {
+    EntryTab #sort-bar.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserTabView #sort-bar:focus {
+    EntryTab #sort-bar:focus {
         border-top: solid $accent;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog {
+    EntryTab #filter-dialog {
         height: 4;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -223,27 +223,27 @@ class KnowledgeEntryBrowserTabView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog.-visible {
+    EntryTab #filter-dialog.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog:focus {
+    EntryTab #filter-dialog:focus {
         border-top: solid $accent;
     }
     /* Filter dialog: type row · flashcard row (radios + compact One-of input) · hint row. */
-    KnowledgeEntryBrowserTabView #filter-dialog #type-row,
-    KnowledgeEntryBrowserTabView #filter-dialog #hint-row {
+    EntryTab #filter-dialog #type-row,
+    EntryTab #filter-dialog #hint-row {
         height: 1;
         width: 1fr;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog #flashcard-row {
+    EntryTab #filter-dialog #flashcard-row {
         height: 1;
         width: 1fr;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog #flashcard-radios {
+    EntryTab #filter-dialog #flashcard-radios {
         height: 1;
         width: auto;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog #one-of-input {
+    EntryTab #filter-dialog #one-of-input {
         height: 1;
         width: 25;
         padding: 0;
@@ -254,14 +254,14 @@ class KnowledgeEntryBrowserTabView(Vertical):
         background: transparent;
         background-tint: $foreground 8%;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog #one-of-input:focus {
+    EntryTab #filter-dialog #one-of-input:focus {
         background-tint: $foreground 15%;
     }
-    KnowledgeEntryBrowserTabView #filter-dialog #one-of-close-bracket {
+    EntryTab #filter-dialog #one-of-close-bracket {
         height: 1;
         width: 1;
     }
-    KnowledgeEntryBrowserTabView #edit-bar {
+    EntryTab #edit-bar {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -269,18 +269,18 @@ class KnowledgeEntryBrowserTabView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    KnowledgeEntryBrowserTabView #edit-bar.-visible {
+    EntryTab #edit-bar.-visible {
         display: block;
     }
-    KnowledgeEntryBrowserTabView #edit-bar:focus {
+    EntryTab #edit-bar:focus {
         border-top: solid $accent;
     }
     /* Permanent keybindings line + separator rule at the very bottom of the tab. */
-    KnowledgeEntryBrowserTabView #tab-keybindings-rule {
+    EntryTab #tab-keybindings-rule {
         margin: 1 0 0 0;
         color: #3a3a3a;
     }
-    KnowledgeEntryBrowserTabView #tab-keybindings {
+    EntryTab #tab-keybindings {
         height: auto;
         text-align: left;
         padding: 0 1;
@@ -298,7 +298,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         ("edit", "#edit-bar"),
     )
 
-    # Global tab keys — bound here (not on _EntriesTable) so the linked-flashcards table picks them
+    # Global tab keys — bound here (not on EntryTable) so the linked-flashcards table picks them
     # up for free. Each open dialog's own ``d``/``s``/``f``/``e`` bindings still win while focused
     # (focused widget's bindings take precedence over an ancestor's).
     BINDINGS = [
@@ -317,7 +317,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserTabViewModel,
+        view_model: EntryTabVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -326,14 +326,14 @@ class KnowledgeEntryBrowserTabView(Vertical):
         # ``hide_dialog`` so visibility, focus, and ``prepare_for_show`` stay coordinated.
         self._active_dialog: _DialogName | None = None
         # VM state at last refresh — used to auto-dismiss the dialog on transitions.
-        self._last_state: KnowledgeEntryBrowserTabViewModel.State | None = None
+        self._last_state: EntryTabVM.State | None = None
         # Tuple of entry ids at last refresh — drives the three ``_refresh`` paths
         # (``extend`` / ``inplace`` / ``rebuild``). ``inplace`` and ``extend`` preserve DataTable's
         # scroll position and cursor.
         self._last_row_signature: tuple[int, ...] | None = None
 
     def compose(self):
-        table = _EntriesTable(
+        table = EntryTable(
             self._vm, self,
             id="entries-table", cursor_type="row", zebra_stripes=True,
         )
@@ -347,22 +347,22 @@ class KnowledgeEntryBrowserTabView(Vertical):
         table.add_column("flashcards")
         with Horizontal(id="tab-body"):
             with Vertical(id="table-column"):
-                yield SearchInput[KnowledgeEntryBrowserTabViewModel](
+                yield SearchInput[EntryTabVM](
                     self._vm, id="search-input",
                 )
                 yield table
-                yield _EntryContentPreview(self._vm, id="entry-content-preview")
+                yield EntryPreview(self._vm, id="entry-content-preview")
                 yield Static("", id="tab-status")
 
             yield Rule(orientation="vertical", line_style="solid", id="tab-body-rule")
             # Both right-hand views mount up front; CSS ``-state-*`` flips visibility. Mounting
             # once avoids re-subscribing each child's vm.dirty on every state flip.
-            yield EntryDetailsView(self._vm.details)
-            yield LinkedFlashcardsPanelView(self._vm.linked_flashcards)
-        yield _DeleteConfirm(self._vm, self, id="delete-confirm")
-        yield _EntriesSortDialog(self._vm, on_close=self.hide_dialog, id="sort-bar")
-        yield _FilterDialog(self._vm, self, id="filter-dialog")
-        yield _EditBar(self._vm, self, id="edit-bar")
+            yield EntryDetails(self._vm.details)
+            yield LinkedFlashcardsPanel(self._vm.linked_flashcards)
+        yield EntriesDeleteMenu(self._vm, self, id="delete-confirm")
+        yield EntriesSortMenu(self._vm, on_close=self.hide_dialog, id="sort-bar")
+        yield FilterMenu(self._vm, self, id="filter-dialog")
+        yield EditMenu(self._vm, self, id="edit-bar")
         yield Rule(line_style="solid", id="tab-keybindings-rule")
         yield Static(self._keybindings_text(), id="tab-keybindings")
 
@@ -461,7 +461,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         # when nothing's active.
         for name, widget_id in self._DIALOG_WIDGETS:
             try:
-                # Widget (not Static) because _FilterDialog is a Vertical container.
+                # Widget (not Static) because FilterMenu is a Vertical container.
                 widget = self.query_one(widget_id, Widget)
             except Exception:
                 continue
@@ -611,7 +611,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
     # Override so external ``tab.focus()`` calls land on the entries table (leftmost in the focus
     # graph) rather than no-op'ing on the non-focusable ``Vertical`` container. Always the entries
     # table regardless of dialog state — caller intent is "enter the tab", not "resume".
-    def focus(self, scroll_visible: bool = True) -> "KnowledgeEntryBrowserTabView":
+    def focus(self, scroll_visible: bool = True) -> "EntryTab":
         try:
             self.query_one("#entries-table", DataTable).focus()
         except Exception:
@@ -693,7 +693,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         except Exception:
             return False
 
-    # Action wrappers: bubble (via SkipAction) on no-handle so ``BrowserView`` can run the
+    # Action wrappers: bubble (via SkipAction) on no-handle so ``Browser`` can run the
     # cross-region fall-through for ``alt+left``/``alt+right``. ``nav_left`` returning the
     # ``"topic_tree"`` sentinel is also a bubble-up — the orchestrator owns the panel-jump.
 
@@ -794,7 +794,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         return False
 
     # ------------------------------------------------------------------
-    # Edit-dialog choice dispatch — called from _EditBar with the chosen label
+    # Edit-dialog choice dispatch — called from EditMenu with the chosen label
     # ------------------------------------------------------------------
 
     async def handle_edit_choice(self, choice: str) -> None:
@@ -820,7 +820,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
             if result is None:
                 # Cancelled — refocus the edit bar so the user can pick a different action.
                 try:
-                    self.query_one("#edit-bar", _EditBar).focus()
+                    self.query_one("#edit-bar", EditMenu).focus()
                 except Exception:
                     pass
                 return
@@ -846,7 +846,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
         def on_dismiss(result: EntryType | None) -> None:
             if result is None:
                 try:
-                    self.query_one("#edit-bar", _EditBar).focus()
+                    self.query_one("#edit-bar", EditMenu).focus()
                 except Exception:
                     pass
                 return
@@ -854,7 +854,7 @@ class KnowledgeEntryBrowserTabView(Vertical):
                 self._vm.change_type_on_selected_entries(result), exclusive=False,
             )
 
-        self.app.push_screen(_TypePickerScreen(current=current), callback=on_dismiss)
+        self.app.push_screen(TypePickerScreen(current=current), callback=on_dismiss)
 
     def _dispatch_focus_details_field(self, widget_id: str) -> None:
         # Single-select only — the option list excludes these in multi-select.

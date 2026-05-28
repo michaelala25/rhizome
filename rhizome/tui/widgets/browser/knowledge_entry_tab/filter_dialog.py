@@ -29,10 +29,10 @@ from textual.widgets import Input, Static
 
 from rhizome.db.models import EntryType
 
-from .view_model import KnowledgeEntryBrowserTabViewModel
+from .view_model import EntryTabVM
 
 if TYPE_CHECKING:
-    from .view import KnowledgeEntryBrowserTabView
+    from .view import EntryTab
 
 
 # Entry-type filter options (row 0). Mirrors ``EntryType`` enum order.
@@ -62,7 +62,7 @@ class _OneOfInput(Input):
         Binding("escape", "handle_escape", show=False),
     ]
 
-    def __init__(self, dialog: "_FilterDialog", **kwargs: Any) -> None:
+    def __init__(self, dialog: "FilterMenu", **kwargs: Any) -> None:
         super().__init__(
             compact=True,
             placeholder="comma-separated ids",
@@ -74,7 +74,7 @@ class _OneOfInput(Input):
         self._dialog.cancel_one_of()
 
 
-class _FilterDialog(Vertical, can_focus=True):
+class FilterMenu(Vertical, can_focus=True):
     """See the module docstring for layout, the "One of" sub-flow, and the keybindings."""
 
     BINDINGS = [
@@ -93,8 +93,8 @@ class _FilterDialog(Vertical, can_focus=True):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserTabViewModel,
-        tab: "KnowledgeEntryBrowserTabView",
+        view_model: EntryTabVM,
+        tab: "EntryTab",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -237,7 +237,7 @@ class _FilterDialog(Vertical, can_focus=True):
 
     def _render_hint(self) -> Text:
         # Extended with the selection-clearing warning while multi-select is on (same pattern as
-        # ``_EntriesSortDialog._extra_hint``).
+        # ``EntriesSortMenu._extra_hint``).
         hint = Text()
         hint.append(
             "↑/↓ row • ←/→ move • space toggle • r reset • f/esc dismiss",

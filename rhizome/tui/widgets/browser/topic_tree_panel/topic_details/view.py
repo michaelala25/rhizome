@@ -1,4 +1,4 @@
-"""``TopicDetailsView`` (+ private ``_ChoicesList``) — name/description side panel under the
+"""``TopicDetails`` (+ private ``TopicDetailChoices``) — name/description side panel under the
 topic tree in the browser's left rail. See ``view_model.py`` for the VM contract."""
 
 from __future__ import annotations
@@ -12,14 +12,14 @@ from textual.widgets import Static, TextArea
 
 from ...choices import ChoiceList
 from ...confirmable_text_area import ConfirmableTextArea
-from .view_model import TopicDetailsViewModel
+from .view_model import TopicDetailsVM
 
 
 # Dim grey for labels; values render in default fg so they read as the "data".
 _LABEL_STYLE = "rgb(120,120,120)"
 
 
-class _ChoicesList(ChoiceList[TopicDetailsViewModel]):
+class TopicDetailChoices(ChoiceList[TopicDetailsVM]):
     """Horizontal Accept/Cancel for committing or discarding a details edit. Visible only while
     ``vm.is_dirty`` (parent toggles the ``.-visible`` class in its ``_refresh``). Escape always
     cancels regardless of cursor position."""
@@ -38,9 +38,9 @@ class _ChoicesList(ChoiceList[TopicDetailsViewModel]):
         self._vm.cancel()
 
 
-class TopicDetailsView(Vertical):
-    """View for ``TopicDetailsViewModel``: name ``TextArea`` over description ``TextArea`` over
-    hidden-when-clean ``_ChoicesList``.
+class TopicDetails(Vertical):
+    """View for ``TopicDetailsVM``: name ``TextArea`` over description ``TextArea`` over
+    hidden-when-clean ``TopicDetailChoices``.
 
     Subscribes to ``vm.dirty`` and mirrors VM state into all three widgets each refresh, with an
     equality guard on each assignment so we don't trigger spurious ``TextArea.Changed`` round-trips.
@@ -48,12 +48,12 @@ class TopicDetailsView(Vertical):
     """
 
     DEFAULT_CSS = """
-    TopicDetailsView {
+    TopicDetails {
         height: auto;
         padding: 0 1;
         border-top: solid #3a3a3a;
     }
-    TopicDetailsView #topic-details-name {
+    TopicDetails #topic-details-name {
         background: transparent;
         border: solid #3a3a3a;
         border-title-align: right;
@@ -64,10 +64,10 @@ class TopicDetailsView(Vertical):
         padding: 0 1;
         margin: 1 0 0 0;
     }
-    TopicDetailsView #topic-details-name:focus {
+    TopicDetails #topic-details-name:focus {
         border: solid $accent;
     }
-    TopicDetailsView #topic-details-description {
+    TopicDetails #topic-details-description {
         background: transparent;
         border: solid #3a3a3a;
         border-title-align: right;
@@ -77,14 +77,14 @@ class TopicDetailsView(Vertical):
         max-height: 12;
         padding: 0 1;
     }
-    TopicDetailsView #topic-details-description:focus {
+    TopicDetails #topic-details-description:focus {
         border: solid $accent;
     }
-    TopicDetailsView #topic-details-counts {
+    TopicDetails #topic-details-counts {
         height: auto;
         padding: 0 1;
     }
-    TopicDetailsView #topic-details-choices {
+    TopicDetails #topic-details-choices {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -92,17 +92,17 @@ class TopicDetailsView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    TopicDetailsView #topic-details-choices.-visible {
+    TopicDetails #topic-details-choices.-visible {
         display: block;
     }
-    TopicDetailsView #topic-details-choices:focus {
+    TopicDetails #topic-details-choices:focus {
         border-top: solid $accent;
     }
     """
 
     def __init__(
         self,
-        view_model: TopicDetailsViewModel,
+        view_model: TopicDetailsVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -123,7 +123,7 @@ class TopicDetailsView(Vertical):
         desc.border_title = "Description"
         yield desc
         yield Static("", id="topic-details-counts")
-        yield _ChoicesList(self._vm, id="topic-details-choices")
+        yield TopicDetailChoices(self._vm, id="topic-details-choices")
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
@@ -139,7 +139,7 @@ class TopicDetailsView(Vertical):
     def _refresh(self) -> None:
         name_area = self.query_one("#topic-details-name", TextArea)
         desc_area = self.query_one("#topic-details-description", TextArea)
-        choices = self.query_one("#topic-details-choices", _ChoicesList)
+        choices = self.query_one("#topic-details-choices", TopicDetailChoices)
 
         target_name = self._vm.name
         target_desc = self._vm.description

@@ -1,8 +1,8 @@
-"""TopicTreePanelView — the browser's left rail: action menu + topic tree + topic-details panel.
+"""TopicTreePanel — the browser's left rail: action menu + topic tree + topic-details panel.
 
 Layout::
 
-    ┌─ TopicTreePanelView ────────────┐
+    ┌─ TopicTreePanel ────────────┐
     │ Topics                          │  ← #browser-tree-title
     │ ┌─ #browser-tree-body ────────┐ │
     │ │ actions │  topic tree       │ │  ← horizontal row, height: 1fr
@@ -11,12 +11,12 @@ Layout::
     └─────────────────────────────────┘
 
 Rail expansion: the actions widget toggles ``-actions-expanded`` on this view when it gains/loses
-focus, which CSS uses to widen the rail. ``BrowserView`` doesn't participate — the right pane's
+focus, which CSS uses to widen the rail. ``Browser`` doesn't participate — the right pane's
 ``width: 1fr`` absorbs the difference.
 
 Alt-arrow navigation: the panel owns its own ``alt+arrow`` bindings and resolves one step within
 its focus graph via ``nav_<dir>``. When a step has no in-graph target, the action raises
-``SkipAction`` so the key bubbles to ``BrowserView`` for cross-region handling (e.g., ``alt+right``
+``SkipAction`` so the key bubbles to ``Browser`` for cross-region handling (e.g., ``alt+right``
 at the rightmost panel widget hops into the active tab).
 
 Focus graph (alt-arrows):
@@ -38,54 +38,54 @@ from textual.widgets import Static
 
 from rhizome.logs import get_logger
 
-from ..topic_tree import BrowserTopicTreeView
-from .action_menu import ActionMenuView
-from .delete_dialog import DeleteDialogView
-from .topic_details import TopicDetailsView
-from .view_model import TopicTreePanelViewModel
+from ..topic_tree import TopicTree
+from .action_menu import ActionMenu
+from .delete_dialog import TopicsDeleteMenu
+from .topic_details import TopicDetails
+from .view_model import TopicTreePanelVM
 
 _logger = get_logger("browser.topic_tree_panel")
 
 
-class TopicTreePanelView(Vertical):
-    """View for ``TopicTreePanelViewModel``. See module docstring."""
+class TopicTreePanel(Vertical):
+    """View for ``TopicTreePanelVM``. See module docstring."""
 
     DEFAULT_CSS = """
-    TopicTreePanelView {
+    TopicTreePanel {
         width: 23%;
         border: solid #3a3a3a;
         padding: 0;
     }
     /* Widen when the actions menu is focused so the full labels (rendered in place of the
        single-letter shorthand) fit. */
-    TopicTreePanelView.-actions-expanded {
+    TopicTreePanel.-actions-expanded {
         width: 33%;
     }
-    TopicTreePanelView:focus-within {
+    TopicTreePanel:focus-within {
         border: solid #6a6a6a;
     }
-    TopicTreePanelView #browser-tree-title {
+    TopicTreePanel #browser-tree-title {
         height: 1;
         padding: 0 1;
         text-style: bold;
     }
-    TopicTreePanelView #browser-tree-body {
+    TopicTreePanel #browser-tree-body {
         height: 1fr;
     }
     /* Vertical rule between the actions menu and the tree lives on the tree (not the menu) so
        it spans the full body height regardless of how few action rows the menu renders. */
-    TopicTreePanelView BrowserTopicTreeView {
+    TopicTreePanel TopicTree {
         padding: 1 0 0 1;
         height: 1fr;
         border-left: solid #3a3a3a;
     }
-    TopicTreePanelView.-actions-expanded BrowserTopicTreeView {
+    TopicTreePanel.-actions-expanded TopicTree {
         border-left: solid #6a6a6a;
     }
     /* Bottom-slot mutex: ``-deleting`` on this panel swaps the details widget out for the
        confirm-delete dialog. */
-    TopicTreePanelView.-deleting TopicDetailsView { display: none; }
-    TopicTreePanelView.-deleting DeleteDialogView { display: block; }
+    TopicTreePanel.-deleting TopicDetails { display: none; }
+    TopicTreePanel.-deleting TopicsDeleteMenu { display: block; }
     """
 
     BINDINGS = [
@@ -100,7 +100,7 @@ class TopicTreePanelView(Vertical):
         Binding("d", "delete", show=False),
     ]
 
-    def __init__(self, view_model: TopicTreePanelViewModel, **kwargs: Any) -> None:
+    def __init__(self, view_model: TopicTreePanelVM, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
         # Topic id captured at delete-dispatch time. Pins the destructive op to the cursor topic
@@ -109,16 +109,16 @@ class TopicTreePanelView(Vertical):
         self._delete_target_id: int | None = None
 
     @property
-    def view_model(self) -> TopicTreePanelViewModel:
+    def view_model(self) -> TopicTreePanelVM:
         return self._vm
 
     def compose(self):
         yield Static("Topics", id="browser-tree-title")
         with Horizontal(id="browser-tree-body"):
-            yield ActionMenuView(id="browser-tree-actions")
-            yield BrowserTopicTreeView(self._vm.tree)
-        yield TopicDetailsView(self._vm.details, id="browser-topic-details")
-        yield DeleteDialogView(id="browser-topic-delete")
+            yield ActionMenu(id="browser-tree-actions")
+            yield TopicTree(self._vm.tree)
+        yield TopicDetails(self._vm.details, id="browser-topic-details")
+        yield TopicsDeleteMenu(id="browser-topic-delete")
 
     def on_mount(self) -> None:
         # Repaint the tree node's label after a successful Accept on the details panel.
@@ -132,28 +132,28 @@ class TopicTreePanelView(Vertical):
         if topic is None:
             return
         try:
-            self.query_one(BrowserTopicTreeView).update_node_label(topic.id, topic.name)
+            self.query_one(TopicTree).update_node_label(topic.id, topic.name)
         except Exception:
             pass
 
     # ------------------------------------------------------------------
-    # ActionMenuView message handlers — stubs for now; real dialogs land later.
+    # ActionMenu message handlers — stubs for now; real dialogs land later.
     # ------------------------------------------------------------------
 
     def on_action_menu_view_rename_requested(
-        self, event: ActionMenuView.RenameRequested
+        self, event: ActionMenu.RenameRequested
     ) -> None:
         # "Rename" is just a shortcut to the name field in the details panel — the buffered-edit
         # flow there already handles the commit. No-ops if no topic is loaded.
         self._focus_details_node("name")
 
     def on_action_menu_view_create_requested(
-        self, event: ActionMenuView.CreateRequested
+        self, event: ActionMenu.CreateRequested
     ) -> None:
         self._dispatch_create(self._vm.tree.cursor_topic_id)
 
     def on_action_menu_view_delete_requested(
-        self, event: ActionMenuView.DeleteRequested
+        self, event: ActionMenu.DeleteRequested
     ) -> None:
         self._begin_delete()
 
@@ -166,18 +166,18 @@ class TopicTreePanelView(Vertical):
         if self._vm.details.topic is not None and self._vm.details.topic.id == topic_id:
             topic_name = self._vm.details.topic.name
         self._delete_target_id = topic_id
-        dialog = self.query_one(DeleteDialogView)
+        dialog = self.query_one(TopicsDeleteMenu)
         dialog.prepare_for_show(topic_name)
         self.add_class("-deleting")
         dialog.focus()
 
     def on_delete_dialog_view_accepted(
-        self, event: DeleteDialogView.Accepted
+        self, event: TopicsDeleteMenu.Accepted
     ) -> None:
         self.run_worker(self._delete_worker(), exclusive=False)
 
     def on_delete_dialog_view_cancelled(
-        self, event: DeleteDialogView.Cancelled
+        self, event: TopicsDeleteMenu.Cancelled
     ) -> None:
         self._end_delete()
 
@@ -189,7 +189,7 @@ class TopicTreePanelView(Vertical):
             return
         await self._vm.tree.delete_topic_subtree(topic_id)
         try:
-            self.query_one(BrowserTopicTreeView).remove_node(topic_id)
+            self.query_one(TopicTree).remove_node(topic_id)
         except Exception:
             pass
         self._end_delete()
@@ -242,24 +242,24 @@ class TopicTreePanelView(Vertical):
     async def _create_topic_worker(self, parent_id: int | None) -> None:
         topic = await self._vm.tree.create_topic(parent_id)
         try:
-            tree_view = self.query_one(BrowserTopicTreeView)
+            tree_view = self.query_one(TopicTree)
         except Exception:
             return
         await tree_view.add_created_topic(topic)
 
     # Override so external ``panel.focus()`` calls land on the tree rather than no-op'ing on the
     # non-focusable ``Vertical`` container.
-    def focus(self, scroll_visible: bool = True) -> "TopicTreePanelView":
+    def focus(self, scroll_visible: bool = True) -> "TopicTreePanel":
         self.focus_tree()
         return self
 
     def focus_tree(self) -> None:
-        self._focus_widget("BrowserTopicTreeView")
+        self._focus_widget("TopicTree")
 
     def nav_left(self) -> bool:
         node = self._focused_node()
         if node == "tree":
-            return self._focus_widget("ActionMenuView")
+            return self._focus_widget("ActionMenu")
         # Actions / details fields → leftmost edge (no-op; caller stays in panel).
         return False
 
@@ -268,7 +268,7 @@ class TopicTreePanelView(Vertical):
         if node == "actions":
             self.focus_tree()
             return True
-        # tree / details fields → False → caller (BrowserView) advances into the active tab.
+        # tree / details fields → False → caller (Browser) advances into the active tab.
         return False
 
     def nav_down(self) -> bool:
@@ -323,9 +323,9 @@ class TopicTreePanelView(Vertical):
             return "details_description"
         if fid == "topic-details-choices":
             return "details_accept"
-        if self._focus_is_in_widget("BrowserTopicTreeView"):
+        if self._focus_is_in_widget("TopicTree"):
             return "tree"
-        if self._focus_is_in_widget("ActionMenuView"):
+        if self._focus_is_in_widget("ActionMenu"):
             return "actions"
         return None
 
@@ -334,14 +334,14 @@ class TopicTreePanelView(Vertical):
 
     def _focus_delete_dialog(self) -> bool:
         try:
-            self.query_one(DeleteDialogView).focus()
+            self.query_one(TopicsDeleteMenu).focus()
             return True
         except Exception:
             return False
 
     def _focus_details_node(self, key: str) -> bool:
         # ``accept`` is conditional on ``is_dirty`` — present in the graph only while the choices
-        # row is rendered (``.-visible`` toggled in TopicDetailsView._refresh).
+        # row is rendered (``.-visible`` toggled in TopicDetails._refresh).
         if key == "accept" and not self._vm.details.is_dirty:
             return False
         if key in ("name", "description") and self._vm.details.topic is None:

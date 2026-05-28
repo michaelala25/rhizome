@@ -33,7 +33,7 @@ Generic on the VM
 -----------------
 ``SearchInput`` is generic on the VM type, bound to ``SearchableViewModelMixin``. Concrete
 widget instances are typically constructed with the bound spelled out (e.g.
-``SearchInput[KnowledgeEntryBrowserTabViewModel]``) so the type-checker can keep the VM-typed
+``SearchInput[EntryTabVM]``) so the type-checker can keep the VM-typed
 ``self._vm`` attribute accurate. At runtime the widget only ever calls ``vm.set_search`` —
 nothing VM-specific leaks across the boundary.
 """

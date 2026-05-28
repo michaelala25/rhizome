@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any
 from rich.text import Text
 
 from ..choices import ChoiceList
-from .view_model import KnowledgeEntryBrowserTabViewModel
+from .view_model import EntryTabVM
 
 if TYPE_CHECKING:
-    from .view import KnowledgeEntryBrowserTabView
+    from .view import EntryTab
 
 
-class _DeleteConfirm(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
+class EntriesDeleteMenu(ChoiceList[EntryTabVM]):
     """Vertical Confirm/Cancel. Header surfaces the count + the no-flashcards-harmed note."""
 
     CHOICES = {"Confirm": "_confirm", "Cancel": "_cancel"}
@@ -22,8 +22,8 @@ class _DeleteConfirm(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserTabViewModel,
-        tab: "KnowledgeEntryBrowserTabView",
+        view_model: EntryTabVM,
+        tab: "EntryTab",
         **kwargs: Any,
     ) -> None:
         super().__init__(view_model, **kwargs)

@@ -23,29 +23,29 @@ from textual.widgets import ContentSwitcher, Static
 from rhizome.logs import get_logger
 
 from .knowledge_entry_tab import (
-    KnowledgeEntryBrowserTabView,
-    KnowledgeEntryBrowserTabViewModel,
+    EntryTab,
+    EntryTabVM,
 )
-from .tab_base import BrowserTabViewModel
-from .topic_tree_panel import TopicTreePanelView
-from .view_model import BrowserViewModel
+from .tab_base import BrowserTabVM
+from .topic_tree_panel import TopicTreePanel
+from .view_model import BrowserVM
 
 _logger = get_logger("browser.view")
 
 
-def _view_for_tab(tab_vm: BrowserTabViewModel):
+def _view_for_tab(tab_vm: BrowserTabVM):
     """Construct the view widget for ``tab_vm`` by dispatching on its concrete type. Raises rather
     than rendering a blank tab if a VM type has no registered view — that's a programmer error."""
-    if isinstance(tab_vm, KnowledgeEntryBrowserTabViewModel):
-        return KnowledgeEntryBrowserTabView(tab_vm)
+    if isinstance(tab_vm, EntryTabVM):
+        return EntryTab(tab_vm)
     raise TypeError(
         f"No view registered for tab VM {type(tab_vm).__name__}. "
         f"Add a branch to _view_for_tab in browser/view.py."
     )
 
 
-class BrowserView(Horizontal):
-    """Takes a caller-constructed ``BrowserViewModel`` and drives it through its mount lifecycle.
+class Browser(Horizontal):
+    """Takes a caller-constructed ``BrowserVM`` and drives it through its mount lifecycle.
 
     ``await self._vm.start()`` runs from ``on_mount`` after Textual finishes mounting children — by
     then every child widget is subscribed to its VM's ``dirty`` and will repaint on first arrival.
@@ -55,22 +55,22 @@ class BrowserView(Horizontal):
     # container derives content height from children, so a child asking for "remaining" gets none).
     # 40 fits the body comfortably; callers can override per-mount via CSS.
     DEFAULT_CSS = """
-    BrowserView {
+    Browser {
         height: 40;
     }
-    BrowserView #browser-right-tab {
+    Browser #browser-right-tab {
         width: 1fr;
         height: 1fr;
         border: solid #3a3a3a;
     }
-    BrowserView #browser-right-tab:focus-within {
+    Browser #browser-right-tab:focus-within {
         border: solid #6a6a6a;
     }
-    BrowserView #browser-tab-bar {
+    Browser #browser-tab-bar {
         height: 1;
         padding: 0 1;
     }
-    BrowserView #browser-tab-area {
+    Browser #browser-tab-area {
         height: 1fr;
         padding: 1 0 0 0;
     }
@@ -86,16 +86,16 @@ class BrowserView(Horizontal):
         Binding("alt+left", "nav_left", show=False),
     ]
 
-    def __init__(self, view_model: BrowserViewModel, **kwargs: Any) -> None:
+    def __init__(self, view_model: BrowserVM, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
 
     @property
-    def view_model(self) -> BrowserViewModel:
+    def view_model(self) -> BrowserVM:
         return self._vm
 
     def compose(self):
-        yield TopicTreePanelView(self._vm.panel)
+        yield TopicTreePanel(self._vm.panel)
         with Vertical(id="browser-right-tab"):
             yield Static("", id="browser-tab-bar")
             initial_id = self._tab_widget_id(self._vm.active_index)
@@ -119,7 +119,7 @@ class BrowserView(Horizontal):
 
     # ``Horizontal`` isn't focusable; route external focus requests through the panel (which in
     # turn lands focus on the topic tree via its own ``focus()`` override).
-    def focus(self, scroll_visible: bool = True) -> "BrowserView":
+    def focus(self, scroll_visible: bool = True) -> "Browser":
         panel = self._panel_view()
         if panel is not None:
             panel.focus()
@@ -218,9 +218,9 @@ class BrowserView(Horizontal):
         target.focus()
         return True
 
-    def _panel_view(self) -> TopicTreePanelView | None:
+    def _panel_view(self) -> TopicTreePanel | None:
         try:
-            return self.query_one(TopicTreePanelView)
+            return self.query_one(TopicTreePanel)
         except Exception:
             return None
 

@@ -1,12 +1,12 @@
-"""ActionMenuView — vertical action menu for the topic tree.
+"""ActionMenu — vertical action menu for the topic tree.
 
 Sits to the left of the tree inside the panel body. Collapsed by default (single-letter shorthand,
 no cursor marker, narrow rail); on focus, the widget renders full ``► label`` rows and toggles
-``-actions-expanded`` on the surrounding ``TopicTreePanelView`` so the panel CSS widens the rail.
+``-actions-expanded`` on the surrounding ``TopicTreePanel`` so the panel CSS widens the rail.
 
 This view is intentionally **VM-less** — the menu has no data-model state of its own and exists
 solely to announce action requests upward. Each entry in ``CHOICES`` resolves to an action method
-that posts one of the nested ``Requested`` messages; the surrounding ``TopicTreePanelView`` catches
+that posts one of the nested ``Requested`` messages; the surrounding ``TopicTreePanel`` catches
 them through Textual's message pump (``on_action_menu_view_<name>_requested``).
 """
 
@@ -19,7 +19,7 @@ from textual.message import Message
 from ..choices import ChoiceList
 
 
-class ActionMenuView(ChoiceList[None]):
+class ActionMenu(ChoiceList[None]):
     """Vertical ``ChoiceList`` rendered to the left of the tree. Overrides ``_render_choice`` to
     show a single-letter shorthand when blurred and the full ``► label`` when focused, and toggles
     the panel's ``-actions-expanded`` class on focus/blur so the rail width follows."""
@@ -34,14 +34,14 @@ class ActionMenuView(ChoiceList[None]):
     DEFAULT_CSS = """
     /* Collapsed default: zero horizontal padding so the shorthand letter sits flush against both
        sides — the visual breathing room around the rule comes from the *tree*'s left-padding. */
-    ActionMenuView {
+    ActionMenu {
         width: auto;
         height: 1fr;
         padding: 1 0 0 0;
     }
     /* Expanded: add horizontal padding so the labels don't crowd the rule. Driven by the same
        ``-actions-expanded`` class the rail width is keyed off, toggled on the panel view. */
-    TopicTreePanelView.-actions-expanded ActionMenuView {
+    TopicTreePanel.-actions-expanded ActionMenu {
         padding: 1 2 0 1;
     }
     """
@@ -90,7 +90,7 @@ class ActionMenuView(ChoiceList[None]):
         # induces by importing this widget. Best-effort: if the ancestor isn't mounted yet during
         # compose-time focus, silently skip — Textual will fire focus again post-mount.
         try:
-            pane = self.screen.query_one("TopicTreePanelView")
+            pane = self.screen.query_one("TopicTreePanel")
         except Exception:
             return
         pane.set_class(expanded, "-actions-expanded")

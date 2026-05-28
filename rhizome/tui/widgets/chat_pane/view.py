@@ -17,7 +17,7 @@ from textual.containers import Vertical, VerticalScroll
 
 from textual.widget import Widget
 
-from ..browser import BrowserView, BrowserViewModel
+from ..browser import Browser, BrowserVM
 from ..view_base import ViewBase
 from .agent_message import AgentMessageView, AgentMessageViewModel
 from .branch_indicator import BranchIndicatorView, BranchIndicatorViewModel
@@ -268,8 +268,8 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             return ShellCommandView(entry)
         if isinstance(entry, BranchIndicatorViewModel):
             return BranchIndicatorView(entry)
-        if isinstance(entry, BrowserViewModel):
-            return BrowserView(entry)
+        if isinstance(entry, BrowserVM):
+            return Browser(entry)
         if isinstance(entry, TestInterruptViewModel):
             return TestInterruptView(entry)
         if isinstance(entry, ChoicesViewModel):

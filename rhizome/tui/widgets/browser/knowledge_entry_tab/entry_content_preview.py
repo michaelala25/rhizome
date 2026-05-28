@@ -9,10 +9,10 @@ from typing import Any
 
 from textual.widgets import TextArea
 
-from .view_model import KnowledgeEntryBrowserTabViewModel
+from .view_model import EntryTabVM
 
 
-class _EntryContentPreview(TextArea):
+class EntryPreview(TextArea):
     """Subscribes to both the tab VM's ``dirty`` (refetches, post-save repaints) and the details
     VM's ``dirty`` (cursor moves — ``set_cursor`` fires only the details dirty, see view_model.py
     for why). Re-reads ``entries[cursor]`` on each fire."""
@@ -20,7 +20,7 @@ class _EntryContentPreview(TextArea):
     can_focus = False
 
     DEFAULT_CSS = """
-    _EntryContentPreview {
+    EntryPreview {
         background: transparent;
         border: solid #3a3a3a;
         padding: 0 1;
@@ -29,7 +29,7 @@ class _EntryContentPreview(TextArea):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserTabViewModel,
+        view_model: EntryTabVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(

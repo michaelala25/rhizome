@@ -1,6 +1,6 @@
 """Entry details side panel (title/content editor with buffered Accept/Cancel)."""
 
-from .view import EntryDetailsView
-from .view_model import EntryDetailsViewModel
+from .view import EntryDetails
+from .view_model import EntryDetailsVM
 
-__all__ = ["EntryDetailsView", "EntryDetailsViewModel"]
+__all__ = ["EntryDetails", "EntryDetailsVM"]

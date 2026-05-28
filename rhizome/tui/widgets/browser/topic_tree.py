@@ -64,7 +64,7 @@ class LoadedTopic:
     has_children: bool
 
 
-class BrowserTopicTreeViewModel(ViewModelBase):
+class TopicTreeVM(ViewModelBase):
     """Multi-select topic tree VM. Holds selection + cursor id + DB reads; the view holds the rest."""
 
     class Callbacks(Enum):
@@ -80,13 +80,13 @@ class BrowserTopicTreeViewModel(ViewModelBase):
         super().__init__()
         self._session_factory = session_factory
         self._selection_changed = self._make_group(
-            BrowserTopicTreeViewModel.Callbacks.SELECTION_CHANGED
+            TopicTreeVM.Callbacks.SELECTION_CHANGED
         )
         self._cursor_changed = self._make_group(
-            BrowserTopicTreeViewModel.Callbacks.CURSOR_CHANGED
+            TopicTreeVM.Callbacks.CURSOR_CHANGED
         )
         self._topic_deleted = self._make_group(
-            BrowserTopicTreeViewModel.Callbacks.TOPIC_DELETED
+            TopicTreeVM.Callbacks.TOPIC_DELETED
         )
         self._selected_ids: set[int] = set()
         # Authoritative external reference; mirrors the widget's own cursor whenever the view pushes
@@ -211,7 +211,7 @@ class BrowserTopicTreeViewModel(ViewModelBase):
         return frozenset(self._selected_ids)
 
 
-class BrowserTopicTreeView(Tree[Topic]):
+class TopicTree(Tree[Topic]):
     """Multi-select tree view. Adds: checkbox rendering off ``vm.is_selected``, ``Space`` toggle,
     lazy ``NodeExpanded`` → ``vm.fetch_children`` population, ``NodeHighlighted`` → ``vm.set_cursor``,
     and Enter suppression (selection is via Space; ``NodeSelected`` would mislead DOM ancestors).
@@ -224,20 +224,20 @@ class BrowserTopicTreeView(Tree[Topic]):
     ]
 
     DEFAULT_CSS = """
-    BrowserTopicTreeView {
+    TopicTree {
         background: transparent;
         padding: 0 0 0 1;
     }
-    BrowserTopicTreeView:focus {
+    TopicTree:focus {
         background-tint: transparent;
     }
-    BrowserTopicTreeView > .tree--cursor,
-    BrowserTopicTreeView:focus > .tree--cursor {
+    TopicTree > .tree--cursor,
+    TopicTree:focus > .tree--cursor {
         background: transparent;
     }
     """
 
-    def __init__(self, view_model: BrowserTopicTreeViewModel, **kwargs: Any) -> None:
+    def __init__(self, view_model: TopicTreeVM, **kwargs: Any) -> None:
         super().__init__("Topics", **kwargs)
         self._vm = view_model
         self.show_root = False
@@ -263,7 +263,7 @@ class BrowserTopicTreeView(Tree[Topic]):
 
     async def _populate_roots(self) -> None:
         # Synthetic ``(root)`` row at the top — selecting it parks the VM cursor on ``None``, which
-        # downstream code (TopicDetailsViewModel, create-action dispatch) reads as "no parent / at
+        # downstream code (TopicDetailsVM, create-action dispatch) reads as "no parent / at
         # the tree root". Data is ``None`` to flag it as virtual everywhere we branch on data.
         self.root.add_leaf(_VIRTUAL_ROOT_LABEL, data=None)
         for lt in await self._vm.fetch_children(None):

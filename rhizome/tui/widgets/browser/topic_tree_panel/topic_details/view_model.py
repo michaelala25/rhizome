@@ -39,7 +39,7 @@ _logger = get_logger("browser.topic_details")
 
 
 @dataclass(frozen=True)
-class _LoadedTopic:
+class LoadedTopicDetails:
     """Output of one ``_fetch``: the topic plus the direct/subtree counts that render below the
     description. Bundled so a single fetch carries everything the view needs."""
     topic: Topic | None
@@ -49,7 +49,7 @@ class _LoadedTopic:
     subtree_flashcards: int
 
 
-class TopicDetailsViewModel(QueryBackedViewModel):
+class TopicDetailsVM(QueryBackedViewModel):
     """Buffered-edit VM for the topic details panel. Accept/Cancel are the explicit exits from dirty;
     nothing reaches the DB until the user Accepts."""
 
@@ -59,7 +59,7 @@ class TopicDetailsViewModel(QueryBackedViewModel):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self._make_group(TopicDetailsViewModel.Callbacks.SAVED)
+        self._saved = self._make_group(TopicDetailsVM.Callbacks.SAVED)
 
         self._topic_id: int | None = None
         self._topic: Topic | None = None
@@ -157,20 +157,20 @@ class TopicDetailsViewModel(QueryBackedViewModel):
     # Fetch
     # ------------------------------------------------------------------
 
-    async def _fetch(self) -> _LoadedTopic:
+    async def _fetch(self) -> LoadedTopicDetails:
         topic_id = self._topic_id
         if topic_id is None:
-            return _LoadedTopic(None, 0, 0, 0, 0)
+            return LoadedTopicDetails(None, 0, 0, 0, 0)
         async with self._session_factory() as session:
             topic = await get_topic(session, topic_id)
             if topic is None:
-                return _LoadedTopic(None, 0, 0, 0, 0)
+                return LoadedTopicDetails(None, 0, 0, 0, 0)
             subtree_ids = await expand_subtrees(session, [topic_id])
             direct_entries = await count_entries(session, topic_id)
             subtree_entries = await count_entries_filtered(session, topic_ids=subtree_ids)
             direct_flashcards = await count_flashcards_by_topic(session, topic_id)
             subtree_flashcards = await count_flashcards_by_topics(session, subtree_ids)
-        return _LoadedTopic(
+        return LoadedTopicDetails(
             topic=topic,
             direct_entries=direct_entries,
             subtree_entries=subtree_entries,
@@ -178,7 +178,7 @@ class TopicDetailsViewModel(QueryBackedViewModel):
             subtree_flashcards=subtree_flashcards,
         )
 
-    def _process_fetched_data(self, result: _LoadedTopic) -> None:
+    def _process_fetched_data(self, result: LoadedTopicDetails) -> None:
         # Discards any in-flight buffer edits on the previous topic — explicit "cursor moved" UX,
         # matching the entry-table's discard-on-nav behaviour.
         topic = result.topic

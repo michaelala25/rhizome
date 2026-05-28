@@ -1,4 +1,4 @@
-"""Edit-action picker (``_EditBar``) and the inline ``_TypePickerScreen`` modal it spawns.
+"""Edit-action picker (``EditMenu``) and the inline ``TypePickerScreen`` modal it spawns.
 
 The type picker is co-located rather than living under ``tui/screens/`` because it's tiny and only
 used here; lift it if a second consumer appears.
@@ -17,10 +17,10 @@ from textual.widgets import Static
 from rhizome.db.models import EntryType
 
 from ..choices import ChoiceList
-from .view_model import KnowledgeEntryBrowserTabViewModel
+from .view_model import EntryTabVM
 
 if TYPE_CHECKING:
-    from .view import KnowledgeEntryBrowserTabView
+    from .view import EntryTab
 
 
 # Edit-bar choices, ordered left-to-right. ``edit title`` / ``edit content`` are single-select
@@ -40,24 +40,24 @@ _EDIT_OPTIONS_MULTI: tuple[str, ...] = (
 )
 
 
-class _TypePickerScreen(ModalScreen[EntryType | None]):
+class TypePickerScreen(ModalScreen[EntryType | None]):
     """Vertical EntryType picker. Arrows / enter / escape. Dismisses with the chosen type or None."""
 
     DEFAULT_CSS = """
-    _TypePickerScreen {
+    TypePickerScreen {
         align: center middle;
     }
-    _TypePickerScreen > Vertical {
+    TypePickerScreen > Vertical {
         width: 40;
         height: auto;
         border: solid $surface-lighten-2;
         padding: 1 2;
         background: $surface;
     }
-    _TypePickerScreen Static {
+    TypePickerScreen Static {
         color: rgb(150,150,150);
     }
-    _TypePickerScreen #type-picker-header {
+    TypePickerScreen #type-picker-header {
         margin-bottom: 1;
         color: rgb(100,100,100);
     }
@@ -119,7 +119,7 @@ class _TypePickerScreen(ModalScreen[EntryType | None]):
         self.dismiss(None)
 
 
-class _EditBar(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
+class EditMenu(ChoiceList[EntryTabVM]):
     """Horizontal edit-action picker. Options come from ``_EDIT_OPTIONS_*``; every label
     dispatches through ``tab.handle_edit_choice(label)``.
 
@@ -131,8 +131,8 @@ class _EditBar(ChoiceList[KnowledgeEntryBrowserTabViewModel]):
 
     def __init__(
         self,
-        view_model: KnowledgeEntryBrowserTabViewModel,
-        tab: "KnowledgeEntryBrowserTabView",
+        view_model: EntryTabVM,
+        tab: "EntryTab",
         **kwargs: Any,
     ) -> None:
         super().__init__(view_model, **kwargs)

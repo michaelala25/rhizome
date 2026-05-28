@@ -2,21 +2,21 @@
 
 from .knowledge_entry_tab import (
     DEFAULT_PAGE_LIMIT,
-    KnowledgeEntryBrowserTabView,
-    KnowledgeEntryBrowserTabViewModel,
+    EntryTab,
+    EntryTabVM,
 )
-from .tab_base import BrowserTabViewModel
-from .topic_tree import BrowserTopicTreeView, BrowserTopicTreeViewModel
-from .view import BrowserView
-from .view_model import BrowserViewModel
+from .tab_base import BrowserTabVM
+from .topic_tree import TopicTree, TopicTreeVM
+from .view import Browser
+from .view_model import BrowserVM
 
 __all__ = [
-    "BrowserTabViewModel",
-    "BrowserTopicTreeView",
-    "BrowserTopicTreeViewModel",
-    "BrowserView",
-    "BrowserViewModel",
+    "BrowserTabVM",
+    "TopicTree",
+    "TopicTreeVM",
+    "Browser",
+    "BrowserVM",
     "DEFAULT_PAGE_LIMIT",
-    "KnowledgeEntryBrowserTabView",
-    "KnowledgeEntryBrowserTabViewModel",
+    "EntryTab",
+    "EntryTabVM",
 ]

@@ -1,6 +1,6 @@
 """Public exports for the browser's left-rail topic-tree panel."""
 
-from .view import TopicTreePanelView
-from .view_model import TopicTreePanelViewModel
+from .view import TopicTreePanel
+from .view_model import TopicTreePanelVM
 
-__all__ = ["TopicTreePanelView", "TopicTreePanelViewModel"]
+__all__ = ["TopicTreePanel", "TopicTreePanelVM"]

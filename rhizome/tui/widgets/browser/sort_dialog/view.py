@@ -1,4 +1,4 @@
-"""SortDialog — generic sort-axis picker over any ``SortableViewModelMixin`` VM.
+"""SortMenu — generic sort-axis picker over any ``SortableVMMixin`` VM.
 
 Layout: one horizontal row of axes (in `vm.sort_options()` order) plus a keybinding hint row.
 The active axis is decorated with an arrow + brackets; the cursor option renders bold (gold
@@ -28,12 +28,12 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.widgets import Static
 
-from .view_model_mixin import SortableViewModelMixin, SortDirection
+from .view_model_mixin import SortableVMMixin, SortDirection
 
-VM = TypeVar("VM", bound=SortableViewModelMixin)
+VM = TypeVar("VM", bound=SortableVMMixin)
 
 
-class SortDialog(Static, Generic[VM], can_focus=True):
+class SortMenu(Static, Generic[VM], can_focus=True):
     BINDINGS = [
         Binding("left", "cursor_left", show=False),
         Binding("right", "cursor_right", show=False),

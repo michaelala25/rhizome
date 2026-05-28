@@ -26,7 +26,7 @@ from rhizome.tui.commands import CommandRegistry
 from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 
-from ..browser import BrowserViewModel
+from ..browser import BrowserVM
 from rhizome.app.vm import ViewModelBase
 from .agent_message import AgentMessageViewModel
 from .agent_stream_router import AgentStreamRouter
@@ -53,7 +53,7 @@ FeedEntry = (
     | InterruptViewModelBase
     | ShellCommandViewModel
     | BranchIndicatorViewModel
-    | BrowserViewModel
+    | BrowserVM
 )
 
 
@@ -1673,7 +1673,7 @@ class ChatPaneViewModel(ViewModelBase):
                     include_in_agent_context=False,
                 )
                 return
-            self._append_feed(BrowserViewModel(self._session_factory))
+            self._append_feed(BrowserVM(self._session_factory))
 
         @reg.command(name="echo", help="Echo arguments back as a system message.")
         @click.argument("words", nargs=-1)

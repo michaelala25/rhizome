@@ -8,7 +8,7 @@ render bright green + bold. The pool paginates via ``vm.load_more``; ``space`` t
 cursor row's relink-set membership (no-op on the boundary, gated by the VM).
 
 The relink Accept/Cancel widget reveals between the table and the answer preview when
-``vm.is_relink_dirty`` is True, via a CSS class toggle (see ``_RelinkChoicesList`` and
+``vm.is_relink_dirty`` is True, via a CSS class toggle (see ``RelinkMenu`` and
 ``_refresh``).
 """
 
@@ -25,7 +25,7 @@ from textual.widgets import DataTable, Static, TextArea
 from ....search_input import SearchInput
 from ...choices import ChoiceList
 
-from .view_model import LinkedFlashcardsPanelViewModel
+from .view_model import LinkedFlashcardsPanelVM
 
 # Boundary sentinel for the row-signature tuple. Negative is safe — flashcard ids are positive
 # autoincrement ints, so the sentinel can't collide with a real row's signature.
@@ -35,7 +35,7 @@ _BOUNDARY_SIG: int = -1
 _BOUNDARY_ROW_KEY = "__boundary__"
 
 
-class _LinkedFlashcardsTable(DataTable):
+class LinkedFlashcardsTable(DataTable):
     """``DataTable`` with auto-load-more at the bottom edge (pool pagination) and a ``space``
     binding for the relink-set toggle. Cursor round-trips through ``vm.set_cursor`` to keep the
     VM's cursor in sync across refetches (mirrors the entries-side wiring)."""
@@ -46,7 +46,7 @@ class _LinkedFlashcardsTable(DataTable):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPanelViewModel,
+        view_model: LinkedFlashcardsPanelVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -67,14 +67,14 @@ class _LinkedFlashcardsTable(DataTable):
         self._vm.toggle_current_relink_selection()
 
 
-class _FlashcardAnswerPreview(TextArea):
+class FlashcardPreview(TextArea):
     """Read-only scrollable preview of the cursor flashcard's question + answer + testing notes.
     ``can_focus=False`` so keyboard nav skips it (mouse-wheel scroll still works)."""
 
     can_focus = False
 
     DEFAULT_CSS = """
-    _FlashcardAnswerPreview {
+    FlashcardPreview {
         background: transparent;
         border: solid #3a3a3a;
         padding: 0 1;
@@ -83,7 +83,7 @@ class _FlashcardAnswerPreview(TextArea):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPanelViewModel,
+        view_model: LinkedFlashcardsPanelVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -113,7 +113,7 @@ class _FlashcardAnswerPreview(TextArea):
             self.text = target
 
 
-class _RelinkChoicesList(ChoiceList[LinkedFlashcardsPanelViewModel]):
+class RelinkMenu(ChoiceList[LinkedFlashcardsPanelVM]):
     """Accept / Cancel for a pending relink. Visibility driven by ``vm.is_relink_dirty`` via the
     ``.-visible`` class toggle in the parent's ``_refresh``. The widget is mounted once and
     survives multiple show/hide cycles, so its cursor persists across them (no
@@ -134,28 +134,28 @@ class _RelinkChoicesList(ChoiceList[LinkedFlashcardsPanelViewModel]):
         self._vm.cancel_relink()
 
 
-class LinkedFlashcardsPanelView(Vertical):
+class LinkedFlashcardsPanel(Vertical):
     """Right-hand panel for ``State.LINKED_FLASHCARDS``. Columns: sel / id / question / answer.
     Layout: search → table → relink Accept/Cancel (toggled by CSS) → answer preview → docked
     status row."""
 
     DEFAULT_CSS = """
-    LinkedFlashcardsPanelView {
+    LinkedFlashcardsPanel {
         height: 1fr;
         layout: vertical;
         padding: 0 1;
     }
-    LinkedFlashcardsPanelView #linked-flashcards-table {
+    LinkedFlashcardsPanel #linked-flashcards-table {
         width: 1fr;
         height: 2fr;
         margin: 1 0 0 0;
     }
-    LinkedFlashcardsPanelView #linked-flashcards-answer-preview {
+    LinkedFlashcardsPanel #linked-flashcards-answer-preview {
         width: 1fr;
         height: 1fr;
         margin: 1 0 0 0;
     }
-    LinkedFlashcardsPanelView #linked-flashcards-status {
+    LinkedFlashcardsPanel #linked-flashcards-status {
         dock: bottom;
         height: 1;
         color: $foreground-muted;
@@ -164,15 +164,15 @@ class LinkedFlashcardsPanelView(Vertical):
     }
     /* Relink wash — darker so the selected rows pop. Mirrors the entries table's
        ``-multi-select`` class. */
-    LinkedFlashcardsPanelView #linked-flashcards-table.-relink {
+    LinkedFlashcardsPanel #linked-flashcards-table.-relink {
         background: $surface-darken-2;
     }
-    LinkedFlashcardsPanelView #linked-flashcards-table.-relink > .datatable--even-row {
+    LinkedFlashcardsPanel #linked-flashcards-table.-relink > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
     /* Relink Accept/Cancel — visibility driven by ``.-visible`` class on dirty/clean transition.
        Thin top border that flips accent on focus (mirrors the entry-details choices). */
-    LinkedFlashcardsPanelView #linked-flashcards-relink-choices {
+    LinkedFlashcardsPanel #linked-flashcards-relink-choices {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -180,10 +180,10 @@ class LinkedFlashcardsPanelView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    LinkedFlashcardsPanelView #linked-flashcards-relink-choices.-visible {
+    LinkedFlashcardsPanel #linked-flashcards-relink-choices.-visible {
         display: block;
     }
-    LinkedFlashcardsPanelView #linked-flashcards-relink-choices:focus {
+    LinkedFlashcardsPanel #linked-flashcards-relink-choices:focus {
         border-top: solid $accent;
     }
     """
@@ -194,7 +194,7 @@ class LinkedFlashcardsPanelView(Vertical):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPanelViewModel,
+        view_model: LinkedFlashcardsPanelVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -208,7 +208,7 @@ class LinkedFlashcardsPanelView(Vertical):
         self._last_relink_dirty: bool = False
 
     def compose(self):
-        table = _LinkedFlashcardsTable(
+        table = LinkedFlashcardsTable(
             self._vm,
             id="linked-flashcards-table",
             cursor_type="row",
@@ -220,14 +220,14 @@ class LinkedFlashcardsPanelView(Vertical):
         table.add_column("id")
         table.add_column("question", width=self._TEXT_COLUMN_WIDTH)
         table.add_column("answer", width=self._TEXT_COLUMN_WIDTH)
-        yield SearchInput[LinkedFlashcardsPanelViewModel](
+        yield SearchInput[LinkedFlashcardsPanelVM](
             self._vm, id="linked-flashcards-search-input",
         )
         yield table
         # Mounted unconditionally so its VM subscription survives across show/hide cycles;
         # visibility flipped by the ``.-visible`` CSS class in ``_refresh``.
-        yield _RelinkChoicesList(self._vm, id="linked-flashcards-relink-choices")
-        yield _FlashcardAnswerPreview(self._vm, id="linked-flashcards-answer-preview")
+        yield RelinkMenu(self._vm, id="linked-flashcards-relink-choices")
+        yield FlashcardPreview(self._vm, id="linked-flashcards-answer-preview")
         yield Static("", id="linked-flashcards-status")
 
     def on_mount(self) -> None:
@@ -314,7 +314,7 @@ class LinkedFlashcardsPanelView(Vertical):
 
         # Relink Accept/Cancel visibility. Class toggle (not unmount) so the VM subscription
         # survives across show/hide cycles.
-        choices = self.query_one("#linked-flashcards-relink-choices", _RelinkChoicesList)
+        choices = self.query_one("#linked-flashcards-relink-choices", RelinkMenu)
         dirty_now = self._vm.is_relink_dirty
         was_dirty = self._last_relink_dirty
         choices.set_class(dirty_now, "-visible")

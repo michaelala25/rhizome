@@ -1,5 +1,5 @@
-"""``EntryDetailsView`` (+ private ``_ChoicesList``) — title/content side panel to the right of the
-entry table in ``KnowledgeEntryBrowserTabView``. See ``view_model.py`` for the VM contract.
+"""``EntryDetails`` (+ private ``EntryDetailChoices``) — title/content side panel to the right of the
+entry table in ``EntryTab``. See ``view_model.py`` for the VM contract.
 """
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ from textual.widgets import TextArea
 
 from ...choices import ChoiceList
 from ...confirmable_text_area import ConfirmableTextArea
-from .view_model import EntryDetailsViewModel
+from .view_model import EntryDetailsVM
 
 
-class _ChoicesList(ChoiceList[EntryDetailsViewModel]):
+class EntryDetailChoices(ChoiceList[EntryDetailsVM]):
     """Horizontal Accept/Cancel for committing or discarding a details edit. Visible only while
     ``vm.is_dirty`` (parent toggles the ``.-visible`` class in its ``_refresh``). Escape always
     cancels regardless of cursor position."""
@@ -33,20 +33,20 @@ class _ChoicesList(ChoiceList[EntryDetailsViewModel]):
         self._vm.cancel()
 
 
-class EntryDetailsView(Vertical):
-    """View for ``EntryDetailsViewModel``: title ``TextArea`` over content ``TextArea`` over
-    hidden-when-clean ``_ChoicesList``.
+class EntryDetails(Vertical):
+    """View for ``EntryDetailsVM``: title ``TextArea`` over content ``TextArea`` over
+    hidden-when-clean ``EntryDetailChoices``.
 
     Subscribes to ``vm.dirty`` and mirrors VM state into all three widgets each refresh, with an
     equality guard on each assignment so we don't trigger spurious ``TextArea.Changed`` round-trips.
     """
 
     DEFAULT_CSS = """
-    EntryDetailsView {
+    EntryDetails {
         height: 1fr;
         padding: 0 1;
     }
-    EntryDetailsView #details-title {
+    EntryDetails #details-title {
         background: transparent;
         border: solid #3a3a3a;
         border-title-align: right;
@@ -57,10 +57,10 @@ class EntryDetailsView(Vertical):
         padding: 0 1;
         margin: 0 0 0 0;
     }
-    EntryDetailsView #details-title:focus {
+    EntryDetails #details-title:focus {
         border: solid $accent;
     }
-    EntryDetailsView #details-content {
+    EntryDetails #details-content {
         background: transparent;
         border: solid #3a3a3a;
         border-title-align: right;
@@ -68,10 +68,10 @@ class EntryDetailsView(Vertical):
         height: 1fr;
         padding: 0 1;
     }
-    EntryDetailsView #details-content:focus {
+    EntryDetails #details-content:focus {
         border: solid $accent;
     }
-    EntryDetailsView #details-choices {
+    EntryDetails #details-choices {
         height: 3;
         margin: 1 0 0 0;
         padding: 0 1;
@@ -79,17 +79,17 @@ class EntryDetailsView(Vertical):
         color: rgb(200,200,200);
         display: none;
     }
-    EntryDetailsView #details-choices.-visible {
+    EntryDetails #details-choices.-visible {
         display: block;
     }
-    EntryDetailsView #details-choices:focus {
+    EntryDetails #details-choices:focus {
         border-top: solid $accent;
     }
     """
 
     def __init__(
         self,
-        view_model: EntryDetailsViewModel,
+        view_model: EntryDetailsVM,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -111,7 +111,7 @@ class EntryDetailsView(Vertical):
         )
         content.border_title = "Content"
         yield content
-        yield _ChoicesList(self._vm, id="details-choices")
+        yield EntryDetailChoices(self._vm, id="details-choices")
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.dirty, self._refresh)
@@ -127,7 +127,7 @@ class EntryDetailsView(Vertical):
     def _refresh(self) -> None:
         title_area = self.query_one("#details-title", TextArea)
         content_area = self.query_one("#details-content", TextArea)
-        choices = self.query_one("#details-choices", _ChoicesList)
+        choices = self.query_one("#details-choices", EntryDetailChoices)
 
         target_title = self._vm.title
         target_content = self._vm.content

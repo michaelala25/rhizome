@@ -1,6 +1,6 @@
 """Public exports for the topic-details panel."""
 
-from .view import TopicDetailsView
-from .view_model import TopicDetailsViewModel
+from .view import TopicDetails
+from .view_model import TopicDetailsVM
 
-__all__ = ["TopicDetailsView", "TopicDetailsViewModel"]
+__all__ = ["TopicDetails", "TopicDetailsVM"]

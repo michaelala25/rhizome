@@ -1,4 +1,4 @@
-"""MultiSelectableViewModelMixin — selection-set state machine for VMs whose windowed list
+"""MultiSelectableVMMixin — selection-set state machine for VMs whose windowed list
 supports a togglable "multi-select mode".
 
 Owns a ``multi_select_active`` flag, an id-keyed ``_selected_ids`` set, the three mutators
@@ -31,7 +31,7 @@ from typing import Any
 from rhizome.app.vm import ViewModelBase
 
 
-class MultiSelectableViewModelMixin(ViewModelBase):
+class MultiSelectableVMMixin(ViewModelBase):
     def __init__(self) -> None:
         super().__init__()
         self._multi_select_active: bool = False

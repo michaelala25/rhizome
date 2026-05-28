@@ -1,10 +1,10 @@
-"""SortableViewModelMixin — the narrow VM contract a ``SortDialog`` consumes.
+"""SortableVMMixin — the narrow VM contract a ``SortMenu`` consumes.
 
 Four members: ``sort_options()`` (axes in display order; first doubles as the reset target),
 ``sort_by`` / ``sort_dir`` (current state), and ``set_sort(sort_by, sort_dir)`` (apply).
 
 Generic on the sort-key type so concrete VMs narrow to their own ``Literal[...]`` alphabet
-(e.g. ``SortableViewModelMixin[EntrySortKey]``); the widget stays alphabet-agnostic.
+(e.g. ``SortableVMMixin[EntrySortKey]``); the widget stays alphabet-agnostic.
 
 Mix this in only at the **leaf** VM that actually drives a dialog — never on a shared base.
 """
@@ -20,8 +20,8 @@ SortKey = TypeVar("SortKey", bound=str)
 SortDirection = Literal["asc", "desc"]
 
 
-class SortableViewModelMixin(ViewModelBase, Generic[SortKey]):
-    """VM contract for sort-axis selection via ``SortDialog``."""
+class SortableVMMixin(ViewModelBase, Generic[SortKey]):
+    """VM contract for sort-axis selection via ``SortMenu``."""
 
     @abstractmethod
     def sort_options(self) -> tuple[SortKey, ...]:

@@ -1,5 +1,5 @@
 """Buffered-edit VM for the entry detail side panel (right of the entry table in
-``KnowledgeEntryBrowserTabView``).
+``EntryTab``).
 
 Editing model: each field has an in-VM buffer seeded from the entry on ``set_entry``. When either
 buffer diverges from the stored value the VM is ``is_dirty`` and the view reveals an Accept/Cancel
@@ -32,7 +32,7 @@ from rhizome.app.vm import ViewModelBase
 _logger = get_logger("browser.entry_details")
 
 
-class EntryDetailsViewModel(ViewModelBase):
+class EntryDetailsVM(ViewModelBase):
     """Buffered-edit VM for the entry detail panel. Accept/Cancel are the explicit exits from dirty;
     nothing reaches the DB until the user Accepts."""
 
@@ -42,7 +42,7 @@ class EntryDetailsViewModel(ViewModelBase):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self._make_group(EntryDetailsViewModel.Callbacks.SAVED)
+        self._saved = self._make_group(EntryDetailsVM.Callbacks.SAVED)
 
         self._entry: KnowledgeEntry | None = None
         # Buffers shadow the entry's stored values. Seeded on every ``set_entry`` so the dirty test

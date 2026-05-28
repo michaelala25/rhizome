@@ -18,9 +18,9 @@ from typing import Any, Generic, TypeVar
 from textual.binding import Binding
 from textual.widgets import DataTable
 
-from .view_model_mixin import MultiSelectableViewModelMixin
+from .view_model_mixin import MultiSelectableVMMixin
 
-VM = TypeVar("VM", bound=MultiSelectableViewModelMixin)
+VM = TypeVar("VM", bound=MultiSelectableVMMixin)
 
 
 class MultiSelectableDataTable(DataTable, Generic[VM]):

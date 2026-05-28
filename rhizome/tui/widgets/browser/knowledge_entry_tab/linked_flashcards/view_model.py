@@ -48,12 +48,12 @@ from ....search_input import SearchableViewModelMixin
 
 _logger = get_logger("browser.linked_flashcards")
 
-# Pool-window cap; mirrors ``KnowledgeEntryBrowserTabViewModel.DEFAULT_PAGE_LIMIT``. The linked
+# Pool-window cap; mirrors ``EntryTabVM.DEFAULT_PAGE_LIMIT``. The linked
 # section is unbounded (per-entry flashcard counts are usually small) and not paginated.
 DEFAULT_PAGE_LIMIT = 500
 
 
-class LinkedFlashcardsPanelViewModel(QueryBackedViewModel, SearchableViewModelMixin):
+class LinkedFlashcardsPanelVM(QueryBackedViewModel, SearchableViewModelMixin):
     """Sub-VM driving the linked-flashcards panel. See module docstring."""
 
     def __init__(
