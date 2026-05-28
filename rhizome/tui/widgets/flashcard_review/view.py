@@ -309,8 +309,6 @@ class FlashcardReview(ViewBase[FlashcardReviewVM], can_focus=True):
         yield Static("", id="fr-help")
 
     def on_mount(self) -> None:
-        super().on_mount()
-
         # Border-title nav hint on the card container — has to live in on_mount because it queries a
         # child widget.
         card_container = self.query_one("#fr-card", Vertical)
