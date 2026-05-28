@@ -10,7 +10,7 @@ from textual.widgets import TabbedContent, TabPane
 from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Role, UserFeedback
 from rhizome.tui.widgets import ChatPane, LoggingPane
-from rhizome.tui.widgets.chat_pane import ChatPaneMVVM
+from rhizome.tui.widgets.chat_pane import ChatPane
 
 
 class LogTabPane(TabPane):
@@ -60,7 +60,7 @@ class ChatTabPane(TabPane):
     def chat_pane(self):
         """Return the mounted chat pane (legacy or MVVM)."""
         if self._new_chat_pane:
-            return self.query_one(ChatPaneMVVM)
+            return self.query_one(ChatPane)
         return self.query_one(ChatPane)
 
     def _truncated_label(self) -> str:
@@ -91,7 +91,7 @@ class ChatTabPane(TabPane):
 
     def compose(self) -> ComposeResult:
         if self._new_chat_pane:
-            yield ChatPaneMVVM(session_factory=self._session_factory)
+            yield ChatPane(session_factory=self._session_factory)
         else:
             yield ChatPane(session_factory=self._session_factory, show_welcome=self._show_welcome)
 

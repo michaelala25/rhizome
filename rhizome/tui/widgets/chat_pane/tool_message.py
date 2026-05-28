@@ -1,4 +1,4 @@
-"""ToolMessageViewModel + view — a contiguous run of tool calls between agent text segments.
+"""ToolMessageVM + view — a contiguous run of tool calls between agent text segments.
 
 The VM holds an append-only list of ``(name, args)`` pairs. The view subscribes to ``dirty`` and
 re-renders the box-drawing tree on each event. There is no streaming concept here: tool calls land
@@ -19,7 +19,7 @@ from ..view_base import ViewBase
 from rhizome.app.vm import ViewModelBase
 
 
-class ToolMessageViewModel(ViewModelBase):
+class ToolMessageVM(ViewModelBase):
     """An ordered list of tool calls. Append-only via ``add_tool_call``."""
 
     def __init__(self) -> None:
@@ -31,27 +31,27 @@ class ToolMessageViewModel(ViewModelBase):
         self.emit(self.dirty)
 
 
-class ToolMessageView(ViewBase[ToolMessageViewModel]):
-    """Renders ``ToolMessageViewModel.tools`` as a Unicode box-drawing tree."""
+class ToolMessage(ViewBase[ToolMessageVM]):
+    """Renders ``ToolMessageVM.tools`` as a Unicode box-drawing tree."""
 
     DEFAULT_CSS = """
-    ToolMessageView {
+    ToolMessage {
         color: $text-muted;
         padding: 0 0 0 4;
         height: auto;
         width: auto;
         min-width: 20;
     }
-    ToolMessageView #tool-title {
+    ToolMessage #tool-title {
         width: auto;
         color: $text-muted;
     }
-    ToolMessageView #tool-content {
+    ToolMessage #tool-content {
         width: auto;
     }
     """
 
-    def __init__(self, vm: ToolMessageViewModel, **kwargs) -> None:
+    def __init__(self, vm: ToolMessageVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
 
     def compose(self) -> ComposeResult:

@@ -1,11 +1,11 @@
 """ChatPane view — steps 1+2 of the MVVM rewrite.
 
-Layout: a ``VerticalScroll`` feed, a ``ChatInputView`` bound to
+Layout: a ``VerticalScroll`` feed, a ``ChatInput`` bound to
 ``vm.chat_input``, and a ``CommandPalette`` bound to the shared
 ``vm.command_palette``. The view subscribes to the VM's ``feed_append``
 to mount one widget per appended feed entry and to ``feed_clear`` to
 drop them all. All input-area keystroke handling (Enter, Tab, Up, Down,
-Escape, Ctrl+Enter) lives inside ``ChatInputView`` itself, which talks
+Escape, Ctrl+Enter) lives inside ``ChatInput`` itself, which talks
 to the input VM directly — the pane is no longer in the path.
 """
 
@@ -19,22 +19,22 @@ from textual.widget import Widget
 
 from ..browser import Browser, BrowserVM
 from ..view_base import ViewBase
-from .agent_message import AgentMessageView, AgentMessageViewModel
-from .branch_indicator import BranchIndicatorView, BranchIndicatorViewModel
-from .chat_input import ChatInputView
-from .chat_message import ChatMessageView
-from .choices import ChoicesView, ChoicesViewModel
+from .agent_message import AgentMessage, AgentMessageVM
+from .branch_indicator import BranchPoint, BranchPointVM
+from .chat_input import ChatInput
+from .chat_message import ChatMessage
+from .choices import UserChoices, UserChoicesVM
 from .command_palette import CommandPalette
 from .conversation_graph import NodeId
-from .interrupt import InterruptViewModelBase, TestInterruptView, TestInterruptViewModel
-from .multiple_choices import MultipleChoicesView, MultipleChoicesViewModel
-from .sql_confirmation import SqlConfirmationView, SqlConfirmationViewModel
-from .warning_choices import WarningChoicesView, WarningChoicesViewModel
-from .shell_command import ShellCommandView, ShellCommandViewModel
-from .status_bar import StatusBarView
-from .thinking_indicator import ThinkingIndicatorView, ThinkingIndicatorViewModel
-from .tool_message import ToolMessageView, ToolMessageViewModel
-from .view_model import ChatPaneViewModel
+from .interrupt import InterruptVMBase, TestInterrupt, TestInterruptVM
+from .multiple_choices import MultiUserChoices, MultiUserChoicesVM
+from .sql_confirmation import SqlConfirmation, SqlConfirmationVM
+from .warning_choices import WarningUserChoices, WarningUserChoicesVM
+from .shell_command import ShellCommandMessage, ShellCommandVM
+from .status_bar import StatusBar
+from .thinking_indicator import ThinkingIndicator, ThinkingIndicatorVM
+from .tool_message import ToolMessage, ToolMessageVM
+from .view_model import ChatPaneVM
 from rhizome.tui.types import ChatMessageData
 
 
@@ -55,7 +55,7 @@ class DepthWrapper(Vertical):
     """
 
 
-class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
+class ChatPane(ViewBase[ChatPaneVM]):
 
     BINDINGS = [
         Binding("shift+tab", "cycle_mode", "Cycle mode", show=False),
@@ -90,11 +90,11 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     ]
 
     DEFAULT_CSS = """
-    ChatPaneMVVM {
+    ChatPane {
         layout: vertical;
         height: 1fr;
     }
-    ChatPaneMVVM #message-area {
+    ChatPane #message-area {
         height: 1fr;
         background: $surface-darken-1;
         padding: 1;
@@ -102,25 +102,25 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         scrollbar-color-hover: rgb(80, 80, 80);
         scrollbar-color-active: rgb(100, 100, 100);
     }
-    ChatPaneMVVM #chat-input {
+    ChatPane #chat-input {
         height: auto;
         min-height: 3;
         max-height: 10;
         padding: 0 1;
         background: rgb(12, 12, 12);
     }
-    ChatPaneMVVM #chat-input.--shell-mode,
-    ChatPaneMVVM #chat-input.--shell-mode:focus {
+    ChatPane #chat-input.--shell-mode,
+    ChatPane #chat-input.--shell-mode:focus {
         border: tall rgb(200, 60, 60);
     }
-    ChatPaneMVVM CommandPalette {
+    ChatPane CommandPalette {
         background: rgb(12, 12, 12);
     }
     /* Per-depth wrapper. ``border-left`` only — no padding, margin, or border-right — so the
      * content area at every depth extends flush to the right edge of #message-area. Each nested
      * level consumes exactly 1 cell on the LEFT for the rule; right-side geometry is untouched.
      */
-    ChatPaneMVVM DepthWrapper {
+    ChatPane DepthWrapper {
         height: auto;
         width: 100%;
         padding: 0;
@@ -130,7 +130,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     """
 
     def __init__(self, *, session_factory=None, **kwargs) -> None:
-        super().__init__(ChatPaneViewModel(session_factory=session_factory), **kwargs)
+        super().__init__(ChatPaneVM(session_factory=session_factory), **kwargs)
 
         # Mounted widgets keyed by FeedItem.id. The pane addresses widgets by id (not position)
         # because the feed may be mutated mid-stream — items can be appended after the agent's open
@@ -161,7 +161,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         self._vm.unsubscribe(self._vm.notify, self._on_notify)
         self._vm.unsubscribe(self._vm.tab_rename, self._on_tab_rename)
 
-    def _on_notify(self, action: ChatPaneViewModel.NotifyAction) -> None:
+    def _on_notify(self, action: ChatPaneVM.NotifyAction) -> None:
         handler = self._NOTIFY_HANDLERS.get(action)
         if handler is None:
             return
@@ -225,20 +225,20 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         return None
 
     _NOTIFY_HANDLERS = {
-        ChatPaneViewModel.NotifyAction.AGENT_BUSY: _notify_agent_busy,
-        ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
-        ChatPaneViewModel.NotifyAction.DESCEND_REQUIRED: _notify_descend_required,
-        ChatPaneViewModel.NotifyAction.QUIT: _notify_quit,
-        ChatPaneViewModel.NotifyAction.NEW_TAB: _notify_new_tab,
-        ChatPaneViewModel.NotifyAction.CLOSE_TAB: _notify_close_tab,
-        ChatPaneViewModel.NotifyAction.OPEN_LOGS: _notify_open_logs,
+        ChatPaneVM.NotifyAction.AGENT_BUSY: _notify_agent_busy,
+        ChatPaneVM.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
+        ChatPaneVM.NotifyAction.DESCEND_REQUIRED: _notify_descend_required,
+        ChatPaneVM.NotifyAction.QUIT: _notify_quit,
+        ChatPaneVM.NotifyAction.NEW_TAB: _notify_new_tab,
+        ChatPaneVM.NotifyAction.CLOSE_TAB: _notify_close_tab,
+        ChatPaneVM.NotifyAction.OPEN_LOGS: _notify_open_logs,
     }
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="message-area")
-        yield ChatInputView(self._vm.chat_input, id="chat-input")
+        yield ChatInput(self._vm.chat_input, id="chat-input")
         yield CommandPalette(self._vm.command_palette, id="command-palette")
-        yield StatusBarView(self._vm.status_bar, id="status-bar")
+        yield StatusBar(self._vm.status_bar, id="status-bar")
 
     def on_mount(self) -> None:
         self._vm.set_worker_scheduler(self.run_worker)
@@ -246,7 +246,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
             self.app.options,  # type: ignore[attr-defined]
             debug=getattr(self.app, "debug_logging", False),
         )
-        self.query_one("#chat-input", ChatInputView).focus()
+        self.query_one("#chat-input", ChatInput).focus()
 
     # ------------------------------------------------------------------
     # VM → view callbacks
@@ -255,32 +255,32 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     def _build_entry_widget(self, entry) -> FeedEntryWidget:
         """Dispatch a feed entry's runtime type to its concrete view widget."""
         if isinstance(entry, ChatMessageData):
-            return ChatMessageView(
+            return ChatMessage(
                 role=entry.role, content=entry.content, mode=entry.mode, rich=entry.rich,
             )
-        if isinstance(entry, AgentMessageViewModel):
-            return AgentMessageView(entry)
-        if isinstance(entry, ToolMessageViewModel):
-            return ToolMessageView(entry)
-        if isinstance(entry, ThinkingIndicatorViewModel):
-            return ThinkingIndicatorView(entry)
-        if isinstance(entry, ShellCommandViewModel):
-            return ShellCommandView(entry)
-        if isinstance(entry, BranchIndicatorViewModel):
-            return BranchIndicatorView(entry)
+        if isinstance(entry, AgentMessageVM):
+            return AgentMessage(entry)
+        if isinstance(entry, ToolMessageVM):
+            return ToolMessage(entry)
+        if isinstance(entry, ThinkingIndicatorVM):
+            return ThinkingIndicator(entry)
+        if isinstance(entry, ShellCommandVM):
+            return ShellCommandMessage(entry)
+        if isinstance(entry, BranchPointVM):
+            return BranchPoint(entry)
         if isinstance(entry, BrowserVM):
             return Browser(entry)
-        if isinstance(entry, TestInterruptViewModel):
-            return TestInterruptView(entry)
-        if isinstance(entry, ChoicesViewModel):
-            return ChoicesView(entry)
-        if isinstance(entry, WarningChoicesViewModel):
-            return WarningChoicesView(entry)
-        if isinstance(entry, MultipleChoicesViewModel):
-            return MultipleChoicesView(entry)
-        if isinstance(entry, SqlConfirmationViewModel):
-            return SqlConfirmationView(entry)
-        if isinstance(entry, InterruptViewModelBase):
+        if isinstance(entry, TestInterruptVM):
+            return TestInterrupt(entry)
+        if isinstance(entry, UserChoicesVM):
+            return UserChoices(entry)
+        if isinstance(entry, WarningUserChoicesVM):
+            return WarningUserChoices(entry)
+        if isinstance(entry, MultiUserChoicesVM):
+            return MultiUserChoices(entry)
+        if isinstance(entry, SqlConfirmationVM):
+            return SqlConfirmation(entry)
+        if isinstance(entry, InterruptVMBase):
             raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
         raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
 
@@ -373,7 +373,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         (nodes no longer on the cursor path) are removed wholesale; their child widgets cascade
         off the tree, so we also evict those ids from ``self._mounted``. Surviving wrappers stay
         put — common-prefix guarantee means the wrappers for the longest shared ancestor chain
-        don't move, preserving any streaming view state (e.g. ``AgentMessageView`` drain tasks)
+        don't move, preserving any streaming view state (e.g. ``AgentMessage`` drain tasks)
         inside them.
         """
         new_path = self._vm._cursor.path
@@ -439,14 +439,14 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if action.startswith("commit_"):
-            if self._vm.state != ChatPaneViewModel.State.COMMIT:
+            if self._vm.state != ChatPaneVM.State.COMMIT:
                 return None
             # When the chat input is focused, up/down should drive the TextArea / history nav, not
             # the commit cursor. Returning None suppresses the priority binding so the keystroke
             # falls through to the input's _on_key. Toggle / submit / cancel / focus-flip bindings
             # remain active regardless of focus.
             if action in ("commit_cursor_up", "commit_cursor_down"):
-                if self.query_one("#chat-input", ChatInputView).has_focus:
+                if self.query_one("#chat-input", ChatInput).has_focus:
                     return None
         return True
 
@@ -477,7 +477,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         if selected:
             self.app.copy_to_clipboard(selected)
             return
-        if self._vm.state == ChatPaneViewModel.State.COMMIT:
+        if self._vm.state == ChatPaneVM.State.COMMIT:
             self._vm.exit_commit_mode()
             return
         if self._vm.agent_busy:
@@ -488,7 +488,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         CONVERSATION → step to the previous navigable feed entry (or jump to the bottom-most one
         when focus is on the chat input).
         """
-        if self._vm.state == ChatPaneViewModel.State.COMMIT:
+        if self._vm.state == ChatPaneVM.State.COMMIT:
             self._vm.request_focus()
             return
         self._vm.navigate_feed(-1, current_id=self._current_feed_id())
@@ -498,7 +498,7 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
         CONVERSATION → step to the next navigable feed entry (or jump to the top-most one when
         focus is on the chat input).
         """
-        if self._vm.state == ChatPaneViewModel.State.COMMIT:
+        if self._vm.state == ChatPaneVM.State.COMMIT:
             self._vm.chat_input.request_focus()
             return
         self._vm.navigate_feed(+1, current_id=self._current_feed_id())
@@ -521,6 +521,6 @@ class ChatPaneMVVM(ViewBase[ChatPaneViewModel]):
     # The pane widget itself isn't focusable, so ``vm.request_focus()`` lands here — we route it to
     # the message-area scroll container. Keystrokes bubble back up to this pane, so the commit-mode
     # bindings still fire.
-    def focus(self, scroll_visible: bool = True) -> "ChatPaneMVVM":
+    def focus(self, scroll_visible: bool = True) -> "ChatPane":
         self.query_one("#message-area", VerticalScroll).focus(scroll_visible=scroll_visible)
         return self

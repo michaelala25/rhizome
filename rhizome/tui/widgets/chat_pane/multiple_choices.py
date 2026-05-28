@@ -7,7 +7,7 @@ Presents N questions, each with its own option list. The user moves between ques
 returns to ``ANSWERING`` with a sticky ``_has_confirmed_once`` flag so future "all answered"
 transitions don't re-auto-confirm.
 
-The VM owns the future (via ``InterruptViewModelBase``); the view is a passive projection that just
+The VM owns the future (via ``InterruptVMBase``); the view is a passive projection that just
 forwards key actions to VM mutators and re-renders on ``dirty``.
 """
 
@@ -22,13 +22,13 @@ from textual.binding import Binding
 from textual.widgets import Static
 
 from ..view_base import ViewBase
-from .interrupt import InterruptViewModelBase
+from .interrupt import InterruptVMBase
 
 _DIM = "rgb(100,100,100)"
 _ANSWERED = "rgb(100,200,100)"
 
 
-class MultipleChoicesViewModel(InterruptViewModelBase):
+class MultiUserChoicesVM(InterruptVMBase):
     """Multi-question single-select interrupt VM. See module docstring."""
 
     class Phase(Enum):
@@ -43,12 +43,12 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
         self._answers: dict[int, str] = {}
         self._per_question_cursor: dict[int, int] = {}
         self._active_question: int = 0
-        self._phase: MultipleChoicesViewModel.Phase = MultipleChoicesViewModel.Phase.ANSWERING
+        self._phase: MultiUserChoicesVM.Phase = MultiUserChoicesVM.Phase.ANSWERING
         self._confirm_cursor: int = 0
         self._has_confirmed_once: bool = False
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> MultipleChoicesViewModel:
+    def from_interrupt(cls, value: dict[str, Any]) -> MultiUserChoicesVM:
         return cls(questions=value["questions"])
 
     # ------------------------------------------------------------------
@@ -80,7 +80,7 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
         """The cursor active on the current axis: per-question answer cursor while ANSWERING, or the
         Yes/No cursor while CONFIRMING.
         """
-        if self._phase is MultipleChoicesViewModel.Phase.CONFIRMING:
+        if self._phase is MultiUserChoicesVM.Phase.CONFIRMING:
             return self._confirm_cursor
         return self._per_question_cursor.get(self._active_question, 0)
 
@@ -110,7 +110,7 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
         if self.resolved:
             return
 
-        if self._phase is MultipleChoicesViewModel.Phase.CONFIRMING:
+        if self._phase is MultiUserChoicesVM.Phase.CONFIRMING:
             new = (self._confirm_cursor + delta) % 2
             if new == self._confirm_cursor:
                 return
@@ -131,7 +131,7 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
     def prev_question(self) -> None:
         if self.resolved:
             return
-        if self._phase is not MultipleChoicesViewModel.Phase.ANSWERING:
+        if self._phase is not MultiUserChoicesVM.Phase.ANSWERING:
             return
         n = len(self._questions)
         if n <= 1:
@@ -142,7 +142,7 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
     def next_question(self) -> None:
         if self.resolved:
             return
-        if self._phase is not MultipleChoicesViewModel.Phase.ANSWERING:
+        if self._phase is not MultiUserChoicesVM.Phase.ANSWERING:
             return
         n = len(self._questions)
         if n <= 1:
@@ -161,12 +161,12 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
         if self.resolved:
             return
 
-        if self._phase is MultipleChoicesViewModel.Phase.CONFIRMING:
+        if self._phase is MultiUserChoicesVM.Phase.CONFIRMING:
             if self._confirm_cursor == 0:
                 self.resolve(self._build_result())
             else:
                 self._has_confirmed_once = True
-                self._phase = MultipleChoicesViewModel.Phase.ANSWERING
+                self._phase = MultiUserChoicesVM.Phase.ANSWERING
                 self.emit(self.dirty)
             return
 
@@ -180,7 +180,7 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
         if next_q is not None:
             self._active_question = next_q
         elif not self._has_confirmed_once:
-            self._phase = MultipleChoicesViewModel.Phase.CONFIRMING
+            self._phase = MultiUserChoicesVM.Phase.CONFIRMING
             self._confirm_cursor = 0
         # else: stay put; user must press submit() to re-resolve.
 
@@ -190,56 +190,56 @@ class MultipleChoicesViewModel(InterruptViewModelBase):
         """Explicit ctrl+enter submit from ANSWERING. No-op in CONFIRMING (use ``confirm()`` there)."""
         if self.resolved:
             return
-        if self._phase is not MultipleChoicesViewModel.Phase.ANSWERING:
+        if self._phase is not MultiUserChoicesVM.Phase.ANSWERING:
             return
         if not self.all_answered:
             return
         self.resolve(self._build_result())
 
 
-class MultipleChoicesView(ViewBase[MultipleChoicesViewModel]):
-    """Three-region projection of ``MultipleChoicesViewModel``: tab bar, prompt, options block, hint.
+class MultiUserChoices(ViewBase[MultiUserChoicesVM]):
+    """Three-region projection of ``MultiUserChoicesVM``: tab bar, prompt, options block, hint.
 
     After resolution the widget collapses to a single comma-separated summary line (no expand toggle —
     the legacy collapse button was intentionally dropped).
     """
 
     DEFAULT_CSS = """
-    MultipleChoicesView {
+    MultiUserChoices {
         height: auto;
         layout: vertical;
         padding: 1 2;
         margin: 0 2;
         border: round rgb(80,80,80);
     }
-    MultipleChoicesView:focus {
+    MultiUserChoices:focus {
         border: round rgb(140,140,200);
     }
-    MultipleChoicesView.--resolved {
+    MultiUserChoices.--resolved {
         border: round rgb(50,50,50);
         color: $text-muted;
     }
-    MultipleChoicesView #mc-tabs,
-    MultipleChoicesView #mc-prompt,
-    MultipleChoicesView #mc-options,
-    MultipleChoicesView #mc-hint,
-    MultipleChoicesView #mc-summary {
+    MultiUserChoices #mc-tabs,
+    MultiUserChoices #mc-prompt,
+    MultiUserChoices #mc-options,
+    MultiUserChoices #mc-hint,
+    MultiUserChoices #mc-summary {
         height: auto;
         width: 1fr;
     }
-    MultipleChoicesView #mc-hint {
+    MultiUserChoices #mc-hint {
         color: $text-muted;
     }
-    MultipleChoicesView #mc-summary {
+    MultiUserChoices #mc-summary {
         display: none;
     }
-    MultipleChoicesView.--resolved #mc-tabs,
-    MultipleChoicesView.--resolved #mc-prompt,
-    MultipleChoicesView.--resolved #mc-options,
-    MultipleChoicesView.--resolved #mc-hint {
+    MultiUserChoices.--resolved #mc-tabs,
+    MultiUserChoices.--resolved #mc-prompt,
+    MultiUserChoices.--resolved #mc-options,
+    MultiUserChoices.--resolved #mc-hint {
         display: none;
     }
-    MultipleChoicesView.--resolved #mc-summary {
+    MultiUserChoices.--resolved #mc-summary {
         display: block;
     }
     """
@@ -284,7 +284,7 @@ class MultipleChoicesView(ViewBase[MultipleChoicesViewModel]):
         self._refresh_hint()
 
     def _refresh_tabs(self) -> None:
-        Phase = MultipleChoicesViewModel.Phase
+        Phase = MultiUserChoicesVM.Phase
         text = Text()
         for i, q in enumerate(self._vm.questions):
             if i > 0:
@@ -300,7 +300,7 @@ class MultipleChoicesView(ViewBase[MultipleChoicesViewModel]):
         self.query_one("#mc-tabs", Static).update(text)
 
     def _refresh_prompt(self) -> None:
-        Phase = MultipleChoicesViewModel.Phase
+        Phase = MultiUserChoicesVM.Phase
         if self._vm.phase is Phase.CONFIRMING:
             self.query_one("#mc-prompt", Static).update("Submit answers?")
         else:
@@ -308,7 +308,7 @@ class MultipleChoicesView(ViewBase[MultipleChoicesViewModel]):
             self.query_one("#mc-prompt", Static).update(q["prompt"])
 
     def _refresh_options(self) -> None:
-        Phase = MultipleChoicesViewModel.Phase
+        Phase = MultiUserChoicesVM.Phase
 
         if self._vm.phase is Phase.CONFIRMING:
             options = ["Yes", "No"]
@@ -333,7 +333,7 @@ class MultipleChoicesView(ViewBase[MultipleChoicesViewModel]):
         self.query_one("#mc-options", Static).update(text)
 
     def _refresh_hint(self) -> None:
-        Phase = MultipleChoicesViewModel.Phase
+        Phase = MultiUserChoicesVM.Phase
         if self._vm.phase is Phase.CONFIRMING:
             hint = "(enter to confirm, ctrl+c to cancel)"
         elif self._vm.all_answered:

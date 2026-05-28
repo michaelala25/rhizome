@@ -14,7 +14,7 @@ from ..view_base import ViewBase
 from rhizome.app.vm import ViewModelBase
 
 
-class ThinkingIndicatorViewModel(ViewModelBase):
+class ThinkingIndicatorVM(ViewModelBase):
     """Sentinel VM with no mutable state. The view subscribes to nothing — its animation is
     self-driven."""
 
@@ -23,11 +23,11 @@ _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _TICK_RATE = 0.1
 
 
-class ThinkingIndicatorView(ViewBase[ThinkingIndicatorViewModel]):
+class ThinkingIndicator(ViewBase[ThinkingIndicatorVM]):
     """Braille-spinner with a 'thinking...' label."""
 
     DEFAULT_CSS = """
-    ThinkingIndicatorView {
+    ThinkingIndicator {
         height: 1;
         margin-top: 1;
         margin-bottom: 1;
@@ -36,7 +36,7 @@ class ThinkingIndicatorView(ViewBase[ThinkingIndicatorViewModel]):
     }
     """
 
-    def __init__(self, vm: ThinkingIndicatorViewModel, **kwargs) -> None:
+    def __init__(self, vm: ThinkingIndicatorVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._frame = 0
         self._static: Static | None = None

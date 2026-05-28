@@ -1,4 +1,4 @@
-"""ChatPaneViewModel — steps 1–3 of the chat-pane MVVM rewrite.
+"""ChatPaneVM — steps 1–3 of the chat-pane MVVM rewrite.
 
 Steps 1+2 cover the feed + commands; step 3 adds an ``AgentSession`` instance, held but unused. No
 worker, no streaming, no harness yet — this is just the bootstrap seam.
@@ -28,31 +28,31 @@ from rhizome.tui.types import ChatMessageData, Mode, Role
 
 from ..browser import BrowserVM
 from rhizome.app.vm import ViewModelBase
-from .agent_message import AgentMessageViewModel
+from .agent_message import AgentMessageVM
 from .agent_stream_router import AgentStreamRouter
-from .branch_indicator import BranchIndicatorViewModel
-from .chat_input import ChatInputViewModel
-from .choices import ChoicesViewModel
-from .command_palette import CommandPaletteViewModel
+from .branch_indicator import BranchPointVM
+from .chat_input import ChatInputVM
+from .choices import UserChoicesVM
+from .command_palette import CommandPaletteVM
 from .conversation_graph import ConversationGraph, ConversationGraphCursor, ConversationNode, NodeId
-from .interrupt import InterruptViewModelBase, TestInterruptViewModel
-from .multiple_choices import MultipleChoicesViewModel
-from .sql_confirmation import SqlConfirmationViewModel
-from .warning_choices import WarningChoicesViewModel
-from .shell_command import ShellCommandViewModel
-from .status_bar import StatusBarViewModel
-from .thinking_indicator import ThinkingIndicatorViewModel
-from .tool_message import ToolMessageViewModel
+from .interrupt import InterruptVMBase, TestInterruptVM
+from .multiple_choices import MultiUserChoicesVM
+from .sql_confirmation import SqlConfirmationVM
+from .warning_choices import WarningUserChoicesVM
+from .shell_command import ShellCommandVM
+from .status_bar import StatusBarVM
+from .thinking_indicator import ThinkingIndicatorVM
+from .tool_message import ToolMessageVM
 
 
 FeedEntry = (
     ChatMessageData
-    | AgentMessageViewModel
-    | ToolMessageViewModel
-    | ThinkingIndicatorViewModel
-    | InterruptViewModelBase
-    | ShellCommandViewModel
-    | BranchIndicatorViewModel
+    | AgentMessageVM
+    | ToolMessageVM
+    | ThinkingIndicatorVM
+    | InterruptVMBase
+    | ShellCommandVM
+    | BranchPointVM
     | BrowserVM
 )
 
@@ -96,7 +96,7 @@ class ChatPaneConversationNode(ConversationNode[FeedItem]):
     agent_session: AgentSession | None = None
     agent_task: object | None = None
     current_router: AgentStreamRouter | None = None
-    pending_interrupt: InterruptViewModelBase | None = None
+    pending_interrupt: InterruptVMBase | None = None
     last_visited_child: NodeId | None = None
 
 
@@ -104,7 +104,7 @@ _DEFAULT_HINT = "Type a message or /command ..."
 _INTERRUPT_HINT = "Resolve the prompt above to continue..."
 
 
-class ChatPaneViewModel(ViewModelBase):
+class ChatPaneVM(ViewModelBase):
 
     # Slash commands that must wait for the agent to be idle. Anything not in this set is allowed to
     # dispatch mid-stream (mode toggles, echo, test-* helpers, etc.). Shell `!` commands and free-text
@@ -144,12 +144,12 @@ class ChatPaneViewModel(ViewModelBase):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
         super().__init__()
 
-        self._feed_append = self._make_group(ChatPaneViewModel.Callbacks.FEED_APPEND)
-        self._feed_remove = self._make_group(ChatPaneViewModel.Callbacks.FEED_REMOVE)
-        self._feed_clear = self._make_group(ChatPaneViewModel.Callbacks.FEED_CLEAR)
-        self._feed_replaced = self._make_group(ChatPaneViewModel.Callbacks.FEED_REPLACED)
-        self._tab_rename = self._make_group(ChatPaneViewModel.Callbacks.TAB_RENAME)
-        self._notify = self._make_group(ChatPaneViewModel.Callbacks.NOTIFY)
+        self._feed_append = self._make_group(ChatPaneVM.Callbacks.FEED_APPEND)
+        self._feed_remove = self._make_group(ChatPaneVM.Callbacks.FEED_REMOVE)
+        self._feed_clear = self._make_group(ChatPaneVM.Callbacks.FEED_CLEAR)
+        self._feed_replaced = self._make_group(ChatPaneVM.Callbacks.FEED_REPLACED)
+        self._tab_rename = self._make_group(ChatPaneVM.Callbacks.TAB_RENAME)
+        self._notify = self._make_group(ChatPaneVM.Callbacks.NOTIFY)
 
         # Conversation feed lives in a ConversationGraph parameterized over ``ChatPaneConversationNode``
         # so every node carries chat-pane-specific per-branch state (``agent_session`` for now;
@@ -163,13 +163,13 @@ class ChatPaneViewModel(ViewModelBase):
         self._cursor: ConversationGraphCursor = self._conversation.cursor_at_root()
         self._next_feed_id: int = 0
 
-        self.state: ChatPaneViewModel.State = ChatPaneViewModel.State.CONVERSATION
+        self.state: ChatPaneVM.State = ChatPaneVM.State.CONVERSATION
 
         # Commit-mode working set, valid only while ``state == COMMIT``. ``_commit_selectable`` is
         # the snapshot of learn-mode AgentMessageVMs in feed order at enter time; ``_commit_cursor``
         # is the index of the highlighted entry. Reset by ``exit_commit_mode`` /
         # ``submit_commit_payload``.
-        self._commit_selectable: list[AgentMessageViewModel] = []
+        self._commit_selectable: list[AgentMessageVM] = []
         self._commit_cursor: int = 0
 
         self.session_mode: Mode = Mode.IDLE
@@ -179,7 +179,7 @@ class ChatPaneViewModel(ViewModelBase):
         self.active_topic: Topic | None = None
         self.topic_path: list[str] = []
 
-        self.command_palette = CommandPaletteViewModel()
+        self.command_palette = CommandPaletteVM()
         self._command_registry = CommandRegistry()
         self._register_commands()
         self.command_palette.set_commands(self._registry_rows())
@@ -187,13 +187,13 @@ class ChatPaneViewModel(ViewModelBase):
         # Input sub-VM owns buffer/enabled/hint/history + holds the shared palette so the input view
         # never reaches into the pane to filter, navigate, or decide tab-completion vs submit. The pane
         # subscribes to ``submitted`` to dispatch chat-vs-slash + agent-busy gating.
-        self.chat_input = ChatInputViewModel(self.command_palette, default_hint=_DEFAULT_HINT)
+        self.chat_input = ChatInputVM(self.command_palette, default_hint=_DEFAULT_HINT)
         self.chat_input.subscribe(self.chat_input.submitted, self._on_input_submitted)
 
         # Status-bar sub-VM. Projection of mode / topic_path (from this VM), token_usage + model_name
         # (from the agent session), and verbosity (from app.options). Pane mutates it through setters;
         # the view subscribes to its own dirty so token updates don't repaint the rest of the pane.
-        self.status_bar = StatusBarViewModel()
+        self.status_bar = StatusBarVM()
         self._options: Options | None = None
 
         # Agent plumbing — instantiated on bootstrap (after the view has access to app.options). Held
@@ -499,7 +499,7 @@ class ChatPaneViewModel(ViewModelBase):
         session. Used by ``_run_agent_turn`` to route cancelled/error messages into the pinned
         branch even if the user has navigated away.
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         target = cursor if cursor is not None else self._cursor
 
         # Dedup peek uses the full visible feed of the target branch so a system message that
@@ -533,7 +533,7 @@ class ChatPaneViewModel(ViewModelBase):
         # pending interrupt) and either refuse or confirm with the user before proceeding — leaving
         # the cleared current branch sitting next to a running other-branch task would be confusing
         # and could lose context the user didn't mean to drop.
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         current = self._node(self._cursor.head)
         if not self.feed and current.current_router is None:
             return
@@ -608,7 +608,7 @@ class ChatPaneViewModel(ViewModelBase):
 
     async def present_interrupt(
         self,
-        vm: InterruptViewModelBase,
+        vm: InterruptVMBase,
         *,
         cursor: ConversationGraphCursor | None = None,
     ) -> Any:
@@ -627,7 +627,7 @@ class ChatPaneViewModel(ViewModelBase):
         mid-stream; if the user is elsewhere they won't see it until they navigate back, at which
         point the view's diff mounts it and the future awaits user input as usual.
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
 
         # TODO: It is up in the air whether or not we want to pause the current router to post _any_ interrupt
         # or let the router itself pause when posting it's own interrupt (through the on_interrupt handler).
@@ -686,7 +686,7 @@ class ChatPaneViewModel(ViewModelBase):
     def start_agent_run(self, user_text: str) -> None:
         """Append the user message and kick off an agent turn. No-op if a run is already in flight
         (real queueing comes with the feed-queue)."""
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         if self.agent_busy:
             return
 
@@ -780,7 +780,7 @@ class ChatPaneViewModel(ViewModelBase):
         """Advance through IDLE → LEARN → REVIEW → IDLE. Silent — the binding's intent is a quick
         cycle, not a chat-visible mode change.
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         cycle = {Mode.IDLE: Mode.LEARN, Mode.LEARN: Mode.REVIEW, Mode.REVIEW: Mode.IDLE}
         await self.set_mode(cycle[self.session_mode], silent=True)
 
@@ -814,7 +814,7 @@ class ChatPaneViewModel(ViewModelBase):
                 graph state catches up on the next model call) or ``"agent"`` (tool-initiated — graph
                 state is updated directly via ``Command``).
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         if source == "agent":
             assert self.agent_busy
             silent = True
@@ -914,7 +914,7 @@ class ChatPaneViewModel(ViewModelBase):
         """Hint to the user that a higher verbosity setting may help. The view decides how to
         present the cue.
         """
-        self.emit(self.notify, ChatPaneViewModel.NotifyAction.HINT_HIGHER_VERBOSITY)
+        self.emit(self.notify, ChatPaneVM.NotifyAction.HINT_HIGHER_VERBOSITY)
 
     # ------------------------------------------------------------------
     # Branching and navigation
@@ -927,7 +927,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         - **First branch at this node** (cursor on an open leaf): closes the leaf and creates a
           continuation child (inheriting the parent's name) plus the new branch. A new
-          ``BranchIndicatorViewModel`` is mounted on the parent's feed.
+          ``BranchPointVM`` is mounted on the parent's feed.
         - **Subsequent branch at a closed branch point** (cursor on a non-leaf): just adds
           another sibling to the existing children. The existing indicator is nudged dirty so
           it picks up the new child.
@@ -944,7 +944,7 @@ class ChatPaneViewModel(ViewModelBase):
         Gated on ``not agent_busy`` (also enforced via ``_AGENT_GATED_COMMANDS`` for the slash-command
         path); asserted here to guard direct programmatic callers.
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         assert not self.agent_busy
 
         # Walk-up case: if the cursor sits on an open leaf with an empty feed and has a parent,
@@ -972,7 +972,7 @@ class ChatPaneViewModel(ViewModelBase):
             # parent — otherwise ``self.feed`` would resolve to the new branch's empty feed by
             # the time we appended. The indicator's ``children`` property is lazy, so reading
             # it at compose time (post-branch) returns the freshly-opened children.
-            indicator = BranchIndicatorViewModel(self._conversation, parent_id, self)
+            indicator = BranchPointVM(self._conversation, parent_id, self)
             self._append_feed(indicator)
 
         new_cursor, new_branch_id = self._conversation.branch(self._cursor, branch_name=branch_name)
@@ -992,7 +992,7 @@ class ChatPaneViewModel(ViewModelBase):
             # selected_child, but that's equality-guarded against no-op moves, so the dirty
             # nudge here is what triggers the re-render for the children-list change.
             for item in self._conversation.node(parent_id).feed:
-                if isinstance(item.entry, BranchIndicatorViewModel):
+                if isinstance(item.entry, BranchPointVM):
                     item.entry.emit(item.entry.dirty)
                     break
 
@@ -1054,7 +1054,7 @@ class ChatPaneViewModel(ViewModelBase):
         if len(target.path) >= 2:
             parent_id = target.path[-2]
             for item in self._conversation.node(parent_id).feed:
-                if isinstance(item.entry, BranchIndicatorViewModel):
+                if isinstance(item.entry, BranchPointVM):
                     item.entry.emit(item.entry.dirty)
                     break
 
@@ -1110,7 +1110,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         Default (``parent_node_id=None``) is the legacy "pop one level" semantics — useful from
         keystrokes that don't know which indicator they're under. When called from a focused
-        ``BranchIndicatorViewModel``, the indicator passes its ``parent_node_id`` so the cursor
+        ``BranchPointVM``, the indicator passes its ``parent_node_id`` so the cursor
         truncates to that node as its new leaf (i.e. "un-descend out of *this* branch point",
         regardless of how many levels deeper the cursor currently sits). No-op if the node isn't
         on the path or is already the leaf.
@@ -1141,7 +1141,7 @@ class ChatPaneViewModel(ViewModelBase):
         """Swap a horizontal sibling at a specific branch point in the cursor path.
 
         Default (``parent_node_id=None``) swaps the leaf's sibling — the cursor's penultimate
-        node decides the swap point. When called from a focused ``BranchIndicatorViewModel``, the
+        node decides the swap point. When called from a focused ``BranchPointVM``, the
         indicator passes its ``parent_node_id`` so the swap happens there.
 
         After the swap, the cursor is deepened via ``last_visited_child`` so re-entering a
@@ -1201,7 +1201,7 @@ class ChatPaneViewModel(ViewModelBase):
         path = self._cursor.path
         for i, nid in enumerate(path):
             for item in self._conversation.node(nid).feed:
-                if isinstance(item.entry, BranchIndicatorViewModel):
+                if isinstance(item.entry, BranchPointVM):
                     selected = path[i + 1] if i + 1 < len(path) else None
                     item.entry.set_selected_child(selected)
 
@@ -1221,7 +1221,7 @@ class ChatPaneViewModel(ViewModelBase):
         with its own enabled lifecycle), and the state machine forbids commit + interrupt
         coexistence.
         """
-        if self.state != ChatPaneViewModel.State.CONVERSATION:
+        if self.state != ChatPaneVM.State.CONVERSATION:
             return
         if self._node(self._cursor.head).pending_interrupt is not None:
             self.chat_input.set_enabled(False)
@@ -1245,7 +1245,7 @@ class ChatPaneViewModel(ViewModelBase):
           - chat text requires the agent to be idle
         Blocked submissions surface as a transient notification.
         """
-        if self.state == ChatPaneViewModel.State.COMMIT:
+        if self.state == ChatPaneVM.State.COMMIT:
             # In commit mode the input buffer is interpreted as optional commit instructions.
             self.chat_input.accept_submission(text)
             self.submit_commit_payload(text)
@@ -1264,7 +1264,7 @@ class ChatPaneViewModel(ViewModelBase):
 
             name = stripped.lstrip("/").split(maxsplit=1)[0]
             if self.agent_busy and name in self._AGENT_GATED_COMMANDS:
-                self.emit(self.notify, ChatPaneViewModel.NotifyAction.AGENT_BUSY)
+                self.emit(self.notify, ChatPaneVM.NotifyAction.AGENT_BUSY)
                 return
 
             # /branch <prompt> is intercepted here instead of going through the click registry:
@@ -1283,7 +1283,7 @@ class ChatPaneViewModel(ViewModelBase):
             return
 
         if self.agent_busy:
-            self.emit(self.notify, ChatPaneViewModel.NotifyAction.AGENT_BUSY)
+            self.emit(self.notify, ChatPaneVM.NotifyAction.AGENT_BUSY)
             return
 
         # Sitting on a non-leaf cursor (branch point) means there's no AgentSession at the current
@@ -1291,7 +1291,7 @@ class ChatPaneViewModel(ViewModelBase):
         # prompt the user to descend into one of the branches first. ``/branch`` and other slash
         # commands aren't gated here — eventually /branch from a non-leaf will create a sibling.
         if self._conversation.children(self._cursor.head):
-            self.emit(self.notify, ChatPaneViewModel.NotifyAction.DESCEND_REQUIRED)
+            self.emit(self.notify, ChatPaneVM.NotifyAction.DESCEND_REQUIRED)
             return
 
         self.chat_input.accept_submission(text)
@@ -1302,8 +1302,8 @@ class ChatPaneViewModel(ViewModelBase):
         Unlike agent runs, shell commands aren't gated by ``agent_busy`` — they're side-channel to
         the conversation.
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
-        vm = ShellCommandViewModel(cmd)
+        assert self.state == ChatPaneVM.State.CONVERSATION
+        vm = ShellCommandVM(cmd)
         self._append_feed(vm)
         self._schedule_worker(vm.execute())
 
@@ -1314,7 +1314,7 @@ class ChatPaneViewModel(ViewModelBase):
     #
     # State machine: CONVERSATION ↔ COMMIT. Most public API asserts CONVERSATION; the methods below
     # are the only legal way in and out of COMMIT. Selection state lives on each
-    # ``AgentMessageViewModel`` (its own dirty drives the per-message border + checkbox); the pane
+    # ``AgentMessageVM`` (its own dirty drives the per-message border + checkbox); the pane
     # holds the ordered snapshot of selectable VMs and the cursor index so navigation is O(1).
     #
     # ``submit_commit_payload`` is stubbed: it cleans up decoration and returns to CONVERSATION but
@@ -1328,7 +1328,7 @@ class ChatPaneViewModel(ViewModelBase):
         COMMIT. If no learn-mode agent messages exist, append a system message and stay in
         CONVERSATION.
         """
-        assert self.state == ChatPaneViewModel.State.CONVERSATION
+        assert self.state == ChatPaneVM.State.CONVERSATION
         assert not self.agent_busy
 
         # Commit selects across the full visible conversation (including ancestor branches), not
@@ -1337,7 +1337,7 @@ class ChatPaneViewModel(ViewModelBase):
         # learn-mode message in this conversation".
         selectable = [
             item.entry for item in self.visible_feed
-            if isinstance(item.entry, AgentMessageViewModel) and item.entry.mode == Mode.LEARN
+            if isinstance(item.entry, AgentMessageVM) and item.entry.mode == Mode.LEARN
         ]
         if not selectable:
             self.append_message(
@@ -1352,9 +1352,9 @@ class ChatPaneViewModel(ViewModelBase):
             vm.set_selectable(True)
             vm.set_cursor(i == 0)
 
-        self.state = ChatPaneViewModel.State.COMMIT
+        self.state = ChatPaneVM.State.COMMIT
         self.chat_input.set_hint(self._COMMIT_HINT)
-        self.chat_input.set_state(ChatInputViewModel.State.COMMIT)
+        self.chat_input.set_state(ChatInputVM.State.COMMIT)
         # Move focus off the input so up/down/enter drive the cursor rather than the input's
         # history nav / submit. The view's focus subscription routes this to the message-area
         # scroll container; events bubble back to the pane's commit-mode bindings.
@@ -1363,12 +1363,12 @@ class ChatPaneViewModel(ViewModelBase):
 
 
     def navigate_commit_cursor_up(self) -> None:
-        assert self.state == ChatPaneViewModel.State.COMMIT
+        assert self.state == ChatPaneVM.State.COMMIT
         self._move_commit_cursor(-1)
 
 
     def navigate_commit_cursor_down(self) -> None:
-        assert self.state == ChatPaneViewModel.State.COMMIT
+        assert self.state == ChatPaneVM.State.COMMIT
         self._move_commit_cursor(1)
 
 
@@ -1385,7 +1385,7 @@ class ChatPaneViewModel(ViewModelBase):
         """Toggle the message under the cursor. On select (not deselect), auto-advance the cursor
         to the next selectable if there is one.
         """
-        assert self.state == ChatPaneViewModel.State.COMMIT
+        assert self.state == ChatPaneVM.State.COMMIT
 
         if not self._commit_selectable:
             return
@@ -1401,7 +1401,7 @@ class ChatPaneViewModel(ViewModelBase):
 
     def exit_commit_mode(self) -> None:
         """Cancel commit mode without submitting. Clears all decoration and returns to CONVERSATION."""
-        assert self.state == ChatPaneViewModel.State.COMMIT
+        assert self.state == ChatPaneVM.State.COMMIT
         self._reset_commit_state()
 
 
@@ -1409,7 +1409,7 @@ class ChatPaneViewModel(ViewModelBase):
         """Submit the commit payload (selected messages + optional free-text instructions) and return
         to CONVERSATION.
 
-        Builds a payload from the selected ``AgentMessageViewModel`` bodies (each annotated with the
+        Builds a payload from the selected ``AgentMessageVM`` bodies (each annotated with the
         immediately-preceding USER message as ``user_context``), injects it into the agent session,
         posts a system notification with the direct-vs-subagent routing hint, and kicks off an
         agent-only turn (no USER message in the feed — the notification is the prompt).
@@ -1417,7 +1417,7 @@ class ChatPaneViewModel(ViewModelBase):
         Edge case: if the user submitted with zero selected messages, exit COMMIT and append
         "No messages selected for commit." Mirrors the legacy ``confirm_commit_selection`` behavior.
         """
-        assert self.state == ChatPaneViewModel.State.COMMIT
+        assert self.state == ChatPaneVM.State.COMMIT
 
         payload = self._build_commit_payload()
 
@@ -1450,7 +1450,7 @@ class ChatPaneViewModel(ViewModelBase):
             {"index": int, "content": str, "user_context": str | None}
 
         ``user_context`` is the most recent USER ``ChatMessageData`` preceding this agent message
-        in the feed, bailing on an earlier ``AgentMessageViewModel`` so we capture the immediate
+        in the feed, bailing on an earlier ``AgentMessageVM`` so we capture the immediate
         prompt rather than stale conversation. Messages with empty bodies are skipped.
         """
         payload: list[dict] = []
@@ -1464,9 +1464,9 @@ class ChatPaneViewModel(ViewModelBase):
             payload.append(entry)
         return payload
 
-    def _preceding_user_context(self, vm: AgentMessageViewModel) -> str | None:
+    def _preceding_user_context(self, vm: AgentMessageVM) -> str | None:
         """Scan backwards in the feed from ``vm``'s position for the nearest USER ChatMessageData.
-        Stop and return None if we hit an earlier AgentMessageViewModel first — that means the
+        Stop and return None if we hit an earlier AgentMessageVM first — that means the
         prompt for this segment is somewhere upstream we shouldn't conflate.
 
         Scans the full visible feed so that an agent message in the current leaf can correctly
@@ -1478,7 +1478,7 @@ class ChatPaneViewModel(ViewModelBase):
             return None
         for item in reversed(visible[:feed_pos]):
             entry = item.entry
-            if isinstance(entry, AgentMessageViewModel):
+            if isinstance(entry, AgentMessageVM):
                 return None
             if isinstance(entry, ChatMessageData) and entry.role == Role.USER:
                 return entry.content
@@ -1528,11 +1528,11 @@ class ChatPaneViewModel(ViewModelBase):
         for vm in self._commit_selectable:
             vm.clear_commit_decoration()
 
-        self.state = ChatPaneViewModel.State.CONVERSATION
+        self.state = ChatPaneVM.State.CONVERSATION
         self._commit_selectable = []
         self._commit_cursor = 0
 
-        self.chat_input.set_state(ChatInputViewModel.State.CHAT)
+        self.chat_input.set_state(ChatInputVM.State.CHAT)
         self.chat_input.reset_hint()
         self.chat_input.request_focus()
         self.emit(self.dirty)
@@ -1580,19 +1580,19 @@ class ChatPaneViewModel(ViewModelBase):
 
         @reg.command(name="quit", help="Quit the application.")
         def _quit() -> None:
-            self.emit(self.notify, ChatPaneViewModel.NotifyAction.QUIT)
+            self.emit(self.notify, ChatPaneVM.NotifyAction.QUIT)
 
         @reg.command(name="new", help="Open a new chat session tab.")
         def _new() -> None:
-            self.emit(self.notify, ChatPaneViewModel.NotifyAction.NEW_TAB)
+            self.emit(self.notify, ChatPaneVM.NotifyAction.NEW_TAB)
 
         @reg.command(name="close", help="Close the current chat session tab.")
         def _close() -> None:
-            self.emit(self.notify, ChatPaneViewModel.NotifyAction.CLOSE_TAB)
+            self.emit(self.notify, ChatPaneVM.NotifyAction.CLOSE_TAB)
 
         @reg.command(name="logs", help="Open the logs viewer tab.")
         def _logs() -> None:
-            self.emit(self.notify, ChatPaneViewModel.NotifyAction.OPEN_LOGS)
+            self.emit(self.notify, ChatPaneVM.NotifyAction.OPEN_LOGS)
 
         @reg.command(name="rename", help="Rename the current tab.")
         @click.argument("words", nargs=-1, required=True)
@@ -1699,7 +1699,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         @reg.command(name="test-interrupt", help="Spawn a synthetic interrupt to exercise routing.")
         async def _test_interrupt() -> None:
-            interrupt = TestInterruptViewModel(prompt="Pick an option:", options=["alpha", "beta", "gamma"])
+            interrupt = TestInterruptVM(prompt="Pick an option:", options=["alpha", "beta", "gamma"])
             result = await self.present_interrupt(interrupt)
             if result is None:
                 self.append_message(
@@ -1714,7 +1714,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         @reg.command(name="test-choices", help="Spawn a Choices interrupt with sample options.")
         async def _test_choices() -> None:
-            interrupt = ChoicesViewModel.from_interrupt({
+            interrupt = UserChoicesVM.from_interrupt({
                 "message": "Which fruit do you prefer?",
                 "options": ["Apple", "Banana", "Cherry", "Durian"],
             })
@@ -1727,7 +1727,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         @reg.command(name="test-warning-choices", help="Spawn a WarningChoices interrupt.")
         async def _test_warning_choices() -> None:
-            interrupt = WarningChoicesViewModel.from_interrupt({
+            interrupt = WarningUserChoicesVM.from_interrupt({
                 "message": "The agent wants to delete 42 files from the working tree.",
                 "options": ["Approve once", "Always approve in this session"],
             })
@@ -1744,7 +1744,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         @reg.command(name="test-multiple-choices", help="Spawn a MultipleChoices interrupt with 3 questions.")
         async def _test_multiple_choices() -> None:
-            interrupt = MultipleChoicesViewModel.from_interrupt({
+            interrupt = MultiUserChoicesVM.from_interrupt({
                 "questions": [
                     {
                         "name": "Theme",
@@ -1776,7 +1776,7 @@ class ChatPaneViewModel(ViewModelBase):
 
         @reg.command(name="test-sql-confirmation", help="Spawn a SqlConfirmation interrupt with sample preview.")
         async def _test_sql_confirmation() -> None:
-            interrupt = SqlConfirmationViewModel.from_interrupt({
+            interrupt = SqlConfirmationVM.from_interrupt({
                 "sql": (
                     "UPDATE knowledge_entries\n"
                     "SET title = 'Renamed entry'\n"
@@ -1861,7 +1861,7 @@ class ChatPaneViewModel(ViewModelBase):
                 router.route_chunk(chunk)
                 await asyncio.sleep(0.08)
 
-            interrupt = TestInterruptViewModel(
+            interrupt = TestInterruptVM(
                 prompt="Continue with which branch?", options=["left", "right", "neither"],
             )
             result = await self.present_interrupt(interrupt)

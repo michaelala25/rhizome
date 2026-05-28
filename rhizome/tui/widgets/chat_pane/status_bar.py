@@ -2,7 +2,7 @@
 
 The status bar is a projection of facts that live elsewhere: mode and topic_path on the pane VM,
 token_usage + model_name on the AgentSession, verbosity on app.options. Rather than have the view
-reach into all three, ``StatusBarViewModel`` owns the projected slice. Each source's update path
+reach into all three, ``StatusBarVM`` owns the projected slice. Each source's update path
 writes through to a setter here; the setter no-ops on no change and emits ``dirty`` otherwise —
 giving the bar repaint isolation from the rest of the pane's dirty churn (token usage in particular
 updates on every model chunk).
@@ -44,7 +44,7 @@ _VERBOSITY_COLORS: dict[str, str] = {
 TOPIC_PATH_MAX = 60
 
 
-class StatusBarViewModel(ViewModelBase):
+class StatusBarVM(ViewModelBase):
 
     def __init__(self) -> None:
         super().__init__()
@@ -86,7 +86,7 @@ class StatusBarViewModel(ViewModelBase):
         self.emit(self.dirty)
 
 
-class StatusBarView(ViewBase[StatusBarViewModel]):
+class StatusBar(ViewBase[StatusBarVM]):
     """Renders the status bar from VM state. Three lines:
     line 1: topic path (left), model name (right)
     line 2: mode (left), token usage (right)
@@ -94,7 +94,7 @@ class StatusBarView(ViewBase[StatusBarViewModel]):
     """
 
     DEFAULT_CSS = """
-    StatusBarView {
+    StatusBar {
         height: auto;
         background: rgb(12, 12, 12);
         padding: 0 1 1 1;
@@ -102,7 +102,7 @@ class StatusBarView(ViewBase[StatusBarViewModel]):
     }
     """
 
-    def __init__(self, vm: StatusBarViewModel, **kwargs) -> None:
+    def __init__(self, vm: StatusBarVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._static: Static | None = None
 

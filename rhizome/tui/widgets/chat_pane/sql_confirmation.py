@@ -18,7 +18,7 @@ from textual.app import ComposeResult
 from textual.widgets import DataTable, Static
 
 from ..view_base import ViewBase
-from .interrupt import InterruptViewModelBase
+from .interrupt import InterruptVMBase
 
 
 _MAX_CELL_WIDTH = 40
@@ -33,7 +33,7 @@ def _truncate_cell(value: Any, max_len: int = _MAX_CELL_WIDTH) -> str:
     return s
 
 
-class SqlConfirmationViewModel(InterruptViewModelBase):
+class SqlConfirmationVM(InterruptVMBase):
     """Holds the SQL + preview data + Approve/Deny cursor for a SQL-modification interrupt."""
 
     def __init__(
@@ -53,7 +53,7 @@ class SqlConfirmationViewModel(InterruptViewModelBase):
         self._cursor: int = 0
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> SqlConfirmationViewModel:
+    def from_interrupt(cls, value: dict[str, Any]) -> SqlConfirmationVM:
         preview = value.get("preview", {})
         return cls(
             sql=value.get("sql", ""),
@@ -104,66 +104,66 @@ class SqlConfirmationViewModel(InterruptViewModelBase):
         self.resolve(self._options[self._cursor])
 
 
-class SqlConfirmationView(ViewBase[SqlConfirmationViewModel]):
-    """Renders ``SqlConfirmationViewModel``. Up/Down move the cursor; Enter confirms."""
+class SqlConfirmation(ViewBase[SqlConfirmationVM]):
+    """Renders ``SqlConfirmationVM``. Up/Down move the cursor; Enter confirms."""
 
     DEFAULT_CSS = """
-    SqlConfirmationView {
+    SqlConfirmation {
         height: auto;
         layout: vertical;
         padding: 1 2;
         margin: 0 2;
         border: round rgb(80,80,80);
     }
-    SqlConfirmationView:focus {
+    SqlConfirmation:focus {
         border: round rgb(140,140,200);
     }
-    SqlConfirmationView.--resolved {
+    SqlConfirmation.--resolved {
         border: round rgb(50,50,50);
         color: $text-muted;
     }
-    SqlConfirmationView #sql-header {
+    SqlConfirmation #sql-header {
         color: rgb(220,160,50);
         margin-bottom: 1;
     }
-    SqlConfirmationView #sql-statement {
+    SqlConfirmation #sql-statement {
         background: rgb(40,40,50);
         padding: 1 2;
         margin-bottom: 1;
     }
-    SqlConfirmationView #sql-no-preview {
+    SqlConfirmation #sql-no-preview {
         color: rgb(150,150,150);
         margin-bottom: 1;
     }
-    SqlConfirmationView DataTable {
+    SqlConfirmation DataTable {
         height: auto;
         max-height: 14;
         margin-bottom: 1;
     }
-    SqlConfirmationView #sql-truncation-note {
+    SqlConfirmation #sql-truncation-note {
         color: rgb(150,150,150);
         margin-bottom: 1;
     }
-    SqlConfirmationView #sql-options {
+    SqlConfirmation #sql-options {
         height: auto;
     }
-    SqlConfirmationView #sql-hint {
+    SqlConfirmation #sql-hint {
         color: rgb(100,100,100);
     }
-    SqlConfirmationView #sql-collapsed {
+    SqlConfirmation #sql-collapsed {
         height: auto;
         display: none;
     }
-    SqlConfirmationView.--resolved #sql-header,
-    SqlConfirmationView.--resolved #sql-statement,
-    SqlConfirmationView.--resolved #sql-no-preview,
-    SqlConfirmationView.--resolved #sql-preview-table,
-    SqlConfirmationView.--resolved #sql-truncation-note,
-    SqlConfirmationView.--resolved #sql-options,
-    SqlConfirmationView.--resolved #sql-hint {
+    SqlConfirmation.--resolved #sql-header,
+    SqlConfirmation.--resolved #sql-statement,
+    SqlConfirmation.--resolved #sql-no-preview,
+    SqlConfirmation.--resolved #sql-preview-table,
+    SqlConfirmation.--resolved #sql-truncation-note,
+    SqlConfirmation.--resolved #sql-options,
+    SqlConfirmation.--resolved #sql-hint {
         display: none;
     }
-    SqlConfirmationView.--resolved #sql-collapsed {
+    SqlConfirmation.--resolved #sql-collapsed {
         display: block;
     }
     """

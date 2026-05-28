@@ -1,6 +1,6 @@
 """WarningChoices interrupt — Choices-style picker with amber warning styling.
 
-Behaviourally identical to ``ChoicesViewModel`` (intentionally duplicated rather than subclassed so
+Behaviourally identical to ``UserChoicesVM`` (intentionally duplicated rather than subclassed so
 ``isinstance`` dispatch order never matters). The only differences are the amber icon + summary
 motif on the view side and ``from_interrupt`` always prepending Approve/Deny to caller-supplied
 extras.
@@ -15,15 +15,15 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from ..view_base import ViewBase
-from .interrupt import InterruptViewModelBase
+from .interrupt import InterruptVMBase
 
 _AMBER = "rgb(220,160,50)"
 _GREEN = "rgb(100,200,100)"
 _DIM = "rgb(100,100,100)"
 
 
-class WarningChoicesViewModel(InterruptViewModelBase):
-    """Business logic for the WarningChoices interrupt. Identical surface to ``ChoicesViewModel`` —
+class WarningUserChoicesVM(InterruptVMBase):
+    """Business logic for the WarningChoices interrupt. Identical surface to ``UserChoicesVM`` —
     deliberately not subclassed so that view dispatch by ``isinstance`` can check the two VMs in any
     order. ``from_interrupt`` prepends Approve/Deny to any caller-supplied extras.
     """
@@ -42,7 +42,7 @@ class WarningChoicesViewModel(InterruptViewModelBase):
         self.cursor: int = 0
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> WarningChoicesViewModel:
+    def from_interrupt(cls, value: dict[str, Any]) -> WarningUserChoicesVM:
         # Caller-supplied ``options`` are treated as extras; Approve/Deny always come first.
         extras = list(value.get("options") or [])
         return cls(
@@ -69,23 +69,23 @@ class WarningChoicesViewModel(InterruptViewModelBase):
         self.resolve(self.options[self.cursor])
 
 
-class WarningChoicesView(ViewBase[WarningChoicesViewModel]):
+class WarningUserChoices(ViewBase[WarningUserChoicesVM]):
     """Amber warning header + numbered options + cancel hint. On resolution collapses to a one-line
     ``⚠  <message> → <selected>`` summary. Ctrl+C cancels the pending future and is consumed in
     ``on_key`` to prevent the pane's priority cancel binding from firing.
     """
 
     DEFAULT_CSS = """
-    WarningChoicesView {
+    WarningUserChoices {
         height: auto;
         padding: 1 2;
         margin: 0 2;
         border: round rgb(120,90,30);
     }
-    WarningChoicesView:focus {
+    WarningUserChoices:focus {
         border: round rgb(220,160,50);
     }
-    WarningChoicesView.--resolved {
+    WarningUserChoices.--resolved {
         border: round rgb(60,50,30);
         color: $text-muted;
     }

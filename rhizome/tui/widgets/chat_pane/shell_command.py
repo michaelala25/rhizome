@@ -1,6 +1,6 @@
 """Shell command — sub-VM + view used by the MVVM chat pane.
 
-Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandViewModel``
+Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandVM``
 is appended to the feed and its ``execute()`` coroutine is scheduled on the pane's worker. The VM owns the
 subprocess lifecycle, the streamed output, and the final exit code; the view subscribes to ``dirty`` and
 renders header / output area / exit code into stock ``Static`` widgets.
@@ -29,7 +29,7 @@ from rhizome.app.vm import ViewModelBase
 SHELL_TIMEOUT = 30
 
 
-class ShellCommandViewModel(ViewModelBase):
+class ShellCommandVM(ViewModelBase):
     """State for one shell-command invocation.
 
     Lifecycle:
@@ -124,8 +124,8 @@ class ShellCommandViewModel(ViewModelBase):
             self.emit(self.dirty)
 
 
-class ShellCommandView(ViewBase[ShellCommandViewModel]):
-    """Renders a ``ShellCommandViewModel``: header line, output area, elapsed display (while running and on
+class ShellCommandMessage(ViewBase[ShellCommandVM]):
+    """Renders a ``ShellCommandVM``: header line, output area, elapsed display (while running and on
     completion if >=10s), and a trailing exit-code line on non-zero exits.
 
     Uses ``set_interval`` to repaint elapsed while the VM is running; the interval is cancelled once the VM
@@ -133,25 +133,25 @@ class ShellCommandView(ViewBase[ShellCommandViewModel]):
     """
 
     DEFAULT_CSS = f"""
-    ShellCommandView {{
+    ShellCommandMessage {{
         height: auto;
         padding: 1 2 1 2;
         background: {Colors.USER_BG};
         margin: 0 2;
     }}
-    ShellCommandView .shell-header {{
+    ShellCommandMessage .shell-header {{
         height: auto;
         width: 1fr;
     }}
-    ShellCommandView .shell-elapsed {{
+    ShellCommandMessage .shell-elapsed {{
         height: auto;
         color: $text-muted;
         display: none;
     }}
-    ShellCommandView .shell-elapsed.--visible {{
+    ShellCommandMessage .shell-elapsed.--visible {{
         display: block;
     }}
-    ShellCommandView .shell-output-area {{
+    ShellCommandMessage .shell-output-area {{
         height: auto;
         max-height: 20;
         background: rgb(8, 8, 8);
@@ -159,28 +159,28 @@ class ShellCommandView(ViewBase[ShellCommandViewModel]):
         padding: 0 1;
         display: none;
     }}
-    ShellCommandView .shell-output-area.--visible {{
+    ShellCommandMessage .shell-output-area.--visible {{
         display: block;
     }}
-    ShellCommandView .shell-output {{
+    ShellCommandMessage .shell-output {{
         height: auto;
         width: 1fr;
         color: rgb(180, 180, 180);
     }}
-    ShellCommandView .shell-exit-code {{
+    ShellCommandMessage .shell-exit-code {{
         height: auto;
         color: $text-muted;
         display: none;
     }}
-    ShellCommandView .shell-exit-code.--visible {{
+    ShellCommandMessage .shell-exit-code.--visible {{
         display: block;
     }}
-    ShellCommandView .shell-exit-code.--error {{
+    ShellCommandMessage .shell-exit-code.--error {{
         color: {Colors.SYSTEM_ERROR};
     }}
     """
 
-    def __init__(self, vm: ShellCommandViewModel, **kwargs) -> None:
+    def __init__(self, vm: ShellCommandVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._tick_timer: Timer | None = None
 

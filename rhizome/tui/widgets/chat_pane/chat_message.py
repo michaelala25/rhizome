@@ -1,4 +1,4 @@
-"""ChatMessageView — a static, non-streaming chat message (user / system / error).
+"""ChatMessage — a static, non-streaming chat message (user / system / error).
 
 ``ChatMessageData`` is an immutable dataclass — content is fixed at append time, so this view binds
 to data, not a VM. Agent messages live in ``agent_message.py`` (separate VM + view, with streaming
@@ -30,35 +30,35 @@ _ROLE_PREFIXES = {
 }
 
 
-class ChatMessageView(Widget):
+class ChatMessage(Widget):
     """Renders an immutable chat message with role prefix and styling."""
 
     DEFAULT_CSS = f"""
-    ChatMessageView {{
+    ChatMessage {{
         padding: 1 2 0 2;
         height: auto;
     }}
-    ChatMessageView.user-message {{
+    ChatMessage.user-message {{
         background: {Colors.USER_BG};
         margin: 0 2;
     }}
-    ChatMessageView.system-message {{
+    ChatMessage.system-message {{
         color: $text-muted;
     }}
-    ChatMessageView.error-message {{
+    ChatMessage.error-message {{
         color: {Colors.SYSTEM_ERROR};
     }}
-    ChatMessageView.error-message Markdown {{
+    ChatMessage.error-message Markdown {{
         color: {Colors.SYSTEM_ERROR};
     }}
-    ChatMessageView .msg-header {{
+    ChatMessage .msg-header {{
         height: auto;
         width: 1fr;
     }}
-    ChatMessageView .msg-prefix {{
+    ChatMessage .msg-prefix {{
         height: auto;
     }}
-    ChatMessageView .msg-content {{
+    ChatMessage .msg-content {{
         width: 1fr;
         color: rgb(204, 204, 204);
     }}
@@ -76,7 +76,7 @@ class ChatMessageView(Widget):
         super().__init__(**kwargs)
         if role == Role.AGENT:
             raise ValueError(
-                "ChatMessageView does not render AGENT messages — use AgentMessageView instead."
+                "ChatMessage does not render AGENT messages — use AgentMessage instead."
             )
         self._role = role
         self._prefix = _ROLE_PREFIXES.get(role, "")

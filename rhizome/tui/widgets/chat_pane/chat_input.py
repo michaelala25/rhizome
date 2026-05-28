@@ -1,7 +1,7 @@
 """Chat input — sub-VM + view used by the MVVM chat pane.
 
 The input owns the visible buffer, the disabled/hint reconciliation, and the per-session history ring. It
-holds a reference to the shared ``CommandPaletteViewModel`` (constructed by the pane) so that buffer mutations
+holds a reference to the shared ``CommandPaletteVM`` (constructed by the pane) so that buffer mutations
 can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
 typed text is a complete command — no widget-tree walks, no parent mediation.
 
@@ -18,13 +18,13 @@ from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
 from rhizome.app.vm import ViewModelBase
-from .command_palette import CommandPaletteViewModel
+from .command_palette import CommandPaletteVM
 
 
 _BLURRED_HINT = "ctrl+l to return to the chat area"
 
 
-class ChatInputViewModel(ViewModelBase):
+class ChatInputVM(ViewModelBase):
 
     class Callbacks(Enum):
         SUBMITTED = "submitted"
@@ -43,14 +43,14 @@ class ChatInputViewModel(ViewModelBase):
         CHAT = "chat"
         COMMIT = "commit"
 
-    def __init__(self, palette: CommandPaletteViewModel, *, default_hint: str = "") -> None:
+    def __init__(self, palette: CommandPaletteVM, *, default_hint: str = "") -> None:
         super().__init__()
 
-        self._submitted = self._make_group(ChatInputViewModel.Callbacks.SUBMITTED)
+        self._submitted = self._make_group(ChatInputVM.Callbacks.SUBMITTED)
 
         self._palette = palette
 
-        self.state: ChatInputViewModel.State = ChatInputViewModel.State.CHAT
+        self.state: ChatInputVM.State = ChatInputVM.State.CHAT
         self.buffer: str = ""
         self.enabled: bool = True
         self.default_hint: str = default_hint
@@ -72,7 +72,7 @@ class ChatInputViewModel(ViewModelBase):
         return self._submitted
 
     @property
-    def palette(self) -> CommandPaletteViewModel:
+    def palette(self) -> CommandPaletteVM:
         return self._palette
 
     @property
@@ -94,18 +94,18 @@ class ChatInputViewModel(ViewModelBase):
         # feeding it to the palette would surface a misleading "/c…" match on the first character.
         # ``update_palette=False`` is used by history nav: recalling a "/foo" entry should not pop
         # the palette open, since that would steal up/down from further history traversal.
-        if update_palette and self.state == ChatInputViewModel.State.CHAT:
+        if update_palette and self.state == ChatInputVM.State.CHAT:
             self._palette.update_for_input(text)
         self.emit(self.dirty)
 
-    def set_state(self, state: "ChatInputViewModel.State") -> None:
+    def set_state(self, state: "ChatInputVM.State") -> None:
         if self.state == state:
             return
         self.state = state
         
         # Reconcile the palette with the new state: hide on entering COMMIT, re-filter against the
         # current buffer on returning to CHAT.
-        if state == ChatInputViewModel.State.COMMIT:
+        if state == ChatInputVM.State.COMMIT:
             self._palette.update_for_input("")
         else:
             self._palette.update_for_input(self.buffer)
@@ -138,7 +138,7 @@ class ChatInputViewModel(ViewModelBase):
         busy) and call ``accept_submission(text)`` to commit the clear+history-push only on accept.
         """
         text = self.buffer.strip()
-        if not text and self.state != ChatInputViewModel.State.COMMIT:
+        if not text and self.state != ChatInputVM.State.COMMIT:
             return
         self.emit(self.submitted, text)
 
@@ -208,8 +208,8 @@ class ChatInputViewModel(ViewModelBase):
         return self._palette.has_exact_match(self.buffer)
 
 
-class ChatInputView(TextArea):
-    """View for ``ChatInputViewModel``.
+class ChatInput(TextArea):
+    """View for ``ChatInputVM``.
 
     Subclasses ``TextArea`` rather than ``ViewBase`` so we keep the TextArea editing surface intact while
     still binding to a VM. Standard ``dirty`` subscription is wired manually in ``on_mount`` / ``on_unmount``
@@ -220,7 +220,7 @@ class ChatInputView(TextArea):
     calling the VM directly. The pane only learns about submissions via the ``submitted`` callback group.
     """
 
-    def __init__(self, vm: ChatInputViewModel, *, id: str | None = None) -> None:
+    def __init__(self, vm: ChatInputVM, *, id: str | None = None) -> None:
         super().__init__(show_line_numbers=False, tab_behavior="focus", id=id)
         self._vm = vm
         self._last_escape: float = 0.0
@@ -319,7 +319,7 @@ class ChatInputView(TextArea):
 
         # In COMMIT state, up/down skip history nav entirely and behave as plain TextArea cursor
         # movement so the user can navigate multi-line instructions.
-        in_commit = self._vm.state == ChatInputViewModel.State.COMMIT
+        in_commit = self._vm.state == ChatInputVM.State.COMMIT
 
         if event.key == "up":
             row, col = self.cursor_location

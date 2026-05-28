@@ -1,4 +1,4 @@
-"""AgentMessageViewModel + view — a single contiguous agent text segment.
+"""AgentMessageVM + view — a single contiguous agent text segment.
 
 The VM holds an append-only ``body`` string and a ``streaming`` flag that flips on ``close()``.
 Chunks land via ``append_token``; the view's drain task pulls characters from ``body`` on a fixed
@@ -6,7 +6,7 @@ tick and writes adaptive-sized slices into a ``MarkdownStream`` so bursty arriva
 rather than blitting.
 
 Unlike the previous design, this VM represents *one* segment — not a whole agent turn. Tool calls
-live in their own ``ToolMessageViewModel`` entries in the feed; alternating chat segments and tool
+live in their own ``ToolMessageVM`` entries in the feed; alternating chat segments and tool
 lists are routed (in step 2) by the chat-pane VM or (in step 3) by the ``AgentStreamRouter``. The
 thinking indicator is likewise its own feed entry, not a child of this view.
 """
@@ -28,7 +28,7 @@ from ..view_base import ViewBase
 from rhizome.app.vm import ViewModelBase
 
 
-class AgentMessageViewModel(ViewModelBase):
+class AgentMessageVM(ViewModelBase):
     """A single contiguous run of agent text. Append-only ``body``; ``streaming`` flips on close."""
 
     def __init__(self, *, mode: Mode = Mode.IDLE) -> None:
@@ -107,8 +107,8 @@ class AgentMessageViewModel(ViewModelBase):
         self.emit(self.dirty)
 
 
-class AgentMessageView(ViewBase[AgentMessageViewModel]):
-    """Renders an ``AgentMessageViewModel`` with adaptive markdown streaming.
+class AgentMessage(ViewBase[AgentMessageVM]):
+    """Renders an ``AgentMessageVM`` with adaptive markdown streaming.
 
     The drain task wakes on every VM event (``_wakeup``) and writes adaptive-sized slices into the
     ``MarkdownStream`` on a fixed tick. While the VM is open, slices are sized so pending content
@@ -118,49 +118,49 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
     """
 
     DEFAULT_CSS = f"""
-    AgentMessageView {{
+    AgentMessage {{
         padding: 1 2 0 2;
         height: auto;
         layout: vertical;
     }}
-    AgentMessageView.learn-mode {{
+    AgentMessage.learn-mode {{
         border: round {Colors.LEARN_AGENT_BORDER};
         margin: 0 2;
     }}
-    AgentMessageView.review-mode {{
+    AgentMessage.review-mode {{
         border: round {Colors.REVIEW_AGENT_BORDER};
         margin: 0 2;
     }}
-    AgentMessageView.--commit-selectable {{
+    AgentMessage.--commit-selectable {{
         border: round {Colors.COMMIT_SELECTABLE};
     }}
-    AgentMessageView.--commit-selectable.--commit-cursor {{
+    AgentMessage.--commit-selectable.--commit-cursor {{
         border: round {Colors.COMMIT_CURSOR};
     }}
-    AgentMessageView.--commit-selected {{
+    AgentMessage.--commit-selected {{
         border: round {Colors.COMMIT_SELECTED};
     }}
-    AgentMessageView.--commit-selected.--commit-cursor {{
+    AgentMessage.--commit-selected.--commit-cursor {{
         border: round {Colors.COMMIT_SELECTED_CURSOR};
     }}
-    AgentMessageView .msg-header {{
+    AgentMessage .msg-header {{
         height: auto;
         width: 1fr;
     }}
-    AgentMessageView .msg-prefix {{
+    AgentMessage .msg-prefix {{
         height: auto;
     }}
-    AgentMessageView .commit-checkbox {{
+    AgentMessage .commit-checkbox {{
         height: auto;
         width: auto;
         margin-right: 1;
         display: none;
     }}
-    AgentMessageView.--commit-selectable .commit-checkbox,
-    AgentMessageView.--commit-selected .commit-checkbox {{
+    AgentMessage.--commit-selectable .commit-checkbox,
+    AgentMessage.--commit-selected .commit-checkbox {{
         display: block;
     }}
-    AgentMessageView .agent-body {{
+    AgentMessage .agent-body {{
         width: 1fr;
         color: rgb(204, 204, 204);
     }}
@@ -171,7 +171,7 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
     _TAIL_BUDGET_MS = 200
     _MIN_SLICE_CHARS = 2
 
-    def __init__(self, vm: AgentMessageViewModel, **kwargs) -> None:
+    def __init__(self, vm: AgentMessageVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
@@ -275,7 +275,7 @@ class AgentMessageView(ViewBase[AgentMessageViewModel]):
         # First write to this widget instance: dump whatever body exists in one shot. For a
         # freshly-constructed VM this is typically the first token or two, so the visual difference
         # vs. the slicing path is negligible. The case this really fixes is *remount* — cursor
-        # navigation brings a previously-displayed AgentMessageViewModel back into view with its
+        # navigation brings a previously-displayed AgentMessageVM back into view with its
         # full body already populated, and without this branch the catch-up logic would slow-stream
         # the existing content back in like a fake re-stream. New tokens that arrive after this
         # initial dump (i.e. the VM is still streaming) fall through to the budgeted-slice path

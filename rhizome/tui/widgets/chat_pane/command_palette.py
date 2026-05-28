@@ -16,7 +16,7 @@ from ..view_base import ViewBase
 from rhizome.app.vm import ViewModelBase
 
 
-class CommandPaletteViewModel(ViewModelBase):
+class CommandPaletteVM(ViewModelBase):
 
     def __init__(self) -> None:
         super().__init__()
@@ -119,7 +119,7 @@ class CommandPaletteViewModel(ViewModelBase):
         self.emit(self.dirty)
 
 
-class CommandPalette(ViewBase[CommandPaletteViewModel]):
+class CommandPalette(ViewBase[CommandPaletteVM]):
 
     DEFAULT_CSS = """
     CommandPalette {
@@ -140,7 +140,7 @@ class CommandPalette(ViewBase[CommandPaletteViewModel]):
     }
     """
 
-    def __init__(self, vm: CommandPaletteViewModel, **kwargs) -> None:
+    def __init__(self, vm: CommandPaletteVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
 
     def compose(self) -> ComposeResult:

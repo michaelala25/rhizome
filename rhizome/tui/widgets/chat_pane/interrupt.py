@@ -1,4 +1,4 @@
-"""InterruptViewModelBase + TestInterrupt for the chat-pane MVVM rewrite.
+"""InterruptVMBase + TestInterrupt for the chat-pane MVVM rewrite.
 
 Interrupts are feed-native sub-VMs: they live as siblings of AgentMessage in the chat pane's feed, not as
 children of it. The peek-tail rule means an interrupt appearing implicitly closes the open AgentMessage
@@ -25,7 +25,7 @@ from ..view_base import ViewBase
 from rhizome.app.vm import ViewModelBase
 
 
-class InterruptViewModelBase(ViewModelBase):
+class InterruptVMBase(ViewModelBase):
     """Common machinery for any feed-resident interrupt VM. Subclasses define the interaction surface
     (cursor, options, etc.); the base owns the future plumbing + idempotency guards.
     """
@@ -70,7 +70,7 @@ class InterruptViewModelBase(ViewModelBase):
         self.emit(self.dirty)
 
 
-class TestInterruptViewModel(InterruptViewModelBase):
+class TestInterruptVM(InterruptVMBase):
     """Minimal interrupt: a cursor over a list of options, Enter resolves with the selected option's value.
     Built for routing verification — not linked to any tool call.
     """
@@ -96,26 +96,26 @@ class TestInterruptViewModel(InterruptViewModelBase):
         self.resolve(self.options[self.cursor])
 
 
-class TestInterruptView(ViewBase[TestInterruptViewModel]):
-    """Single-Static projection of ``TestInterruptViewModel``. Up/Down move the cursor; Enter confirms. The
+class TestInterrupt(ViewBase[TestInterruptVM]):
+    """Single-Static projection of ``TestInterruptVM``. Up/Down move the cursor; Enter confirms. The
     widget keeps itself rendered after resolution so the conversational record shows what was chosen.
     """
 
     DEFAULT_CSS = """
-    TestInterruptView {
+    TestInterrupt {
         height: auto;
         padding: 1 2;
         margin: 0 2;
         border: round rgb(80, 80, 80);
     }
-    TestInterruptView:focus {
+    TestInterrupt:focus {
         border: round rgb(140, 140, 200);
     }
-    TestInterruptView.--resolved {
+    TestInterrupt.--resolved {
         border: round rgb(50, 50, 50);
         color: $text-muted;
     }
-    TestInterruptView #interrupt-body {
+    TestInterrupt #interrupt-body {
         width: 1fr;
         height: auto;
     }

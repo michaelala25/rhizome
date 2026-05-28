@@ -1,16 +1,11 @@
-"""chat_pane package — legacy widget + in-progress MVVM rewrite.
+"""chat_pane package — MVVM chat pane.
 
-The legacy widget lives at ``..legacy.chat_pane.ChatPane``; it's re-exported here
-(along with ``HintHigherVerbosity``) so existing imports
-(``from rhizome.tui.widgets.chat_pane import ChatPane``) keep resolving to the
-working widget while the rewrite proceeds.
-
-The MVVM rewrite lives in ``.view`` and ``.view_model`` and is exposed under
-``ChatPaneMVVM`` for opt-in use.
+The legacy widget still lives at ``rhizome.tui.widgets.legacy.chat_pane.ChatPane``
+(also re-exported from ``rhizome.tui.widgets``); the new MVVM ``ChatPane`` in
+``.view`` takes the unqualified name in this package.
 """
 
-from ..legacy.chat_pane import ChatPane, HintHigherVerbosity
-from .view import ChatPaneMVVM
-from .view_model import ChatPaneViewModel
+from .view import ChatPane
+from .view_model import ChatPaneVM
 
-__all__ = ["ChatPane", "ChatPaneMVVM", "ChatPaneViewModel", "HintHigherVerbosity"]
+__all__ = ["ChatPane", "ChatPaneVM"]

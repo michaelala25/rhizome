@@ -16,10 +16,10 @@ from textual.binding import Binding
 from textual.widgets import Static
 
 from ..view_base import ViewBase
-from .interrupt import InterruptViewModelBase
+from .interrupt import InterruptVMBase
 
 
-class ChoicesViewModel(InterruptViewModelBase):
+class UserChoicesVM(InterruptVMBase):
     """Business logic for the Choices interrupt: prompt + options + cursor + resolution.
 
     Mutators are idempotent on the resolved state — stale key handlers can't double-fire the future.
@@ -42,7 +42,7 @@ class ChoicesViewModel(InterruptViewModelBase):
         self.cursor: int = 0
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> ChoicesViewModel:
+    def from_interrupt(cls, value: dict[str, Any]) -> UserChoicesVM:
         """Build a VM from an agent interrupt value dict (legacy contract)."""
         return cls(
             prompt=value.get("message", cls.DEFAULT_PROMPT),
@@ -72,19 +72,19 @@ _DIM = "rgb(100,100,100)"
 _GREEN = "rgb(100,200,100)"
 
 
-class ChoicesView(ViewBase[ChoicesViewModel]):
-    """Multi-Static projection of ``ChoicesViewModel``: prompt header, numbered options with cursor
+class UserChoices(ViewBase[UserChoicesVM]):
+    """Multi-Static projection of ``UserChoicesVM``: prompt header, numbered options with cursor
     marker, ctrl+c hint, and a post-resolution summary line. On resolve the prompt/options/hint hide
     and the summary takes over (``prompt → selected`` or ``prompt — cancelled``).
     """
 
     DEFAULT_CSS = """
-    ChoicesView {
+    UserChoices {
         height: auto;
         padding: 1 2;
         margin: 0 2;
     }
-    ChoicesView.--resolved {
+    UserChoices.--resolved {
         color: $text-muted;
     }
     """

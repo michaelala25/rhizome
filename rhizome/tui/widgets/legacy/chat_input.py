@@ -151,7 +151,7 @@ class ChatInput(TextArea):
             return True
 
         # Walk up to find any ancestor exposing a command registry — works for
-        # both the legacy ChatPane and the MVVM ChatPaneMVVM passthrough.
+        # both the legacy ChatPane and the MVVM ChatPane passthrough.
         node = self.parent
         while node is not None and not hasattr(node, "_command_registry"):
             node = node.parent

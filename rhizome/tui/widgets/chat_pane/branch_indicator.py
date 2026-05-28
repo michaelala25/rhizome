@@ -1,6 +1,6 @@
 """BranchIndicator — sub-VM + view representing a /branch point in the chat feed.
 
-Lives in the parent node's feed (appended by ``ChatPaneViewModel.branch()`` at the moment of /branch).
+Lives in the parent node's feed (appended by ``ChatPaneVM.branch()`` at the moment of /branch).
 Displays the branches reachable from that point and, when the cursor has descended through it, which
 branch is currently selected. State is push-driven: the chat pane walks the visible feed on every
 cursor move and calls ``set_selected_child(...)`` directly — no event-pump subscription.
@@ -23,10 +23,10 @@ from rhizome.app.vm import ViewModelBase
 from .conversation_graph import ConversationGraph, NodeId
 
 if TYPE_CHECKING:
-    from .view_model import ChatPaneViewModel
+    from .view_model import ChatPaneVM
 
 
-class BranchIndicatorViewModel(ViewModelBase):
+class BranchPointVM(ViewModelBase):
     """Represents a single branch point. Display state is derived from ``_selected_child``:
 
     - ``None`` — cursor is at the parent node (pre-descent). Renders "N branches below ...".
@@ -42,7 +42,7 @@ class BranchIndicatorViewModel(ViewModelBase):
         self,
         graph: ConversationGraph,
         parent_node_id: NodeId,
-        chat_pane: "ChatPaneViewModel",
+        chat_pane: "ChatPaneVM",
     ) -> None:
         super().__init__()
         self._graph = graph
@@ -80,7 +80,7 @@ class BranchIndicatorViewModel(ViewModelBase):
         return name if name else f"branch-{child_id}"
 
     # ------------------------------------------------------------------
-    # State updates (called by ChatPaneViewModel on cursor moves)
+    # State updates (called by ChatPaneVM on cursor moves)
     # ------------------------------------------------------------------
 
     def set_selected_child(self, child_id: NodeId | None) -> None:
@@ -126,7 +126,7 @@ class BranchIndicatorViewModel(ViewModelBase):
 
         Passes ``parent_node_id`` so an ancestor indicator (higher in the path) ascends out of its
         own branch point rather than just popping one level from the leaf — see
-        ``ChatPaneViewModel.ascend``.
+        ``ChatPaneVM.ascend``.
         """
         if self._selected_child is None:
             return
@@ -136,7 +136,7 @@ class BranchIndicatorViewModel(ViewModelBase):
         """ctrl+left (-1) / ctrl+right (+1): swap horizontal sibling at *this* branch point.
 
         Passes ``parent_node_id`` so the swap happens at this indicator's level even if the cursor
-        currently sits several levels deeper. See ``ChatPaneViewModel.swap_sibling`` for the
+        currently sits several levels deeper. See ``ChatPaneVM.swap_sibling`` for the
         truncation semantics.
         """
         if self._selected_child is None:
@@ -144,7 +144,7 @@ class BranchIndicatorViewModel(ViewModelBase):
         self._chat_pane.swap_sibling(direction, parent_node_id=self._parent_node_id)
 
 
-class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
+class BranchPoint(ViewBase[BranchPointVM]):
     """Bright-grey banner with top/bottom borders. Focusable via click; keystrokes only fire when
     focused so they never compete with the chat input's word-nav."""
 
@@ -161,7 +161,7 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
     ]
 
     DEFAULT_CSS = """
-    BranchIndicatorView {
+    BranchPoint {
         height: auto;
         padding: 0 1;
         margin: 1 0;
@@ -169,20 +169,20 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
         border-bottom: rgb(120, 120, 120);
         color: rgb(180, 180, 180);
     }
-    BranchIndicatorView:focus {
+    BranchPoint:focus {
         border-top: rgb(220, 220, 220);
         border-bottom: rgb(220, 220, 220);
         color: rgb(220, 220, 220);
     }
-    BranchIndicatorView Horizontal {
+    BranchPoint Horizontal {
         height: auto;
         width: 1fr;
     }
-    BranchIndicatorView .branches {
+    BranchPoint .branches {
         width: auto;
         height: auto;
     }
-    BranchIndicatorView .hint {
+    BranchPoint .hint {
         width: 1fr;
         height: auto;
         content-align-horizontal: right;
@@ -194,7 +194,7 @@ class BranchIndicatorView(ViewBase[BranchIndicatorViewModel]):
     # doesn't blow out the indicator's width.
     _VISIBLE_SIBLINGS_PER_SIDE = 2
 
-    def __init__(self, vm: BranchIndicatorViewModel, **kwargs) -> None:
+    def __init__(self, vm: BranchPointVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._branches_static: Static | None = None
         self._hint_static: Static | None = None
