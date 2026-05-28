@@ -32,6 +32,7 @@ from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 from rhizome.db import Topic
 from rhizome.db.operations import (
     create_topic,
+    delete_topic_subtree,
     expand_subtrees,
     find_parent_topic_ids,
     list_children,
@@ -69,8 +70,11 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     class Callbacks(Enum):
         # No payloads — listeners read public accessors. ``CURSOR_CHANGED`` is split from ``dirty``
         # so consumers like the topic-summary panel don't refetch on every selection-toggle repaint.
+        # ``TOPIC_DELETED`` fires after a subtree delete commits; the browser orchestrator listens so
+        # the active tab can drop rows whose topic just vanished.
         SELECTION_CHANGED = "selection_changed"
         CURSOR_CHANGED = "cursor_changed"
+        TOPIC_DELETED = "topic_deleted"
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
@@ -80,6 +84,9 @@ class BrowserTopicTreeViewModel(ViewModelBase):
         )
         self._cursor_changed = self._make_group(
             BrowserTopicTreeViewModel.Callbacks.CURSOR_CHANGED
+        )
+        self._topic_deleted = self._make_group(
+            BrowserTopicTreeViewModel.Callbacks.TOPIC_DELETED
         )
         self._selected_ids: set[int] = set()
         # Authoritative external reference; mirrors the widget's own cursor whenever the view pushes
@@ -97,6 +104,10 @@ class BrowserTopicTreeViewModel(ViewModelBase):
     @property
     def cursor_changed(self):
         return self._cursor_changed
+
+    @property
+    def topic_deleted(self):
+        return self._topic_deleted
 
     def is_selected(self, topic_id: int) -> bool:
         return topic_id in self._selected_ids
@@ -124,6 +135,24 @@ class BrowserTopicTreeViewModel(ViewModelBase):
                 topics = await list_children(session, parent_id)
             parent_set = await find_parent_topic_ids(session, [t.id for t in topics])
         return [LoadedTopic(topic=t, has_children=t.id in parent_set) for t in topics]
+
+    async def delete_topic_subtree(self, root_id: int) -> set[int]:
+        """Delete ``root_id`` and its full subtree (FK cascade handles entries / flashcards).
+        Drops any selected ids that just vanished and clears the cursor if it pointed into the
+        deleted subtree. Emits ``TOPIC_DELETED`` so the browser orchestrator can refetch the
+        active tab. Returns the set of deleted topic ids."""
+        async with self._session_factory() as session:
+            deleted_ids = await delete_topic_subtree(session, root_id)
+            await session.commit()
+        if deleted_ids & self._selected_ids:
+            self._selected_ids -= deleted_ids
+            self.emit(self._selection_changed)
+        if self._cursor_topic_id in deleted_ids:
+            self._cursor_topic_id = None
+            self.emit(self._cursor_changed)
+        self.emit(self.dirty)
+        self.emit(self._topic_deleted)
+        return deleted_ids
 
     async def create_topic(self, parent_id: int | None) -> Topic:
         """Create a new topic under ``parent_id`` (``None`` = root) and return it. The name is
@@ -331,6 +360,27 @@ class BrowserTopicTreeView(Tree[Topic]):
             # 0 (the synthetic ``(root)`` row) because ``_line`` is still its uninitialised
             # default. Defer to after the next refresh so the line cache is current.
             self.call_after_refresh(self.move_cursor, new_node)
+
+    def remove_node(self, topic_id: int) -> bool:
+        """Detach the node for ``topic_id`` (and its whole subtree, which Textual prunes for free)
+        and move the cursor to its parent — or the synthetic ``(root)`` row when the deleted node
+        was a top-level topic. Returns ``True`` when the node was found and removed."""
+        node = self._find_node(self.root, topic_id)
+        if node is None:
+            return False
+        parent = node.parent
+        node.remove()
+        if parent is None or parent is self.root:
+            virtual = self.root.children[0] if self.root.children else None
+            if virtual is not None:
+                self.call_after_refresh(self.move_cursor, virtual)
+        else:
+            # Parent stops being expandable if it's now empty — flip the arrow off so it doesn't
+            # look like it has hidden children.
+            if not parent.children:
+                parent.allow_expand = False
+            self.call_after_refresh(self.move_cursor, parent)
+        return True
 
     def update_node_label(self, topic_id: int, new_name: str) -> bool:
         """Find the node for ``topic_id`` and rewrite its label + ``data.name`` in place. Returns

@@ -40,6 +40,7 @@ from rhizome.logs import get_logger
 
 from ..topic_tree import BrowserTopicTreeView
 from .action_menu import ActionMenuView
+from .delete_dialog import DeleteDialogView
 from .topic_details import TopicDetailsView
 from .view_model import TopicTreePanelViewModel
 
@@ -81,6 +82,10 @@ class TopicTreePanelView(Vertical):
     TopicTreePanelView.-actions-expanded BrowserTopicTreeView {
         border-left: solid #6a6a6a;
     }
+    /* Bottom-slot mutex: ``-deleting`` on this panel swaps the details widget out for the
+       confirm-delete dialog. */
+    TopicTreePanelView.-deleting TopicDetailsView { display: none; }
+    TopicTreePanelView.-deleting DeleteDialogView { display: block; }
     """
 
     BINDINGS = [
@@ -92,11 +97,16 @@ class TopicTreePanelView(Vertical):
         # ``c`` creates under the cursor (``(root)`` cursor → no parent); ``shift+c`` always at root.
         Binding("c", "create", show=False),
         Binding("shift+c", "create_root", show=False),
+        Binding("d", "delete", show=False),
     ]
 
     def __init__(self, view_model: TopicTreePanelViewModel, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
+        # Topic id captured at delete-dispatch time. Pins the destructive op to the cursor topic
+        # *as of* when the dialog opened, so an alt+up→tree→arrow→alt+down round-trip can't end
+        # up deleting a different topic than the one the prompt named.
+        self._delete_target_id: int | None = None
 
     @property
     def view_model(self) -> TopicTreePanelViewModel:
@@ -108,6 +118,7 @@ class TopicTreePanelView(Vertical):
             yield ActionMenuView(id="browser-tree-actions")
             yield BrowserTopicTreeView(self._vm.tree)
         yield TopicDetailsView(self._vm.details, id="browser-topic-details")
+        yield DeleteDialogView(id="browser-topic-delete")
 
     def on_mount(self) -> None:
         # Repaint the tree node's label after a successful Accept on the details panel.
@@ -144,11 +155,49 @@ class TopicTreePanelView(Vertical):
     def on_action_menu_view_delete_requested(
         self, event: ActionMenuView.DeleteRequested
     ) -> None:
-        _logger.info(
-            "delete_topic (subtree) stub — cursor=%s, selection=%d",
-            self._vm.tree.cursor_topic_id,
-            len(self._vm.tree.selected_ids),
-        )
+        self._begin_delete()
+
+    def _begin_delete(self) -> None:
+        # No-op when cursor is on the synthetic ``(root)`` row — there's no topic to delete.
+        topic_id = self._vm.tree.cursor_topic_id
+        if topic_id is None:
+            return
+        topic_name: str | None = None
+        if self._vm.details.topic is not None and self._vm.details.topic.id == topic_id:
+            topic_name = self._vm.details.topic.name
+        self._delete_target_id = topic_id
+        dialog = self.query_one(DeleteDialogView)
+        dialog.prepare_for_show(topic_name)
+        self.add_class("-deleting")
+        dialog.focus()
+
+    def on_delete_dialog_view_accepted(
+        self, event: DeleteDialogView.Accepted
+    ) -> None:
+        self.run_worker(self._delete_worker(), exclusive=False)
+
+    def on_delete_dialog_view_cancelled(
+        self, event: DeleteDialogView.Cancelled
+    ) -> None:
+        self._end_delete()
+
+    async def _delete_worker(self) -> None:
+        # Read the pinned target — NOT the live cursor (see __init__ note).
+        topic_id = self._delete_target_id
+        if topic_id is None:
+            self._end_delete()
+            return
+        await self._vm.tree.delete_topic_subtree(topic_id)
+        try:
+            self.query_one(BrowserTopicTreeView).remove_node(topic_id)
+        except Exception:
+            pass
+        self._end_delete()
+
+    def _end_delete(self) -> None:
+        self._delete_target_id = None
+        self.remove_class("-deleting")
+        self.focus_tree()
 
     # ------------------------------------------------------------------
     # Alt-arrow nav — actions wrap the in-graph resolvers and bubble on no-handle
@@ -179,6 +228,9 @@ class TopicTreePanelView(Vertical):
 
     def action_create_root(self) -> None:
         self._dispatch_create(None)
+
+    def action_delete(self) -> None:
+        self._begin_delete()
 
     def _dispatch_create(self, parent_id: int | None) -> None:
         # Background worker because the DB write + tree mutation chain is async, and key-binding
@@ -222,16 +274,22 @@ class TopicTreePanelView(Vertical):
     def nav_down(self) -> bool:
         node = self._focused_node()
         if node == "tree":
+            # The delete dialog takes over the bottom slot while ``-deleting`` is active.
+            if self._delete_active():
+                return self._focus_delete_dialog()
             return self._focus_details_node("name")
         if node == "details_name":
             return self._focus_details_node("description")
         if node == "details_description":
             return self._focus_details_node("accept")
-        # actions / details_accept → no further down step.
+        # actions / details_accept / delete_dialog → no further down step.
         return False
 
     def nav_up(self) -> bool:
         node = self._focused_node()
+        if node == "delete_dialog":
+            self.focus_tree()
+            return True
         if node == "details_accept":
             return self._focus_details_node("description")
         if node == "details_description":
@@ -257,6 +315,8 @@ class TopicTreePanelView(Vertical):
         if focused is None:
             return None
         fid = focused.id
+        if fid == "browser-topic-delete":
+            return "delete_dialog"
         if fid == "topic-details-name":
             return "details_name"
         if fid == "topic-details-description":
@@ -268,6 +328,16 @@ class TopicTreePanelView(Vertical):
         if self._focus_is_in_widget("ActionMenuView"):
             return "actions"
         return None
+
+    def _delete_active(self) -> bool:
+        return self.has_class("-deleting")
+
+    def _focus_delete_dialog(self) -> bool:
+        try:
+            self.query_one(DeleteDialogView).focus()
+            return True
+        except Exception:
+            return False
 
     def _focus_details_node(self, key: str) -> bool:
         # ``accept`` is conditional on ``is_dirty`` — present in the graph only while the choices

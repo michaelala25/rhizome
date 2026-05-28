@@ -2,7 +2,7 @@
 
 from typing import Iterable
 
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import bindparam, delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rhizome.db import Topic
@@ -181,3 +181,22 @@ async def delete_topic(
     await session.delete(topic)
     await session.flush()
     _logger.info("Topic deleted: id=%d", topic_id)
+
+
+async def delete_topic_subtree(
+    session: AsyncSession,
+    root_id: int,
+) -> set[int]:
+    """Delete a topic and its entire subtree in one DELETE. The FK ``ON DELETE CASCADE`` on
+    every ``topic.id`` reference (children, entries, flashcards, ...) handles the recursive
+    cleanup at the DB level — we only have to enumerate the topic ids ourselves so the caller
+    can update in-memory state (selection sets, tree nodes) without a follow-up query.
+
+    Returns the set of deleted topic ids."""
+    subtree_ids = await expand_subtrees(session, [root_id])
+    if not subtree_ids:
+        return set()
+    await session.execute(delete(Topic).where(Topic.id.in_(subtree_ids)))
+    await session.flush()
+    _logger.info("Topic subtree deleted: root=%d, count=%d", root_id, len(subtree_ids))
+    return subtree_ids

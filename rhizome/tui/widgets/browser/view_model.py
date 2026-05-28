@@ -51,6 +51,7 @@ class BrowserViewModel(ViewModelBase):
         # rows that may now carry stale topic names.
         self._panel.tree.subscribe(self._panel.tree.selection_changed, self._on_filter_changed)
         self._panel.details.subscribe(self._panel.details.saved, self._on_topic_saved)
+        self._panel.tree.subscribe(self._panel.tree.topic_deleted, self._on_topic_deleted)
 
         resolved_tabs = _default_tabs(session_factory) if tabs is None else tabs
         for tab in resolved_tabs:
@@ -143,6 +144,14 @@ class BrowserViewModel(ViewModelBase):
         # rows joined against the renamed topic pick up the new name. Inactive tabs are left
         # untouched — they'll refetch the next time their filter changes; if a user switches to
         # one before that, they may briefly see stale topic names.
+        active = self.active_tab
+        if active is not None:
+            active.refetch()
+
+    def _on_topic_deleted(self) -> None:
+        # Fired after a subtree delete commits. Active tab refetches so rows whose topic just
+        # vanished (or whose entries cascaded away) disappear from view. Same inactive-tab
+        # caveat as rename — they'll catch up on their next filter change.
         active = self.active_tab
         if active is not None:
             active.refetch()

@@ -16,6 +16,10 @@ single VM + view so `BrowserView` / `BrowserViewModel` treat the rail as one reg
   `CreateRequested` / `DeleteRequested` messages caught by the panel view's
   `on_action_menu_view_<name>_requested` handlers. Collapsed-by-default with focus-driven rail
   expansion.
+- **delete_dialog.py — `DeleteDialogView`**: VM-less confirm-delete dialog that takes over the
+  bottom slot (CSS toggles `.-deleting` on the panel to swap it for the details panel). Cancel
+  is the first choice so the cursor defaults there — avoiding accidental subtree deletions on a
+  stray enter press.
 - **topic_details/ — `TopicDetailsViewModel` + `TopicDetailsView`**: buffered-edit panel beneath
   the tree (name + description `TextArea`s + Accept/Cancel choices). VM is a
   `QueryBackedViewModel`; the panel VM pushes `set_topic_id` on cursor changes, the fetch loads

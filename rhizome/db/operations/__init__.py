@@ -90,6 +90,7 @@ from .resources import (
 from .topics import (
     create_topic,
     delete_topic,
+    delete_topic_subtree,
     expand_subtrees,
     find_parent_topic_ids,
     get_subtree,
@@ -110,6 +111,7 @@ __all__ = [
     "find_parent_topic_ids",
     "update_topic",
     "delete_topic",
+    "delete_topic_subtree",
     # entries
     "EntrySortKey",
     "count_entries",
