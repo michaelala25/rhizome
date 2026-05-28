@@ -9,8 +9,8 @@ slash command appends a fresh `BrowserViewModel` to the feed and `BrowserView` b
 ## Files & subdirectories
 
 - **view.py — `BrowserView`** — thin top-level `Horizontal`. Composes the panel + the tab bar
-  over a `ContentSwitcher` of pre-mounted tab views. Owns the `Ctrl+←/→` tab cycle and dispatches
-  the `alt+arrow` cross-region focus walk. See the module docstring for the dispatch contract.
+  over a `ContentSwitcher` of pre-mounted tab views. Owns the `Ctrl+←/→` tab cycle and the
+  `alt+←/→` cross-region fall-through. See the module docstring for the bubble-up nav contract.
 - **view_model.py — `BrowserViewModel`** — orchestrator. Owns the panel VM and a fixed list of
   tab VMs; subscribes to `panel.tree.selection_changed` and pushes `panel.current_filter` into
   the active tab. Inactive tabs catch up lazily on switch via the idempotent `set_topic_filter`.
@@ -44,12 +44,13 @@ slash command appends a fresh `BrowserViewModel` to the feed and `BrowserView` b
 - **Filter semantics — `None` vs empty.** `None` = "no filter, show everything"; an empty
   iterable = "selection is non-empty in principle but expanded to zero topics". Both are legal
   terminal states preserved end-to-end (orchestrator, tab base, DB ops).
-- **Cross-region focus is view-side.** No VM knows or cares which sub-region is focused.
-  `BrowserView` dispatches `alt+arrow` to `panel.nav_*` / `tab.nav_*` (priority bindings so they
-  fire even when a `TextArea` is focused); each side resolves one step in its own focus graph and
-  returns a bool, or — for tabs — the sentinel string `"topic_tree"` to ask `BrowserView` to land
-  focus back on the tree. See `view.py` for the dispatcher and `knowledge_entry_tab/view.py` for
-  the tab's node/edge graph.
+- **Cross-region focus is view-side, bubble-up.** No VM knows or cares which sub-region is
+  focused. Each region (panel, tab) binds `alt+arrow` itself and resolves one step in its own
+  focus graph via `nav_<dir>`; the action raises `SkipAction` when there's no in-graph target
+  so the key bubbles to `BrowserView`, which only binds `alt+←/→` as the cross-region swap
+  (panel ↔ active tab). The tab's `nav_left` may return the `"topic_tree"` sentinel as an
+  explicit "bubble me up" signal even when focus *could* stay in-tab. See `view.py` for the
+  fall-through and `knowledge_entry_tab/view.py` for the tab's node/edge graph.
 - **Panel filter contract.** The orchestrator subscribes to `panel.tree.selection_changed` for
   the event and reads `panel.current_filter` for the value. The composite read lives on the
   panel; the event is consumed at its source rather than aliased through the panel.

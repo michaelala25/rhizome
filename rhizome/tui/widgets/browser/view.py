@@ -1,8 +1,12 @@
 """Top-level browser view. Composes the topic-tree panel on the left and the tab bar + active tab
-on the right; dispatches the alt-arrow cross-region focus walk to whichever side currently has
-focus. Each side exposes a small ``nav_*`` / ``focus_*`` surface this view calls without reaching
-in. Tab views are all mounted up front behind a ``ContentSwitcher`` so switching is just a
-``current = ...`` flip — first-visit latency is the tab's own fetch, not widget construction.
+on the right. Tab views are all mounted up front behind a ``ContentSwitcher`` so switching is just
+a ``current = ...`` flip — first-visit latency is the tab's own fetch, not widget construction.
+
+Alt-arrow navigation is bubble-up: each region (panel, tab) binds ``alt+arrow`` itself and walks
+its own focus graph. This view only binds ``alt+left``/``alt+right`` as the cross-region
+fall-through (panel → tab on right, tab → panel on left), which fire when a region's action
+raises ``SkipAction`` because the step had no in-graph target. There's no cross-region ``alt+up``
+or ``alt+down``, so those keys aren't bound here at all.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from typing import Any
 
 from rich.text import Text
 
+from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, Static
@@ -74,12 +79,11 @@ class BrowserView(Horizontal):
     BINDINGS = [
         Binding("ctrl+right", "next_tab", show=False),
         Binding("ctrl+left", "prev_tab", show=False),
-        # ``priority=True`` so these fire even when a descendant ``TextArea`` is focused — its own
-        # word-nav (alt+←/→) and paragraph-jump (alt+↑/↓) bindings would otherwise swallow the event.
-        Binding("alt+right", "focus_right", priority=True, show=False),
-        Binding("alt+left", "focus_left", priority=True, show=False),
-        Binding("alt+up", "focus_up", priority=True, show=False),
-        Binding("alt+down", "focus_down", priority=True, show=False),
+        # Cross-region fall-through only — fires when the focused region's own alt+arrow action
+        # raised SkipAction (i.e., the step had no in-graph target). Up/down have no cross-region
+        # meaning, so they're left for the regions alone.
+        Binding("alt+right", "nav_right", show=False),
+        Binding("alt+left", "nav_left", show=False),
     ]
 
     def __init__(self, view_model: BrowserViewModel, **kwargs: Any) -> None:
@@ -107,15 +111,18 @@ class BrowserView(Horizontal):
         # The VM hasn't emitted dirty yet, so paint the tab bar once ourselves before fetching.
         self._refresh()
         await self._vm.start()
-        self._focus_tree()
+        self.focus()
 
     def on_unmount(self) -> None:
         self._vm.unsubscribe(self._vm.dirty, self._refresh)
         self._vm.unsubscribe(self._vm.focus, self.focus)
 
-    # ``Horizontal`` isn't focusable; route external focus requests to the tree inside the panel.
+    # ``Horizontal`` isn't focusable; route external focus requests through the panel (which in
+    # turn lands focus on the topic tree via its own ``focus()`` override).
     def focus(self, scroll_visible: bool = True) -> "BrowserView":
-        self._focus_tree(scroll_visible=scroll_visible)
+        panel = self._panel_view()
+        if panel is not None:
+            panel.focus()
         return self
 
     # ------------------------------------------------------------------
@@ -161,77 +168,61 @@ class BrowserView(Horizontal):
         self._vm.prev_tab()
 
     # ------------------------------------------------------------------
-    # Cross-region focus navigation (alt+arrow)
+    # Cross-region focus graph — two nodes (panel, tab), two edges (panel ↔ tab)
     # ------------------------------------------------------------------
     #
-    # Two regions: panel (left) and active tab (right). Internal navigation is delegated to each
-    # side's ``nav_*``. A ``False`` from ``panel.nav_right`` means "I'm at my rightmost — advance
-    # into the tab"; ``False`` from ``panel.nav_left`` means "leftmost region, no-op". The tab's
-    # ``nav_left`` can return the sentinel ``"topic_tree"`` to ask us to focus the tree.
+    # These actions only fire when the focused region's own ``alt+arrow`` action bubbled (raised
+    # ``SkipAction``) because the step had no in-graph next step. Up/down have no cross-region
+    # meaning, so they aren't bound here at all.
 
-    def action_focus_right(self) -> None:
-        if self._focus_is_in_panel():
-            panel = self._panel_view()
-            if panel is None or not panel.nav_right():
-                tab = self._active_tab_view()
-                if tab is not None and hasattr(tab, "focus_first"):
-                    tab.focus_first()
-            return
-        tab = self._active_tab_view()
-        if tab is not None and hasattr(tab, "nav_right"):
-            tab.nav_right()
+    def action_nav_left(self) -> None:
+        if not self.nav_left():
+            raise SkipAction()
 
-    def action_focus_left(self) -> None:
-        if self._focus_is_in_panel():
-            panel = self._panel_view()
-            if panel is not None:
-                panel.nav_left()
-            return
-        tab = self._active_tab_view()
-        result = tab.nav_left() if tab is not None and hasattr(tab, "nav_left") else False
-        if result == "topic_tree":
-            panel = self._panel_view()
-            if panel is not None:
-                panel.focus_tree()
+    def action_nav_right(self) -> None:
+        if not self.nav_right():
+            raise SkipAction()
 
-    def action_focus_up(self) -> None:
-        if self._focus_is_in_panel():
-            return
-        tab = self._active_tab_view()
-        if tab is not None and hasattr(tab, "nav_up"):
-            tab.nav_up()
+    def nav_left(self) -> bool:
+        if self._focused_node() == "tab":
+            return self._focus_node("panel")
+        return False
 
-    def action_focus_down(self) -> None:
-        if self._focus_is_in_panel():
-            return
-        tab = self._active_tab_view()
-        if tab is not None and hasattr(tab, "nav_down"):
-            tab.nav_down()
+    def nav_right(self) -> bool:
+        if self._focused_node() == "panel":
+            return self._focus_node("tab")
+        return False
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Focus probes
     # ------------------------------------------------------------------
 
-    def _focus_is_in_panel(self) -> bool:
+    def _focused_node(self) -> str | None:
         focused = self.screen.focused if self.screen else None
         if focused is None:
-            return False
+            return None
         panel = self._panel_view()
-        if panel is None:
+        if panel is not None and (focused is panel or panel in focused.ancestors_with_self):
+            return "panel"
+        tab = self._active_tab_view()
+        if tab is not None and (focused is tab or tab in focused.ancestors_with_self):
+            return "tab"
+        return None
+
+    def _focus_node(self, node: str) -> bool:
+        """Focus the named region. Each region's own ``focus()`` override routes to the right
+        inner widget (panel → topic tree, tab → entries table)."""
+        target = self._panel_view() if node == "panel" else self._active_tab_view()
+        if target is None:
             return False
-        return focused is panel or panel in focused.ancestors_with_self
+        target.focus()
+        return True
 
     def _panel_view(self) -> TopicTreePanelView | None:
         try:
             return self.query_one(TopicTreePanelView)
         except Exception:
             return None
-
-    def _focus_tree(self, *, scroll_visible: bool = True) -> None:
-        panel = self._panel_view()
-        if panel is None:
-            return
-        panel.focus_tree()
 
     def _active_tab_view(self):
         target_id = self._tab_widget_id(self._vm.active_index)

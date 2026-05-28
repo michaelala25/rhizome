@@ -6,9 +6,12 @@ Dialog mutex: a single ``_active_dialog`` slot toggled via ``show_dialog`` / ``h
 ``prepare_for_show()`` hook, and run focus rescue (focus the new dialog, or fall back to the
 entries table on hide). State transitions auto-dismiss any open dialog.
 
-Cross-region focus graph (driven by ``BrowserView``'s ``alt+arrow`` priority bindings via
-``nav_<dir>``). The dialog node collapses all four dialogs to one ``"dialog"`` name; ``nav_left``
-returns the sentinel ``"topic_tree"`` for edges that escape the tab.
+Alt-arrow navigation: the tab owns its own ``alt+arrow`` bindings; each ``action_nav_<dir>``
+resolves one step within the focus graph below via ``nav_<dir>``, and raises ``SkipAction``
+when the step has no in-graph target (or returns the ``"topic_tree"`` sentinel) so the key
+bubbles to ``BrowserView`` for the cross-region hop back to the panel.
+
+The dialog node collapses all four dialogs to one ``"dialog"`` name.
 
 | Node                        | Widget id                          | Present when                                                  |
 |-----------------------------|------------------------------------|---------------------------------------------------------------|
@@ -44,6 +47,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from rich.text import Text
+from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
@@ -305,6 +309,10 @@ class KnowledgeEntryBrowserTabView(Vertical):
         Binding("l", "tab_toggle_relink", show=False),
         Binding("m", "tab_toggle_multi_select", show=False),
         Binding("tab", "tab_cycle_mode", show=False),
+        Binding("alt+left", "nav_left", show=False),
+        Binding("alt+right", "nav_right", show=False),
+        Binding("alt+up", "nav_up", show=False),
+        Binding("alt+down", "nav_down", show=False),
     ]
 
     def __init__(
@@ -600,10 +608,15 @@ class KnowledgeEntryBrowserTabView(Vertical):
         "relink_choices": "linked-flashcards-relink-choices",
     }
 
-    def focus_first(self) -> None:
-        """Entry point when ``BrowserView`` hands focus to the tab. Always lands on the entries
-        table (leftmost in the focus graph) regardless of dialog state."""
-        self.query_one("#entries-table", DataTable).focus()
+    # Override so external ``tab.focus()`` calls land on the entries table (leftmost in the focus
+    # graph) rather than no-op'ing on the non-focusable ``Vertical`` container. Always the entries
+    # table regardless of dialog state — caller intent is "enter the tab", not "resume".
+    def focus(self, scroll_visible: bool = True) -> "KnowledgeEntryBrowserTabView":
+        try:
+            self.query_one("#entries-table", DataTable).focus()
+        except Exception:
+            pass
+        return self
 
     def _focused_node(self) -> str | None:
         # All four dialogs collapse to one ``"dialog"`` node — their outgoing edges are identical.
@@ -679,6 +692,27 @@ class KnowledgeEntryBrowserTabView(Vertical):
             return True
         except Exception:
             return False
+
+    # Action wrappers: bubble (via SkipAction) on no-handle so ``BrowserView`` can run the
+    # cross-region fall-through for ``alt+left``/``alt+right``. ``nav_left`` returning the
+    # ``"topic_tree"`` sentinel is also a bubble-up — the orchestrator owns the panel-jump.
+
+    def action_nav_left(self) -> None:
+        result = self.nav_left()
+        if result is False or result == "topic_tree":
+            raise SkipAction()
+
+    def action_nav_right(self) -> None:
+        if not self.nav_right():
+            raise SkipAction()
+
+    def action_nav_up(self) -> None:
+        if not self.nav_up():
+            raise SkipAction()
+
+    def action_nav_down(self) -> None:
+        if not self.nav_down():
+            raise SkipAction()
 
     def nav_up(self) -> bool:
         node = self._focused_node()
