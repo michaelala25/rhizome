@@ -30,8 +30,15 @@ class InterruptVMBase(ViewModelBase):
         super().__init__()
         self._future: asyncio.Future[Any] = asyncio.Future()
         self.resolved: bool = False
-        self.cancelled: bool = False
+        # Backing field for the ``cancelled`` property below. Property-based so subclasses with their
+        # own ``cancelled`` property (e.g. FlashcardReviewVM) don't collide with a direct attribute
+        # assignment here when both are in the MRO.
+        self._cancelled: bool = False
         self.result: Any | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     async def future(self) -> Any:
         """Block until the user resolves (or cancels) this interrupt. Returns the resolved value, or
@@ -60,7 +67,7 @@ class InterruptVMBase(ViewModelBase):
 
         self.resolved = True
         self.is_navigable = False
-        self.cancelled = True
+        self._cancelled = True
         if not self._future.done():
             self._future.cancel()
 
