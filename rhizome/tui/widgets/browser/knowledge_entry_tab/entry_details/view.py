@@ -10,6 +10,7 @@ from textual.containers import Vertical
 from textual.widgets import TextArea
 
 from ...choices import ChoiceList
+from ...confirmable_text_area import ConfirmableTextArea
 from .view_model import EntryDetailsViewModel
 
 
@@ -48,6 +49,8 @@ class EntryDetailsView(Vertical):
     EntryDetailsView #details-title {
         background: transparent;
         border: solid #3a3a3a;
+        border-title-align: right;
+        border-title-color: rgb(120,120,120);
         height: auto;
         min-height: 3;
         max-height: 6;
@@ -60,6 +63,8 @@ class EntryDetailsView(Vertical):
     EntryDetailsView #details-content {
         background: transparent;
         border: solid #3a3a3a;
+        border-title-align: right;
+        border-title-color: rgb(120,120,120);
         height: 1fr;
         padding: 0 1;
     }
@@ -96,8 +101,16 @@ class EntryDetailsView(Vertical):
     def compose(self):
         # Title is a ``TextArea`` so long titles wrap rather than overflowing. ``show_line_numbers=False``
         # keeps both fields looking like editable boxes rather than code editors.
-        yield TextArea(id="details-title", show_line_numbers=False, soft_wrap=True)
-        yield TextArea(id="details-content", show_line_numbers=False, soft_wrap=True)
+        title = ConfirmableTextArea(
+            id="details-title", show_line_numbers=False, soft_wrap=True,
+        )
+        title.border_title = "Title"
+        yield title
+        content = ConfirmableTextArea(
+            id="details-content", show_line_numbers=False, soft_wrap=True,
+        )
+        content.border_title = "Content"
+        yield content
         yield _ChoicesList(self._vm, id="details-choices")
 
     def on_mount(self) -> None:
@@ -165,3 +178,9 @@ class EntryDetailsView(Vertical):
             self._vm.set_title(event.text_area.text)
         elif wid == "details-content":
             self._vm.set_content(event.text_area.text)
+
+    async def on_confirmable_text_area_accept_edits_requested(
+        self, event: ConfirmableTextArea.AcceptEditsRequested
+    ) -> None:
+        if self._vm.is_dirty and not self._vm.multi_select_active:
+            await self._vm.accept()

@@ -11,6 +11,7 @@ from textual.containers import Vertical
 from textual.widgets import Static, TextArea
 
 from ...choices import ChoiceList
+from ...confirmable_text_area import ConfirmableTextArea
 from .view_model import TopicDetailsViewModel
 
 
@@ -55,6 +56,8 @@ class TopicDetailsView(Vertical):
     TopicDetailsView #topic-details-name {
         background: transparent;
         border: solid #3a3a3a;
+        border-title-align: right;
+        border-title-color: rgb(120,120,120);
         height: auto;
         min-height: 3;
         max-height: 5;
@@ -67,6 +70,8 @@ class TopicDetailsView(Vertical):
     TopicDetailsView #topic-details-description {
         background: transparent;
         border: solid #3a3a3a;
+        border-title-align: right;
+        border-title-color: rgb(120,120,120);
         height: auto;
         min-height: 4;
         max-height: 12;
@@ -107,10 +112,16 @@ class TopicDetailsView(Vertical):
         self._was_dirty: bool = False
 
     def compose(self):
-        yield TextArea(id="topic-details-name", show_line_numbers=False, soft_wrap=True)
-        yield TextArea(
+        name = ConfirmableTextArea(
+            id="topic-details-name", show_line_numbers=False, soft_wrap=True,
+        )
+        name.border_title = "Title"
+        yield name
+        desc = ConfirmableTextArea(
             id="topic-details-description", show_line_numbers=False, soft_wrap=True,
         )
+        desc.border_title = "Description"
+        yield desc
         yield Static("", id="topic-details-counts")
         yield _ChoicesList(self._vm, id="topic-details-choices")
 
@@ -188,3 +199,9 @@ class TopicDetailsView(Vertical):
             self._vm.set_name(event.text_area.text)
         elif wid == "topic-details-description":
             self._vm.set_description(event.text_area.text)
+
+    async def on_confirmable_text_area_accept_edits_requested(
+        self, event: ConfirmableTextArea.AcceptEditsRequested
+    ) -> None:
+        if self._vm.is_dirty:
+            await self._vm.accept()
