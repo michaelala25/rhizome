@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from ..view_base import ViewBase
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 
 class ThinkingIndicatorViewModel(ViewModelBase):

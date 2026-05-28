@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from ..query_backed_view_model import QueryBackedViewModel
+from rhizome.app.query_backed_vm import QueryBackedViewModel
 
 
 class BrowserTabViewModel(QueryBackedViewModel):

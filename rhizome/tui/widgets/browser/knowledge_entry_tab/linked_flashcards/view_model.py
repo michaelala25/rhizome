@@ -43,7 +43,7 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from ....query_backed_view_model import QueryBackedViewModel
+from rhizome.app.query_backed_vm import QueryBackedViewModel
 from ....search_input import SearchableViewModelMixin
 
 _logger = get_logger("browser.linked_flashcards")

@@ -40,7 +40,7 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 _logger = get_logger("browser.topic_tree")
 

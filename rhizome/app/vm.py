@@ -123,7 +123,7 @@ class Emitter:
 
 
 class ViewModelBase:
-    """Base class for MVVM view-models in ``rhizome/tui/widgets/``.
+    """Base class for MVVM view-models.
 
     Communication model
     -------------------

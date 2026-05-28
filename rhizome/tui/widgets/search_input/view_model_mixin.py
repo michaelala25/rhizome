@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 
 class SearchableViewModelMixin(ViewModelBase):

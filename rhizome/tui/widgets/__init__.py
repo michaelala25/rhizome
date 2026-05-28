@@ -1,6 +1,6 @@
 # Core
 from .view_base import ViewBase
-from .view_model_base import CallbackGroup, Emitter, ViewModelBase
+from rhizome.app.vm import CallbackGroup, Emitter, ViewModelBase
 
 # Specific Widgets
 from .agent_message_harness import AgentMessageHarness

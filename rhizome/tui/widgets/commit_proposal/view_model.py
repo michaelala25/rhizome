@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import Any, TYPE_CHECKING
 
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession

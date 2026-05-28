@@ -23,7 +23,7 @@ from textual.widgets import Static
 from rhizome.tui.colors import Colors
 
 from ..view_base import ViewBase
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 
 SHELL_TIMEOUT = 30

@@ -178,7 +178,7 @@ from rhizome.db.operations.flashcards import commit_fsrs_card
 from rhizome.logs import get_logger
 from rhizome.tui.widgets.flashcard_review._timer import Timer
 from rhizome.tui.widgets.flashcard_review.flashcard import Flashcard, FlashcardData
-from rhizome.tui.widgets.view_model_base import Emitter, ViewModelBase
+from rhizome.app.vm import Emitter, ViewModelBase
 
 _logger = get_logger("tui.flashcard_review_vm")
 

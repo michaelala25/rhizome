@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace, field
 from enum import Enum, auto
 from typing import Any
 
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 
 @dataclass

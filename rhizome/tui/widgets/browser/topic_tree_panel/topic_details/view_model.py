@@ -33,7 +33,7 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from ....query_backed_view_model import QueryBackedViewModel
+from rhizome.app.query_backed_vm import QueryBackedViewModel
 
 _logger = get_logger("browser.topic_details")
 

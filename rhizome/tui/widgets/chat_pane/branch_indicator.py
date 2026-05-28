@@ -19,7 +19,7 @@ from textual.containers import Horizontal
 from textual.widgets import Static
 
 from ..view_base import ViewBase
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 from .conversation_graph import ConversationGraph, NodeId
 
 if TYPE_CHECKING:

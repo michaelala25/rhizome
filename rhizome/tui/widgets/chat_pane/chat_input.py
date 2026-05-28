@@ -17,7 +17,7 @@ from enum import Enum
 from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 from .command_palette import CommandPaletteViewModel
 
 

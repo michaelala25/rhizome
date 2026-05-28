@@ -27,7 +27,7 @@ from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 
 from ..browser import BrowserViewModel
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 from .agent_message import AgentMessageViewModel
 from .agent_stream_router import AgentStreamRouter
 from .branch_indicator import BranchIndicatorViewModel

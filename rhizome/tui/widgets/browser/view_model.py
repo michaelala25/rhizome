@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 from rhizome.logs import get_logger
 
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 from .knowledge_entry_tab import KnowledgeEntryBrowserTabViewModel
 from .tab_base import BrowserTabViewModel
 from .topic_tree_panel import TopicTreePanelViewModel

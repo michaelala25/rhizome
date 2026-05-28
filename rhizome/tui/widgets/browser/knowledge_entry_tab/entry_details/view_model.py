@@ -27,7 +27,7 @@ from rhizome.db import KnowledgeEntry
 from rhizome.db.operations import update_entry
 from rhizome.logs import get_logger
 
-from ....view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 _logger = get_logger("browser.entry_details")
 

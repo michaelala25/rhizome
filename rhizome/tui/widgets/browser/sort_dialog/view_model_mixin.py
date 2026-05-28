@@ -14,7 +14,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Generic, Literal, TypeVar
 
-from ...view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 SortKey = TypeVar("SortKey", bound=str)
 SortDirection = Literal["asc", "desc"]

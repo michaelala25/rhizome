@@ -25,7 +25,7 @@ from rhizome.tui.colors import Colors
 from rhizome.tui.types import Mode
 
 from ..view_base import ViewBase
-from ..view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 
 class AgentMessageViewModel(ViewModelBase):

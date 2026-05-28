@@ -21,7 +21,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.widgets import Static
 
-from ...view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 
 VM = TypeVar("VM", bound=ViewModelBase)
 

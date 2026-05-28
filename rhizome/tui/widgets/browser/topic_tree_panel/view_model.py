@@ -12,7 +12,7 @@ from typing import Any
 from rhizome.logs import get_logger
 
 from ..topic_tree import BrowserTopicTreeViewModel
-from ...view_model_base import ViewModelBase
+from rhizome.app.vm import ViewModelBase
 from .topic_details import TopicDetailsViewModel
 
 _logger = get_logger("browser.topic_tree_panel")
