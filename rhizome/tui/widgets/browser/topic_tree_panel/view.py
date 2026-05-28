@@ -1,4 +1,4 @@
-"""TopicTreePanelView — the browser's left rail: action menu + topic tree.
+"""TopicTreePanelView — the browser's left rail: action menu + topic tree + topic-details panel.
 
 Layout::
 
@@ -7,6 +7,7 @@ Layout::
     │ ┌─ #browser-tree-body ────────┐ │
     │ │ actions │  topic tree       │ │  ← horizontal row, height: 1fr
     │ └─────────┴───────────────────┘ │
+    │  topic-details (name/desc)      │  ← #browser-topic-details
     └─────────────────────────────────┘
 
 Rail expansion: the actions widget toggles ``-actions-expanded`` on this view when it gains/loses
@@ -17,6 +18,13 @@ Alt-arrow navigation: the panel owns its own ``alt+arrow`` bindings and resolves
 its focus graph via ``nav_<dir>``. When a step has no in-graph target, the action raises
 ``SkipAction`` so the key bubbles to ``BrowserView`` for cross-region handling (e.g., ``alt+right``
 at the rightmost panel widget hops into the active tab).
+
+Focus graph (alt-arrows):
+
+  * alt+down:  tree → details_name → details_description → details_accept (when dirty)
+  * alt+up:    reverse — details_accept → details_description → details_name → tree
+  * alt+left:  tree → actions; details fields → no-op (leftmost)
+  * alt+right: actions → tree; details fields → no-op (caller hops to active tab)
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from rhizome.logs import get_logger
 
 from ..topic_tree import BrowserTopicTreeView
 from .action_menu import ActionMenuView
+from .topic_details import TopicDetailsView
 from .view_model import TopicTreePanelViewModel
 
 _logger = get_logger("browser.topic_tree_panel")
@@ -79,6 +88,7 @@ class TopicTreePanelView(Vertical):
         Binding("alt+right", "nav_right", show=False),
         Binding("alt+up", "nav_up", show=False),
         Binding("alt+down", "nav_down", show=False),
+        Binding("r", "rename", show=False),
     ]
 
     def __init__(self, view_model: TopicTreePanelViewModel, **kwargs: Any) -> None:
@@ -92,25 +102,45 @@ class TopicTreePanelView(Vertical):
     def compose(self):
         yield Static("Topics", id="browser-tree-title")
         with Horizontal(id="browser-tree-body"):
-            yield ActionMenuView(
-                on_rename=self._action_rename,
-                on_create=self._action_create,
-                on_delete=self._action_delete,
-                id="browser-tree-actions",
-            )
+            yield ActionMenuView(id="browser-tree-actions")
             yield BrowserTopicTreeView(self._vm.tree)
+        yield TopicDetailsView(self._vm.details, id="browser-topic-details")
+
+    def on_mount(self) -> None:
+        # Repaint the tree node's label after a successful Accept on the details panel.
+        self._vm.details.subscribe(self._vm.details.saved, self._on_details_saved)
+
+    def on_unmount(self) -> None:
+        self._vm.details.unsubscribe(self._vm.details.saved, self._on_details_saved)
+
+    def _on_details_saved(self) -> None:
+        topic = self._vm.details.topic
+        if topic is None:
+            return
+        try:
+            self.query_one(BrowserTopicTreeView).update_node_label(topic.id, topic.name)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
-    # Action stubs invoked by ActionMenuView
+    # ActionMenuView message handlers — stubs for now; real dialogs land later.
     # ------------------------------------------------------------------
 
-    async def _action_rename(self) -> None:
-        _logger.info("rename_topic stub — cursor=%s", self._vm.tree.cursor_topic_id)
+    def on_action_menu_view_rename_requested(
+        self, event: ActionMenuView.RenameRequested
+    ) -> None:
+        # "Rename" is just a shortcut to the name field in the details panel — the buffered-edit
+        # flow there already handles the commit. No-ops if no topic is loaded.
+        self._focus_details_node("name")
 
-    async def _action_create(self) -> None:
+    def on_action_menu_view_create_requested(
+        self, event: ActionMenuView.CreateRequested
+    ) -> None:
         _logger.info("create_topic stub — cursor parent=%s", self._vm.tree.cursor_topic_id)
 
-    async def _action_delete(self) -> None:
+    def on_action_menu_view_delete_requested(
+        self, event: ActionMenuView.DeleteRequested
+    ) -> None:
         _logger.info(
             "delete_topic (subtree) stub — cursor=%s, selection=%d",
             self._vm.tree.cursor_topic_id,
@@ -137,6 +167,9 @@ class TopicTreePanelView(Vertical):
         if not self.nav_down():
             raise SkipAction()
 
+    def action_rename(self) -> None:
+        self._focus_details_node("name")
+
     # Override so external ``panel.focus()`` calls land on the tree rather than no-op'ing on the
     # non-focusable ``Vertical`` container.
     def focus(self, scroll_visible: bool = True) -> "TopicTreePanelView":
@@ -144,54 +177,100 @@ class TopicTreePanelView(Vertical):
         return self
 
     def focus_tree(self) -> None:
-        try:
-            self.query_one(BrowserTopicTreeView).focus()
-        except Exception:
-            pass
+        self._focus_widget("BrowserTopicTreeView")
 
     def nav_left(self) -> bool:
-        if self._focus_is_in_tree():
-            try:
-                self.query_one(ActionMenuView).focus()
-                return True
-            except Exception:
-                return False
+        node = self._focused_node()
+        if node == "tree":
+            return self._focus_widget("ActionMenuView")
+        # Actions / details fields → leftmost edge (no-op; caller stays in panel).
         return False
 
     def nav_right(self) -> bool:
-        if self._focus_is_in_actions():
+        node = self._focused_node()
+        if node == "actions":
             self.focus_tree()
             return True
-        return False
-
-    def nav_up(self) -> bool:
-        # No "up" out of the tree or actions menu — the panel has no row above the body.
+        # tree / details fields → False → caller (BrowserView) advances into the active tab.
         return False
 
     def nav_down(self) -> bool:
-        # No "down" — the panel has no row below the body.
+        node = self._focused_node()
+        if node == "tree":
+            return self._focus_details_node("name")
+        if node == "details_name":
+            return self._focus_details_node("description")
+        if node == "details_description":
+            return self._focus_details_node("accept")
+        # actions / details_accept → no further down step.
+        return False
+
+    def nav_up(self) -> bool:
+        node = self._focused_node()
+        if node == "details_accept":
+            return self._focus_details_node("description")
+        if node == "details_description":
+            return self._focus_details_node("name")
+        if node == "details_name":
+            self.focus_tree()
+            return True
+        # tree / actions → no row above the body / details.
         return False
 
     # ------------------------------------------------------------------
-    # Focus probes
+    # Focus probes + dispatch
     # ------------------------------------------------------------------
 
-    def _focus_is_in_tree(self) -> bool:
-        focused = self.screen.focused if self.screen else None
-        if focused is None:
-            return False
-        try:
-            tree = self.query_one(BrowserTopicTreeView)
-        except Exception:
-            return False
-        return focused is tree or tree in focused.ancestors_with_self
+    _DETAILS_NODE_IDS: dict[str, str] = {
+        "name": "topic-details-name",
+        "description": "topic-details-description",
+        "accept": "topic-details-choices",
+    }
 
-    def _focus_is_in_actions(self) -> bool:
+    def _focused_node(self) -> str | None:
+        focused = self.screen.focused if self.screen else None
+        if focused is None:
+            return None
+        fid = focused.id
+        if fid == "topic-details-name":
+            return "details_name"
+        if fid == "topic-details-description":
+            return "details_description"
+        if fid == "topic-details-choices":
+            return "details_accept"
+        if self._focus_is_in_widget("BrowserTopicTreeView"):
+            return "tree"
+        if self._focus_is_in_widget("ActionMenuView"):
+            return "actions"
+        return None
+
+    def _focus_details_node(self, key: str) -> bool:
+        # ``accept`` is conditional on ``is_dirty`` — present in the graph only while the choices
+        # row is rendered (``.-visible`` toggled in TopicDetailsView._refresh).
+        if key == "accept" and not self._vm.details.is_dirty:
+            return False
+        if key in ("name", "description") and self._vm.details.topic is None:
+            return False
+        widget_id = self._DETAILS_NODE_IDS[key]
+        try:
+            self.query_one(f"#{widget_id}").focus()
+            return True
+        except Exception:
+            return False
+
+    def _focus_widget(self, type_name: str) -> bool:
+        try:
+            self.query_one(type_name).focus()
+            return True
+        except Exception:
+            return False
+
+    def _focus_is_in_widget(self, type_name: str) -> bool:
         focused = self.screen.focused if self.screen else None
         if focused is None:
             return False
         try:
-            actions = self.query_one(ActionMenuView)
+            target = self.query_one(type_name)
         except Exception:
             return False
-        return focused is actions or actions in focused.ancestors_with_self
+        return focused is target or target in focused.ancestors_with_self

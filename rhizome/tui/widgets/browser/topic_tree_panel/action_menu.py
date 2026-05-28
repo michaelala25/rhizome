@@ -5,23 +5,18 @@ no cursor marker, narrow rail); on focus, the widget renders full ``► label`` 
 ``-actions-expanded`` on the surrounding ``TopicTreePanelView`` so the panel CSS widens the rail.
 
 This view is intentionally **VM-less** — the menu has no data-model state of its own and exists
-solely to invoke actions on the parent panel view. Each entry in ``CHOICES`` resolves to an action
-method that delegates to a callback supplied at construction time by the panel view (rename /
-create / delete stubs today; real dialogs land in follow-up passes). Mirror Textual's binding
-convention: ``CHOICES`` maps label → action-method name, and the action methods are thin
-wrappers around the injected callbacks.
+solely to announce action requests upward. Each entry in ``CHOICES`` resolves to an action method
+that posts one of the nested ``Requested`` messages; the surrounding ``TopicTreePanelView`` catches
+them through Textual's message pump (``on_action_menu_view_<name>_requested``).
 """
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
-
 from rich.text import Text
 
-from ..choices import ChoiceList
+from textual.message import Message
 
-# Action callbacks may be sync or async — ChoiceList.action_confirm awaits if needed.
-ActionCallback = Callable[[], Awaitable[None] | None]
+from ..choices import ChoiceList
 
 
 class ActionMenuView(ChoiceList[None]):
@@ -57,18 +52,21 @@ class ActionMenuView(ChoiceList[None]):
         "delete": "d",
     }
 
-    def __init__(
-        self,
-        *,
-        on_rename: ActionCallback,
-        on_create: ActionCallback,
-        on_delete: ActionCallback,
-        **kwargs,
-    ) -> None:
+    # ------------------------------------------------------------------
+    # Messages — one per action; the panel handles them via on_<snake>.
+    # ------------------------------------------------------------------
+
+    class RenameRequested(Message):
+        """User picked ``rename`` from the action menu."""
+
+    class CreateRequested(Message):
+        """User picked ``create`` from the action menu."""
+
+    class DeleteRequested(Message):
+        """User picked ``delete`` from the action menu."""
+
+    def __init__(self, **kwargs) -> None:
         super().__init__(view_model=None, **kwargs)
-        self._on_rename = on_rename
-        self._on_create = on_create
-        self._on_delete = on_delete
 
     def _render_choice(self, label: str, selected: bool) -> Text:
         # When focused the base's ``► bold`` / ``  dim`` rendering is exactly what we want; only the
@@ -97,12 +95,12 @@ class ActionMenuView(ChoiceList[None]):
             return
         pane.set_class(expanded, "-actions-expanded")
 
-    # ChoiceList.action_confirm resolves these by name via getattr, then awaits if needed.
-    def _rename(self):
-        return self._on_rename()
+    # ChoiceList.action_confirm resolves these by name via getattr.
+    def _rename(self) -> None:
+        self.post_message(self.RenameRequested())
 
-    def _create(self):
-        return self._on_create()
+    def _create(self) -> None:
+        self.post_message(self.CreateRequested())
 
-    def _delete(self):
-        return self._on_delete()
+    def _delete(self) -> None:
+        self.post_message(self.DeleteRequested())

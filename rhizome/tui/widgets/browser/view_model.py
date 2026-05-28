@@ -45,9 +45,12 @@ class BrowserViewModel(ViewModelBase):
         self._active_index: int = 0
         self._started: bool = False
 
-        # Only inter-VM subscription the orchestrator owns; everything else is direct method calls.
-        # Subscribed directly on the tree — the panel doesn't re-broadcast under an alias.
+        # Inter-VM subscriptions the orchestrator owns; everything else is direct method calls.
+        # Subscribed directly on the tree — the panel doesn't re-broadcast under an alias. The
+        # details ``saved`` hook fires after a successful rename/edit so we can refresh any tab
+        # rows that may now carry stale topic names.
         self._panel.tree.subscribe(self._panel.tree.selection_changed, self._on_filter_changed)
+        self._panel.details.subscribe(self._panel.details.saved, self._on_topic_saved)
 
         resolved_tabs = _default_tabs(session_factory) if tabs is None else tabs
         for tab in resolved_tabs:
@@ -134,3 +137,12 @@ class BrowserViewModel(ViewModelBase):
         active = self.active_tab
         if active is not None:
             active.set_topic_filter(self._panel.current_filter)
+
+    def _on_topic_saved(self) -> None:
+        # Fired by panel.details.SAVED after a rename/edit. Re-run the active tab's query so any
+        # rows joined against the renamed topic pick up the new name. Inactive tabs are left
+        # untouched — they'll refetch the next time their filter changes; if a user switches to
+        # one before that, they may briefly see stale topic names.
+        active = self.active_tab
+        if active is not None:
+            active.refetch()

@@ -1,20 +1,26 @@
 # rhizome/tui/widgets/browser/topic_tree_panel/
 
-The browser's left rail bundled as one panel: action menu + topic tree, behind a single VM + view
-so `BrowserView` / `BrowserViewModel` treat the rail as one region.
+The browser's left rail bundled as one panel: action menu + topic tree + topic-details, behind a
+single VM + view so `BrowserView` / `BrowserViewModel` treat the rail as one region.
 
 ## Files
 
-- **view_model.py — `TopicTreePanelViewModel`**: owns the tree child VM and exposes
-  `current_filter` as a composite read. The actions menu is VM-less, so the panel VM does not
-  carry an actions child.
-- **view.py — `TopicTreePanelView`**: `Vertical(title, Horizontal(actions, tree))`. Owns rail
-  CSS, the cross-region focus surface (`focus_tree`, `nav_left/right/up/down`) called by
-  `BrowserView`, and the rename / create / delete action stubs that `ActionMenuView` invokes via
-  callbacks supplied at compose time.
+- **view_model.py — `TopicTreePanelViewModel`**: owns the tree + details child VMs and the wire
+  between them (`tree.cursor_changed` → `details.set_topic_id`). Exposes `current_filter` as a
+  composite read. The actions menu is VM-less.
+- **view.py — `TopicTreePanelView`**: `Vertical(title, Horizontal(actions, tree), details)`.
+  Owns rail CSS, the cross-region focus surface (`nav_left/right/up/down`) called by
+  `BrowserView`, and subscribes to `details.saved` to repaint the tree node label after a rename.
 - **action_menu.py — `ActionMenuView`**: vertical action menu to the left of the tree (rename /
-  create / delete). VM-less `ChoiceList` subclass — action methods dispatch to callbacks injected
-  by the panel view rather than to a VM. Collapsed-by-default with focus-driven rail expansion.
+  create / delete). VM-less `ChoiceList` subclass — posts nested `RenameRequested` /
+  `CreateRequested` / `DeleteRequested` messages caught by the panel view's
+  `on_action_menu_view_<name>_requested` handlers. Collapsed-by-default with focus-driven rail
+  expansion.
+- **topic_details/ — `TopicDetailsViewModel` + `TopicDetailsView`**: buffered-edit panel beneath
+  the tree (name + description `TextArea`s + Accept/Cancel choices). VM is a
+  `QueryBackedViewModel`; the panel VM pushes `set_topic_id` on cursor changes, the fetch loads
+  the topic, and reseeding buffers silently discards any in-progress edit. Accept persists via
+  `update_topic` and emits `SAVED` so the panel view can repaint the tree node label.
 
 The tree itself (`BrowserTopicTreeViewModel` + `BrowserTopicTreeView`) lives at the parent level
 — this panel only composes it.
@@ -23,8 +29,9 @@ The tree itself (`BrowserTopicTreeViewModel` + `BrowserTopicTreeView`) lives at 
 
 - **Panel is the leftmost top-level region.** `nav_left` returning `False` is the leftmost-edge
   signal; `BrowserView` no-ops rather than trying to advance further left.
-- **Vertical nav is a no-op.** Nothing focusable sits above or below the body row, so `nav_up`
-  and `nav_down` both return `False`.
+- **Vertical nav extends through the details panel.** From the tree, `alt+down` walks
+  `tree → details_name → details_description → details_accept` (the last only when the details
+  panel `is_dirty`); `alt+up` is the reverse. The actions menu has no up/down neighbours.
 - **Rail expansion is panel-owned.** `ActionMenuView.on_focus` toggles `-actions-expanded` on the
   surrounding `TopicTreePanelView` via `screen.query_one("TopicTreePanelView")` (type-name string
   to avoid the circular import the panel view induces by importing the actions widget). The right

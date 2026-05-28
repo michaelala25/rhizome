@@ -19,8 +19,9 @@ slash command appends a fresh `BrowserViewModel` to the feed and `BrowserView` b
 - **topic_tree.py — `BrowserTopicTreeViewModel` + `BrowserTopicTreeView`** — the multi-select
   tree itself. Selection is cascade-on-toggle; `_selected_ids` already holds the expanded filter
   set, so `expanded_filter_ids()` is a sync read. See the module docstring for the View/VM split.
-- **topic_tree_panel/** — bundles the action menu + tree as a single rail, behind one panel VM
-  + view that `BrowserView` treats as one region. See its CONTEXT.md.
+- **topic_tree_panel/** — bundles the action menu + tree + topic-details (name/description
+  editor) as a single rail, behind one panel VM + view that `BrowserView` treats as one region.
+  See its CONTEXT.md.
 - **knowledge_entry_tab/** — the first concrete `BrowserTabViewModel`: paginated `DataTable` of
   knowledge entries with editable details and a swappable linked-flashcards panel. See its
   CONTEXT.md.

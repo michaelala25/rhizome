@@ -255,6 +255,28 @@ class BrowserTopicTreeView(Tree[Topic]):
             return
         self._vm.set_cursor(event.node.data.id)
 
+    def update_node_label(self, topic_id: int, new_name: str) -> bool:
+        """Find the node for ``topic_id`` and rewrite its label + ``data.name`` in place. Returns
+        ``True`` if the node was found and updated. Used after a rename so the on-screen label
+        matches the persisted value without a full reload."""
+        target = self._find_node(self.root, topic_id)
+        if target is None:
+            return False
+        if target.data is not None:
+            target.data.name = new_name
+        target.label = new_name  # type: ignore[assignment]
+        self._invalidate_label_cache()
+        return True
+
+    def _find_node(self, node: "TreeNode[Topic]", topic_id: int):
+        for child in node.children:
+            if child.data is not None and child.data.id == topic_id:
+                return child
+            found = self._find_node(child, topic_id)
+            if found is not None:
+                return found
+        return None
+
     async def action_toggle_selection(self) -> None:
         node = self.cursor_node
         if node is None or node.data is None:

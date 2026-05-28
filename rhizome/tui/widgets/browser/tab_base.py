@@ -58,3 +58,8 @@ class BrowserTabViewModel(QueryBackedViewModel):
         self._filter_ids = new_filter
         self._filter_applied = True
         self._request_fetch()
+
+    def refetch(self) -> None:
+        """Re-run the current query without changing inputs. Used by the orchestrator after
+        out-of-band data changes (e.g. a topic rename) that may have invalidated cached rows."""
+        self._request_fetch()
