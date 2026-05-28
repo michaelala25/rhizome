@@ -43,8 +43,8 @@ from rhizome.resources import LoadMode, NodeKey, ResourceManager
 
 from rhizome.tui.dock import DockableWidgetMixin
 from rhizome.tui.types import Arrangement
-from rhizome.tui.widgets.resource.view_model import ResourceLoaderViewModel
-from rhizome.tui.widgets.resource.loader_tree import (
+from rhizome.tui.widgets.legacy.resource.view_model import ResourceLoaderViewModel
+from rhizome.tui.widgets.legacy.resource.loader_tree import (
     LoaderHint,
     LoaderTree,
     NodeData,

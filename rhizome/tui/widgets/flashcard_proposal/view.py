@@ -19,8 +19,8 @@ from textual.containers import Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Button, Static, TextArea
 
-from ..entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
-from ..interrupt import InterruptWidgetBase
+from ..legacy.entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
+from ..legacy.interrupt import InterruptWidgetBase
 from ..view_base import ViewBase
 from .view_model import FlashcardProposalViewModel
 

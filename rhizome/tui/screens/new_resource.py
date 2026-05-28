@@ -14,8 +14,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from rhizome.db.models import LoadingPreference
-from rhizome.tui.widgets.file_browser import FileBrowser
-from rhizome.tui.widgets.togglable_topic_tree import TogglableTopicTree
+from rhizome.tui.widgets.legacy.file_browser import FileBrowser
+from rhizome.tui.widgets.legacy.togglable_topic_tree import TogglableTopicTree
 
 
 _DIM = "rgb(80,80,80)"

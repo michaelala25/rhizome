@@ -14,8 +14,8 @@ from textual.reactive import reactive
 from textual.message import Message
 from textual.widgets import Button, Input, Static, TextArea
 
-from ..entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
-from ..interrupt import InterruptWidgetBase
+from ..legacy.entry_list import ENTRY_ACCENT, ENTRY_DIM, ENTRY_HINT
+from ..legacy.interrupt import InterruptWidgetBase
 
 _ENTRY_TYPES = ["fact", "exposition", "overview"]
 _CHOICES = ["Approve", "Edit", "Reset", "Cancel"]

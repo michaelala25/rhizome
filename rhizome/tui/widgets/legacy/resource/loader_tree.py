@@ -21,7 +21,7 @@ from rhizome.resources import LoadMode, NodeKey
 from rhizome.tui.types import Arrangement
 
 if TYPE_CHECKING:
-    from rhizome.tui.widgets.resource.loader import ResourceLoader
+    from rhizome.tui.widgets.legacy.resource.loader import ResourceLoader
 
 
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"

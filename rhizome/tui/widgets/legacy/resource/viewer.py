@@ -25,12 +25,12 @@ from rhizome.resources import ResourceManager
 from rhizome.tui.dock import DockableWidgetMixin
 from rhizome.tui.types import DatabaseCommitted
 
-from rhizome.tui.widgets.messages import ActiveTopicChanged
-from rhizome.tui.widgets.resource.linker import ResourceLinker
-from rhizome.tui.widgets.resource.list_view import ResourceList
-from rhizome.tui.widgets.resource.loader import ResourceLoader
-from rhizome.tui.widgets.resource.view_model import ResourceViewMode, ResourceViewerViewModel
-from rhizome.tui.widgets.topic_tree import TopicTree
+from rhizome.tui.widgets.legacy.messages import ActiveTopicChanged
+from rhizome.tui.widgets.legacy.resource.linker import ResourceLinker
+from rhizome.tui.widgets.legacy.resource.list_view import ResourceList
+from rhizome.tui.widgets.legacy.resource.loader import ResourceLoader
+from rhizome.tui.widgets.legacy.resource.view_model import ResourceViewMode, ResourceViewerViewModel
+from rhizome.tui.widgets.legacy.topic_tree import TopicTree
 
 
 _MODE_LABELS = {

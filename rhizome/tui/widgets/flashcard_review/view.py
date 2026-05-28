@@ -20,7 +20,7 @@ from .view_model import (
     FlashcardReviewAction,
     FlashcardReviewViewModel,
 )
-from ..interrupt import InterruptWidgetBase
+from ..legacy.interrupt import InterruptWidgetBase
 from ..view_base import ViewBase
 
 

@@ -10,7 +10,7 @@ from textual.widgets import Input, Static
 
 from rhizome.credentials import store_api_key
 from rhizome.tui.options import Options
-from rhizome.tui.widgets.welcome import ASCII_ART
+from rhizome.tui.widgets.legacy.welcome import ASCII_ART
 
 
 class SetupScreen(Screen[bool]):
