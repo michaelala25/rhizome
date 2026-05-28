@@ -1,4 +1,4 @@
-"""FlashcardReview — thin Textual view over FlashcardReviewViewModel."""
+"""FlashcardReview — thin Textual view over FlashcardReviewVM."""
 
 from __future__ import annotations
 
@@ -12,16 +12,15 @@ from textual.widgets import Button, Rule, Static, TextArea
 
 from fsrs import Rating
 
-from ._dot_strips import _DotStrip
-from .keymap import KEYBINDINGS, key_to_action
-from .view_model import (
+from rhizome.tui.widgets.flashcard_review.dot_strips import _DotStrip
+from rhizome.tui.widgets.flashcard_review.keymap import KEYBINDINGS, key_to_action
+from rhizome.app.flashcard_review.review import (
     Flashcard,
     FlashcardData,
     FlashcardReviewAction,
-    FlashcardReviewViewModel,
+    FlashcardReviewVM,
 )
-from ..legacy.interrupt import InterruptWidgetBase
-from ..view_base import ViewBase
+from rhizome.tui.widgets.view_base import ViewBase
 
 
 # Throbber frames — pulsing dot used in both the counter (think-time) and
@@ -109,7 +108,7 @@ class _AnswerInput(TextArea):
             event.prevent_default()
 
 
-class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, can_focus=True):
+class FlashcardReview(ViewBase[FlashcardReviewVM], can_focus=True):
 
     DEFAULT_CSS = """
     FlashcardReview {
@@ -246,45 +245,13 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
     }
     """
 
-    @classmethod
-    def from_interrupt(cls, value: dict[str, Any], context: Any = None) -> "FlashcardReview":
-        """Construct from an interrupt value dict and the AgentContext.
-
-        Pulls the auto-scorer and DB session factory off the context.
-        FSRS state mutates entirely in-memory during the session; the
-        session factory is held only so the VM's optional ``commit()``
-        API can be called by a consumer of the resolved payload.
-        """
-        scorer = getattr(context, "scorer_subagent", None) if context is not None else None
-        session_factory = getattr(context, "session_factory", None) if context is not None else None
-        return cls(
-            cards=value["cards"],
-            session_factory=session_factory,
-            auto_score_enabled=value.get("auto_score_enabled", False),
-            auto_scorer=scorer,
-        )
-
     def __init__(
         self,
-        cards: list[FlashcardData],
-        session_factory: Any,
-        auto_score_enabled: bool = False,
-        auto_scorer: Any = None,
+        vm: FlashcardReviewVM,
         **kwargs,
     ) -> None:
-        vm = FlashcardReviewViewModel(
-            cards=cards,
-            session_factory=session_factory,
-            auto_score_enabled=auto_score_enabled,
-            auto_scorer=auto_scorer,
-        )
-        # ViewBase wires dirty→_refresh and focus→self.focus, and stores ``vm`` as ``self._vm``;
-        # InterruptWidgetBase (further up the MRO) sets up the asyncio.Future via **kwargs.
+        # ViewBase wires dirty→_refresh and focus→self.focus, and stores ``vm`` as ``self._vm``.
         super().__init__(vm, **kwargs)
-
-        # Additional subscription specific to FlashcardReview: resolve the future when the VM reaches
-        # DONE. Doesn't query child widgets, so safe to subscribe pre-mount.
-        self._vm.subscribe(self._vm.dirty, self._maybe_resolve)
 
         # Set while ``_refresh`` programmatically rewrites the TextArea's
         # contents; the Changed handler checks this to avoid echoing the
@@ -342,7 +309,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         yield Static("", id="fr-help")
 
     def on_mount(self) -> None:
-        super().on_mount()  # InterruptWidgetBase → setup_navigation
+        super().on_mount()
 
         # Border-title nav hint on the card container — has to live in on_mount because it queries a
         # child widget.
@@ -355,92 +322,6 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
 
     def on_unmount(self) -> None:
         super().on_unmount()  # ViewBase tears down the dirty→_refresh / focus→self.focus subs
-        self._vm.unsubscribe(self._vm.dirty, self._maybe_resolve)
-
-    def action_cancel_interrupt(self) -> None:
-        """No-op. Ctrl+c is owned by this widget's ``on_key`` handler, which
-        resolves it to ``FlashcardReviewAction.CANCEL`` and routes it through ``vm.dispatch``;
-        ``_maybe_resolve`` then cancels the underlying future.
-
-        If this also called ``self._vm.cancel()``, Textual would fire
-        BOTH this binding action AND the ``on_key`` event for the same
-        keypress, and the second call would hit ``vm.finish``'s
-        ``state != DONE`` assertion.
-
-        TODO: this no-op override is a band-aid. Eventually the ctrl+c
-        binding should be removed from ``InterruptWidgetBase`` entirely
-        — each widget's cancellation UX is different enough that the
-        base shouldn't presume one. Related: the base's ``.cancel()``
-        shadows what looks like a generic method name; renaming it to
-        something more specific (``.cancel_interrupt()``, or ideally
-        folding it into ``.resolve(cancelled=True)``) would remove the
-        footgun where a subclass might unintentionally override it.
-        """
-        pass
-
-    def _maybe_resolve(self) -> None:
-        """Called on every VM ``dirty`` emit. The first time we observe
-        the VM reach its DONE state, resolve the future with the result.
-        
-        Cancel and complete both resolve — ``_build_result`` sets
-        ``completed`` accordingly so the tool can distinguish them and
-        handle partial state. Subsequent emits after DONE (collapse
-        toggle, navigation while expanded) are no-ops because
-        ``_future`` is already done.
-        """
-        if self._future.done():
-            return
-        if self._vm.state != FlashcardReviewViewModel.State.DONE:
-            return
-        
-        # Resolve, maintaining navigability (so the user can still look at the cards
-        # post resolve, just not change them).
-        self.resolve(self._build_result(), deactivate_navigation=False)
-
-    def _build_result(self) -> dict[str, Any]:
-        cards = []
-        
-        for card in self._vm._cards:
-            score_val: int | None = None
-            score_label: str | None = None
-            score = card.score
-
-            if score in (
-                Flashcard.Score.AGAIN,
-                Flashcard.Score.HARD,
-                Flashcard.Score.GOOD,
-                Flashcard.Score.EASY,
-            ):
-                score_val = score.value
-                score_label = score.name.lower()
-            elif score == Flashcard.Score.SKIPPED:
-                score_label = "skipped"
-            elif score == Flashcard.Score.AUTO:
-                # Session ended while the card was still pending a batch
-                # (e.g. user cancelled mid-batch). No final rating.
-                score_label = "auto"
-
-            cards.append({
-                "id": card.id,
-                "question": card.question,
-                "answer": card.answer,
-                "user_answer": card.user_answer or "",
-                "score": score_val,
-                "score_label": score_label,
-                "flagged": card.flagged,
-                "duration": round(card.elapsed_time, 1),
-                # Final in-memory FSRS state for this card. The widget
-                # never persists this itself — the consumer (typically
-                # the review_present_flashcards tool) decides whether to
-                # commit it to the DB based on the session's ephemeral
-                # flag.
-                "fsrs_card": card.fsrs_card,
-            })
-
-        return {
-            "completed": not self._vm.cancelled,
-            "cards": cards,
-        }
 
     def on_focus(self, event: events.Focus) -> None:
         """When the widget gains focus from outside (e.g. navigation via
@@ -455,7 +336,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
             return
         if (
             card.state == Flashcard.State.FRONT
-            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+            and self._vm.state == FlashcardReviewVM.State.REVIEWING
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
@@ -502,11 +383,11 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
 
     def _refresh(self) -> None:
         match self._vm.state:
-            case FlashcardReviewViewModel.State.START:
+            case FlashcardReviewVM.State.START:
                 self._refresh_start()
-            case FlashcardReviewViewModel.State.REVIEWING:
+            case FlashcardReviewVM.State.REVIEWING:
                 self._refresh_reviewing()
-            case FlashcardReviewViewModel.State.DONE:
+            case FlashcardReviewVM.State.DONE:
                 self._refresh_done()
         self._refresh_help()
         self._refresh_auto_approve_hint()
@@ -518,7 +399,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         toggle it. Visible only during REVIEWING — the toggle isn't wired in other
         states."""
         hint = self.query_one("#fr-auto-approve-hint", Static)
-        if self._vm.state != FlashcardReviewViewModel.State.REVIEWING:
+        if self._vm.state != FlashcardReviewVM.State.REVIEWING:
             hint.display = False
             return
         hint.display = True
@@ -784,7 +665,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         move focus if we already own it somewhere — don't steal from the chat input or
         anywhere else outside this widget.
         """
-        in_review = self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        in_review = self._vm.state == FlashcardReviewVM.State.REVIEWING
         show = input_visible and in_review
 
         self.query_one("#fr-answer-input-label", Static).display = show
@@ -969,7 +850,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
             card is not None
             and card.state == Flashcard.State.FRONT
             and self._vm.timers_visible
-            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+            and self._vm.state == FlashcardReviewVM.State.REVIEWING
         )
         currently_running = self._timer_interval is not None
         if live_timer_visible and not currently_running:
@@ -991,7 +872,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         countdown_visible = (
             card is not None
             and card.state == Flashcard.State.AWAITING_REVEAL
-            and self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+            and self._vm.state == FlashcardReviewVM.State.REVIEWING
         )
         currently_running = self._due_interval is not None
         if countdown_visible and not currently_running:
@@ -1011,7 +892,7 @@ class FlashcardReview(ViewBase[FlashcardReviewViewModel], InterruptWidgetBase, c
         think-time throbber (FRONT card without timer visible) or the
         batch-scoring indicator needs to animate."""
         card = self._vm.current_card
-        in_review = self._vm.state == FlashcardReviewViewModel.State.REVIEWING
+        in_review = self._vm.state == FlashcardReviewVM.State.REVIEWING
         think_throbber = (
             in_review
             and card is not None

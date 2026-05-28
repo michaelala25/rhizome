@@ -7,7 +7,7 @@ from __future__ import annotations
 from textual import events
 from textual.widgets import Static
 
-from .flashcard import Flashcard
+from rhizome.app.flashcard_review.flashcard import Flashcard
 
 
 # Dot-strip colors. Cursor uses a different glyph (◉) so it reads even when the

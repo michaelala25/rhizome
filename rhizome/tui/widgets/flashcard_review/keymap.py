@@ -22,10 +22,10 @@ the display-friendly key string for each action; the same table doubles as a
 label-source for a future contextual help dropdown.
 """
 
-from rhizome.tui.widgets.flashcard_review.flashcard import Flashcard
-from rhizome.tui.widgets.flashcard_review.view_model import (
+from rhizome.app.flashcard_review.flashcard import Flashcard
+from rhizome.app.flashcard_review.review import (
     FlashcardReviewAction,
-    FlashcardReviewViewModel,
+    FlashcardReviewVM,
 )
 
 
@@ -80,13 +80,13 @@ _SCORE_KEY_TO_ACTION: dict[str, FlashcardReviewAction] = {
 }
 
 
-def key_to_action(key: str, vm: FlashcardReviewViewModel) -> FlashcardReviewAction | None:
+def key_to_action(key: str, vm: FlashcardReviewVM) -> FlashcardReviewAction | None:
     """Resolve a key press to a semantic FlashcardReviewAction given the current VM state.
 
     Returns ``None`` if the key has no meaning in the current context (the View
     should treat that as "not handled" and let the event propagate).
     """
-    S = FlashcardReviewViewModel.State
+    S = FlashcardReviewVM.State
 
     # Cross-state — checked first so they win regardless of state.
     if key == KEYBINDINGS[FlashcardReviewAction.TOGGLE_HELP]:

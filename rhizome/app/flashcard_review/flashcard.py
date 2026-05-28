@@ -80,7 +80,7 @@ Transitions (all enforced by asserts on the source state):
             - Either the user manually scored the card (any time), or the batch auto-scorer
               returned a rating in {1,2,3,4} while the VM is in AUTO_ACCEPT mode.
             - Manual override of a PENDING_AUTO card is blocked by
-              ``FlashcardReviewViewModel`` while the auto-score task is in flight (the
+              ``FlashcardReviewVM`` while the auto-score task is in flight (the
               user's score would be immediately overridden once the batch returns).
             - Same routing as the REVEALED_NOT_SCORED variant: scheduler advances
               ``_current_fsrs_card``, then SCORED if Review or AWAITING_REVEAL if
@@ -214,7 +214,7 @@ from typing import NotRequired, TypedDict
 
 from fsrs import Card, Rating, Scheduler, State
 
-from rhizome.tui.widgets.flashcard_review._timer import Timer
+from rhizome.app.flashcard_review.timer import Timer
 
 
 # Simple dataclass constructed in the interrupt payload in the tool call. ``fsrs_card`` is the in-memory
