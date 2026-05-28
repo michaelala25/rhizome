@@ -53,7 +53,7 @@ class BrowserView(Horizontal):
 
     # Fixed height: inside the chat-tab ``VerticalScroll`` feed, ``1fr`` resolves to 0 (the scroll
     # container derives content height from children, so a child asking for "remaining" gets none).
-    # 40 fits the body + summary; callers can override per-mount via CSS.
+    # 40 fits the body comfortably; callers can override per-mount via CSS.
     DEFAULT_CSS = """
     BrowserView {
         height: 40;

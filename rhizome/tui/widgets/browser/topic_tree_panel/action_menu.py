@@ -1,4 +1,4 @@
-"""TopicTreeActionsView — vertical action menu for the topic tree.
+"""ActionMenuView — vertical action menu for the topic tree.
 
 Sits to the left of the tree inside the panel body. Collapsed by default (single-letter shorthand,
 no cursor marker, narrow rail); on focus, the widget renders full ``► label`` rows and toggles
@@ -24,7 +24,7 @@ from ..choices import ChoiceList
 ActionCallback = Callable[[], Awaitable[None] | None]
 
 
-class TopicTreeActionsView(ChoiceList[None]):
+class ActionMenuView(ChoiceList[None]):
     """Vertical ``ChoiceList`` rendered to the left of the tree. Overrides ``_render_choice`` to
     show a single-letter shorthand when blurred and the full ``► label`` when focused, and toggles
     the panel's ``-actions-expanded`` class on focus/blur so the rail width follows."""
@@ -39,14 +39,14 @@ class TopicTreeActionsView(ChoiceList[None]):
     DEFAULT_CSS = """
     /* Collapsed default: zero horizontal padding so the shorthand letter sits flush against both
        sides — the visual breathing room around the rule comes from the *tree*'s left-padding. */
-    TopicTreeActionsView {
+    ActionMenuView {
         width: auto;
         height: 1fr;
         padding: 1 0 0 0;
     }
     /* Expanded: add horizontal padding so the labels don't crowd the rule. Driven by the same
        ``-actions-expanded`` class the rail width is keyed off, toggled on the panel view. */
-    TopicTreePanelView.-actions-expanded TopicTreeActionsView {
+    TopicTreePanelView.-actions-expanded ActionMenuView {
         padding: 1 2 0 1;
     }
     """
