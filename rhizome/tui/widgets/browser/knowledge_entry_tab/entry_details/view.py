@@ -21,7 +21,7 @@ class _ChoicesList(ChoiceList[EntryDetailsViewModel]):
 
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
     LEAD = "Edit: "
-    HINT = "← / → move • enter confirm • esc cancels"
+    HINT = "ctrl+enter to accept"
 
     async def _accept(self) -> None:
         await self._vm.accept()
