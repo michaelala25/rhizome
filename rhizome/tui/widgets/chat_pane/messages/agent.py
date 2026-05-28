@@ -21,7 +21,6 @@ from textual.containers import Horizontal
 from textual.widgets import Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
-from rhizome.tui.colors import Colors
 from rhizome.tui.types import Mode
 
 from rhizome.tui.widgets.view_base import ViewBase
@@ -45,24 +44,24 @@ class AgentMessage(ViewBase[AgentMessageVM]):
         layout: vertical;
     }}
     AgentMessage.learn-mode {{
-        border: round {Colors.LEARN_AGENT_BORDER};
+        border: round rgb(60, 80, 160);
         margin: 0 2;
     }}
     AgentMessage.review-mode {{
-        border: round {Colors.REVIEW_AGENT_BORDER};
+        border: round rgb(120, 60, 160);
         margin: 0 2;
     }}
     AgentMessage.--commit-selectable {{
-        border: round {Colors.COMMIT_SELECTABLE};
+        border: round rgb(140, 120, 50);
     }}
     AgentMessage.--commit-selectable.--commit-cursor {{
-        border: round {Colors.COMMIT_CURSOR};
+        border: round rgb(220, 190, 60);
     }}
     AgentMessage.--commit-selected {{
-        border: round {Colors.COMMIT_SELECTED};
+        border: round rgb(60, 160, 80);
     }}
     AgentMessage.--commit-selected.--commit-cursor {{
-        border: round {Colors.COMMIT_SELECTED_CURSOR};
+        border: round rgb(80, 200, 100);
     }}
     AgentMessage .msg-header {{
         height: auto;
@@ -106,7 +105,7 @@ class AgentMessage(ViewBase[AgentMessageVM]):
             self.add_class("review-mode")
 
     def compose(self) -> ComposeResult:
-        prefix = f"[bold {Colors.AGENT_PREFIX}]agent:[/bold {Colors.AGENT_PREFIX}] "
+        prefix = f"[bold rgb(200, 100, 200)]agent:[/bold rgb(200, 100, 200)] "
         with Horizontal(classes="msg-header"):
             yield Static("□", classes="commit-checkbox")
             yield Static(prefix, classes="msg-prefix")

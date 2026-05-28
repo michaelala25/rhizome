@@ -13,34 +13,10 @@ Textual reactives.
 
 from __future__ import annotations
 
-from rich.text import Text
-from textual.widgets import Static
 
 from rhizome.agent.utils import TokenUsageData
-from rhizome.tui.colors import Colors
 
 from rhizome.app.vm import ViewModelBase
-
-
-def _compact_rgb(s: str) -> str:
-    """Strip spaces from RGB strings so Rich can parse them."""
-    return s.replace(" ", "")
-
-
-_MODE_COLORS: dict[str, str] = {
-    "learn": _compact_rgb(Colors.LEARN_SYSTEM_TEXT),
-    "review": _compact_rgb(Colors.REVIEW_SYSTEM_TEXT),
-}
-
-_VERBOSITY_COLORS: dict[str, str] = {
-    "terse": "rgb(120,120,120)",
-    "standard": "rgb(255,255,255)",
-    "verbose": "rgb(90,210,190)",
-    "auto": "rgb(255,80,255)",
-}
-
-# Max characters for the rendered topic path (excluding the "topic: " prefix).
-TOPIC_PATH_MAX = 60
 
 
 class StatusBarVM(ViewModelBase):

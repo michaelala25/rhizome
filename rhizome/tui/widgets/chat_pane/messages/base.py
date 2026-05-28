@@ -19,14 +19,13 @@ from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
-from rhizome.tui.colors import Colors
 from rhizome.tui.types import Mode, Role
 
 
 _ROLE_PREFIXES = {
-    Role.USER: f"[bold {Colors.USER_PREFIX}]you:[/bold {Colors.USER_PREFIX}] ",
-    Role.SYSTEM: f"[{Colors.SYSTEM_PREFIX}]system:[/{Colors.SYSTEM_PREFIX}] ",
-    Role.ERROR: f"[bold {Colors.SYSTEM_ERROR}]error:[/bold {Colors.SYSTEM_ERROR}] ",
+    Role.USER: f"[bold rgb(100, 160, 230)]you:[/bold rgb(100, 160, 230)] ",
+    Role.SYSTEM: f"[rgb(140, 140, 140)]system:[/rgb(140, 140, 140)] ",
+    Role.ERROR: f"[bold rgb(220, 80, 80)]error:[/bold rgb(220, 80, 80)] ",
 }
 
 
@@ -39,17 +38,17 @@ class ChatMessage(Widget):
         height: auto;
     }}
     ChatMessage.user-message {{
-        background: {Colors.USER_BG};
+        background: rgb(22, 22, 22);
         margin: 0 2;
     }}
     ChatMessage.system-message {{
         color: $text-muted;
     }}
     ChatMessage.error-message {{
-        color: {Colors.SYSTEM_ERROR};
+        color: rgb(220, 80, 80);
     }}
     ChatMessage.error-message Markdown {{
-        color: {Colors.SYSTEM_ERROR};
+        color: rgb(220, 80, 80);
     }}
     ChatMessage .msg-header {{
         height: auto;

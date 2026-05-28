@@ -6,7 +6,6 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Markdown, Static
 
-from rhizome.tui.colors import Colors
 from rhizome.tui.types import Mode, Role
 
 
@@ -32,7 +31,7 @@ class ChatMessage(Widget):
         background: rgb(45, 45, 45);
     }}
     ChatMessage.user-message {{
-        background: {Colors.USER_BG};
+        background: rgb(22, 22, 22);
         margin: 0 2;
         padding: 1 2 0 2;
     }}
@@ -47,39 +46,39 @@ class ChatMessage(Widget):
         padding: 0 2 0 2;
     }}
     ChatMessage.error-message {{
-        color: {Colors.SYSTEM_ERROR};
+        color: rgb(220, 80, 80);
         padding: 1 2 0 2;
     }}
     ChatMessage.error-message Markdown {{
-        color: {Colors.SYSTEM_ERROR};
+        color: rgb(220, 80, 80);
     }}
     ChatMessage.learn-mode.agent-message {{
-        border: round {Colors.LEARN_AGENT_BORDER};
+        border: round rgb(60, 80, 160);
         margin: 0 2;
     }}
     ChatMessage.review-mode.agent-message {{
-        border: round {Colors.REVIEW_AGENT_BORDER};
+        border: round rgb(120, 60, 160);
         margin: 0 2;
     }}
     ChatMessage.--commit-selectable,
     ChatMessage.learn-mode.--commit-selectable,
     ChatMessage.review-mode.--commit-selectable {{
-        border: round {Colors.COMMIT_SELECTABLE};
+        border: round rgb(140, 120, 50);
     }}
     ChatMessage.--commit-cursor,
     ChatMessage.learn-mode.--commit-cursor,
     ChatMessage.review-mode.--commit-cursor {{
-        border: round {Colors.COMMIT_CURSOR};
+        border: round rgb(220, 190, 60);
     }}
     ChatMessage.--commit-selected,
     ChatMessage.learn-mode.--commit-selected,
     ChatMessage.review-mode.--commit-selected {{
-        border: round {Colors.COMMIT_SELECTED};
+        border: round rgb(60, 160, 80);
     }}
     ChatMessage.--commit-selected.--commit-cursor,
     ChatMessage.learn-mode.--commit-selected.--commit-cursor,
     ChatMessage.review-mode.--commit-selected.--commit-cursor {{
-        border: round {Colors.COMMIT_SELECTED_CURSOR};
+        border: round rgb(80, 200, 100);
     }}
     ChatMessage .commit-checkbox {{
         dock: left;
@@ -126,10 +125,10 @@ class ChatMessage(Widget):
     """
 
     ROLE_PREFIXES = {
-        Role.USER: f"[bold {Colors.USER_PREFIX}]you:[/bold {Colors.USER_PREFIX}] ",
-        Role.AGENT: f"[bold {Colors.AGENT_PREFIX}]agent:[/bold {Colors.AGENT_PREFIX}] ",
-        Role.SYSTEM: f"[{Colors.SYSTEM_PREFIX}]system:[/{Colors.SYSTEM_PREFIX}] ",
-        Role.ERROR: f"[bold {Colors.SYSTEM_ERROR}]error:[/bold {Colors.SYSTEM_ERROR}] ",
+        Role.USER: f"[bold rgb(100, 160, 230)]you:[/bold rgb(100, 160, 230)] ",
+        Role.AGENT: f"[bold rgb(200, 100, 200)]agent:[/bold rgb(200, 100, 200)] ",
+        Role.SYSTEM: f"[rgb(140, 140, 140)]system:[/rgb(140, 140, 140)] ",
+        Role.ERROR: f"[bold rgb(220, 80, 80)]error:[/bold rgb(220, 80, 80)] ",
     }
 
     def __init__(self, role: Role, content: str = "", mode: Mode = Mode.IDLE) -> None:

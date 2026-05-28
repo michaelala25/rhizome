@@ -20,7 +20,6 @@ from textual.containers import VerticalScroll
 from textual.timer import Timer
 from textual.widgets import Static
 
-from rhizome.tui.colors import Colors
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
@@ -41,7 +40,7 @@ class ShellCommandMessage(ViewBase[ShellCommandVM]):
     ShellCommandMessage {{
         height: auto;
         padding: 1 2 1 2;
-        background: {Colors.USER_BG};
+        background: rgb(22, 22, 22);
         margin: 0 2;
     }}
     ShellCommandMessage .shell-header {{
@@ -81,7 +80,7 @@ class ShellCommandMessage(ViewBase[ShellCommandVM]):
         display: block;
     }}
     ShellCommandMessage .shell-exit-code.--error {{
-        color: {Colors.SYSTEM_ERROR};
+        color: rgb(220, 80, 80);
     }}
     """
 
@@ -90,7 +89,7 @@ class ShellCommandMessage(ViewBase[ShellCommandVM]):
         self._tick_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
-        prefix = f"[bold {Colors.USER_PREFIX}]you:[/bold {Colors.USER_PREFIX}] "
+        prefix = f"[bold rgb(100, 160, 230)]you:[/bold rgb(100, 160, 230)] "
         yield Static(f"{prefix}$ {self._vm.command}", classes="shell-header")
         yield Static("", classes="shell-elapsed")
         with VerticalScroll(classes="shell-output-area"):

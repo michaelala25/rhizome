@@ -13,7 +13,6 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from rhizome.tui.colors import Colors
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.messages.tool import ToolMessageVM
@@ -54,7 +53,7 @@ class ToolMessage(ViewBase[ToolMessageVM]):
         self.query_one("#tool-content", Static).update(self._render_tree())
 
     def _title_text(self) -> str:
-        c = Colors.TOOLCALL_TITLE
+        c = "rgb(220, 160, 80)"
         return f"[{c}]tool calls[/{c}] ▼"
 
     def _max_arg_width(self) -> int:

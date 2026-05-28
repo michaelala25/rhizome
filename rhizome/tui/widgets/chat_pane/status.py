@@ -17,7 +17,6 @@ from rich.text import Text
 from textual.widgets import Static
 
 from rhizome.agent.utils import TokenUsageData
-from rhizome.tui.colors import Colors
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.status import StatusBarVM
@@ -29,8 +28,8 @@ def _compact_rgb(s: str) -> str:
 
 
 _MODE_COLORS: dict[str, str] = {
-    "learn": _compact_rgb(Colors.LEARN_SYSTEM_TEXT),
-    "review": _compact_rgb(Colors.REVIEW_SYSTEM_TEXT),
+    "learn": _compact_rgb("rgb(110, 140, 240)"),
+    "review": _compact_rgb("rgb(170, 90, 220)"),
 }
 
 _VERBOSITY_COLORS: dict[str, str] = {

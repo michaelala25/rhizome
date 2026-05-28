@@ -20,7 +20,6 @@ from textual.containers import VerticalScroll
 from textual.timer import Timer
 from textual.widgets import Static
 
-from rhizome.tui.colors import Colors
 
 from rhizome.app.vm import ViewModelBase
 

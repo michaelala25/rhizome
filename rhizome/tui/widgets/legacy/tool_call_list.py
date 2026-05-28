@@ -10,7 +10,6 @@ from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Static
 
-from rhizome.tui.colors import Colors
 
 
 class ToolCallList(Widget, can_focus=True):
@@ -50,7 +49,7 @@ class ToolCallList(Widget, can_focus=True):
         yield Static("", id="tool-content")
 
     def _title_text(self) -> str:
-        c = Colors.TOOLCALL_TITLE
+        c = "rgb(220, 160, 80)"
         hint = " [rgb(100,100,100)](ctrl+o)[/rgb(100,100,100)]" if self.has_class("--show-hint") else ""
         if self._collapsed:
             count = len(self._tools)

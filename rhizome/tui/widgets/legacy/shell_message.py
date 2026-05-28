@@ -11,7 +11,6 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Static
 
-from rhizome.tui.colors import Colors
 
 
 class ShellCommandMessage(Widget):
@@ -23,7 +22,7 @@ class ShellCommandMessage(Widget):
     ShellCommandMessage {{
         height: auto;
         padding: 1 2 1 2;
-        background: {Colors.USER_BG};
+        background: rgb(22, 22, 22);
         margin: 0 2;
     }}
     ShellCommandMessage .shell-header {{
@@ -63,7 +62,7 @@ class ShellCommandMessage(Widget):
         display: block;
     }}
     ShellCommandMessage .shell-exit-code.--error {{
-        color: {Colors.SYSTEM_ERROR};
+        color: rgb(220, 80, 80);
     }}
     """
 
@@ -72,7 +71,7 @@ class ShellCommandMessage(Widget):
         self._command = command
 
     def compose(self) -> ComposeResult:
-        prefix = f"[bold {Colors.USER_PREFIX}]you:[/bold {Colors.USER_PREFIX}] "
+        prefix = f"[bold rgb(100, 160, 230)]you:[/bold rgb(100, 160, 230)] "
         yield Static(f"{prefix}$ {self._command}", classes="shell-header")
         yield Static("", classes="shell-elapsed")
         with VerticalScroll(classes="shell-output-area"):

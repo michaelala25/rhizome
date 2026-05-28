@@ -21,7 +21,6 @@ from textual.containers import Horizontal
 from textual.widgets import Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
-from rhizome.tui.colors import Colors
 from rhizome.tui.types import Mode
 
 from rhizome.app.vm import ViewModelBase
