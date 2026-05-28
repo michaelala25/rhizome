@@ -15,20 +15,8 @@ from textual.widgets import Static
 
 from rhizome.tui.colors import Colors
 
-from ..view_base import ViewBase
-from rhizome.app.vm import ViewModelBase
-
-
-class ToolMessageVM(ViewModelBase):
-    """An ordered list of tool calls. Append-only via ``add_tool_call``."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.tools: list[tuple[str, dict[str, Any]]] = []
-
-    def add_tool_call(self, name: str, args: dict[str, Any] | None = None) -> None:
-        self.tools.append((name, args or {}))
-        self.emit(self.dirty)
+from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.app.chat_pane.messages.tool import ToolMessageVM
 
 
 class ToolMessage(ViewBase[ToolMessageVM]):

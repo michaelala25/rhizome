@@ -19,8 +19,8 @@ from textual.widgets import Static
 from rhizome.agent.utils import TokenUsageData
 from rhizome.tui.colors import Colors
 
-from ..view_base import ViewBase
-from rhizome.app.vm import ViewModelBase
+from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.app.chat_pane.status import StatusBarVM
 
 
 def _compact_rgb(s: str) -> str:
@@ -42,48 +42,6 @@ _VERBOSITY_COLORS: dict[str, str] = {
 
 # Max characters for the rendered topic path (excluding the "topic: " prefix).
 TOPIC_PATH_MAX = 60
-
-
-class StatusBarVM(ViewModelBase):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.mode: str = "idle"
-        self.topic_path: list[str] = []
-        self.model_name: str = ""
-        self.verbosity: str = "auto"
-        self.token_usage: TokenUsageData = TokenUsageData()
-
-    def set_mode(self, mode: str) -> None:
-        if self.mode == mode:
-            return
-        self.mode = mode
-        self.emit(self.dirty)
-
-    def set_topic_path(self, path: list[str]) -> None:
-        if self.topic_path == path:
-            return
-        self.topic_path = list(path)
-        self.emit(self.dirty)
-
-    def set_model_name(self, name: str) -> None:
-        if self.model_name == name:
-            return
-        self.model_name = name
-        self.emit(self.dirty)
-
-    def set_verbosity(self, verbosity: str) -> None:
-        if self.verbosity == verbosity:
-            return
-        self.verbosity = verbosity
-        self.emit(self.dirty)
-
-    def set_token_usage(self, usage: TokenUsageData) -> None:
-        """Token usage is mutated in-place on the AgentSession, so identity checks won't catch
-        updates. Always emit — callers (the agent session callback) only fire on actual updates
-        anyway."""
-        self.token_usage = usage
-        self.emit(self.dirty)
 
 
 class StatusBar(ViewBase[StatusBarVM]):

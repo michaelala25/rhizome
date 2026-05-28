@@ -26,23 +26,24 @@ from rhizome.tui.commands import CommandRegistry
 from rhizome.tui.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 
-from ..browser import BrowserVM
+from rhizome.app.browser.browser import BrowserVM
 from rhizome.app.vm import ViewModelBase
-from .agent_message import AgentMessageVM
-from .agent_stream_router import AgentStreamRouter
-from .branch_indicator import BranchPointVM
-from .chat_input import ChatInputVM
-from .choices import UserChoicesVM
-from .command_palette import CommandPaletteVM
-from .conversation_graph import ConversationGraph, ConversationGraphCursor, ConversationNode, NodeId
-from .interrupt import InterruptVMBase, TestInterruptVM
-from .multiple_choices import MultiUserChoicesVM
-from .sql_confirmation import SqlConfirmationVM
-from .warning_choices import WarningUserChoicesVM
-from .shell_command import ShellCommandVM
-from .status_bar import StatusBarVM
-from .thinking_indicator import ThinkingIndicatorVM
-from .tool_message import ToolMessageVM
+from rhizome.app.chat_pane.messages.agent import AgentMessageVM
+from rhizome.app.chat_pane.agent_stream_router import AgentStreamRouter
+from rhizome.app.chat_pane.branch import BranchPointVM
+from rhizome.app.chat_pane.chat_input import ChatInputVM
+from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
+from rhizome.app.chat_pane.command_palette import CommandPaletteVM
+from rhizome.app.chat_pane.conversation_graph import ConversationGraph, ConversationGraphCursor, ConversationNode, NodeId
+from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
+from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
+from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
+from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.app.chat_pane.messages.shell import ShellCommandVM
+from rhizome.app.chat_pane.status import StatusBarVM
+from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
+from rhizome.app.chat_pane.messages.tool import ToolMessageVM
 
 
 FeedEntry = (

@@ -38,14 +38,14 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from langchain_core.messages import AIMessageChunk
 
-from .agent_message import AgentMessageVM
-from .choices import UserChoicesVM
-from .interrupt import InterruptVMBase
-from .multiple_choices import MultiUserChoicesVM
-from .sql_confirmation import SqlConfirmationVM
-from .thinking_indicator import ThinkingIndicatorVM
-from .tool_message import ToolMessageVM
-from .warning_choices import WarningUserChoicesVM
+from rhizome.app.chat_pane.messages.agent import AgentMessageVM
+from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
+from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
+from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
+from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
+from rhizome.app.chat_pane.messages.tool import ToolMessageVM
+from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
 
 
 # Maps the ``"type"`` key on a graph interrupt-value dict to the VM factory that builds the matching

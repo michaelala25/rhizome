@@ -14,59 +14,13 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from ..view_base import ViewBase
-from .interrupt import InterruptVMBase
+from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
 
 _AMBER = "rgb(220,160,50)"
 _GREEN = "rgb(100,200,100)"
 _DIM = "rgb(100,100,100)"
-
-
-class WarningUserChoicesVM(InterruptVMBase):
-    """Business logic for the WarningChoices interrupt. Identical surface to ``UserChoicesVM`` —
-    deliberately not subclassed so that view dispatch by ``isinstance`` can check the two VMs in any
-    order. ``from_interrupt`` prepends Approve/Deny to any caller-supplied extras.
-    """
-
-    DEFAULT_PROMPT = "The agent has requested a potentially dangerous action."
-
-    def __init__(
-        self,
-        prompt: str = DEFAULT_PROMPT,
-        options: list[str] | None = None,
-    ) -> None:
-        super().__init__()
-        self.is_navigable = True
-        self.prompt = prompt
-        self.options = list(options) if options else ["Approve", "Deny"]
-        self.cursor: int = 0
-
-    @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> WarningUserChoicesVM:
-        # Caller-supplied ``options`` are treated as extras; Approve/Deny always come first.
-        extras = list(value.get("options") or [])
-        return cls(
-            prompt=value.get("message", cls.DEFAULT_PROMPT),
-            options=["Approve", "Deny"] + extras,
-        )
-
-    def move_cursor(self, delta: int) -> None:
-        if self.resolved:
-            return
-        if not self.options:
-            return
-        new = (self.cursor + delta) % len(self.options)
-        if new == self.cursor:
-            return
-        self.cursor = new
-        self.emit(self.dirty)
-
-    def confirm(self) -> None:
-        if self.resolved:
-            return
-        if not self.options:
-            return
-        self.resolve(self.options[self.cursor])
 
 
 class WarningUserChoices(ViewBase[WarningUserChoicesVM]):

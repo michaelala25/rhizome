@@ -24,87 +24,8 @@ from textual.widgets.markdown import MarkdownStream
 from rhizome.tui.colors import Colors
 from rhizome.tui.types import Mode
 
-from ..view_base import ViewBase
-from rhizome.app.vm import ViewModelBase
-
-
-class AgentMessageVM(ViewModelBase):
-    """A single contiguous run of agent text. Append-only ``body``; ``streaming`` flips on close."""
-
-    def __init__(self, *, mode: Mode = Mode.IDLE) -> None:
-        super().__init__()
-        self.body: str = ""
-        self.streaming: bool = True
-        self.cancelled: bool = False
-        self.mode: Mode = mode
-
-        # Commit-mode decoration. Set by the chat-pane VM while in COMMIT state; the view paints
-        # borders + a checkbox in the header off these flags.
-        self.is_selectable: bool = False
-        self.is_selected: bool = False
-        self.is_cursor: bool = False
-
-    @property
-    def is_empty(self) -> bool:
-        return self.body == ""
-
-    def append_token(self, text: str) -> None:
-        assert self.streaming, "append_token after close()"
-        if not text:
-            return
-        self.body += text
-        self.emit(self.dirty)
-
-    def close(self) -> None:
-        if not self.streaming:
-            return
-        self.streaming = False
-        self.emit(self.dirty)
-
-    def mark_cancelled(self) -> None:
-        """Signal the view's drain loop to exit immediately instead of catching up.
-
-        The drain loop normally pulls budget-sized slices off ``body`` until rendered catches up,
-        even after ``close()`` flips ``streaming`` to False. When the user cancels mid-stream we
-        don't want the buffered text to keep painting — flipping this flag and emitting dirty
-        (which sets the view's wakeup event) causes the loop to short-circuit on its next
-        iteration and exit, leaving the partially-rendered slice frozen as-is.
-
-        Idempotent. Doesn't touch ``body`` or ``streaming`` — callers typically follow with
-        ``close()`` so the segment is also formally sealed.
-        """
-        if self.cancelled:
-            return
-        self.cancelled = True
-        self.emit(self.dirty)
-
-    def set_selectable(self, selectable: bool) -> None:
-        if self.is_selectable == selectable:
-            return
-        self.is_selectable = selectable
-        self.emit(self.dirty)
-
-    def set_selected(self, selected: bool) -> None:
-        if self.is_selected == selected:
-            return
-        self.is_selected = selected
-        self.emit(self.dirty)
-
-    def set_cursor(self, cursor: bool) -> None:
-        if self.is_cursor == cursor:
-            return
-        self.is_cursor = cursor
-        self.emit(self.dirty)
-
-    def clear_commit_decoration(self) -> None:
-        if not (self.is_selectable or self.is_selected or self.is_cursor):
-            return
-        
-        self.is_selectable = False
-        self.is_selected = False
-        self.is_cursor = False
-        
-        self.emit(self.dirty)
+from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.app.chat_pane.messages.agent import AgentMessageVM
 
 
 class AgentMessage(ViewBase[AgentMessageVM]):

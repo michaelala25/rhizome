@@ -5,7 +5,7 @@ The legacy widget still lives at ``rhizome.tui.widgets.legacy.chat_pane.ChatPane
 ``.view`` takes the unqualified name in this package.
 """
 
-from .view import ChatPane
-from .view_model import ChatPaneVM
+from rhizome.tui.widgets.chat_pane.chat_pane import ChatPane
+from rhizome.app.chat_pane.chat_pane import ChatPaneVM
 
 __all__ = ["ChatPane", "ChatPaneVM"]

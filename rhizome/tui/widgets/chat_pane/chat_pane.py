@@ -17,24 +17,36 @@ from textual.containers import Vertical, VerticalScroll
 
 from textual.widget import Widget
 
-from ..browser import Browser, BrowserVM
-from ..view_base import ViewBase
-from .agent_message import AgentMessage, AgentMessageVM
-from .branch_indicator import BranchPoint, BranchPointVM
-from .chat_input import ChatInput
-from .chat_message import ChatMessage
-from .choices import UserChoices, UserChoicesVM
-from .command_palette import CommandPalette
-from .conversation_graph import NodeId
-from .interrupt import InterruptVMBase, TestInterrupt, TestInterruptVM
-from .multiple_choices import MultiUserChoices, MultiUserChoicesVM
-from .sql_confirmation import SqlConfirmation, SqlConfirmationVM
-from .warning_choices import WarningUserChoices, WarningUserChoicesVM
-from .shell_command import ShellCommandMessage, ShellCommandVM
-from .status_bar import StatusBar
-from .thinking_indicator import ThinkingIndicator, ThinkingIndicatorVM
-from .tool_message import ToolMessage, ToolMessageVM
-from .view_model import ChatPaneVM
+from rhizome.app.browser.browser import BrowserVM
+from rhizome.tui.widgets.browser.browser import Browser
+from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.chat_pane.messages.agent import AgentMessage
+from rhizome.app.chat_pane.messages.agent import AgentMessageVM
+from rhizome.tui.widgets.chat_pane.branch import BranchPoint
+from rhizome.app.chat_pane.branch import BranchPointVM
+from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
+from rhizome.tui.widgets.chat_pane.messages.base import ChatMessage
+from rhizome.tui.widgets.chat_pane.interrupts.user_choices import UserChoices
+from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
+from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
+from rhizome.app.chat_pane.conversation_graph import NodeId
+from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.tui.widgets.chat_pane.interrupts.test import TestInterrupt
+from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
+from rhizome.tui.widgets.chat_pane.interrupts.multi_choices import MultiUserChoices
+from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
+from rhizome.tui.widgets.chat_pane.interrupts.sql import SqlConfirmation
+from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
+from rhizome.tui.widgets.chat_pane.interrupts.warning import WarningUserChoices
+from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.tui.widgets.chat_pane.messages.shell import ShellCommandMessage
+from rhizome.app.chat_pane.messages.shell import ShellCommandVM
+from rhizome.tui.widgets.chat_pane.status import StatusBar
+from rhizome.tui.widgets.chat_pane.thinking import ThinkingIndicator
+from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
+from rhizome.tui.widgets.chat_pane.messages.tool import ToolMessage
+from rhizome.app.chat_pane.messages.tool import ToolMessageVM
+from rhizome.app.chat_pane.chat_pane import ChatPaneVM
 from rhizome.tui.types import ChatMessageData
 
 

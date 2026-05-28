@@ -10,17 +10,8 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from ..view_base import ViewBase
-from rhizome.app.vm import ViewModelBase
-
-
-class ThinkingIndicatorVM(ViewModelBase):
-    """Sentinel VM with no mutable state. The view subscribes to nothing — its animation is
-    self-driven."""
-
-
-_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_TICK_RATE = 0.1
+from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
 
 
 class ThinkingIndicator(ViewBase[ThinkingIndicatorVM]):
