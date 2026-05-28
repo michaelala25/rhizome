@@ -89,6 +89,9 @@ class TopicTreePanelView(Vertical):
         Binding("alt+up", "nav_up", show=False),
         Binding("alt+down", "nav_down", show=False),
         Binding("r", "rename", show=False),
+        # ``c`` creates under the cursor (``(root)`` cursor → no parent); ``shift+c`` always at root.
+        Binding("c", "create", show=False),
+        Binding("shift+c", "create_root", show=False),
     ]
 
     def __init__(self, view_model: TopicTreePanelViewModel, **kwargs: Any) -> None:
@@ -136,7 +139,7 @@ class TopicTreePanelView(Vertical):
     def on_action_menu_view_create_requested(
         self, event: ActionMenuView.CreateRequested
     ) -> None:
-        _logger.info("create_topic stub — cursor parent=%s", self._vm.tree.cursor_topic_id)
+        self._dispatch_create(self._vm.tree.cursor_topic_id)
 
     def on_action_menu_view_delete_requested(
         self, event: ActionMenuView.DeleteRequested
@@ -169,6 +172,28 @@ class TopicTreePanelView(Vertical):
 
     def action_rename(self) -> None:
         self._focus_details_node("name")
+
+    def action_create(self) -> None:
+        # Cursor on ``(root)`` → ``cursor_topic_id is None`` → create at root level.
+        self._dispatch_create(self._vm.tree.cursor_topic_id)
+
+    def action_create_root(self) -> None:
+        self._dispatch_create(None)
+
+    def _dispatch_create(self, parent_id: int | None) -> None:
+        # Background worker because the DB write + tree mutation chain is async, and key-binding
+        # action handlers must stay sync (Textual awaits them but we don't want to block the key
+        # pipeline on the round-trip). The worker drives both halves so the cursor-move lands
+        # only after the new node is actually mounted.
+        self.run_worker(self._create_topic_worker(parent_id), exclusive=False)
+
+    async def _create_topic_worker(self, parent_id: int | None) -> None:
+        topic = await self._vm.tree.create_topic(parent_id)
+        try:
+            tree_view = self.query_one(BrowserTopicTreeView)
+        except Exception:
+            return
+        await tree_view.add_created_topic(topic)
 
     # Override so external ``panel.focus()`` calls land on the tree rather than no-op'ing on the
     # non-focusable ``Vertical`` container.

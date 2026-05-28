@@ -32,6 +32,10 @@ The tree itself (`BrowserTopicTreeViewModel` + `BrowserTopicTreeView`) lives at 
 - **Vertical nav extends through the details panel.** From the tree, `alt+down` walks
   `tree → details_name → details_description → details_accept` (the last only when the details
   panel `is_dirty`); `alt+up` is the reverse. The actions menu has no up/down neighbours.
+- **Pane-wide shortcuts.** `r` focuses the details name field. `c` creates under the cursor
+  parent (with `cursor_topic_id is None` — i.e., cursor on the tree's synthetic `(root)` row —
+  meaning "create at root level"); `shift+c` always creates at root. All three are inert inside
+  the details `TextArea`s since those consume printable keys at the widget level.
 - **Rail expansion is panel-owned.** `ActionMenuView.on_focus` toggles `-actions-expanded` on the
   surrounding `TopicTreePanelView` via `screen.query_one("TopicTreePanelView")` (type-name string
   to avoid the circular import the panel view induces by importing the actions widget). The right

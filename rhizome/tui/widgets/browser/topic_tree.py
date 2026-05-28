@@ -8,6 +8,12 @@ either adds or removes the whole subtree based on full-coverage. The consequence
 second-stage CTE at filter-propagation time. Partial coverage (cascade-add then explicitly uncheck
 a descendant) counts as not-fully-selected, so a re-toggle re-adds the whole subtree — standard
 tri-state file-picker behaviour.
+
+A synthetic ``(root)`` row sits at the top of the tree as a navigable placeholder for "no topic":
+highlighting it pushes ``None`` into ``set_cursor``, which downstream consumers (the details
+panel, the create-action dispatcher) read as "the tree root". It's a leaf with ``data=None``, so
+the same ``node.data is None`` guard the code already uses for the hidden Textual root also
+identifies it everywhere we branch on data.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
 from rhizome.db import Topic
 from rhizome.db.operations import (
+    create_topic,
     expand_subtrees,
     find_parent_topic_ids,
     list_children,
@@ -41,6 +48,10 @@ _UNCHECKED_STYLE = Style(color="rgb(80,80,80)")
 _CURSOR_FOCUSED = Style(color="rgb(255,80,80)", bold=True)
 _CURSOR_UNFOCUSED = Style(color="rgb(255,80,80)")
 _ID_SUFFIX_STYLE = Style(color="rgb(120,120,120)")
+# Style for the synthetic ``(root)`` row at the top of the tree — a dimmer grey than regular
+# topic names so it reads as a placeholder; cursor highlight uses the normal red tint.
+_VIRTUAL_ROOT_STYLE = Style(color="rgb(100,100,100)")
+_VIRTUAL_ROOT_LABEL = "(root)"
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,16 @@ class BrowserTopicTreeViewModel(ViewModelBase):
                 topics = await list_children(session, parent_id)
             parent_set = await find_parent_topic_ids(session, [t.id for t in topics])
         return [LoadedTopic(topic=t, has_children=t.id in parent_set) for t in topics]
+
+    async def create_topic(self, parent_id: int | None) -> Topic:
+        """Create a new topic under ``parent_id`` (``None`` = root) and return it. The name is
+        auto-generated as ``"Untitled Topic <id>"`` — we flush to get the id, then mutate the
+        in-memory row's name in place before committing so the column never holds the placeholder."""
+        async with self._session_factory() as session:
+            topic = await create_topic(session, name="Untitled Topic", parent_id=parent_id)
+            topic.name = f"Untitled Topic {topic.id}"
+            await session.commit()
+        return topic
 
     # ------------------------------------------------------------------
     # Selection
@@ -212,12 +233,16 @@ class BrowserTopicTreeView(Tree[Topic]):
         self._invalidate_label_cache()
 
     async def _populate_roots(self) -> None:
+        # Synthetic ``(root)`` row at the top — selecting it parks the VM cursor on ``None``, which
+        # downstream code (TopicDetailsViewModel, create-action dispatch) reads as "no parent / at
+        # the tree root". Data is ``None`` to flag it as virtual everywhere we branch on data.
+        self.root.add_leaf(_VIRTUAL_ROOT_LABEL, data=None)
         for lt in await self._vm.fetch_children(None):
             if lt.has_children:
                 self.root.add(lt.topic.name, data=lt.topic, allow_expand=True)
             else:
                 self.root.add_leaf(lt.topic.name, data=lt.topic)
-        # Restore cursor to the VM's last-known topic if present; otherwise park on the first root.
+        # Restore cursor: a remembered topic id wins; ``None`` (or no match) parks on ``(root)``.
         target_id = self._vm.cursor_topic_id
         if target_id is not None:
             for node in self.root.children:
@@ -251,9 +276,61 @@ class BrowserTopicTreeView(Tree[Topic]):
                 node.add_leaf(lt.topic.name, data=lt.topic)
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[Topic]) -> None:
+        # Synthetic ``(root)`` row → ``None`` cursor; real topic rows → their id.
         if event.node.data is None:
+            self._vm.set_cursor(None)
             return
         self._vm.set_cursor(event.node.data.id)
+
+    async def add_created_topic(self, topic: Topic) -> None:
+        """Insert a freshly-created topic into the tree and park the cursor on it.
+
+        Handles three parent shapes: ``None`` (append as a new root after any existing roots);
+        an already-loaded parent (just append a leaf alongside the existing siblings); and a
+        parent that was previously a childless leaf (flip ``allow_expand`` so the expand arrow
+        renders, then append). For an expandable-but-unloaded parent we eagerly fetch its
+        siblings first so the new node lands next to them rather than alone.
+        """
+        parent_id = topic.parent_id
+        if parent_id is None:
+            new_node = self.root.add_leaf(topic.name, data=topic)
+            self.call_after_refresh(self.move_cursor, new_node)
+            return
+
+        parent_node = self._find_node(self.root, parent_id)
+        if parent_node is None:
+            # Parent isn't materialised in the tree (its ancestor subtree never expanded).
+            # Nothing we can do without a deeper walk; the user can navigate to find it.
+            return
+
+        if not parent_node.allow_expand:
+            # Was rendered as a leaf because it had no children at populate time. Promote it now.
+            parent_node.allow_expand = True
+
+        if not parent_node.children:
+            # Either freshly-promoted or expandable-but-unloaded — fetch the full child set so
+            # the new topic sits among its real siblings. The fetch reflects the just-committed
+            # write so our row appears in the result.
+            for lt in await self._vm.fetch_children(parent_id):
+                if lt.has_children:
+                    parent_node.add(lt.topic.name, data=lt.topic, allow_expand=True)
+                else:
+                    parent_node.add_leaf(lt.topic.name, data=lt.topic)
+            new_node = next(
+                (c for c in parent_node.children if c.data is not None and c.data.id == topic.id),
+                None,
+            )
+        else:
+            new_node = parent_node.add_leaf(topic.name, data=topic)
+
+        if not parent_node.is_expanded:
+            parent_node.expand()
+        if new_node is not None:
+            # ``move_cursor`` reads ``node._line`` which is only computed on the next render pass
+            # — calling it synchronously after ``add_leaf`` / ``expand`` snaps the cursor to line
+            # 0 (the synthetic ``(root)`` row) because ``_line`` is still its uninitialised
+            # default. Defer to after the next refresh so the line cache is current.
+            self.call_after_refresh(self.move_cursor, new_node)
 
     def update_node_label(self, topic_id: int, new_name: str) -> bool:
         """Find the node for ``topic_id`` and rewrite its label + ``data.name`` in place. Returns
@@ -340,10 +417,15 @@ class BrowserTopicTreeView(Tree[Topic]):
             checkbox = ""
             checkbox_style = base_style
 
-        # Focus-aware cursor tint so the user can tell whether keystrokes route here.
+        # Focus-aware cursor tint so the user can tell whether keystrokes route here. The synthetic
+        # ``(root)`` row uses a dimmer grey when idle but takes the standard red cursor tint when
+        # highlighted so it doesn't visually disappear behind the cursor.
         is_cursor = node is self.cursor_node
+        is_virtual = node.data is None
         if is_cursor:
             label_style = _CURSOR_FOCUSED if self.has_focus else _CURSOR_UNFOCUSED
+        elif is_virtual:
+            label_style = _VIRTUAL_ROOT_STYLE
         else:
             label_style = style
 
