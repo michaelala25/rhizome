@@ -36,7 +36,7 @@ from rhizome.agent.subagents.flashcard_validator import (
 
 from rhizome.logs import get_logger
 from rhizome.resources import ResourceManager
-from rhizome.tui.options import Options
+from rhizome.app.options import Options
 
 
 def _merge_resource_messages_into_queue(

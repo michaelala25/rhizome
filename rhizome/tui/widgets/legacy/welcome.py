@@ -4,7 +4,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from rhizome.tui.options import Options
+from rhizome.app.options import Options
 
 ASCII_ART = r"""
     ____  __    _

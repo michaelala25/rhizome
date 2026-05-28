@@ -11,9 +11,9 @@ from rhizome.config import get_default_db_path
 from rhizome.credentials import has_api_key
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
-from rhizome.tui.options import Options, OptionScope
+from rhizome.app.options import Options, OptionScope
 from rhizome.db import get_engine, get_session_factory
-from rhizome.tui.session import NotifyingSessionFactory
+from rhizome.app.sql_session import NotifyingSessionFactory
 from rhizome.tui.screens.main import MainScreen, ChatTabPane, LogTabPane
 from rhizome.tui.screens.setup import SetupScreen
 from rhizome.tui.types import DatabaseCommitted

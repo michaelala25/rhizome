@@ -7,7 +7,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import TabbedContent, TabPane
 
-from rhizome.tui.options import Options
+from rhizome.app.options import Options
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Role, UserFeedback
 from rhizome.tui.widgets import ChatPane, LoggingPane
 from rhizome.tui.widgets.chat_pane import ChatPane

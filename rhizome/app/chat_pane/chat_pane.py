@@ -22,8 +22,8 @@ from rhizome.agent.session import AgentSession, get_agent_kwargs
 from rhizome.db import Topic
 from rhizome.db.operations import get_topic
 from rhizome.resources.manager import ResourceManager
-from rhizome.tui.commands import CommandRegistry
-from rhizome.tui.options import Options
+from rhizome.app.command_registry import CommandRegistry
+from rhizome.app.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 
 from rhizome.app.browser.browser import BrowserVM

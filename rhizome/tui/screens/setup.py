@@ -9,7 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from rhizome.credentials import store_api_key
-from rhizome.tui.options import Options
+from rhizome.app.options import Options
 from rhizome.tui.widgets.legacy.welcome import ASCII_ART
 
 

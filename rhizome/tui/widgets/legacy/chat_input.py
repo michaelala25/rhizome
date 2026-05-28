@@ -5,7 +5,7 @@ import time
 from textual.message import Message
 from textual.widgets import TextArea
 
-from rhizome.tui.commands import parse_input
+from rhizome.app.command_registry import parse_input
 
 
 class ChatInput(TextArea):

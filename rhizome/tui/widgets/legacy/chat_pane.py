@@ -48,8 +48,8 @@ from rhizome.resources import ResourceManager
 from rhizome.resources.auto_metadata import generate_resource_metadata
 from rhizome.resources.ingest import extract_text_from_file, fetch_webpage_text, ingest_resource
 from rhizome.tui.commit_state import CommitApproved, CommitState
-from rhizome.tui.commands import CommandRegistry, parse_input
-from rhizome.tui.options import Options, OptionScope, build_jsonc_snapshot, parse_jsonc
+from rhizome.app.command_registry import CommandRegistry, parse_input
+from rhizome.app.options import Options, OptionScope, build_jsonc_snapshot, parse_jsonc
 from rhizome.tui.dock import DockContainerMixin, HorizontalDockArea, VerticalDockArea
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Mode, Role
 
