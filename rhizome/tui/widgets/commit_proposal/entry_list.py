@@ -8,9 +8,25 @@ the table goes from zero to one rows, which would round-trip back through
 ``on_data_table_row_highlighted`` and oscillate the VM cursor).
 
 Cursor movement is driven by ``DataTable``'s default ``cursor_up`` / ``cursor_down`` actions; the
-resulting ``RowHighlighted`` is forwarded to ``vm.set_cursor``, whose equality guard absorbs the
-bounce. ``check_action`` disables the binding at the top/bottom row so the keystroke bubbles to
-the parent ``CommitProposal``'s focus-graph bindings.
+resulting ``RowHighlighted`` is forwarded to ``vm.set_cursor``. ``check_action`` disables the
+binding at the top/bottom row so the keystroke bubbles to the parent ``CommitProposal``'s
+focus-graph bindings.
+
+Cursor-sync feedback loop under fast key-repeat
+-----------------------------------------------
+The VM's identity guard on ``set_cursor`` handles the simple round-trip — when a single
+``move_cursor`` call re-posts ``RowHighlighted`` at the same row, the next ``set_cursor`` no-ops
+and the chain dies. But under fast key-repeat on a large table, Textual's ``RowHighlighted``
+backlog desynchronizes: by the time we process ``RH(N+1)``, ``cursor_coordinate`` has already
+advanced to N+2 with ``RH(N+2)`` queued. If ``_refresh`` then "syncs" the table back to N+1 via
+``move_cursor``, two things happen at once: (a) the visible cursor snaps backwards, and (b) a
+fresh ``RH(N+1)`` lands in the queue behind ``RH(N+2)``. The two interleave indefinitely — every
+step is a genuine cursor change, so the identity guard never gets to fire.
+
+The fix: skip the ``_refresh`` cursor-sync while a ``RowHighlighted`` is being forwarded — in
+that path the table is the source of truth and any pushback from us only adds noise. The sync
+still runs for VM-initiated moves (boundary navigation from the parent view, ``reset()``'s
+cursor clamp), which is where it's actually needed.
 
 Excluded rows render dim + strikethrough across all three columns.
 
@@ -62,6 +78,10 @@ class EntryList(DataTable, can_focus=True):
         )
         self._vm = vm
         self._content_key = None
+        # True for the duration of ``on_data_table_row_highlighted``. ``_refresh`` checks this
+        # to skip its cursor-sync ``move_cursor`` — see the module docstring for the fast-scroll
+        # feedback loop it guards against.
+        self._handling_row_highlighted: bool = False
 
     def on_mount(self) -> None:
         self.add_columns("Title", "Type", "Topic")
@@ -135,7 +155,14 @@ class EntryList(DataTable, can_focus=True):
     # ------------------------------------------------------------------
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        self._vm.set_cursor(event.cursor_row)
+        # The flag scopes for the entire ``vm.set_cursor`` call — both the ``vm.details.dirty``
+        # subscriber (fired from ``_sync_details``) and the ``vm.dirty`` subscriber run
+        # synchronously inside the emit chain, so both ``_refresh`` invocations see the flag.
+        self._handling_row_highlighted = True
+        try:
+            self._vm.set_cursor(event.cursor_row)
+        finally:
+            self._handling_row_highlighted = False
 
     # ------------------------------------------------------------------
     # Per-row cursor tint — DataTable's component-class lookup is flat per cell, so we hook
@@ -206,9 +233,15 @@ class EntryList(DataTable, can_focus=True):
             self.update_cell_at(Coordinate(i, 2), topic)
             self.update_cell_at(Coordinate(i, 3), content)
 
-        # Sync the DataTable's visual cursor to vm.cursor for VM-driven moves (e.g. boundary
-        # navigation). The induced RowHighlighted round-trips through vm.set_cursor's equality guard.
-        if cursor is not None and self.cursor_row != cursor:
+        # Sync the table's visual cursor to vm.cursor for VM-initiated moves (boundary navigation
+        # from the parent view, ``reset()``'s clamp). Suppressed inside ``RowHighlighted`` handling
+        # because the table is the source of truth there and pushing back would re-post the event —
+        # under fast key-repeat that closes the feedback loop documented in the module docstring.
+        if (
+            not self._handling_row_highlighted
+            and cursor is not None
+            and self.cursor_row != cursor
+        ):
             self.move_cursor(row=cursor, animate=False)
 
         # Auto-width columns may shift as cell content changes, so re-fit the content column.

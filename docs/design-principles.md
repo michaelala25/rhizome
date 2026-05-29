@@ -75,6 +75,9 @@
             - To fix this, we guard against emit(self.dirty) in VM.set_cursor(new_cursor) by returning early when self.cursor == new_cursor - no data changed internally, so we don't need to repaint.
             - The second round trip of the event isn't really avoidable thanks to how DataTable repainting works in textual, and we probably could've avoided this by using something other than DataTable.move_cursor in View._refresh, but the guard in the VM also works.
 
+        - **Caveat:** the identity guard is necessary but not sufficient when the View ALSO pushes back to the framework during _refresh (the DataTable.move_cursor workaround above). Under fast event rates (e.g. holding down on a big table) the framework's event queue desynchronizes: by the time we process T(N+1), the framework has already advanced to N+2 with T(N+2) queued behind us. _refresh's "sync" call then both snaps the framework backwards AND posts a fresh T(N+1) behind T(N+2), and the two interleave indefinitely — every step is a genuinely new cursor value, so the identity guard never fires.
+            - Rule of thumb: when the View is forwarding an event from the framework, the framework is the source of truth for that event — don't push back through the same channel while the handler is on the stack. Scope the framework-sync in _refresh (the move_cursor call, etc.) to VM-initiated cursor changes only. A _handling_X flag set across the event handler is the simplest gate.
+
 
 
 
