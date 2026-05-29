@@ -103,6 +103,13 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         await self._vm.start()
         self.focus()
 
+    def on_focus(self, event) -> None:
+        # Bounce focus inward off the bare container onto the topic panel.
+        super().on_focus(event)
+        panel = self._panel_view()
+        if panel is not None:
+            panel.focus()
+
     # Browser is a composite — focus belongs on its inner regions, not the outer container. Route
     # external focus requests (including the ``vm.focus → self.focus`` subscription wired by
     # ``ViewBase``) through the panel, which in turn lands focus on the topic tree via its own

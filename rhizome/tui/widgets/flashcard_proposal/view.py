@@ -330,6 +330,17 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
     def on_resize(self) -> None:
         self._sync_list_area_height()
 
+    def on_focus(self, event) -> None:
+        # Bounce focus inward off the bare container — except in DONE-collapsed, where ``enter`` on
+        # the parent toggles back open and we want the binding to actually fire here.
+        super().on_focus(event)
+        if self._vm.state == FlashcardProposalVM.State.DONE and self._collapsed:
+            return
+        try:
+            self.query_one("#fp-flashcard-list", FlashcardList).focus()
+        except Exception:
+            pass
+
     def _sync_list_area_height(self) -> None:
         # Pin flashcard-list-area's height to ``max(its own natural content height, details
         # height)`` so a tall FlashcardDetails doesn't leave dead vertical space between the
@@ -584,8 +595,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         FlashcardProposalChoices in-list activator)."""
         if self._vm.state != FlashcardProposalVM.State.DONE:
             return
-        self._collapsed = not self._collapsed
-        self._refresh_done_surface()
+        self._toggle_collapsed()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "fp-collapse":
@@ -593,8 +603,21 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         event.stop()
         if self._vm.state != FlashcardProposalVM.State.DONE:
             return
+        self._toggle_collapsed()
+
+    def _toggle_collapsed(self) -> None:
+        # Flip _collapsed, then swap focus so the enter binding lives on whichever node makes sense
+        # for the new state: parent self when collapsed (so enter re-expands), flashcard list when
+        # expanded (so the user can browse the proposal).
         self._collapsed = not self._collapsed
         self._refresh_done_surface()
+        if self._collapsed:
+            self.focus()
+        else:
+            try:
+                self.query_one("#fp-flashcard-list", FlashcardList).focus()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Topic picker

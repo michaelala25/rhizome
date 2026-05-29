@@ -133,6 +133,10 @@ class EntryList(DataTable, can_focus=True):
                 self._vm.cursor is not None
                 and self._vm.cursor < len(self._vm.entries) - 1
             )
+        # Disable DataTable's inherited ``enter → select_cursor`` binding — nothing handles
+        # ``RowSelected`` here, and returning False lets enter bubble to the parent's collapse toggle.
+        if action == "select_cursor":
+            return False
         return True
 
     # ------------------------------------------------------------------
