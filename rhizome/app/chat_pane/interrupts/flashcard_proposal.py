@@ -46,7 +46,7 @@ class FlashcardProposalInterruptVM(FlashcardProposalVM, InterruptVMBase):
             return
         if self.state != FlashcardProposalVM.State.DONE:
             return
-        self.resolve(self._build_result())
+        self.resolve(self._build_result(), remain_navigable=True)
 
     def _build_result(self) -> dict[str, Any]:
         accepted: list[Flashcard] | None

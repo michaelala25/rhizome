@@ -46,13 +46,16 @@ class InterruptVMBase(ViewModelBase):
         """
         return await self._future
 
-    def resolve(self, value: Any) -> None:
-        """Set the future to ``value``. No-op if already resolved/cancelled."""
+    def resolve(self, value: Any, remain_navigable: bool = False) -> None:
+        """Set the future to ``value``. No-op if already resolved/cancelled. ``remain_navigable``
+        becomes the post-resolve value of ``is_navigable`` — interrupts whose resolved form still
+        hosts navigable UI (e.g. a DONE-collapse with focusable buttons) pass True.
+        """
         if self.resolved:
             return
 
         self.resolved = True
-        self.is_navigable = False
+        self.is_navigable = remain_navigable
         self.result = value
         if not self._future.done():
             self._future.set_result(value)

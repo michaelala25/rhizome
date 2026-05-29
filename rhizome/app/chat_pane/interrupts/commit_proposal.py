@@ -46,7 +46,7 @@ class CommitProposalInterruptVM(CommitProposalVM, InterruptVMBase):
             return
         if self.state != CommitProposalVM.State.DONE:
             return
-        self.resolve(self._build_result())
+        self.resolve(self._build_result(), remain_navigable=True)
 
     def _build_result(self) -> dict[str, Any]:
         accepted: list[Entry] | None

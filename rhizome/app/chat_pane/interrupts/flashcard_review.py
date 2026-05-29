@@ -35,7 +35,7 @@ class FlashcardReviewInterruptVM(FlashcardReviewVM, InterruptVMBase):
             return
         if self.state != FlashcardReviewVM.State.DONE:
             return
-        self.resolve(self._build_result())
+        self.resolve(self._build_result(), remain_navigable=True)
 
     def _build_result(self) -> dict[str, Any]:
         cards = []
