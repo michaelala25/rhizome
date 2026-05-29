@@ -125,9 +125,15 @@ class FlashcardList(DataTable, can_focus=True):
     # ------------------------------------------------------------------
 
     def action_toggle_exclude(self) -> None:
+        # State guard: the flashcard-list stays focusable in DONE so the user can browse the
+        # proposal, but every mutator must be off-limits there — the VM asserts EDITING.
+        if self._vm.state != FlashcardProposalVM.State.EDITING:
+            return
         self._vm.toggle_exclude_current_flashcard()
 
     def action_set_topic(self) -> None:
+        if self._vm.state != FlashcardProposalVM.State.EDITING:
+            return
         self.post_message(SetTopicRequested(scope="current"))
 
     # ------------------------------------------------------------------

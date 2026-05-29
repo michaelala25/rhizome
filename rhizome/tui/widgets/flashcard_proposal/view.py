@@ -7,8 +7,8 @@ view's own arrow handlers, which forward focus along the graph. The parent also 
 topic-picker modal (since the modal needs a ``session_factory`` and the leaves do not) and the
 lifecycle keybindings (``ctrl+a/r/c``, ``ctrl+e``, ``shift+t``).
 
-The focus graph
----------------
+The focus graph (EDITING state)
+-------------------------------
 Nodes (in declaration order)::
 
     shared-topic-setter
@@ -30,6 +30,16 @@ The read-only ``fp-details-linked-entries`` Static is rendered between testing-n
 details choices but is intentionally absent from the focus graph — it isn't interactive.
 
 ``focus_first`` lands on ``flashcard-list`` per the same convention as commit-proposal.
+
+DONE state
+----------
+Mirrors the commit-proposal view: on EDITING→DONE the view flips its own ``_collapsed`` to True,
+blurs the focused descendant, drops every editable node out of the focus graph (only
+``fp-flashcard-list`` stays available), and sets ``can_focus = False`` on the SharedTopicSetter,
+the three details TextAreas, both ChoiceLists, and the edit-instructions area. The upper-right
+▶/▼ button toggles ``_collapsed``; ``enter`` does the same (gated to DONE-only inside
+``action_toggle_collapsed``). Collapsed renders a centered "Flashcard Proposal - (N flashcards) -
+<final state>" summary plus the dim grey edit-instructions readout when non-empty.
 """
 
 from __future__ import annotations
@@ -40,7 +50,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
 from rhizome.tui.widgets.flashcard_proposal.choices import FlashcardProposalChoices
@@ -50,6 +60,13 @@ from rhizome.tui.widgets.flashcard_proposal.flashcard_list import FlashcardList
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.flashcard_proposal.shared_topic_setter import SharedTopicSetter
 from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+
+
+# Final-state colours shown in the collapsed DONE summary header. Matched against the commit-
+# proposal trio so the chat-pane vocabulary stays consistent across both surfaces.
+_APPROVED_GREEN = "rgb(120,210,110)"
+_EDITS_YELLOW = "rgb(235,180,90)"
+_CANCEL_RED = "rgb(235,100,100)"
 
 
 # Static focus graph. Each entry maps a node id to its alt+arrow neighbours. ``None`` means "no
@@ -119,8 +136,13 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         max-height: 40;
         padding: 0;
     }
+    FlashcardProposal #fp-top-row {
+        height: 1;
+        background: transparent;
+    }
     FlashcardProposal #fp-title {
         height: 1;
+        width: 1fr;
         padding: 0 1;
         background: transparent;
     }
@@ -163,6 +185,41 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
     FlashcardProposal #fp-global-choices {
         margin: 1 0;
     }
+    FlashcardProposal #fp-collapse {
+        dock: right;
+        width: 3;
+        min-width: 3;
+        height: 1;
+        background: transparent;
+        border: none;
+        color: rgb(120,120,120);
+        display: none;
+    }
+    FlashcardProposal #fp-collapse:hover {
+        color: rgb(220,220,220);
+    }
+    FlashcardProposal #fp-done-summary-line {
+        height: auto;
+        width: 1fr;
+        padding: 1 2;
+        text-align: center;
+        display: none;
+    }
+    FlashcardProposal #fp-done-status {
+        height: auto;
+        width: 1fr;
+        margin: 1 0;
+        text-align: center;
+        display: none;
+    }
+    FlashcardProposal #fp-done-instructions {
+        margin: 1 4 0 4;
+        padding: 1 2;
+        height: auto;
+        background: rgb(40,40,40);
+        color: rgb(180,180,180);
+        display: none;
+    }
     """
 
     BINDINGS = [
@@ -184,6 +241,10 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         Binding("ctrl+c", "cancel", show=False),
         Binding("ctrl+e", "toggle_edit_instructions", show=False),
         Binding("shift+t", "set_topic_all", show=False),
+        # DONE-state collapse toggle — same dual-meaning ``enter`` strategy as commit-proposal.
+        # The action no-ops in EDITING so it doesn't fight with SharedTopicSetter / TextArea /
+        # ChoiceList enter consumers there.
+        Binding("enter", "toggle_collapsed", show=False),
     ]
 
     def __init__(self, vm: FlashcardProposalVM, *, session_factory: Any | None = None, **kwargs) -> None:
@@ -192,12 +253,23 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         # for the ``/test-flashcard-proposal`` slash command which doesn't need real topic data.
         self._session_factory = session_factory
 
+        # DONE-state display flag, owned entirely by the view. Defaults to False; the EDITING→DONE
+        # transition in ``_refresh`` flips it to True on first observation.
+        self._collapsed: bool = False
+        # Edge-detection flag for the EDITING→DONE transition.
+        self._entered_done: bool = False
+
     # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
 
     def compose(self):
-        yield Static(self._title_text(), id="fp-title")
+        # Upper-right ▶/▼ button shares the title row. Hidden in EDITING; toggled visible by
+        # ``_refresh_done_surface`` once the VM reaches DONE.
+        with Horizontal(id="fp-top-row"):
+            yield Static(self._title_text(), id="fp-title")
+            yield Button("▼", id="fp-collapse")
+
         yield Static(
             "The agent has drafted these flashcards to commit — edit them inline, exclude any "
             "you don't want, or request revisions before approving.",
@@ -213,7 +285,15 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
                 yield Static(self._flashcard_list_hints_text(), id="fp-flashcard-list-hints")
             yield FlashcardDetails(self._vm.details, id="fp-flashcard-details")
         yield FlashcardProposalChoices(self._vm, id="fp-global-choices")
+        # DONE-expanded status label — fills the slot the choices vacated, rendering the colored
+        # final-state word (approved / edits requested / cancelled).
+        yield Static("", id="fp-done-status")
         yield EditInstructionsArea(self._vm, id="fp-edit-instructions")
+        # Read-only edit-instructions readout shown in DONE (any). Borderless dim-grey block —
+        # same formatting in DONE-expanded and DONE-collapsed.
+        yield Static("", id="fp-done-instructions")
+        # Collapsed-DONE centered summary line.
+        yield Static("", id="fp-done-summary-line")
 
     def _flashcard_list_hints_text(self) -> str:
         rows = [
@@ -270,14 +350,122 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         self.call_after_refresh(_apply)
 
     def _refresh(self) -> None:
-        # Parent has no own-rendered content. Children subscribe to vm.dirty independently.
-        pass
+        # Bulk of the editing-state content is rendered by child widgets that subscribe to
+        # vm.dirty independently — the parent's job here is the DONE-state surface (collapsed/
+        # expanded gating, summary block, button) and the one-shot EDITING→DONE edge.
+        if self._vm.state == FlashcardProposalVM.State.DONE and not self._entered_done:
+            self._handle_done_transition()
+            self._entered_done = True
+
+        self._refresh_done_surface()
+
+    def _refresh_done_surface(self) -> None:
+        """Sync button visibility, the DONE status widgets, and the visibility of the editing
+        content based on (state, collapsed). Idempotent.
+
+        Visibility matrix (rows are widgets, columns are EDITING / DONE-expanded / DONE-collapsed)::
+
+            fp-title, description, spacer, topic-setter, middle  →  ●  ●  ○
+            fp-global-choices                                    →  ●  ○  ○
+            fp-done-status (centered final-state label)          →  ○  ●  ○
+            fp-edit-instructions (TextArea)                      →  ●*  ○  ○      (* vm flag)
+            fp-done-instructions (dim grey readout)              →  ○  ●†  ●†     († non-empty)
+            fp-done-summary-line (centered title + state)        →  ○  ○  ●
+        """
+        in_done = self._vm.state == FlashcardProposalVM.State.DONE
+        collapsed_done = in_done and self._collapsed
+        expanded_done = in_done and not self._collapsed
+
+        btn = self.query_one("#fp-collapse", Button)
+        btn.display = in_done
+        btn.label = "▶" if collapsed_done else "▼"
+
+        editing_or_expanded_done = not collapsed_done
+        for wid in (
+            "fp-title", "fp-description", "fp-description-spacer",
+            "fp-shared-topic-setter", "fp-middle",
+        ):
+            self.query_one(f"#{wid}", Widget).display = editing_or_expanded_done
+
+        # Choices live only in EDITING; DONE-expanded swaps in the centered status label.
+        self.query_one("#fp-global-choices", Widget).display = not in_done
+        self.query_one("#fp-done-status", Widget).display = expanded_done
+
+        self.query_one("#fp-edit-instructions", Widget).display = (
+            not in_done and self._vm.edit_instructions_visible
+        )
+
+        instructions = self._vm.edit_instructions.strip()
+        instructions_widget = self.query_one("#fp-done-instructions", Static)
+        instructions_widget.display = in_done and bool(instructions)
+        if instructions_widget.display:
+            instructions_widget.update(instructions)
+
+        summary_line = self.query_one("#fp-done-summary-line", Static)
+        summary_line.display = collapsed_done
+
+        if in_done:
+            state_label = self._done_state_label()
+            if expanded_done:
+                self.query_one("#fp-done-status", Static).update(state_label)
+            if collapsed_done:
+                n = len(self._vm.flashcards)
+                noun = "flashcard" if n == 1 else "flashcards"
+                summary_line.update(
+                    f"[bold rgb(255,80,80)]Flashcard Proposal[/]  "
+                    f"[dim]- ({n} {noun}) -[/]  {state_label}"
+                )
+
+    def _done_state_label(self) -> str:
+        """Markup-formatted colored state word shared by the collapsed summary line and the
+        DONE-expanded status slot."""
+        if self._vm.cancelled:
+            return f"[bold {_CANCEL_RED}]cancelled[/]"
+        if self._vm.edit_instructions.strip():
+            return f"[bold {_EDITS_YELLOW}]edits requested[/]"
+        return f"[bold {_APPROVED_GREEN}]approved[/]"
+
+    def _handle_done_transition(self) -> None:
+        """One-shot wiring run the first time we observe state == DONE.
+
+        Flips the view's collapsed flag to True, drops every editable descendant out of the focus
+        chain (via ``can_focus = False``), and blurs whatever currently holds focus so the chat
+        input can take over once the interrupt resolves."""
+        self._collapsed = True
+
+        for wid in (
+            "fp-shared-topic-setter",
+            "fp-details-question",
+            "fp-details-answer",
+            "fp-details-testing-notes",
+            "fp-details-choices",
+            "fp-global-choices",
+            "fp-edit-instructions",
+        ):
+            try:
+                self.query_one(f"#{wid}", Widget).can_focus = False
+            except Exception:
+                pass
+
+        screen = self.screen
+        if screen is None:
+            return
+        focused = screen.focused
+        if focused is None:
+            return
+        node: Widget | None = focused
+        while node is not None and node is not self:
+            node = node.parent
+        if node is self:
+            focused.blur()
 
     # ------------------------------------------------------------------
     # Focus orchestration
     # ------------------------------------------------------------------
 
     def _focus_first(self) -> None:
+        if self._vm.state != FlashcardProposalVM.State.EDITING:
+            return
         self.query_one("#fp-flashcard-list", FlashcardList).focus()
 
     def action_focus_neighbour(self, direction: str) -> None:
@@ -339,6 +527,10 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         return target
 
     def _is_focus_node_available(self, node_id: str) -> bool:
+        # In DONE only the flashcard-list stays in the graph — the user browses the proposal but
+        # can't edit anything.
+        if self._vm.state == FlashcardProposalVM.State.DONE:
+            return node_id == "fp-flashcard-list"
         if node_id == "fp-details-choices":
             return self._vm.details.is_dirty
         if node_id == "fp-edit-instructions":
@@ -385,6 +577,24 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         if self._vm.state != FlashcardProposalVM.State.EDITING:
             return
         self._open_topic_picker(scope="all")
+
+    def action_toggle_collapsed(self) -> None:
+        """DONE-only enter binding. No-ops in EDITING so it can't fight with the EDITING-state
+        ``enter`` consumers (SharedTopicSetter, the ConfirmableTextArea accept hook, the
+        FlashcardProposalChoices in-list activator)."""
+        if self._vm.state != FlashcardProposalVM.State.DONE:
+            return
+        self._collapsed = not self._collapsed
+        self._refresh_done_surface()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "fp-collapse":
+            return
+        event.stop()
+        if self._vm.state != FlashcardProposalVM.State.DONE:
+            return
+        self._collapsed = not self._collapsed
+        self._refresh_done_surface()
 
     # ------------------------------------------------------------------
     # Topic picker

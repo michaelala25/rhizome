@@ -140,12 +140,20 @@ class EntryList(DataTable, can_focus=True):
     # ------------------------------------------------------------------
 
     def action_toggle_exclude(self) -> None:
+        # State guard: the entry-list stays focusable in DONE so the user can browse the
+        # proposal, but every mutator must be off-limits there — the VM asserts EDITING.
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.toggle_exclude_current_entry()
 
     def action_cycle_type(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.cycle_current_entry_type()
 
     def action_set_topic(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self.post_message(SetTopicRequested(scope="current"))
 
     # ------------------------------------------------------------------

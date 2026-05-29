@@ -74,8 +74,15 @@ class EditInstructionsArea(TextArea):
     # ------------------------------------------------------------------
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area is self:
-            self._vm.set_edit_instructions(event.text_area.text)
+        # Belt-and-suspenders: in DONE the parent view flips ``can_focus`` False so the user can't
+        # type here, but a programmatic load (e.g. a ``self.text =`` assignment from ``_refresh``)
+        # would still fire this. Guard so we don't crash ``vm.set_edit_instructions``'s
+        # ``_assert_editing``.
+        if event.text_area is not self:
+            return
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
+        self._vm.set_edit_instructions(event.text_area.text)
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         # ``up`` is owned by TextArea's BINDINGS (action_cursor_up), so it never reaches _on_key.
@@ -90,6 +97,9 @@ class EditInstructionsArea(TextArea):
             event.prevent_default()
             return
         if event.key == "escape":
+            if self._vm.state != CommitProposalVM.State.EDITING:
+                event.prevent_default()
+                return
             now = time.monotonic()
             if now - self._last_escape_ts < _DOUBLE_ESC_WINDOW:
                 self._vm.discard_edit_instructions()

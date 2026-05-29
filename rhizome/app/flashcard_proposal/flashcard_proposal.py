@@ -14,11 +14,15 @@ State summary
 - ``edit_instructions`` / ``edit_instructions_visible`` — the natural-language edit-loop input.
   The buffer survives toggling the area's visibility; only ``discard_edit_instructions()`` clears
   the text.
-- ``state`` — ``EDITING`` until ``accept_all()`` or ``cancel()`` flips it to ``DONE``.
+- ``state`` — ``EDITING`` until ``accept_all()`` or ``cancel()`` flips it to ``DONE``. In ``DONE``
+  the working state freezes: confirmed edits and the excluded set remain, but every mutator is
+  off-limits (each one assertion-guards on ``EDITING``). ``accept_all()`` flushes the in-flight
+  details buffer first so an unsaved question/answer/notes edit isn't silently dropped;
+  ``cancel()`` does the opposite — discards the buffer via ``self._details.cancel()`` — so a
+  half-typed edit on the focused card doesn't survive a rejection.
 - ``_cancelled`` — distinguishes the two DONE flavors. The interrupt subclass uses this to pick
-  the future's resolution shape.
-- ``_collapsed`` — view-side fold flag (auto-set to True on lifecycle exit). Toggleable in DONE
-  state only.
+  the future's resolution shape. Collapsed/expanded display state for the DONE surface lives on
+  the view, not here.
 
 Cursor moves push the new flashcard into ``self.details`` so the question / answer / notes
 TextAreas reseed. Cursor moves silently discard any in-flight edits — symmetric with the
@@ -53,7 +57,6 @@ class FlashcardProposalVM(ViewModelBase):
 
         self.state: FlashcardProposalVM.State = FlashcardProposalVM.State.EDITING
         self._cancelled: bool = False
-        self._collapsed: bool = False
 
         self.edit_instructions: str = ""
         self.edit_instructions_visible: bool = False
@@ -72,17 +75,6 @@ class FlashcardProposalVM(ViewModelBase):
         return self._cancelled
 
     @property
-    def collapsed(self) -> bool:
-        return self._collapsed
-
-    @collapsed.setter
-    def collapsed(self, value: bool) -> None:
-        if self._collapsed == value:
-            return
-        self._collapsed = value
-        self.emit(self.dirty)
-
-    @property
     def details(self) -> FlashcardDetailsVM:
         return self._details
 
@@ -94,10 +86,6 @@ class FlashcardProposalVM(ViewModelBase):
 
     def is_excluded(self, idx: int) -> bool:
         return idx in self.excluded
-
-    def toggle_collapsed(self) -> None:
-        assert self.state == FlashcardProposalVM.State.DONE
-        self.collapsed = not self.collapsed
 
     # ------------------------------------------------------------------
     # Cursor
@@ -200,14 +188,16 @@ class FlashcardProposalVM(ViewModelBase):
         # details VM no-ops if not dirty.
         self._details.accept()
         self.state = FlashcardProposalVM.State.DONE
-        self._collapsed = True
         self.emit(self.dirty)
 
     def cancel(self) -> None:
         self._assert_editing()
+        # Symmetric counterpart to accept_all's flush: drop the in-flight details buffer rather
+        # than commit it, so a half-typed edit on the focused flashcard doesn't survive a
+        # rejection. No-op if not dirty.
+        self._details.cancel()
         self._cancelled = True
         self.state = FlashcardProposalVM.State.DONE
-        self._collapsed = True
         self.emit(self.dirty)
 
     def reset(self) -> None:

@@ -54,11 +54,19 @@ class CommitProposalChoices(ChoiceList[CommitProposalVM]):
     # ------------------------------------------------------------------
     # Choice actions
     # ------------------------------------------------------------------
+    #
+    # ``can_focus`` is flipped False on this widget when the parent view enters DONE, so keyboard
+    # activation can't reach these handlers — but a mouse click can still trigger ``_approve`` &
+    # friends. Each one guards on EDITING since the underlying VM mutators assert that state.
 
     def _approve(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.accept_all()
 
     def _edit(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.toggle_edit_instructions_area()
         if self._vm.edit_instructions_visible:
             try:
@@ -67,12 +75,18 @@ class CommitProposalChoices(ChoiceList[CommitProposalVM]):
                 pass
 
     def _reset(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.reset()
 
     def _cancel(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.cancel()
 
     def action_cancel(self) -> None:
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self._vm.cancel()
 
     # ------------------------------------------------------------------

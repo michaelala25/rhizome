@@ -6,8 +6,8 @@ edge; the parent looks up the source in the focus graph and forwards focus to th
 The parent also owns the topic-picker modal (since the modal needs a ``session_factory`` and the
 leaves do not) and the lifecycle keybindings (``ctrl+a/r/c``, ``ctrl+e``, ``shift+t``).
 
-The focus graph
----------------
+The focus graph (EDITING state)
+-------------------------------
 Nodes (in declaration order)::
 
     shared-topic-setter
@@ -24,6 +24,20 @@ Nodes (in declaration order)::
     edit-instructions (visible only when ``edit_instructions_visible``)
 
 ``focus_first`` lands on ``entry-list`` per the spec.
+
+DONE state
+----------
+On the EDITING→DONE transition the view flips its own ``_collapsed`` flag to True, blurs whatever
+descendant currently has focus, and tightens the focus graph so only ``cp-entry-list`` remains
+available (every other node returns False from ``_is_focus_node_available``). The TextAreas in the
+details panel and the edit-instructions area are flipped to ``can_focus = False`` so they leave the
+global focus chain too; the entry-list keeps its cursor so the user can still browse the proposal.
+
+The upper-right ▶/▼ button toggles ``_collapsed``; ``enter`` on the widget itself (or on the
+still-focusable entry list) does the same. When collapsed, the editing content is hidden and a
+centered summary block renders the title, count, the final-state label (approved / edits requested
+/ cancelled), and — if the user supplied edit-instructions before approving — a dim grey readout of
+that buffer.
 """
 
 from __future__ import annotations
@@ -34,7 +48,7 @@ from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Button, Static
 
 from rhizome.app.commit_proposal.commit_proposal import CommitProposalVM
 from rhizome.tui.widgets.commit_proposal.choices import CommitProposalChoices
@@ -44,6 +58,13 @@ from rhizome.tui.widgets.commit_proposal.entry_list import EntryList
 from rhizome.tui.widgets.commit_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.commit_proposal.shared_topic_setter import SharedTopicSetter
 from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+
+
+# Final-state colours shown in the collapsed DONE summary header. Matched against the trio used in
+# the flashcard-review widget so the chat-pane vocabulary stays consistent across surfaces.
+_APPROVED_GREEN = "rgb(120,210,110)"
+_EDITS_YELLOW = "rgb(235,180,90)"
+_CANCEL_RED = "rgb(235,100,100)"
 
 
 # Static focus graph. Each entry maps a node id to its alt+arrow neighbours. ``None`` means "no
@@ -107,8 +128,13 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         max-height: 35;
         padding: 0;
     }
+    CommitProposal #cp-top-row {
+        height: 1;
+        background: transparent;
+    }
     CommitProposal #cp-title {
         height: 1;
+        width: 1fr;
         padding: 0 1;
         background: transparent;
     }
@@ -151,6 +177,41 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
     CommitProposal #cp-global-choices {
         margin: 1 0;
     }
+    CommitProposal #cp-collapse {
+        dock: right;
+        width: 3;
+        min-width: 3;
+        height: 1;
+        background: transparent;
+        border: none;
+        color: rgb(120,120,120);
+        display: none;
+    }
+    CommitProposal #cp-collapse:hover {
+        color: rgb(220,220,220);
+    }
+    CommitProposal #cp-done-summary-line {
+        height: auto;
+        width: 1fr;
+        padding: 1 2;
+        text-align: center;
+        display: none;
+    }
+    CommitProposal #cp-done-status {
+        height: auto;
+        width: 1fr;
+        margin: 1 0;
+        text-align: center;
+        display: none;
+    }
+    CommitProposal #cp-done-instructions {
+        margin: 1 4 0 4;
+        padding: 1 2;
+        height: auto;
+        background: rgb(40,40,40);
+        color: rgb(180,180,180);
+        display: none;
+    }
     """
 
     BINDINGS = [
@@ -172,6 +233,10 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         Binding("ctrl+c", "cancel", show=False),
         Binding("ctrl+e", "toggle_edit_instructions", show=False),
         Binding("shift+t", "set_topic_all", show=False),
+        # DONE-state collapse toggle. Active only when state == DONE (gated in ``check_action``)
+        # so the editing-state ``enter`` consumers (SharedTopicSetter, the EntryDetails
+        # ConfirmableTextAreas, CommitProposalChoices) keep their semantics.
+        Binding("enter", "toggle_collapsed", show=False),
     ]
 
     def __init__(self, vm: CommitProposalVM, *, session_factory: Any | None = None, **kwargs) -> None:
@@ -180,12 +245,27 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         # for the ``/test-commit-proposal`` slash command which doesn't need real topic data.
         self._session_factory = session_factory
 
+        # DONE-state display flag, owned entirely by the view. Defaults to False; the EDITING→DONE
+        # transition in ``_refresh`` flips it to True on first observation (and never again from
+        # the VM side — only ``action_toggle_collapsed`` and the ▶/▼ button move it after that).
+        self._collapsed: bool = False
+        # Edge-detection flag for the EDITING→DONE transition. ``_refresh`` flips this True the
+        # first time state == DONE so the one-shot collapse + blur + can_focus updates run exactly
+        # once.
+        self._entered_done: bool = False
+
     # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
 
     def compose(self):
-        yield Static(self._title_text(), id="cp-title")
+        # Upper-right ▶/▼ button shares the title row. Hidden in EDITING; toggled visible by
+        # ``_refresh_done_surface`` once the VM reaches DONE. Intentionally outside the focus
+        # graph — the parent's ``enter`` binding handles keyboard toggling when focus is on the
+        # entry list (or on the widget itself).
+        with Horizontal(id="cp-top-row"):
+            yield Static(self._title_text(), id="cp-title")
+            yield Button("▼", id="cp-collapse")
         yield Static(
             "The agent has drafted these knowledge entries to commit — edit them inline, "
             "exclude any you don't want, or request revisions before approving.",
@@ -201,7 +281,15 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
                 yield Static(self._entry_list_hints_text(), id="cp-entry-list-hints")
             yield EntryDetails(self._vm.details, id="cp-entry-details")
         yield CommitProposalChoices(self._vm, id="cp-global-choices")
+        # DONE-expanded status label — fills the slot the choices vacated, rendering the colored
+        # final-state word (approved / edits requested / cancelled).
+        yield Static("", id="cp-done-status")
         yield EditInstructionsArea(self._vm, id="cp-edit-instructions")
+        # Read-only edit-instructions readout shown in DONE (any). Borderless dim-grey block —
+        # same formatting in DONE-expanded and DONE-collapsed.
+        yield Static("", id="cp-done-instructions")
+        # Collapsed-DONE centered summary line ("Commit Proposal - (N entries) - <state>").
+        yield Static("", id="cp-done-summary-line")
 
     def _entry_list_hints_text(self) -> str:
         # Key/label colour pair shared with the browser entries tab's keybindings row.
@@ -259,14 +347,141 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         self.call_after_refresh(_apply)
 
     def _refresh(self) -> None:
-        # Parent has no own-rendered content. Children subscribe to vm.dirty independently.
-        pass
+        # Bulk of the editing-state content is rendered by child widgets that subscribe to
+        # vm.dirty independently — the parent's job here is the DONE-state surface (collapsed/
+        # expanded gating, summary block, button) and the one-shot EDITING→DONE edge.
+        if self._vm.state == CommitProposalVM.State.DONE and not self._entered_done:
+            self._handle_done_transition()
+            self._entered_done = True
+
+        self._refresh_done_surface()
+
+    def _refresh_done_surface(self) -> None:
+        """Sync button visibility, the DONE status widgets, and the visibility of the editing
+        content based on (state, collapsed). Idempotent — runs on every dirty emit and on every
+        toggle, but only mutates widgets when their target state has changed.
+
+        Visibility matrix (rows are widgets, columns are EDITING / DONE-expanded / DONE-collapsed)::
+
+            cp-title, description, spacer, topic-setter, middle  →  ●  ●  ○
+            cp-global-choices                                    →  ●  ○  ○
+            cp-done-status (centered final-state label)          →  ○  ●  ○
+            cp-edit-instructions (TextArea)                      →  ●*  ○  ○      (* vm flag)
+            cp-done-instructions (dim grey readout)              →  ○  ●†  ●†     († non-empty)
+            cp-done-summary-line (centered title + state)        →  ○  ○  ●
+        """
+        in_done = self._vm.state == CommitProposalVM.State.DONE
+        collapsed_done = in_done and self._collapsed
+        expanded_done = in_done and not self._collapsed
+
+        # ▶/▼ button — shown in DONE only; arrow flips with collapsed state.
+        btn = self.query_one("#cp-collapse", Button)
+        btn.display = in_done
+        btn.label = "▶" if collapsed_done else "▼"
+
+        # ``cp-top-row`` stays visible across all three modes (its only visible occupant in
+        # collapsed-DONE is the dock-right button) — the inner title Static gets hidden when
+        # collapsed so it doesn't duplicate the centered summary header below.
+        editing_or_expanded_done = not collapsed_done
+        for wid in (
+            "cp-title", "cp-description", "cp-description-spacer",
+            "cp-shared-topic-setter", "cp-middle",
+        ):
+            self.query_one(f"#{wid}", Widget).display = editing_or_expanded_done
+
+        # Choices live only in EDITING; in DONE-expanded their slot is occupied by the centered
+        # status label instead, and DONE-collapsed hides both.
+        self.query_one("#cp-global-choices", Widget).display = not in_done
+        self.query_one("#cp-done-status", Widget).display = expanded_done
+
+        # Edit-instructions area: only ever the editable TextArea while editing AND the VM flag
+        # is set; in DONE the read-only readout block takes over (and the TextArea is hidden).
+        self.query_one("#cp-edit-instructions", Widget).display = (
+            not in_done and self._vm.edit_instructions_visible
+        )
+
+        # Done-state read-only readout — same dim-grey formatting in expanded and collapsed.
+        instructions = self._vm.edit_instructions.strip()
+        instructions_widget = self.query_one("#cp-done-instructions", Static)
+        instructions_widget.display = in_done and bool(instructions)
+        if instructions_widget.display:
+            instructions_widget.update(instructions)
+
+        # Collapsed-DONE centered summary line.
+        summary_line = self.query_one("#cp-done-summary-line", Static)
+        summary_line.display = collapsed_done
+
+        if in_done:
+            state_label = self._done_state_label()
+            if expanded_done:
+                self.query_one("#cp-done-status", Static).update(state_label)
+            if collapsed_done:
+                n = len(self._vm.entries)
+                noun = "entry" if n == 1 else "entries"
+                summary_line.update(
+                    f"[bold rgb(255,80,80)]Commit Proposal[/]  "
+                    f"[dim]- ({n} {noun}) -[/]  {state_label}"
+                )
+
+    def _done_state_label(self) -> str:
+        """Markup-formatted colored state word shared by the collapsed summary line and the
+        DONE-expanded status slot."""
+        if self._vm.cancelled:
+            return f"[bold {_CANCEL_RED}]cancelled[/]"
+        if self._vm.edit_instructions.strip():
+            return f"[bold {_EDITS_YELLOW}]edits requested[/]"
+        return f"[bold {_APPROVED_GREEN}]approved[/]"
+
+    def _handle_done_transition(self) -> None:
+        """One-shot wiring run the first time we observe state == DONE.
+
+        Flips the view's collapsed flag to True (the default landing surface for a freshly-done
+        proposal), drops every editable descendant out of the focus chain, and blurs whatever
+        currently holds focus so the chat input can take over once the interrupt resolves."""
+        self._collapsed = True
+
+        # Tear down the editable surface. Beyond removing each node from the parent's focus graph
+        # (handled by ``_is_focus_node_available``), each widget gets ``can_focus = False`` so it
+        # also leaves the screen-level tab chain — important because the interrupt will resolve
+        # imminently and we don't want a stale TextArea to soak up programmatic focus from the
+        # chat pane's post-resolve refocus.
+        for wid in (
+            "cp-shared-topic-setter",
+            "cp-details-title",
+            "cp-details-content",
+            "cp-details-choices",
+            "cp-global-choices",
+            "cp-edit-instructions",
+        ):
+            try:
+                self.query_one(f"#{wid}", Widget).can_focus = False
+            except Exception:
+                pass
+
+        # Blur the currently-focused descendant. The chat pane typically refocuses its input on
+        # interrupt resolution, so this is mostly a defensive nudge — keeps a now-non-focusable
+        # TextArea from holding focus until the chat pane gets around to it.
+        screen = self.screen
+        if screen is None:
+            return
+        focused = screen.focused
+        if focused is None:
+            return
+        node: Widget | None = focused
+        while node is not None and node is not self:
+            node = node.parent
+        if node is self:
+            focused.blur()
 
     # ------------------------------------------------------------------
     # Focus orchestration
     # ------------------------------------------------------------------
 
     def _focus_first(self) -> None:
+        # ``on_mount`` runs before the VM could possibly reach DONE in practice, but guard anyway
+        # so a re-mount after resolution doesn't grab focus from the chat input.
+        if self._vm.state != CommitProposalVM.State.EDITING:
+            return
         self.query_one("#cp-entry-list", EntryList).focus()
 
     def action_focus_neighbour(self, direction: str) -> None:
@@ -330,6 +545,10 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         return target
 
     def _is_focus_node_available(self, node_id: str) -> bool:
+        # In DONE only the entry-list stays in the graph — the user browses the proposal but can't
+        # edit anything. Alt+arrow traversals from the entry list dead-end at every neighbour.
+        if self._vm.state == CommitProposalVM.State.DONE:
+            return node_id == "cp-entry-list"
         if node_id == "cp-details-choices":
             return self._vm.details.is_dirty
         if node_id == "cp-edit-instructions":
@@ -375,6 +594,24 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         if self._vm.state != CommitProposalVM.State.EDITING:
             return
         self._open_topic_picker(scope="all")
+
+    def action_toggle_collapsed(self) -> None:
+        """DONE-only enter binding. No-ops in EDITING so it can't fight with the EDITING-state
+        ``enter`` consumers (the SharedTopicSetter's set-topic-all binding, the
+        ConfirmableTextArea accept hook, the CommitProposalChoices in-list activator)."""
+        if self._vm.state != CommitProposalVM.State.DONE:
+            return
+        self._collapsed = not self._collapsed
+        self._refresh_done_surface()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "cp-collapse":
+            return
+        event.stop()
+        if self._vm.state != CommitProposalVM.State.DONE:
+            return
+        self._collapsed = not self._collapsed
+        self._refresh_done_surface()
 
     # ------------------------------------------------------------------
     # Topic picker
