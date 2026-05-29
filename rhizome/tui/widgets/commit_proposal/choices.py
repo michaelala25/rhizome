@@ -18,7 +18,7 @@ from typing import ClassVar
 from rich.text import Text
 
 from rhizome.app.commit_proposal.commit_proposal import CommitProposalVM
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
 class CommitProposalChoices(ChoiceList[CommitProposalVM]):

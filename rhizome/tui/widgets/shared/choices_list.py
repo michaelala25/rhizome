@@ -1,4 +1,4 @@
-"""Shared base widget for browser-tab choice dialogs.
+"""Reusable base widget for in-pane choice dialogs.
 
 A ``ChoiceList`` renders a list of named choices, owns the cursor + arrow nav + enter/escape,
 and dispatches the selected choice to an action method on the subclass.

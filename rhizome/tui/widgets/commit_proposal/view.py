@@ -505,7 +505,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         self._reset_target_cursor_for_continuation(target_id, direction)
 
     def _reset_target_cursor_for_continuation(self, target_id: str, direction: str) -> None:
-        from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
+        from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
         if target_id == "cp-entry-list":
             n = len(self._vm.entries)

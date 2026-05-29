@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from rich.text import Text
 
 from rhizome.app.browser.tabs.entries.tab import EntryTabVM
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 if TYPE_CHECKING:
     from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab

@@ -18,8 +18,8 @@ from textual.events import Key
 from textual.widgets import TextArea
 
 from rhizome.app.commit_proposal.entry_details import EntryDetailsVM
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
-from rhizome.tui.widgets.browser.shared.confirmable_text_area import ConfirmableTextArea
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.confirmable_text_area import ConfirmableTextArea
 
 
 class _EntryDetailChoices(ChoiceList[EntryDetailsVM]):

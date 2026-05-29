@@ -1,10 +1,10 @@
 """``ConfirmableTextArea`` — a ``TextArea`` that emits an ``AcceptEditsRequested`` message on
 ``ctrl+j`` (the byte terminals usually send for ``ctrl+enter``).
 
-Shared between the topic-details and entry-details panels so a "commit my edits" shortcut works
-the same way from inside any of their editable fields. The widget itself knows nothing about who
-owns it; the parent view catches ``ConfirmableTextArea.AcceptEditsRequested`` and decides what to
-do (typically: if the VM is dirty, await ``vm.accept()``).
+Used wherever a details panel needs a "commit my edits" shortcut from inside an editable field.
+The widget itself knows nothing about who owns it; the parent view catches
+``ConfirmableTextArea.AcceptEditsRequested`` and decides what to do (typically: if the VM is
+dirty, await ``vm.accept()``).
 """
 
 from __future__ import annotations

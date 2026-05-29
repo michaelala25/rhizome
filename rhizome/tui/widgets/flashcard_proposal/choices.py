@@ -18,7 +18,7 @@ from typing import ClassVar
 from rich.text import Text
 
 from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
 class FlashcardProposalChoices(ChoiceList[FlashcardProposalVM]):

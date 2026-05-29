@@ -8,7 +8,7 @@ across them (no ``prepare_for_show`` reset). Escape always cancels regardless of
 from __future__ import annotations
 
 from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
 class RelinkMenu(ChoiceList[LinkedFlashcardsPanelVM]):

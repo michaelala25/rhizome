@@ -13,7 +13,7 @@ from rich.text import Text
 
 from textual.message import Message
 
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
 class TopicsDeleteMenu(ChoiceList[None]):

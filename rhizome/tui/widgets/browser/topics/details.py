@@ -10,8 +10,8 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Static, TextArea
 
-from rhizome.tui.widgets.browser.shared.choices_list import ChoiceList
-from rhizome.tui.widgets.browser.shared.confirmable_text_area import ConfirmableTextArea
+from rhizome.tui.widgets.shared.choices_list import ChoiceList
+from rhizome.tui.widgets.shared.confirmable_text_area import ConfirmableTextArea
 from rhizome.app.browser.topics.details import TopicDetailsVM
 
 
