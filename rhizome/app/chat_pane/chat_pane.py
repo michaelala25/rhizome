@@ -41,6 +41,8 @@ from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
+from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptVM
+from rhizome.app.commit_proposal import Entry, EntryType
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.app.chat_pane.status import StatusBarVM
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
@@ -1881,6 +1883,64 @@ class ChatPaneVM(ViewModelBase):
                 "flashcards cancelled" if result is None
                 else f"flashcards resolved: completed={result['completed']}, {len(result['cards'])} cards"
             )
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
+
+        @reg.command(name="test-commit-proposal", help="Spawn a CommitProposal interrupt with sample data.")
+        @click.option("--big", is_flag=True, help="Spawn 10× the sample entries to exercise sizing/scroll.")
+        async def _test_commit_proposal(big: bool) -> None:
+            sample_entries = [
+                Entry(
+                    title="Binary search complexity",
+                    content="Binary search has O(log n) time complexity — each comparison halves the "
+                    "remaining search space.",
+                    entry_type=EntryType.FACT,
+                    topic_id=1,
+                    topic_name="Algorithms",
+                ),
+                Entry(
+                    title="Stack vs queue",
+                    content="A stack is LIFO: the most recently added element is removed first.\n"
+                    "A queue is FIFO: the earliest added element is removed first.",
+                    entry_type=EntryType.EXPOSITION,
+                    topic_id=1,
+                    topic_name="Algorithms",
+                ),
+                Entry(
+                    title="Hash collisions",
+                    content="A hash collision is when two distinct keys produce the same hash. Common "
+                    "resolutions: chaining (buckets hold linked lists) or open addressing (probe for "
+                    "the next free slot).",
+                    entry_type=EntryType.FACT,
+                    topic_id=None,
+                    topic_name=None,
+                ),
+                Entry(
+                    title="CAP theorem",
+                    content="A distributed system can provide at most two of: Consistency, "
+                    "Availability, Partition tolerance.",
+                    entry_type=EntryType.OVERVIEW,
+                    topic_id=2,
+                    topic_name="Distributed systems",
+                ),
+            ]
+
+            if big:
+                sample_entries = [e.clone() for e in sample_entries for _ in range(10)]
+
+            interrupt = CommitProposalInterruptVM(sample_entries)
+            result = await self.present_interrupt(interrupt)
+            if result is None or result["accepted"] is None:
+                content = "commit-proposal cancelled"
+            else:
+                accepted = result["accepted"]
+                ei = result["edit_instructions"]
+                content = (
+                    f"commit-proposal resolved: {len(accepted)} accepted"
+                    + (f" · edits: {ei!r}" if ei else "")
+                )
             self.append_message(
                 ChatMessageData(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,

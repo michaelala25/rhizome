@@ -41,6 +41,8 @@ from rhizome.tui.widgets.chat_pane.interrupts.warning import WarningUserChoices
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
 from rhizome.tui.widgets.chat_pane.interrupts.flashcard_review import FlashcardReviewInterrupt
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
+from rhizome.tui.widgets.chat_pane.interrupts.commit_proposal import CommitProposalInterrupt
+from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptVM
 from rhizome.tui.widgets.chat_pane.messages.shell import ShellCommandMessage
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.tui.widgets.chat_pane.status import StatusBar
@@ -145,6 +147,9 @@ class ChatPane(ViewBase[ChatPaneVM]):
 
     def __init__(self, *, session_factory=None, **kwargs) -> None:
         super().__init__(ChatPaneVM(session_factory=session_factory), **kwargs)
+        # Retained for view-side modal pushes (TopicSelectorScreen needs it) when constructing
+        # interrupt views that have their own session-aware UX.
+        self._session_factory = session_factory
 
         # Mounted widgets keyed by FeedItem.id. The pane addresses widgets by id (not position)
         # because the feed may be mutated mid-stream — items can be appended after the agent's open
@@ -296,6 +301,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
             return SqlConfirmation(entry)
         if isinstance(entry, FlashcardReviewInterruptVM):
             return FlashcardReviewInterrupt(entry)
+        if isinstance(entry, CommitProposalInterruptVM):
+            return CommitProposalInterrupt(entry, session_factory=self._session_factory)
         if isinstance(entry, InterruptVMBase):
             raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
         raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")

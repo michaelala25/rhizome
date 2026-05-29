@@ -1,17 +1,19 @@
-"""commit_proposal package — legacy widget + in-progress MVVM rewrite.
+"""Commit-proposal view tree. Top-level export is ``CommitProposal``; the leaves
+(``EntryList``, ``EntryDetails``, ``SharedTopicSetter``, ``CommitProposalChoices``, ``EditInstructions-
+Area``) are public for testing but typically only the parent is mounted directly."""
 
-The legacy widget at ``._legacy.CommitProposal`` is the one currently wired
-into ``agent_message_harness`` and ``chat_pane``; it's re-exported here as
-``CommitProposal`` so existing call sites (``from .commit_proposal import
-CommitProposal``) keep resolving to the working implementation.
+from rhizome.tui.widgets.commit_proposal.choices import CommitProposalChoices
+from rhizome.tui.widgets.commit_proposal.edit_instructions import EditInstructionsArea
+from rhizome.tui.widgets.commit_proposal.entry_details import EntryDetails
+from rhizome.tui.widgets.commit_proposal.entry_list import EntryList
+from rhizome.tui.widgets.commit_proposal.shared_topic_setter import SharedTopicSetter
+from rhizome.tui.widgets.commit_proposal.view import CommitProposal
 
-The MVVM rewrite lives in ``.view`` (``CommitProposal``) and ``.view_model``
-(``CommitProposalViewModel``). It is not yet feature-complete (no resolution
-state, no topic selector wiring) — exposed under a distinct name so callers
-opt in explicitly.
-"""
-
-from ._legacy import CommitProposal
-from .view import CommitProposal as CommitProposalMVVM
-
-__all__ = ["CommitProposal", "CommitProposalMVVM"]
+__all__ = [
+    "CommitProposal",
+    "EditInstructionsArea",
+    "EntryDetails",
+    "EntryList",
+    "CommitProposalChoices",
+    "SharedTopicSetter",
+]
