@@ -5,8 +5,8 @@ Displays the branches reachable from that point and, when the cursor has descend
 branch is currently selected. State is push-driven: the chat pane walks the visible feed on every
 cursor move and calls ``set_selected_child(...)`` directly — no event-pump subscription.
 
-The widget is focusable. While focused, ctrl+arrow keys forward to the VM, which calls back into
-the chat pane VM to mutate the cursor (``descend_into`` / ``ascend`` / ``swap_sibling``).
+The widget is focusable. While focused, ``alt+<arrow>`` keys forward to the VM, which calls back
+into the chat pane VM to mutate the cursor (``descend_into`` / ``ascend`` / ``swap_sibling``).
 """
 
 from __future__ import annotations
@@ -78,6 +78,15 @@ class BranchPointVM(ViewModelBase):
         name = self._graph.node(child_id).name
         return name if name else f"branch-{child_id}"
 
+    @property
+    def selected_child_name(self) -> str:
+        """Actual stored name of the selected child (empty string if unnamed). Distinct from
+        ``child_name(...)`` — the view uses this to pre-fill the rename editor so the fallback
+        ``branch-{id}`` placeholder never leaks into the editable text."""
+        if self._selected_child is None:
+            return ""
+        return self._graph.node(self._selected_child).name or ""
+
     # ------------------------------------------------------------------
     # State updates (called by ChatPaneVM on cursor moves)
     # ------------------------------------------------------------------
@@ -131,8 +140,19 @@ class BranchPointVM(ViewModelBase):
             return
         self._chat_pane.ascend(parent_node_id=self._parent_node_id)
 
+    def request_rename(self, new_name: str) -> None:
+        """Rename the currently-selected child branch. No-op when no child is selected — without
+        a descent there's no unambiguous target. Empty/whitespace input clears the name so the
+        indicator falls back to the ``branch-{id}`` display.
+        """
+        if self._selected_child is None:
+            return
+        name = new_name.strip() or None
+        self._graph.rename(self._selected_child, name)
+        self.emit(self.dirty)
+
     def request_sibling(self, direction: int) -> None:
-        """ctrl+left (-1) / ctrl+right (+1): swap horizontal sibling at *this* branch point.
+        """alt+left (-1) / alt+right (+1): swap horizontal sibling at *this* branch point.
 
         Passes ``parent_node_id`` so the swap happens at this indicator's level even if the cursor
         currently sits several levels deeper. See ``ChatPaneVM.swap_sibling`` for the
