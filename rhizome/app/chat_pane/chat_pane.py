@@ -42,7 +42,9 @@ from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
 from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptVM
+from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptVM
 from rhizome.app.commit_proposal import Entry, EntryType
+from rhizome.app.flashcard_proposal import Flashcard
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.app.chat_pane.status import StatusBarVM
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
@@ -1939,6 +1941,67 @@ class ChatPaneVM(ViewModelBase):
                 ei = result["edit_instructions"]
                 content = (
                     f"commit-proposal resolved: {len(accepted)} accepted"
+                    + (f" · edits: {ei!r}" if ei else "")
+                )
+            self.append_message(
+                ChatMessageData(role=Role.SYSTEM, content=content),
+                include_in_agent_context=False,
+            )
+
+        @reg.command(name="test-flashcard-proposal", help="Spawn a FlashcardProposal interrupt with sample data.")
+        @click.option("--big", is_flag=True, help="Spawn 10× the sample flashcards to exercise sizing/scroll.")
+        async def _test_flashcard_proposal(big: bool) -> None:
+            sample_flashcards = [
+                Flashcard(
+                    question="What is the time complexity of binary search?",
+                    answer="O(log n) — each comparison halves the remaining search space.",
+                    testing_notes="Accept any equivalent phrasing (logarithmic, log base 2, etc.).",
+                    topic_id=1,
+                    topic_name="Algorithms",
+                    entry_ids=[101, 102],
+                ),
+                Flashcard(
+                    question="Explain the difference between a stack and a queue.",
+                    answer="A stack is LIFO: the most recently added element is removed first.\n"
+                    "A queue is FIFO: the earliest added element is removed first.",
+                    testing_notes="Both LIFO/FIFO labels must be stated; pure 'opposite' answers fail.",
+                    topic_id=1,
+                    topic_name="Algorithms",
+                    entry_ids=[103],
+                ),
+                Flashcard(
+                    question="What is a hash collision and how is it typically resolved?",
+                    answer="A collision is two distinct keys hashing to the same bucket. Common "
+                    "resolutions: chaining (linked lists per bucket) or open addressing (probe "
+                    "for the next free slot).",
+                    testing_notes="",
+                    topic_id=None,
+                    topic_name=None,
+                    entry_ids=[],
+                ),
+                Flashcard(
+                    question="What does the CAP theorem state?",
+                    answer="A distributed system can provide at most two of: Consistency, "
+                    "Availability, Partition tolerance.",
+                    testing_notes="All three properties must be named.",
+                    topic_id=2,
+                    topic_name="Distributed systems",
+                    entry_ids=[204, 205, 206],
+                ),
+            ]
+
+            if big:
+                sample_flashcards = [f.clone() for f in sample_flashcards for _ in range(10)]
+
+            interrupt = FlashcardProposalInterruptVM(sample_flashcards)
+            result = await self.present_interrupt(interrupt)
+            if result is None or result["accepted"] is None:
+                content = "flashcard-proposal cancelled"
+            else:
+                accepted = result["accepted"]
+                ei = result["edit_instructions"]
+                content = (
+                    f"flashcard-proposal resolved: {len(accepted)} accepted"
                     + (f" · edits: {ei!r}" if ei else "")
                 )
             self.append_message(

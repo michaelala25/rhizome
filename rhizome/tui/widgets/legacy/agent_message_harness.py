@@ -16,7 +16,8 @@ from rhizome.logs import get_logger
 from rhizome.tui.types import Mode, Role
 
 from ..commit_proposal import CommitProposal
-from ..flashcard_proposal import FlashcardProposal
+# FlashcardProposal is VM-backed now; the legacy harness branch below raises rather than
+# constructing one with a from_interrupt dict shape that no longer exists.
 from ..flashcard_review.view import FlashcardReview
 from .interrupt import InterruptWidgetBase
 from .choices import Choices
@@ -279,7 +280,10 @@ class AgentMessageHarness(Widget):
         elif itype == "commit_proposal":
             widget = CommitProposal.from_interrupt(interrupt_value)
         elif itype == "flashcard_proposal":
-            widget = FlashcardProposal.from_interrupt(interrupt_value)
+            raise NotImplementedError(
+                "FlashcardProposal interrupts are routed through the new chat pane's interrupt "
+                "VM dispatch; the legacy harness no longer mounts them."
+            )
         elif itype == "sql_confirmation":
             widget = SqlConfirmation.from_interrupt(interrupt_value)
         elif itype == "flashcard_review":

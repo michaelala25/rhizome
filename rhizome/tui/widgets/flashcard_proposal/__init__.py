@@ -1,16 +1,20 @@
-"""flashcard_proposal package — legacy widget + in-progress MVVM rewrite.
+"""Flashcard-proposal view tree. Top-level export is ``FlashcardProposal``; the leaves
+(``FlashcardList``, ``FlashcardDetails``, ``SharedTopicSetter``, ``FlashcardProposalChoices``,
+``EditInstructionsArea``) are public for testing but typically only the parent is mounted
+directly."""
 
-The legacy widget at ``._legacy.FlashcardProposal`` is the one currently wired
-into ``agent_message_harness`` and ``chat_pane``; it's re-exported here as
-``FlashcardProposal`` so existing call sites keep resolving to the working
-implementation.
+from rhizome.tui.widgets.flashcard_proposal.choices import FlashcardProposalChoices
+from rhizome.tui.widgets.flashcard_proposal.edit_instructions import EditInstructionsArea
+from rhizome.tui.widgets.flashcard_proposal.flashcard_details import FlashcardDetails
+from rhizome.tui.widgets.flashcard_proposal.flashcard_list import FlashcardList
+from rhizome.tui.widgets.flashcard_proposal.shared_topic_setter import SharedTopicSetter
+from rhizome.tui.widgets.flashcard_proposal.view import FlashcardProposal
 
-The MVVM rewrite lives in ``.view`` (``FlashcardProposal``) and ``.view_model``
-(``FlashcardProposalViewModel``). It mirrors ``commit_proposal``'s structure —
-VM owns model + widget state, view owns layout / focus / key routing.
-"""
-
-from ._legacy import FlashcardProposal
-from .view import FlashcardProposal as FlashcardProposalMVVM
-
-__all__ = ["FlashcardProposal", "FlashcardProposalMVVM"]
+__all__ = [
+    "EditInstructionsArea",
+    "FlashcardDetails",
+    "FlashcardList",
+    "FlashcardProposal",
+    "FlashcardProposalChoices",
+    "SharedTopicSetter",
+]

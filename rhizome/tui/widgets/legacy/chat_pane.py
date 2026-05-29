@@ -66,8 +66,8 @@ from .messages import ActiveTopicChanged
 from .resource.view_model import ResourceViewerViewModel
 from .resource.viewer import ResourceViewer
 from ..commit_proposal.view import CommitProposal
-from ..flashcard_proposal import FlashcardProposal
-from ..flashcard_proposal.view import FlashcardProposal as FlashcardProposalMVVM
+# FlashcardProposal lives in the new chat pane only; the legacy pane's `/test-flashcard-proposal`
+# stub below raises rather than importing the new VM-shaped widget.
 from ..flashcard_review.view import FlashcardReview
 from .choices import Choices
 from .multiple_choices import MultipleChoices
@@ -1627,36 +1627,11 @@ class ChatPane(Widget, DockContainerMixin):
         )
 
     async def _cmd_test_flashcard_proposal(self) -> None:
-        """Open the flashcard proposal widget with sample data."""
-        sample_cards = [
-            {
-                "question": "What is the time complexity of binary search?",
-                "answer": "O(log n) — each comparison halves the remaining search space.",
-                "testing_notes": "Ask for best/worst case separately.",
-                "entry_ids": [1, 3],
-            },
-            {
-                "question": "Explain the difference between a stack and a queue.",
-                "answer": "A stack is LIFO (Last In, First Out): the most recently added element is removed first.\n\nA queue is FIFO (First In, First Out): the earliest added element is removed first.",
-                "testing_notes": None,
-                "entry_ids": [2],
-            },
-            {
-                "question": "What is a hash collision and how is it typically resolved?",
-                "answer": "A hash collision occurs when two different keys produce the same hash value.\n\nCommon resolution strategies:\n• Chaining — each bucket holds a linked list of entries\n• Open addressing — probe for the next available slot (linear, quadratic, or double hashing)",
-                "testing_notes": "Can ask about chaining vs open addressing trade-offs as a follow-up.",
-                "entry_ids": [],
-            },
-        ]
-
-        area = self.query_one("#message-area")
-        proposal = FlashcardProposalMVVM(flashcards=sample_cards)
-        await area.mount(proposal)
-        area.scroll_end(animate=False)
-        self._active_widgets.append(proposal)
-        proposal.focus()
-        self.query_one("#chat-input").placeholder = (
-            "Ctrl+l to refocus chat input"
+        """Stub — the FlashcardProposal widget no longer accepts a list-of-dicts on the legacy
+        pane. Use the new chat pane's ``/test-flashcard-proposal`` command instead."""
+        raise NotImplementedError(
+            "FlashcardProposal is now a VM-backed widget mounted by the new chat pane. "
+            "Run /test-flashcard-proposal there."
         )
 
     async def _cmd_test_commit_proposal(self) -> None:

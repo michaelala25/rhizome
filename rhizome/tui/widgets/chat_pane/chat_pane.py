@@ -43,6 +43,8 @@ from rhizome.tui.widgets.chat_pane.interrupts.flashcard_review import FlashcardR
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
 from rhizome.tui.widgets.chat_pane.interrupts.commit_proposal import CommitProposalInterrupt
 from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptVM
+from rhizome.tui.widgets.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterrupt
+from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptVM
 from rhizome.tui.widgets.chat_pane.messages.shell import ShellCommandMessage
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.tui.widgets.chat_pane.status import StatusBar
@@ -303,6 +305,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
             return FlashcardReviewInterrupt(entry)
         if isinstance(entry, CommitProposalInterruptVM):
             return CommitProposalInterrupt(entry, session_factory=self._session_factory)
+        if isinstance(entry, FlashcardProposalInterruptVM):
+            return FlashcardProposalInterrupt(entry, session_factory=self._session_factory)
         if isinstance(entry, InterruptVMBase):
             raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
         raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
