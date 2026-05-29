@@ -1,7 +1,9 @@
 """``EditInstructionsArea`` — natural-language buffer at the bottom of the proposal widget.
 
 Visible only when ``vm.edit_instructions_visible``. Two-tap-escape (within 500ms) clears the
-buffer. ``ctrl+`` and ``alt+`` keys bubble so the parent's lifecycle / focus bindings win.
+buffer. ``ctrl+`` and ``alt+`` keys bubble so the parent's lifecycle / focus bindings win, except
+``ctrl+a`` (select-all, handled locally via ``ProposalTextArea``'s binding) and ``ctrl+e`` (bubbles
+via ``ProposalTextArea``'s ``SkipAction`` binding to the parent's ``toggle_edit_instructions``).
 """
 
 from __future__ import annotations
@@ -12,14 +14,15 @@ from textual.events import Key
 from textual.widgets import TextArea
 
 from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.tui.widgets.shared.text_area import ProposalTextArea
 
 
 _DOUBLE_ESC_WINDOW = 0.5
 
 
-class EditInstructionsArea(TextArea):
-    """``TextArea`` bound to ``vm.edit_instructions``. Auto-hides via CSS when the VM flag is
-    False. Owns its own escape-chord timer so the chord doesn't depend on parent-side
+class EditInstructionsArea(ProposalTextArea):
+    """``ProposalTextArea`` bound to ``vm.edit_instructions``. Auto-hides via CSS when the VM flag
+    is False. Owns its own escape-chord timer so the chord doesn't depend on parent-side
     bookkeeping."""
 
     DEFAULT_CSS = """
@@ -94,6 +97,10 @@ class EditInstructionsArea(TextArea):
     async def _on_key(self, event: Key) -> None:
         # ``TextArea._on_key`` is async in modern Textual; the override mirrors that signature so
         # the fall-through path can await it without leaking a coroutine.
+        # ctrl+a / ctrl+e: let the inherited BINDINGS run (select-all locally; SkipAction bubble
+        # to the parent's toggle_edit_instructions).
+        if event.key in ("ctrl+a", "ctrl+e"):
+            return
         if event.key.startswith("alt+") or event.key.startswith("ctrl+"):
             event.prevent_default()
             return

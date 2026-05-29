@@ -1,7 +1,7 @@
 """``EntryDetails`` — title/content editing pane on the right of the middle row.
 
-Mirrors the structure of the browser's entry-details panel: title ``ConfirmableTextArea`` over
-content ``ConfirmableTextArea`` over an Accept/Cancel ``ChoiceList`` that is only visible while
+Mirrors the structure of the browser's entry-details panel: title ``ProposalTextArea`` over
+content ``ProposalTextArea`` over an Accept/Cancel ``ChoiceList`` that is only visible while
 ``EntryDetailsVM.is_dirty``.
 
 Boundary navigation: plain ``up`` from the title and plain ``down`` from the bottom-most visible
@@ -19,7 +19,7 @@ from textual.widgets import TextArea
 
 from rhizome.app.commit_proposal.entry_details import EntryDetailsVM
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
-from rhizome.tui.widgets.shared.confirmable_text_area import ConfirmableTextArea
+from rhizome.tui.widgets.shared.text_area import ProposalTextArea
 
 
 class _EntryDetailChoices(ChoiceList[EntryDetailsVM]):
@@ -39,11 +39,15 @@ class _EntryDetailChoices(ChoiceList[EntryDetailsVM]):
         self._vm.cancel()
 
 
-class _DetailsTextArea(ConfirmableTextArea):
-    """``ConfirmableTextArea`` that bubbles ``alt+`` and ``ctrl+`` keys to the outer view so the
-    parent's bindings (focus nav, lifecycle actions) win over the TextArea's default consumption."""
+class _DetailsTextArea(ProposalTextArea):
+    """``ProposalTextArea`` that bubbles ``alt+`` and ``ctrl+`` keys to the outer view so the
+    parent's bindings (focus nav, lifecycle actions) win over the TextArea's default consumption.
+    ``ctrl+a`` and ``ctrl+e`` are exempted so the inherited BINDINGS (select-all and the
+    edit-instructions bubble) actually fire."""
 
     def _on_key(self, event: Key) -> None:
+        if event.key in ("ctrl+a", "ctrl+e"):
+            return
         if event.key.startswith("alt+") or event.key.startswith("ctrl+"):
             event.prevent_default()
             return
@@ -165,7 +169,7 @@ class EntryDetails(Vertical):
             self._vm.set_content(event.text_area.text)
 
     def on_confirmable_text_area_accept_edits_requested(
-        self, event: ConfirmableTextArea.AcceptEditsRequested
+        self, event: ProposalTextArea.AcceptEditsRequested
     ) -> None:
         if self._vm.is_dirty:
             self._vm.accept()
