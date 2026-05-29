@@ -49,7 +49,7 @@ from rhizome.tui.widgets.flashcard_proposal.flashcard_details import FlashcardDe
 from rhizome.tui.widgets.flashcard_proposal.flashcard_list import FlashcardList
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.flashcard_proposal.shared_topic_setter import SharedTopicSetter
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 
 
 # Static focus graph. Each entry maps a node id to its alt+arrow neighbours. ``None`` means "no
@@ -108,7 +108,7 @@ _FOCUS_GRAPH: dict[str, dict[str, str | None]] = {
 }
 
 
-class FlashcardProposal(ViewBase[FlashcardProposalVM]):
+class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
     """Parent view for the flashcard-proposal interrupt."""
 
     DEFAULT_CSS = """

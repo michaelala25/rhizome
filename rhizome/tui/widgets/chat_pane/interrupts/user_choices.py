@@ -15,12 +15,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
 
 
-class UserChoices(ViewBase[UserChoicesVM]):
+class UserChoices(NavigableFeedItemViewBase[UserChoicesVM]):
     """Multi-Static projection of ``UserChoicesVM``: prompt header, numbered options with cursor
     marker, ctrl+c hint, and a post-resolution summary line. On resolve the prompt/options/hint hide
     and the summary takes over (``prompt → selected`` or ``prompt — cancelled``).

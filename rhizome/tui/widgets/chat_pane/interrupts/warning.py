@@ -14,7 +14,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
 
@@ -23,10 +23,11 @@ _GREEN = "rgb(100,200,100)"
 _DIM = "rgb(100,100,100)"
 
 
-class WarningUserChoices(ViewBase[WarningUserChoicesVM]):
+class WarningUserChoices(NavigableFeedItemViewBase[WarningUserChoicesVM]):
     """Amber warning header + numbered options + cancel hint. On resolution collapses to a one-line
     ``⚠  <message> → <selected>`` summary. Ctrl+C cancels the pending future and is consumed in
-    ``on_key`` to prevent the pane's priority cancel binding from firing.
+    ``on_key`` to prevent the pane's priority cancel binding from firing. Border styling is
+    inherited from ``NavigableFeedItem`` — the amber motif lives in the ⚠ icon + header text.
     """
 
     DEFAULT_CSS = """
@@ -34,13 +35,8 @@ class WarningUserChoices(ViewBase[WarningUserChoicesVM]):
         height: auto;
         padding: 1 2;
         margin: 0 2;
-        border: round rgb(120,90,30);
-    }
-    WarningUserChoices:focus {
-        border: round rgb(220,160,50);
     }
     WarningUserChoices.--resolved {
-        border: round rgb(60,50,30);
         color: $text-muted;
     }
     """

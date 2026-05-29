@@ -43,7 +43,7 @@ from rhizome.tui.widgets.commit_proposal.entry_details import EntryDetails
 from rhizome.tui.widgets.commit_proposal.entry_list import EntryList
 from rhizome.tui.widgets.commit_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.commit_proposal.shared_topic_setter import SharedTopicSetter
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 
 
 # Static focus graph. Each entry maps a node id to its alt+arrow neighbours. ``None`` means "no
@@ -96,7 +96,7 @@ _FOCUS_GRAPH: dict[str, dict[str, str | None]] = {
 }
 
 
-class CommitProposal(ViewBase[CommitProposalVM]):
+class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
     """Parent view for the commit-proposal interrupt."""
 
     DEFAULT_CSS = """

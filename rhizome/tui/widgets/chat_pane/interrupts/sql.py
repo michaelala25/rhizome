@@ -17,7 +17,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import DataTable, Static
 
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
 
@@ -34,7 +34,7 @@ def _truncate_cell(value: Any, max_len: int = _MAX_CELL_WIDTH) -> str:
     return s
 
 
-class SqlConfirmation(ViewBase[SqlConfirmationVM]):
+class SqlConfirmation(NavigableFeedItemViewBase[SqlConfirmationVM]):
     """Renders ``SqlConfirmationVM``. Up/Down move the cursor; Enter confirms."""
 
     DEFAULT_CSS = """
@@ -43,13 +43,8 @@ class SqlConfirmation(ViewBase[SqlConfirmationVM]):
         layout: vertical;
         padding: 1 2;
         margin: 0 2;
-        border: round rgb(80,80,80);
-    }
-    SqlConfirmation:focus {
-        border: round rgb(140,140,200);
     }
     SqlConfirmation.--resolved {
-        border: round rgb(50,50,50);
         color: $text-muted;
     }
     SqlConfirmation #sql-header {

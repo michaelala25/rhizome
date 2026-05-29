@@ -21,7 +21,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
 
@@ -29,7 +29,7 @@ _DIM = "rgb(100,100,100)"
 _ANSWERED = "rgb(100,200,100)"
 
 
-class MultiUserChoices(ViewBase[MultiUserChoicesVM]):
+class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
     """Three-region projection of ``MultiUserChoicesVM``: tab bar, prompt, options block, hint.
 
     After resolution the widget collapses to a single comma-separated summary line (no expand toggle —
@@ -42,13 +42,8 @@ class MultiUserChoices(ViewBase[MultiUserChoicesVM]):
         layout: vertical;
         padding: 1 2;
         margin: 0 2;
-        border: round rgb(80,80,80);
-    }
-    MultiUserChoices:focus {
-        border: round rgb(140,140,200);
     }
     MultiUserChoices.--resolved {
-        border: round rgb(50,50,50);
         color: $text-muted;
     }
     MultiUserChoices #mc-tabs,

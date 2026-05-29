@@ -18,7 +18,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import Static
 
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.branch import BranchPointVM
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId
 
@@ -26,11 +26,9 @@ if TYPE_CHECKING:
     from .view_model import ChatPaneVM
 
 
-class BranchPoint(ViewBase[BranchPointVM]):
-    """Bright-grey banner with top/bottom borders. Focusable via click; keystrokes only fire when
-    focused so they never compete with the chat input's word-nav."""
-
-    can_focus = True
+class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
+    """Bright-grey banner with the navigable-feed-item border (dim → hover → focus). Focusable via
+    click; keystrokes only fire when focused so they never compete with the chat input's word-nav."""
 
     # ctrl+up / ctrl+down are reserved by the chat pane for feed-wide navigation; ascend/descend
     # therefore live on alt+up / alt+down. TODO: the asymmetry with sibling-swap on ctrl+left/right is
@@ -47,13 +45,9 @@ class BranchPoint(ViewBase[BranchPointVM]):
         height: auto;
         padding: 0 1;
         margin: 1 0;
-        border-top: rgb(120, 120, 120);
-        border-bottom: rgb(120, 120, 120);
         color: rgb(180, 180, 180);
     }
     BranchPoint:focus {
-        border-top: rgb(220, 220, 220);
-        border-bottom: rgb(220, 220, 220);
         color: rgb(220, 220, 220);
     }
     BranchPoint Horizontal {

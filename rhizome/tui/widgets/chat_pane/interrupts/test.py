@@ -6,10 +6,10 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 
 
-class TestInterrupt(ViewBase[TestInterruptVM]):
+class TestInterrupt(NavigableFeedItemViewBase[TestInterruptVM]):
     """Single-Static projection of ``TestInterruptVM``. Up/Down move the cursor; Enter confirms. The
     widget keeps itself rendered after resolution so the conversational record shows what was chosen.
     """
@@ -19,13 +19,8 @@ class TestInterrupt(ViewBase[TestInterruptVM]):
         height: auto;
         padding: 1 2;
         margin: 0 2;
-        border: round rgb(80, 80, 80);
-    }
-    TestInterrupt:focus {
-        border: round rgb(140, 140, 200);
     }
     TestInterrupt.--resolved {
-        border: round rgb(50, 50, 50);
         color: $text-muted;
     }
     TestInterrupt #interrupt-body {

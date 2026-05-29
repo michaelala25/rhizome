@@ -20,7 +20,7 @@ from rhizome.app.flashcard_review.review import (
     FlashcardReviewAction,
     FlashcardReviewVM,
 )
-from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 
 
 # Throbber frames — pulsing dot used in both the counter (think-time) and
@@ -108,7 +108,7 @@ class _AnswerInput(TextArea):
             event.prevent_default()
 
 
-class FlashcardReview(ViewBase[FlashcardReviewVM], can_focus=True):
+class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
 
     DEFAULT_CSS = """
     FlashcardReview {
