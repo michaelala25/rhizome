@@ -11,13 +11,11 @@ or ``alt+down``, so those keys aren't bound here at all.
 
 from __future__ import annotations
 
-from typing import Any
-
 from rich.text import Text
 
 from textual.actions import SkipAction
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.widgets import ContentSwitcher, Static
 
 from rhizome.logs import get_logger
@@ -26,6 +24,7 @@ from rhizome.app.browser.tabs.entries.tab import EntryTabVM
 from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab
 from rhizome.app.browser.tab_base import BrowserTabVM
 from rhizome.tui.widgets.browser.topics.panel import TopicTreePanel
+from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.app.browser.browser import BrowserVM
 
 _logger = get_logger("browser.view")
@@ -42,19 +41,22 @@ def _view_for_tab(tab_vm: BrowserTabVM):
     )
 
 
-class Browser(Horizontal):
+class Browser(NavigableFeedItemViewBase[BrowserVM]):
     """Takes a caller-constructed ``BrowserVM`` and drives it through its mount lifecycle.
 
     ``await self._vm.start()`` runs from ``on_mount`` after Textual finishes mounting children — by
     then every child widget is subscribed to its VM's ``dirty`` and will repaint on first arrival.
     """
 
-    # Fixed height: inside the chat-tab ``VerticalScroll`` feed, ``1fr`` resolves to 0 (the scroll
-    # container derives content height from children, so a child asking for "remaining" gets none).
-    # 40 fits the body comfortably; callers can override per-mount via CSS.
+    # Height is pinned to 40 because inside the chat-tab ``VerticalScroll`` feed, ``1fr`` resolves
+    # to 0 (the scroll container derives content height from children, so a child asking for
+    # "remaining" gets none) — 40 fits the body comfortably; callers can override per-mount via CSS.
     DEFAULT_CSS = """
     Browser {
         height: 40;
+        width: 1fr;
+        layout: horizontal;
+        overflow: hidden hidden;
     }
     Browser #browser-right-tab {
         width: 1fr;
@@ -84,14 +86,6 @@ class Browser(Horizontal):
         Binding("alt+left", "nav_left", show=False),
     ]
 
-    def __init__(self, view_model: BrowserVM, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._vm = view_model
-
-    @property
-    def view_model(self) -> BrowserVM:
-        return self._vm
-
     def compose(self):
         yield TopicTreePanel(self._vm.panel)
         with Vertical(id="browser-right-tab"):
@@ -104,19 +98,15 @@ class Browser(Horizontal):
                     yield tab_view
 
     async def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._vm.subscribe(self._vm.focus, self.focus)
         # The VM hasn't emitted dirty yet, so paint the tab bar once ourselves before fetching.
         self._refresh()
         await self._vm.start()
         self.focus()
 
-    def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
-        self._vm.unsubscribe(self._vm.focus, self.focus)
-
-    # ``Horizontal`` isn't focusable; route external focus requests through the panel (which in
-    # turn lands focus on the topic tree via its own ``focus()`` override).
+    # Browser is a composite — focus belongs on its inner regions, not the outer container. Route
+    # external focus requests (including the ``vm.focus → self.focus`` subscription wired by
+    # ``ViewBase``) through the panel, which in turn lands focus on the topic tree via its own
+    # ``focus()`` override.
     def focus(self, scroll_visible: bool = True) -> "Browser":
         panel = self._panel_view()
         if panel is not None:
