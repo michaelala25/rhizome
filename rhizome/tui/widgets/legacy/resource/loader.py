@@ -6,7 +6,7 @@ CONTEXT modes via space / ctrl+enter respectively, with the
 resource's ``loading_preference`` + token estimate deciding which concrete
 mode ``space`` resolves to.
 
-State is stored in MDL form: a flat ``dict[NodeKey, ResourceLoadType]`` where an
+State is stored in MDL form: a flat ``dict[ResourceTreeNodeKey, ResourceLoadType]`` where an
 entry means "this node and every descendant are in this mode, unless a
 descendant has its own overriding entry."  The loader maintains the
 invariant that no ancestor–descendant pair exists at the same mode (such
@@ -39,7 +39,7 @@ from textual.widgets._tree import TreeNode
 
 from rhizome.db import Resource
 from rhizome.db.models import LoadingPreference, ResourceSection
-from rhizome.resources import ResourceLoadType, NodeKey, ResourceManager
+from rhizome.resources import ResourceLoadType, ResourceTreeNodeKey, ResourceManager
 
 from rhizome.tui.dock import DockableWidgetMixin
 from rhizome.tui.types import Arrangement
@@ -47,7 +47,7 @@ from rhizome.tui.widgets.legacy.resource.view_model import ResourceLoaderViewMod
 from rhizome.tui.widgets.legacy.resource.loader_tree import (
     LoaderHint,
     LoaderTree,
-    NodeData,
+    ResourceTreeNodeData,
     _fmt_tokens,
     _owning_resource,
     _SPINNER_FRAMES,
@@ -90,20 +90,20 @@ class _ResourceSectionCache:
 
     # -- Lookup primitives (O(1) or O(children)) -----------------------
 
-    def resource_for_key(self, key: NodeKey) -> Resource | None:
+    def resource_for_key(self, key: ResourceTreeNodeKey) -> Resource | None:
         kind, nid = key
         if kind == "resource":
             return self.resource_by_id.get(nid)
         rid = self.resource_id_by_section_id.get(nid)
         return self.resource_by_id.get(rid) if rid is not None else None
 
-    def owning_resource_id(self, key: NodeKey) -> int | None:
+    def owning_resource_id(self, key: ResourceTreeNodeKey) -> int | None:
         kind, nid = key
         if kind == "resource":
             return nid if nid in self.resource_by_id else None
         return self.resource_id_by_section_id.get(nid)
 
-    def parent_key(self, key: NodeKey) -> NodeKey | None:
+    def parent_key(self, key: ResourceTreeNodeKey) -> ResourceTreeNodeKey | None:
         kind, nid = key
         if kind == "resource":
             return None
@@ -115,14 +115,14 @@ class _ResourceSectionCache:
             return ("resource", rid) if rid is not None else None
         return ("section", s.parent_id)
 
-    def child_keys(self, key: NodeKey) -> list[NodeKey]:
+    def child_keys(self, key: ResourceTreeNodeKey) -> list[ResourceTreeNodeKey]:
         kind, nid = key
         if kind == "resource":
             return [("section", s.id) for s in self.top_sections_by_resource_id.get(nid, [])]
         return [("section", s.id) for s in self.children_by_section_id.get(nid, [])]
 
-    def descendant_keys(self, key: NodeKey) -> list[NodeKey]:
-        result: list[NodeKey] = []
+    def descendant_keys(self, key: ResourceTreeNodeKey) -> list[ResourceTreeNodeKey]:
+        result: list[ResourceTreeNodeKey] = []
         queue = list(self.child_keys(key))
         while queue:
             k = queue.pop()
@@ -198,11 +198,11 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         self._vm.resources = value
 
     @property
-    def _states(self) -> dict[NodeKey, ResourceLoadType]:
+    def _states(self) -> dict[ResourceTreeNodeKey, ResourceLoadType]:
         return self._vm.states
 
     @_states.setter
-    def _states(self, value: dict[NodeKey, ResourceLoadType]) -> None:
+    def _states(self, value: dict[ResourceTreeNodeKey, ResourceLoadType]) -> None:
         self._vm.states = value
 
     @property
@@ -272,32 +272,32 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
 
     # -- Tree navigation helpers (all delegate to the cache) -----------
 
-    def _ancestor_entry_owner(self, key: NodeKey) -> NodeKey | None:
+    def _ancestor_entry_owner(self, key: ResourceTreeNodeKey) -> ResourceTreeNodeKey | None:
         """Return the nearest ancestor-or-self of ``key`` with an entry, or None."""
-        current: NodeKey | None = key
+        current: ResourceTreeNodeKey | None = key
         while current is not None:
             if current in self._states:
                 return current
             current = self._cache.parent_key(current)
         return None
 
-    def _effective_mode(self, key: NodeKey) -> ResourceLoadType | None:
+    def _effective_mode(self, key: ResourceTreeNodeKey) -> ResourceLoadType | None:
         """The effective mode of ``key`` given the current MDL state."""
         owner = self._ancestor_entry_owner(key)
         return self._states[owner] if owner is not None else None
 
-    def _has_descendant_entry(self, key: NodeKey) -> bool:
+    def _has_descendant_entry(self, key: ResourceTreeNodeKey) -> bool:
         """True if any descendant of ``key`` has its own entry."""
         return any(k in self._states for k in self._cache.descendant_keys(key))
 
-    def _is_partially_loaded(self, data: NodeData) -> bool:
+    def _is_partially_loaded(self, data: ResourceTreeNodeData) -> bool:
         """True if some — but not all — of *data*'s descendants share its effective mode."""
         key = _state_key(data)
         if not self._cache.child_keys(key):
             return False
         return self._has_descendant_entry(key)
 
-    def _descendant_modes_only_cs(self, data: NodeData) -> bool:
+    def _descendant_modes_only_cs(self, data: ResourceTreeNodeData) -> bool:
         """True iff every descendant entry under *data* is CONTEXT.
 
         Used for checkbox color when a node has no effective mode itself but
@@ -324,7 +324,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         self._resources = list(resources)
         self._cache = _ResourceSectionCache(self._resources)
 
-        valid_keys: set[NodeKey] = set()
+        valid_keys: set[ResourceTreeNodeKey] = set()
         for r in resources:
             valid_keys.add(("resource", r.id))
             for s in getattr(r, "sections", None) or []:
@@ -375,10 +375,10 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             detail.update("")
             detail.display = False
 
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[NodeData]) -> None:
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[ResourceTreeNodeData]) -> None:
         self._update_detail(event.node.data)
 
-    def _update_detail(self, data: NodeData | None) -> None:
+    def _update_detail(self, data: ResourceTreeNodeData | None) -> None:
         """Update the detail panel with metadata for the highlighted node."""
         detail = self.query_one("#rld-detail", Static)
         if data is None:
@@ -445,7 +445,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
 
     # -- Toggle (expand / set / collapse) ------------------------------
 
-    def _expand_along_path(self, ancestor: NodeKey, target: NodeKey) -> None:
+    def _expand_along_path(self, ancestor: ResourceTreeNodeKey, target: ResourceTreeNodeKey) -> None:
         """Push ``ancestor``'s entry down so ``target`` gets its own entry.
 
         Walks from ``ancestor`` down to ``target``.  At each step, takes the
@@ -457,8 +457,8 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             return
 
         # Build the ancestor→target path (exclusive of target, inclusive of ancestor).
-        path: list[NodeKey] = []
-        cursor: NodeKey | None = target
+        path: list[ResourceTreeNodeKey] = []
+        cursor: ResourceTreeNodeKey | None = target
         while cursor is not None and cursor != ancestor:
             path.append(cursor)
             cursor = self._cache.parent_key(cursor)
@@ -476,7 +476,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
                 if child not in self._states:
                     self._states[child] = mode
 
-    def _collapse_upward(self, key: NodeKey) -> None:
+    def _collapse_upward(self, key: ResourceTreeNodeKey) -> None:
         """Walk up from ``key``'s parent, promoting whenever all siblings agree.
 
         At each parent P: if every direct child of P has an entry and all
@@ -498,7 +498,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             else:
                 break
 
-    def _apply_toggle(self, key: NodeKey, new_mode: ResourceLoadType | None) -> None:
+    def _apply_toggle(self, key: ResourceTreeNodeKey, new_mode: ResourceLoadType | None) -> None:
         """Set ``key``'s effective mode to ``new_mode`` (None = unload).
 
         Preserves MDL invariant via expand / clear-descendants / set / collapse.
@@ -542,7 +542,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
 
     def _resource_has_loaded_entry(self, resource: Resource) -> bool:
         """True if any entry in this resource's subtree is in INDEX mode."""
-        root: NodeKey = ("resource", resource.id)
+        root: ResourceTreeNodeKey = ("resource", resource.id)
         keys = [root, *self._cache.descendant_keys(root)]
         return any(self._states.get(k) == ResourceLoadType.INDEX for k in keys)
 
@@ -575,7 +575,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         self._pending_resources.discard(resource.id)
         if not success:
             # Roll back the user's intent: remove any state under this resource.
-            resource_key: NodeKey = ("resource", resource.id)
+            resource_key: ResourceTreeNodeKey = ("resource", resource.id)
             self._states.pop(resource_key, None)
             for desc in self._cache.descendant_keys(resource_key):
                 self._states.pop(desc, None)
@@ -595,7 +595,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         if self._resource_manager is None:
             return
 
-        filtered: dict[NodeKey, ResourceLoadType] = {
+        filtered: dict[ResourceTreeNodeKey, ResourceLoadType] = {
             k: v
             for k, v in self._states.items()
             if self._cache.owning_resource_id(k) not in self._pending_resources
@@ -604,7 +604,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
 
     # -- Actions -------------------------------------------------------
 
-    def _is_locked(self, node: TreeNode[NodeData]) -> bool:
+    def _is_locked(self, node: TreeNode[ResourceTreeNodeData]) -> bool:
         """True if the node (or its owning resource) is pending."""
         data = node.data
         if data is None:
@@ -615,7 +615,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             return data.resource_id in self._pending_resources
         return False
 
-    def _cursor_key(self) -> tuple[TreeNode[NodeData], NodeKey, Resource] | None:
+    def _cursor_key(self) -> tuple[TreeNode[ResourceTreeNodeData], ResourceTreeNodeKey, Resource] | None:
         node = self._tree.cursor_node
         if node is None or node.data is None:
             return None
@@ -660,7 +660,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
 
     def _toggle(
         self,
-        key: NodeKey,
+        key: ResourceTreeNodeKey,
         resource: Resource,
         target_mode: ResourceLoadType | None,
     ) -> None:

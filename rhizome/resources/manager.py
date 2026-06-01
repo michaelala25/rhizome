@@ -1,7 +1,7 @@
 """ResourceManager — tracks loaded resource state and produces messages for the agent session.
 
 State is represented in **minimum-description-length (MDL) form**: a flat
-``dict[NodeKey, ResourceLoadType]`` where an entry at node *X* means "*X* and every
+``dict[ResourceTreeNodeKey, ResourceLoadType]`` where an entry at node *X* means "*X* and every
 descendant of *X* are loaded at this mode, unless a descendant has its own
 entry overriding it."
 
@@ -70,8 +70,8 @@ class ResourceLoadType(enum.Enum):
     CONTEXT = "context"
 
 
-NodeKind = Literal["resource", "section"]
-NodeKey = tuple[NodeKind, int]
+ResourceTreeNodeKind = Literal["resource", "section"]
+ResourceTreeNodeKey = tuple[ResourceTreeNodeKind, int]
 
 
 # Deterministic id for the vector-store digest message so the add_messages
@@ -79,7 +79,7 @@ NodeKey = tuple[NodeKind, int]
 VECTOR_STORE_DIGEST_MESSAGE_ID = "rhizome-vector-store-digest"
 
 
-def _fmt_state(state: dict[NodeKey, ResourceLoadType]) -> str:
+def _fmt_state(state: dict[ResourceTreeNodeKey, ResourceLoadType]) -> str:
     if not state:
         return "(empty)"
     parts = [f"{kind[0]}{nid}:{mode.value}" for (kind, nid), mode in sorted(state.items())]
@@ -97,8 +97,8 @@ class ResourceManager:
     def __init__(self, session_factory=None) -> None:
         self._session_factory = session_factory
 
-        self._current: dict[NodeKey, ResourceLoadType] = {}
-        self._next: dict[NodeKey, ResourceLoadType] = {}
+        self._current: dict[ResourceTreeNodeKey, ResourceLoadType] = {}
+        self._next: dict[ResourceTreeNodeKey, ResourceLoadType] = {}
 
         self._vector_store = ResourceVectorStore()
         self._embedding_in_progress: set[int] = set()
@@ -117,7 +117,7 @@ class ResourceManager:
     # State updates (called by the UI layer)
     # ------------------------------------------------------------------
 
-    def set_state(self, state: dict[NodeKey, ResourceLoadType]) -> None:
+    def set_state(self, state: dict[ResourceTreeNodeKey, ResourceLoadType]) -> None:
         """Replace the next state wholesale with a snapshot from the loader."""
         new_next = dict(state)
         if new_next != self._next:
@@ -161,8 +161,8 @@ class ResourceManager:
     # Consumption (called by AgentSession.stream)
     # ------------------------------------------------------------------
 
-    async def _group_by_rid(self, nodes: set[NodeKey]) -> dict[int, set[NodeKey]]:
-        by_rid: dict[int, set[NodeKey]] = defaultdict(set)
+    async def _group_by_rid(self, nodes: set[ResourceTreeNodeKey]) -> dict[int, set[ResourceTreeNodeKey]]:
+        by_rid: dict[int, set[ResourceTreeNodeKey]] = defaultdict(set)
 
         resources = set(node for node in nodes if node[0] == "resource")
         sections = set(node for node in nodes if node[0] == "section")
@@ -191,7 +191,7 @@ class ResourceManager:
     
     async def _build_vector_store(
         self,
-        indexed_scope: set[NodeKey],
+        indexed_scope: set[ResourceTreeNodeKey],
     ) -> None:
         """Rebuild the vector store from the set of INDEX MDL nodes.
 
@@ -222,7 +222,7 @@ class ResourceManager:
     async def _build_resource_chunk_metas(
         self,
         session: AsyncSession,
-        node: NodeKey,
+        node: ResourceTreeNodeKey,
     ) -> list[tuple[ChunkMeta, bytes]]:
         """Fetch embedded chunks for a single scoped node and hydrate metas.
 
@@ -269,7 +269,7 @@ class ResourceManager:
 
     async def _build_vector_store_digest_message(
         self,
-        indexed_scope: set[NodeKey],
+        indexed_scope: set[ResourceTreeNodeKey],
     ) -> BaseMessage:
         """Build a digest of what's queryable via the ``query_resources`` tool.
 
@@ -305,8 +305,8 @@ class ResourceManager:
 
     async def _build_context_stuffed_messages(
         self,
-        old_cs_by_rid: dict[int, set[NodeKey]],
-        new_cs_by_rid: dict[int, set[NodeKey]],
+        old_cs_by_rid: dict[int, set[ResourceTreeNodeKey]],
+        new_cs_by_rid: dict[int, set[ResourceTreeNodeKey]],
     ):
         # First, determine which resources need rebuilds/removals
         removals: list[int] = []
@@ -378,15 +378,15 @@ class ResourceManager:
 
         # First, rebuild the vector store and emit a digest summarizing its
         # contents so the agent knows what `query_resources` can retrieve.
-        old_indexed: set[NodeKey] = set(k for k, m in self._current.items() if m == ResourceLoadType.INDEX)
-        new_indexed: set[NodeKey] = set(k for k, m in self._next.items() if m == ResourceLoadType.INDEX)
+        old_indexed: set[ResourceTreeNodeKey] = set(k for k, m in self._current.items() if m == ResourceLoadType.INDEX)
+        new_indexed: set[ResourceTreeNodeKey] = set(k for k, m in self._next.items() if m == ResourceLoadType.INDEX)
         if old_indexed != new_indexed:
             await self._build_vector_store(new_indexed)
             messages.append(await self._build_vector_store_digest_message(new_indexed))
 
         # Second, compute message diff for context-stuffed resources/sections
-        old_cs: set[NodeKey] = set(k for k, m in self._current.items() if m == ResourceLoadType.CONTEXT)
-        new_cs: set[NodeKey] = set(k for k, m in self._next.items() if m == ResourceLoadType.CONTEXT)
+        old_cs: set[ResourceTreeNodeKey] = set(k for k, m in self._current.items() if m == ResourceLoadType.CONTEXT)
+        new_cs: set[ResourceTreeNodeKey] = set(k for k, m in self._next.items() if m == ResourceLoadType.CONTEXT)
 
         old_cs_by_rid = await self._group_by_rid(old_cs)
         new_cs_by_rid = await self._group_by_rid(new_cs)

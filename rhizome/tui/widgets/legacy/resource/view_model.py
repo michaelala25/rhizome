@@ -17,7 +17,7 @@ from __future__ import annotations
 import enum
 
 from rhizome.db import Resource, Topic
-from rhizome.resources import ResourceLoadType, NodeKey
+from rhizome.resources import ResourceLoadType, ResourceTreeNodeKey
 
 
 # ======================================================================
@@ -57,7 +57,7 @@ class ResourceLoaderViewModel:
 
     def __init__(self) -> None:
         self.resources: list[Resource] = []
-        self.states: dict[NodeKey, ResourceLoadType] = {}
+        self.states: dict[ResourceTreeNodeKey, ResourceLoadType] = {}
         self.pending_resources: set[int] = set()
         self.show_ids: bool = False
         self.spinner_frame: int = 0

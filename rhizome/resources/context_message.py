@@ -29,7 +29,7 @@ from rhizome.db.operations import compute_section_end_offsets
 from rhizome.logs import get_logger
 
 if TYPE_CHECKING:
-    from rhizome.resources.manager import NodeKey
+    from rhizome.resources.manager import ResourceTreeNodeKey
 
 _log = get_logger("resources.context_message")
 
@@ -44,7 +44,7 @@ def resource_context_message_id(resource_id: int) -> str:
 
 def build_resource_context_message(
     resource: Resource,
-    cs_entries: set[NodeKey],
+    cs_entries: set[ResourceTreeNodeKey],
 ) -> HumanMessage | None:
     """Build the context-stuffing ``HumanMessage`` for a single resource.
 
@@ -118,7 +118,7 @@ def build_resource_context_message(
     return HumanMessage(content=content, id=resource_context_message_id(resource.id))
 
 
-def _entry_sort_key(entry: NodeKey, sections_by_id: dict[int, object]) -> tuple[int, int]:
+def _entry_sort_key(entry: ResourceTreeNodeKey, sections_by_id: dict[int, object]) -> tuple[int, int]:
     """Document-order sort key: resource root first, sections by start_offset."""
     kind, nid = entry
     if kind == "resource":

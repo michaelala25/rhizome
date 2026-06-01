@@ -16,7 +16,7 @@ from textual.widgets._tree import TreeNode, TOGGLE_STYLE
 
 from rhizome.db import Resource
 from rhizome.db.models import ResourceSection
-from rhizome.resources import ResourceLoadType, NodeKey
+from rhizome.resources import ResourceLoadType, ResourceTreeNodeKey
 
 from rhizome.tui.types import Arrangement
 
@@ -49,7 +49,7 @@ _SECTION_DEPTH_2_PLUS = Style(color="rgb(100,100,100)")
 
 # -- Shared helpers ----------------------------------------------------
 
-NodeData = Resource | ResourceSection
+ResourceTreeNodeData = Resource | ResourceSection
 
 
 def _fmt_tokens(n: int | None) -> str:
@@ -63,13 +63,13 @@ def _fmt_tokens(n: int | None) -> str:
     return str(n)
 
 
-def _state_key(data: NodeData) -> NodeKey:
+def _state_key(data: ResourceTreeNodeData) -> ResourceTreeNodeKey:
     if isinstance(data, Resource):
         return ("resource", data.id)
     return ("section", data.id)
 
 
-def _owning_resource(node: TreeNode[NodeData]) -> Resource:
+def _owning_resource(node: TreeNode[ResourceTreeNodeData]) -> Resource:
     """Walk up to find the Resource that owns this node."""
     current = node
     while current is not None:
@@ -112,7 +112,7 @@ class LoaderHint(Static):
 # Inner tree widget
 # ======================================================================
 
-class LoaderTree(Tree[NodeData]):
+class LoaderTree(Tree[ResourceTreeNodeData]):
     """The actual Tree — managed by the outer ResourceLoader container."""
 
     DEFAULT_CSS = """
@@ -155,7 +155,7 @@ class LoaderTree(Tree[NodeData]):
 
     # -- Expansion -----------------------------------------------------
 
-    def on_tree_node_expanded(self, event: Tree.NodeExpanded[NodeData]) -> None:
+    def on_tree_node_expanded(self, event: Tree.NodeExpanded[ResourceTreeNodeData]) -> None:
         node = event.node
         data = node.data
         if data is None or node.children:
@@ -191,7 +191,7 @@ class LoaderTree(Tree[NodeData]):
 
         self._refresh_height()
 
-    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed[NodeData]) -> None:
+    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed[ResourceTreeNodeData]) -> None:
         self._refresh_height()
 
     # -- Key handling --------------------------------------------------
@@ -226,7 +226,7 @@ class LoaderTree(Tree[NodeData]):
     # -- Label rendering -----------------------------------------------
 
     def render_label(
-        self, node: TreeNode[NodeData], base_style: Style, style: Style,
+        self, node: TreeNode[ResourceTreeNodeData], base_style: Style, style: Style,
     ) -> Text:
         data = node.data
         if data is None:
