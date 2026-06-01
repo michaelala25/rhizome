@@ -1,12 +1,12 @@
 """ResourceLoader — tree-based widget for loading resources into the agent session.
 
 Resources are root nodes; sections (if extracted) appear as expandable
-children.  Both resources and sections can be toggled to LOADED or
-CONTEXT_STUFFED modes via space / ctrl+enter respectively, with the
+children.  Both resources and sections can be toggled to INDEX or
+CONTEXT modes via space / ctrl+enter respectively, with the
 resource's ``loading_preference`` + token estimate deciding which concrete
 mode ``space`` resolves to.
 
-State is stored in MDL form: a flat ``dict[NodeKey, LoadMode]`` where an
+State is stored in MDL form: a flat ``dict[NodeKey, ResourceLoadType]`` where an
 entry means "this node and every descendant are in this mode, unless a
 descendant has its own overriding entry."  The loader maintains the
 invariant that no ancestor–descendant pair exists at the same mode (such
@@ -14,12 +14,12 @@ pairs are always collapsed to a single parent entry).
 
 Toggle semantics:
 
-- ``space`` resolves to the resource's *default* mode (LOADED or
-  CONTEXT_STUFFED depending on ``loading_preference`` + token estimate).
+- ``space`` resolves to the resource's *default* mode (INDEX or
+  CONTEXT depending on ``loading_preference`` + token estimate).
   Pressing space cycles: effective-default → unloaded, anything-else →
   effective-default.
-- ``ctrl+enter`` cycles: CONTEXT_STUFFED → unloaded, anything-else →
-  CONTEXT_STUFFED.
+- ``ctrl+enter`` cycles: CONTEXT → unloaded, anything-else →
+  CONTEXT.
 
 The toggle handler applies three transformations to preserve the MDL
 invariant: **expand** along the ancestor path if the effective mode comes
@@ -39,7 +39,7 @@ from textual.widgets._tree import TreeNode
 
 from rhizome.db import Resource
 from rhizome.db.models import LoadingPreference, ResourceSection
-from rhizome.resources import LoadMode, NodeKey, ResourceManager
+from rhizome.resources import ResourceLoadType, NodeKey, ResourceManager
 
 from rhizome.tui.dock import DockableWidgetMixin
 from rhizome.tui.types import Arrangement
@@ -198,11 +198,11 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         self._vm.resources = value
 
     @property
-    def _states(self) -> dict[NodeKey, LoadMode]:
+    def _states(self) -> dict[NodeKey, ResourceLoadType]:
         return self._vm.states
 
     @_states.setter
-    def _states(self, value: dict[NodeKey, LoadMode]) -> None:
+    def _states(self, value: dict[NodeKey, ResourceLoadType]) -> None:
         self._vm.states = value
 
     @property
@@ -281,7 +281,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             current = self._cache.parent_key(current)
         return None
 
-    def _effective_mode(self, key: NodeKey) -> LoadMode | None:
+    def _effective_mode(self, key: NodeKey) -> ResourceLoadType | None:
         """The effective mode of ``key`` given the current MDL state."""
         owner = self._ancestor_entry_owner(key)
         return self._states[owner] if owner is not None else None
@@ -298,7 +298,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         return self._has_descendant_entry(key)
 
     def _descendant_modes_only_cs(self, data: NodeData) -> bool:
-        """True iff every descendant entry under *data* is CONTEXT_STUFFED.
+        """True iff every descendant entry under *data* is CONTEXT.
 
         Used for checkbox color when a node has no effective mode itself but
         does have descendant entries — pick amber only if they're all CS.
@@ -309,7 +309,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         ]
         if not descendant_entries:
             return False
-        return all(m == LoadMode.CONTEXT_STUFFED for m in descendant_entries)
+        return all(m == ResourceLoadType.CONTEXT for m in descendant_entries)
 
     # -- Public API ----------------------------------------------------
 
@@ -498,7 +498,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
             else:
                 break
 
-    def _apply_toggle(self, key: NodeKey, new_mode: LoadMode | None) -> None:
+    def _apply_toggle(self, key: NodeKey, new_mode: ResourceLoadType | None) -> None:
         """Set ``key``'s effective mode to ``new_mode`` (None = unload).
 
         Preserves MDL invariant via expand / clear-descendants / set / collapse.
@@ -526,28 +526,28 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
 
     # -- Embedding & manager sync --------------------------------------
 
-    def _resolve_default_mode(self, resource: Resource) -> LoadMode:
+    def _resolve_default_mode(self, resource: Resource) -> ResourceLoadType:
         """The concrete mode that ``space`` maps to for this resource."""
         pref = resource.loading_preference
         tokens = resource.estimated_tokens or 0
         if pref == LoadingPreference.context_stuff:
-            return LoadMode.CONTEXT_STUFFED
+            return ResourceLoadType.CONTEXT
         if pref == LoadingPreference.vector_store:
-            return LoadMode.LOADED
+            return ResourceLoadType.INDEX
         return (
-            LoadMode.CONTEXT_STUFFED
+            ResourceLoadType.CONTEXT
             if tokens <= self.AUTO_CONTEXT_STUFF_TOKEN_LIMIT
-            else LoadMode.LOADED
+            else ResourceLoadType.INDEX
         )
 
     def _resource_has_loaded_entry(self, resource: Resource) -> bool:
-        """True if any entry in this resource's subtree is in LOADED mode."""
+        """True if any entry in this resource's subtree is in INDEX mode."""
         root: NodeKey = ("resource", resource.id)
         keys = [root, *self._cache.descendant_keys(root)]
-        return any(self._states.get(k) == LoadMode.LOADED for k in keys)
+        return any(self._states.get(k) == ResourceLoadType.INDEX for k in keys)
 
     def _needs_embeddings(self, resource: Resource) -> bool:
-        """True if the resource has at least one LOADED entry and lacks embeddings."""
+        """True if the resource has at least one INDEX entry and lacks embeddings."""
         if not self._resource_has_loaded_entry(resource):
             return False
         chunks = getattr(resource, "chunks", None) or []
@@ -595,7 +595,7 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         if self._resource_manager is None:
             return
 
-        filtered: dict[NodeKey, LoadMode] = {
+        filtered: dict[NodeKey, ResourceLoadType] = {
             k: v
             for k, v in self._states.items()
             if self._cache.owning_resource_id(k) not in self._pending_resources
@@ -637,24 +637,24 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         current_effective = self._effective_mode(key)
 
         if current_effective == default_mode:
-            target_mode: LoadMode | None = None
+            target_mode: ResourceLoadType | None = None
         else:
             target_mode = default_mode
 
         self._toggle(key, resource, target_mode)
 
     def action_toggle_context(self) -> None:
-        """ctrl+j: cycle between CONTEXT_STUFFED and unloaded."""
+        """ctrl+j: cycle between CONTEXT and unloaded."""
         cursor = self._cursor_key()
         if cursor is None:
             return
         _, key, resource = cursor
         current_effective = self._effective_mode(key)
 
-        if current_effective == LoadMode.CONTEXT_STUFFED:
-            target_mode: LoadMode | None = None
+        if current_effective == ResourceLoadType.CONTEXT:
+            target_mode: ResourceLoadType | None = None
         else:
-            target_mode = LoadMode.CONTEXT_STUFFED
+            target_mode = ResourceLoadType.CONTEXT
 
         self._toggle(key, resource, target_mode)
 
@@ -662,14 +662,14 @@ class ResourceLoader(Widget, DockableWidgetMixin, can_focus=True):
         self,
         key: NodeKey,
         resource: Resource,
-        target_mode: LoadMode | None,
+        target_mode: ResourceLoadType | None,
     ) -> None:
         """Common toggle path: apply the MDL transformation and sync."""
         self._apply_toggle(key, target_mode)
         self._tree._invalidate_label_cache()
         self._update_hint()
 
-        # If the resource now has LOADED entries but lacks embeddings, kick
+        # If the resource now has INDEX entries but lacks embeddings, kick
         # off the embedding worker and defer sync until it completes.
         if self._needs_embeddings(resource) and resource.id not in self._pending_resources:
             self._start_embedding(resource)

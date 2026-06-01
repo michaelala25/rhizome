@@ -17,7 +17,7 @@ from __future__ import annotations
 import enum
 
 from rhizome.db import Resource, Topic
-from rhizome.resources import LoadMode, NodeKey
+from rhizome.resources import ResourceLoadType, NodeKey
 
 
 # ======================================================================
@@ -47,7 +47,7 @@ class ResourceLoaderViewModel:
     """State for the ResourceLoader widget.
 
     ``states`` is an MDL-form dict: an entry at ``(kind, id)`` means that
-    node and every descendant are loaded at the given :class:`LoadMode`,
+    node and every descendant are loaded at the given :class:`ResourceLoadType`,
     unless a descendant has its own overriding entry.  Absence = unloaded.
 
     ``pending_resources`` holds resource ids currently computing embeddings;
@@ -57,7 +57,7 @@ class ResourceLoaderViewModel:
 
     def __init__(self) -> None:
         self.resources: list[Resource] = []
-        self.states: dict[NodeKey, LoadMode] = {}
+        self.states: dict[NodeKey, ResourceLoadType] = {}
         self.pending_resources: set[int] = set()
         self.show_ids: bool = False
         self.spinner_frame: int = 0

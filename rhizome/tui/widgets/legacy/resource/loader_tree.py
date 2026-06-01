@@ -16,7 +16,7 @@ from textual.widgets._tree import TreeNode, TOGGLE_STYLE
 
 from rhizome.db import Resource
 from rhizome.db.models import ResourceSection
-from rhizome.resources import LoadMode, NodeKey
+from rhizome.resources import ResourceLoadType, NodeKey
 
 from rhizome.tui.types import Arrangement
 
@@ -283,12 +283,12 @@ class LoaderTree(Tree[NodeData]):
         partial = loader._is_partially_loaded(data)
         if effective is None and not partial:
             checkbox, cb_style = "[ ] ", _UNCHECKED
-        elif effective == LoadMode.CONTEXT_STUFFED or (
+        elif effective == ResourceLoadType.CONTEXT or (
             effective is None and loader._descendant_modes_only_cs(data)
         ):
             checkbox = "[/] " if partial else "[✓] "
             cb_style = _CHECKED_AMBER
-        else:  # LOADED, or partial with at least one LOADED descendant
+        else:  # INDEX, or partial with at least one INDEX descendant
             checkbox = "[/] " if partial else "[✓] "
             cb_style = _CHECKED_GREEN
 
@@ -332,7 +332,7 @@ class LoaderTree(Tree[NodeData]):
                 if meta_parts:
                     suffix = "  " + " │ ".join(meta_parts)
 
-        if effective == LoadMode.CONTEXT_STUFFED:
+        if effective == ResourceLoadType.CONTEXT:
             suffix += "  ctx"
 
         # -- Truncate name to fit within available width ---------------
@@ -363,7 +363,7 @@ class LoaderTree(Tree[NodeData]):
         if not vertical:
             if isinstance(data, Resource):
                 meta_end = suffix
-                if effective == LoadMode.CONTEXT_STUFFED:
+                if effective == ResourceLoadType.CONTEXT:
                     meta_end = suffix[: -len("  ctx")]
                     text.append(meta_end, style=_META)
                     text.append("  ctx", style=_CTX_TAG)
@@ -372,13 +372,13 @@ class LoaderTree(Tree[NodeData]):
             else:
                 if suffix:
                     meta_end = suffix
-                    if effective == LoadMode.CONTEXT_STUFFED:
+                    if effective == ResourceLoadType.CONTEXT:
                         meta_end = suffix[: -len("  ctx")]
                         text.append(meta_end, style=_META)
                         text.append("  ctx", style=_CTX_TAG)
                     else:
                         text.append(suffix, style=_META)
-                elif effective == LoadMode.CONTEXT_STUFFED:
+                elif effective == ResourceLoadType.CONTEXT:
                     text.append("  ctx", style=_CTX_TAG)
         elif suffix:
             # Vertical: only the ctx tag if present

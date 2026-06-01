@@ -79,7 +79,7 @@ def build_resource_tools(
     #     resource loader, and we don't want the agent creating rows with
     #     this stale flow.
     #   - list_resources / get_resource_info are pure DB reads that don't
-    #     reflect loader state (LOADED / CONTEXT_STUFFED) or vector-store
+    #     reflect loader state (INDEX / CONTEXT) or vector-store
     #     membership.  Revisit once we decide how much of that the agent
     #     should see.
     # ------------------------------------------------------------------
@@ -207,9 +207,9 @@ def build_resource_tools(
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("query_resources", description=(
-        "Semantic search over the currently-loaded resource chunks. Embeds "
+        "Semantic search over the currently-indexed resource chunks. Embeds "
         "the query, runs it against the vector store built from the user's "
-        "LOADED resources/sections, and returns the top-k matches with their "
+        "INDEX resources/sections, and returns the top-k matches with their "
         "resource name, section breadcrumb, similarity score, and chunk text. "
         "Returns an explanatory message if no resources are currently loaded."
     ))
@@ -228,7 +228,7 @@ def build_resource_tools(
         if store.is_empty():
             return (
                 "No resources are currently loaded into the vector store. "
-                "Ask the user to toggle a resource or section to LOADED via "
+                "Ask the user to toggle a resource or section to INDEX via "
                 "the resource loader, then retry."
             )
 

@@ -1,7 +1,7 @@
 """ResourceManager — tracks loaded resource state and produces messages for the agent session.
 
 State is represented in **minimum-description-length (MDL) form**: a flat
-``dict[NodeKey, LoadMode]`` where an entry at node *X* means "*X* and every
+``dict[NodeKey, ResourceLoadType]`` where an entry at node *X* means "*X* and every
 descendant of *X* are loaded at this mode, unless a descendant has its own
 entry overriding it."
 
@@ -17,10 +17,10 @@ list of messages to inject into the graph state:
   sections updates content without appending duplicates.
 - For every resource that had CS content before and has none now, emit a
   :class:`RemoveMessage` with the same id to drop it from graph state.
-- Whenever the LOADED scope changes, emit a single vector-store digest
+- Whenever the INDEX scope changes, emit a single vector-store digest
   :class:`HumanMessage` (id ``rhizome-vector-store-digest``) listing what's
   currently queryable via the ``query_resources`` tool, or a
-  :class:`RemoveMessage` with that id when the LOADED scope becomes empty.
+  :class:`RemoveMessage` with that id when the INDEX scope becomes empty.
 
 Owner resolution (which resource a section belongs to) is done on demand
 via a single batched DB lookup at the top of :meth:`consume`; sections are
@@ -59,11 +59,15 @@ _log = get_logger("resources.manager")
 # State representation
 # ---------------------------------------------------------------------------
 
-class LoadMode(enum.Enum):
-    """How a resource or section is loaded for the agent."""
+class ResourceLoadType(enum.Enum):
+    """How a resource or section is made available to the agent.
 
-    LOADED = "loaded"
-    CONTEXT_STUFFED = "context_stuffed"
+    - ``INDEX`` — embedded into the vector store and retrievable via the ``query_resources`` tool.
+    - ``CONTEXT`` — stuffed verbatim into the agent's context window.
+    """
+
+    INDEX = "index"
+    CONTEXT = "context"
 
 
 NodeKind = Literal["resource", "section"]
@@ -75,7 +79,7 @@ NodeKey = tuple[NodeKind, int]
 VECTOR_STORE_DIGEST_MESSAGE_ID = "rhizome-vector-store-digest"
 
 
-def _fmt_state(state: dict[NodeKey, LoadMode]) -> str:
+def _fmt_state(state: dict[NodeKey, ResourceLoadType]) -> str:
     if not state:
         return "(empty)"
     parts = [f"{kind[0]}{nid}:{mode.value}" for (kind, nid), mode in sorted(state.items())]
@@ -93,8 +97,8 @@ class ResourceManager:
     def __init__(self, session_factory=None) -> None:
         self._session_factory = session_factory
 
-        self._current: dict[NodeKey, LoadMode] = {}
-        self._next: dict[NodeKey, LoadMode] = {}
+        self._current: dict[NodeKey, ResourceLoadType] = {}
+        self._next: dict[NodeKey, ResourceLoadType] = {}
 
         self._vector_store = ResourceVectorStore()
         self._embedding_in_progress: set[int] = set()
@@ -102,9 +106,9 @@ class ResourceManager:
 
     @property
     def vector_store(self) -> ResourceVectorStore:
-        """FAISS-backed store over the currently-LOADED chunks.
+        """FAISS-backed store over the currently-indexed chunks.
 
-        Rebuilt inside :meth:`consume` whenever the set of LOADED MDL entries
+        Rebuilt inside :meth:`consume` whenever the set of INDEX MDL entries
         changes.  Agent tools close over this reference to query retrieval.
         """
         return self._vector_store
@@ -113,7 +117,7 @@ class ResourceManager:
     # State updates (called by the UI layer)
     # ------------------------------------------------------------------
 
-    def set_state(self, state: dict[NodeKey, LoadMode]) -> None:
+    def set_state(self, state: dict[NodeKey, ResourceLoadType]) -> None:
         """Replace the next state wholesale with a snapshot from the loader."""
         new_next = dict(state)
         if new_next != self._next:
@@ -187,9 +191,9 @@ class ResourceManager:
     
     async def _build_vector_store(
         self,
-        loaded_scope: set[NodeKey],
+        indexed_scope: set[NodeKey],
     ) -> None:
-        """Rebuild the vector store from the set of LOADED MDL nodes.
+        """Rebuild the vector store from the set of INDEX MDL nodes.
 
         If the loaded scope is empty, simply clear the store and return.
 
@@ -200,16 +204,16 @@ class ResourceManager:
         loaded sibling sections straddled by the same chunk), the winner
         for which node claims the breadcrumb is essentially arbitrary,
         determined by the order in which nodes appear when resolving the
-        ``loaded_scope`` set.  No attempt is made to pin this down as it's
+        ``indexed_scope`` set.  No attempt is made to pin this down as it's
         rarely a big deal.
         """
-        if not loaded_scope:
+        if not indexed_scope:
             await self._vector_store.clear()
             return
 
         entries: dict[int, tuple[ChunkMeta, bytes]] = {}
         async with self._session_factory() as session:
-            for node in loaded_scope:
+            for node in indexed_scope:
                 for meta, emb in await self._build_resource_chunk_metas(session, node):
                     entries.setdefault(meta.chunk_id, (meta, emb))
 
@@ -265,19 +269,19 @@ class ResourceManager:
 
     async def _build_vector_store_digest_message(
         self,
-        loaded_scope: set[NodeKey],
+        indexed_scope: set[NodeKey],
     ) -> BaseMessage:
         """Build a digest of what's queryable via the ``query_resources`` tool.
 
-        Driven directly off the LOADED MDL scope (not the rebuilt store)
+        Driven directly off the INDEX MDL scope (not the rebuilt store)
         since the scope is the canonical "what the user chose to load"
         view; the store is just its chunk-level materialization.  Returns
         a ``RemoveMessage`` when the scope is empty.
         """
-        if not loaded_scope:
+        if not indexed_scope:
             return RemoveMessage(id=VECTOR_STORE_DIGEST_MESSAGE_ID)
 
-        by_rid = await self._group_by_rid(loaded_scope)
+        by_rid = await self._group_by_rid(indexed_scope)
         lines = ["Resources loaded:"]
 
         async with self._session_factory() as session:
@@ -364,7 +368,7 @@ class ResourceManager:
 
         Emits one HumanMessage per resource whose CS entry set changed (new
         content or replacement of existing content), one RemoveMessage per
-        resource that lost all its CS entries, and — whenever the LOADED
+        resource that lost all its CS entries, and — whenever the INDEX
         scope changes — either a digest HumanMessage describing the new
         vector-store contents or a RemoveMessage dropping the prior digest.
         Advances ``_current`` to ``_next`` after producing the diff.
@@ -374,15 +378,15 @@ class ResourceManager:
 
         # First, rebuild the vector store and emit a digest summarizing its
         # contents so the agent knows what `query_resources` can retrieve.
-        old_loaded: set[NodeKey] = set(k for k, m in self._current.items() if m == LoadMode.LOADED)
-        new_loaded: set[NodeKey] = set(k for k, m in self._next.items() if m == LoadMode.LOADED)
-        if old_loaded != new_loaded:
-            await self._build_vector_store(new_loaded)
-            messages.append(await self._build_vector_store_digest_message(new_loaded))
+        old_indexed: set[NodeKey] = set(k for k, m in self._current.items() if m == ResourceLoadType.INDEX)
+        new_indexed: set[NodeKey] = set(k for k, m in self._next.items() if m == ResourceLoadType.INDEX)
+        if old_indexed != new_indexed:
+            await self._build_vector_store(new_indexed)
+            messages.append(await self._build_vector_store_digest_message(new_indexed))
 
         # Second, compute message diff for context-stuffed resources/sections
-        old_cs: set[NodeKey] = set(k for k, m in self._current.items() if m == LoadMode.CONTEXT_STUFFED)
-        new_cs: set[NodeKey] = set(k for k, m in self._next.items() if m == LoadMode.CONTEXT_STUFFED)
+        old_cs: set[NodeKey] = set(k for k, m in self._current.items() if m == ResourceLoadType.CONTEXT)
+        new_cs: set[NodeKey] = set(k for k, m in self._next.items() if m == ResourceLoadType.CONTEXT)
 
         old_cs_by_rid = await self._group_by_rid(old_cs)
         new_cs_by_rid = await self._group_by_rid(new_cs)

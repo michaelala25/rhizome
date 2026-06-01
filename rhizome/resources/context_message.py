@@ -1,7 +1,7 @@
 """Utilities for building context-stuffing ``HumanMessage`` blocks.
 
 The agent session consumes MDL state from :class:`ResourceManager` at the
-start of each stream; any resource with at least one CONTEXT_STUFFED entry
+start of each stream; any resource with at least one CONTEXT entry
 produces one :class:`HumanMessage` here that is injected into the graph
 state via the ``add_messages`` reducer.  The message has a deterministic
 id (``rhizome-resource-ctx-{resource_id}``) so subsequent CS changes can
@@ -51,7 +51,7 @@ def build_resource_context_message(
     ``resource`` must have ``content`` and ``sections`` eagerly loaded (use
     :func:`rhizome.db.operations.resources.get_resource_with_content_and_sections`).
     ``cs_entries`` is the subset of MDL entries under this resource that are
-    at :attr:`LoadMode.CONTEXT_STUFFED`; callers are expected to filter.
+    at :attr:`ResourceLoadType.CONTEXT`; callers are expected to filter.
 
     Returns ``None`` if there is nothing to emit (empty entry list, missing
     ``raw_text``, or every entry's range is unusable).

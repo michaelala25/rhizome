@@ -1,7 +1,7 @@
-"""FAISS-backed vector store for in-scope (LOADED) resource chunks.
+"""FAISS-backed vector store for in-scope (INDEX) resource chunks.
 
 The store is rebuilt from scratch whenever :meth:`ResourceManager.consume`
-detects a change in the set of LOADED MDL entries.  At our expected scale
+detects a change in the set of INDEX MDL entries.  At our expected scale
 (tens of thousands of chunks, with low-hundreds-of-thousands as an extreme
 upper bound), ``IndexFlatIP`` rebuild is sub-second and avoids the
 bookkeeping that incremental add/remove would require.
@@ -46,7 +46,7 @@ class ChunkMeta:
 
 
 class ResourceVectorStore:
-    """Flat FAISS index over the currently-LOADED resource chunks."""
+    """Flat FAISS index over the currently-indexed resource chunks."""
 
     def __init__(self) -> None:
         self._index: faiss.Index | None = None
