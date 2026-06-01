@@ -19,6 +19,8 @@ from textual.widget import Widget
 
 from rhizome.app.browser.browser import BrowserVM
 from rhizome.tui.widgets.browser.browser import Browser
+from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.tui.widgets.options_editor import OptionsEditor
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.tui.widgets.chat_pane.messages.agent import AgentMessage
 from rhizome.app.chat_pane.messages.agent import AgentMessageVM
@@ -291,6 +293,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
             return BranchPoint(entry)
         if isinstance(entry, BrowserVM):
             return Browser(entry)
+        if isinstance(entry, OptionsEditorVM):
+            return OptionsEditor(entry)
         if isinstance(entry, TestInterruptVM):
             return TestInterrupt(entry)
         if isinstance(entry, UserChoicesVM):
@@ -544,6 +548,19 @@ class ChatPane(ViewBase[ChatPaneVM]):
             if focused is widget or widget in focused.ancestors_with_self:
                 return fid
         return None
+
+    def on_options_editor_dismissed(self, event: OptionsEditor.Dismissed) -> None:
+        """Drop the dismissing ``OptionsEditor`` from the feed and return focus to the chat
+        input — the dismissal semantically means "I'm done with this side-task, back to
+        typing." The footer's ``OptionsEditorActions.Dismissed`` is funnelled by the editor
+        through its own ``action_dismiss``, so by the time we see this message the source
+        is always the editor itself (carried as ``event.control``)."""
+        editor = event.control
+        for fid, widget in self._mounted.items():
+            if widget is editor:
+                self._vm._remove_feed(fid)
+                self.query_one("#chat-input", ChatInput).focus()
+                return
 
     # The pane widget itself isn't focusable, so ``vm.request_focus()`` lands here — we route it to
     # the message-area scroll container. Keystrokes bubble back up to this pane, so the commit-mode

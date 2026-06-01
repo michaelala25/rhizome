@@ -27,6 +27,7 @@ from rhizome.app.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
 
 from rhizome.app.browser.browser import BrowserVM
+from rhizome.app.options_editor import OptionsEditorVM
 from rhizome.app.vm import ViewModelBase
 from rhizome.app.chat_pane.messages.agent import AgentMessageVM
 from rhizome.app.chat_pane.agent_stream_router import AgentStreamRouter
@@ -60,6 +61,7 @@ FeedEntry = (
     | ShellCommandVM
     | BranchPointVM
     | BrowserVM
+    | OptionsEditorVM
 )
 
 
@@ -1680,6 +1682,22 @@ class ChatPaneVM(ViewModelBase):
                 )
                 return
             self._append_feed(BrowserVM(self._session_factory))
+
+        @reg.command(name="options", help="Open the options editor inline in the feed.")
+        def _options() -> None:
+            # Bootstrap binds ``self._options`` to the app-level (root) Options instance. Until
+            # that runs we don't have a target to edit; surface a system message instead of
+            # mounting a non-functional widget.
+            if self._options is None:
+                self.append_message(
+                    ChatMessageData(
+                        role=Role.SYSTEM,
+                        content="/options is unavailable until the agent session is bootstrapped.",
+                    ),
+                    include_in_agent_context=False,
+                )
+                return
+            self._append_feed(OptionsEditorVM(self._options))
 
         @reg.command(name="echo", help="Echo arguments back as a system message.")
         @click.argument("words", nargs=-1)

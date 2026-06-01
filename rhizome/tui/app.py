@@ -1,10 +1,12 @@
 """Main Textual application."""
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from textual import messages
 from textual.app import App
+from textual.binding import Binding
 from textual.widgets import TabbedContent
 
 from rhizome.config import get_default_db_path
@@ -20,10 +22,17 @@ from rhizome.tui.types import DatabaseCommitted
 from rhizome.tui.widgets import ChatPane
 
 
+PROFILE_DIR = Path("/tmp/rhizome-profiles")
+
+
 class RhizomeApp(App):
     """Rhizome TUI — a chat-based interface for learning and review."""
 
     TITLE = "rhizome"
+
+    BINDINGS = [
+        Binding("ctrl+f12", "toggle_profile", "Toggle profiler", show=False, priority=True),
+    ]
 
     CSS = """
     MainScreen {
@@ -51,6 +60,7 @@ class RhizomeApp(App):
     ) -> None:
         super().__init__()
         self.debug_logging = debug
+        self._profiler = None  # type: ignore[assignment]
         # Temporary: opt-in to the MVVM chat-pane rewrite. Read by MainScreen /
         # ChatTabPane to pick which widget to mount.
         self.new_chat_pane = new_chat_pane
@@ -102,6 +112,27 @@ class RhizomeApp(App):
     def on_exit_app(self, event: messages.ExitApp) -> None:
         for pane in self.query(ChatPane):
             pane._close_agent_log()
+
+    # ------------------------------------------------------------------
+    # Profiling (ctrl+f12 toggles a pyinstrument session)
+    # ------------------------------------------------------------------
+
+    def action_toggle_profile(self) -> None:
+        from pyinstrument import Profiler
+
+        if self._profiler is None:
+            self._profiler = Profiler(async_mode="enabled")
+            self._profiler.start()
+            self.notify("Profiling started", severity="warning", timeout=2)
+            return
+
+        self._profiler.stop()
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = PROFILE_DIR / f"profile-{stamp}.html"
+        out.write_text(self._profiler.output_html())
+        self._profiler = None
+        self.notify(f"Profile written: {out}", severity="information", timeout=5)
 
     @property
     def active_chat_pane(self) -> ChatPane | None:

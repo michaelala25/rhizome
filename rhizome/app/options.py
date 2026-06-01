@@ -38,7 +38,13 @@ class OptionScope(IntEnum):
 
 
 class OptionSpec:
-    """Base option specification: name, scope, default, help text."""
+    """Base option specification: name, scope, default, help text.
+
+    ``immediate=True`` opts the spec out of editor staging — ``OptionsEditorVM`` writes such
+    values straight to the live ``Options`` target rather than to its scratch clone. Reserve
+    for changes the user has to see take effect live (theme, display-only fields). Off by
+    default; flag explicitly.
+    """
 
     def __init__(
         self,
@@ -46,12 +52,15 @@ class OptionSpec:
         scope: OptionScope,
         default: Any,
         help: str,
+        *,
+        immediate: bool = False,
     ) -> None:
         self.name = name
         self.resolved_name: str = name  # overwritten by metaclass
         self.scope = scope
         self.default = default
         self.help = help
+        self.immediate = immediate
 
     def validate(self, value: Any) -> Any:
         """Validate and return the (possibly coerced) value, or raise ValueError."""
@@ -76,8 +85,10 @@ class ChoicesOptionSpec(OptionSpec):
         default: Any,
         help: str,
         choices: list[Any],
+        *,
+        immediate: bool = False,
     ) -> None:
-        super().__init__(name, scope, default, help)
+        super().__init__(name, scope, default, help, immediate=immediate)
         self.choices = choices
 
     def validate(self, value: Any) -> Any:
@@ -103,12 +114,14 @@ class ConditionalChoicesOptionSpec(OptionSpec):
         condition: OptionSpec,
         choices: dict[Any, list[Any]],
         defaults: dict[Any, Any],
+        *,
+        immediate: bool = False,
     ) -> None:
         self.condition = condition
         self._choices = choices
         self.defaults = defaults
         default = defaults[condition.default]
-        super().__init__(name, scope, default, help)
+        super().__init__(name, scope, default, help, immediate=immediate)
 
     def validate(self, value: Any, *, condition_value: Any = None) -> Any:
         """Validate *value* against the choices for *condition_value*.
@@ -159,8 +172,10 @@ class IntRangeOptionSpec(OptionSpec):
         help: str,
         min: int,
         max: int,
+        *,
+        immediate: bool = False,
     ) -> None:
-        super().__init__(name, scope, default, help)
+        super().__init__(name, scope, default, help, immediate=immediate)
         self.min = min
         self.max = max
 
@@ -192,8 +207,10 @@ class FloatRangeOptionSpec(OptionSpec):
         min: float,
         max: float,
         step: float | None = None,
+        *,
+        immediate: bool = False,
     ) -> None:
-        super().__init__(name, scope, default, help)
+        super().__init__(name, scope, default, help, immediate=immediate)
         self.min = min
         self.max = max
         self.step = step
@@ -225,12 +242,14 @@ class ConditionalIntRangeOptionSpec(OptionSpec):
         condition: OptionSpec,
         ranges: dict[Any, tuple[int, int]],
         defaults: dict[Any, int],
+        *,
+        immediate: bool = False,
     ) -> None:
         self.condition = condition
         self._ranges = ranges
         self.defaults = defaults
         default = defaults[condition.default]
-        super().__init__(name, scope, default, help)
+        super().__init__(name, scope, default, help, immediate=immediate)
 
     def validate(self, value: Any, *, condition_value: Any = None) -> int:
         """Validate *value* against the range for *condition_value*.
@@ -283,8 +302,12 @@ class ToggleOptionSpec(ChoicesOptionSpec):
         scope: OptionScope,
         default: str,
         help: str,
+        *,
+        immediate: bool = False,
     ) -> None:
-        super().__init__(name, scope, default, help, choices=["enabled", "disabled"])
+        super().__init__(
+            name, scope, default, help, choices=["enabled", "disabled"], immediate=immediate,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +665,11 @@ class Options(metaclass=OptionsMeta):
 
     # -- Read --
 
+    @property
+    def scope(self) -> OptionScope:
+        """The minimum scope at which this instance accepts mutations."""
+        return self._scope
+
     def get(self, spec: OptionSpec) -> Any:
         """Resolve a value: local override → parent chain → default."""
         if spec.resolved_name in self._values:
@@ -694,12 +722,107 @@ class Options(metaclass=OptionsMeta):
     ) -> None:
         for child in self._children:
             # Only propagate if the child doesn't have a local override. Child options take
-            # precedence over parent values, so if the child has an override we assume it's intentional and 
+            # precedence over parent values, so if the child has an override we assume it's intentional and
             # don't propagate changes from the parent.
             if spec.resolved_name not in child._values:
                 for listener in child._subscribers.get(spec, []):
                     await listener(old, new)
                 await child._propagate_to_children(spec, old, new)
+
+    # -- Transactional staging --
+
+    def clone(self) -> Options:
+        """Return a detached snapshot at the same scope, seeded with current resolved values.
+
+        The returned instance has no parent link and no external subscribers — only the
+        conditional auto-cascade subscriptions ``__init__`` wires internally. Editor surfaces
+        use this as a scratch space: stage edits via ``clone.set(...)`` (which fires the
+        clone's own internal cascades but no one else's), then commit in one shot via
+        ``target.merge_from(clone)``.
+
+        Every spec is materialized into ``_values`` so the clone is fully self-contained
+        regardless of source scope. A side effect at session scope is that the clone no
+        longer presents the parent-inheritance distinction (every spec reads as a local
+        override) — fine for transactional staging, where the only consumer is the editor.
+        """
+        snap = type(self)(self._scope)
+        for spec in self.spec():
+            snap._values[spec.resolved_name] = self.get(spec)
+        return snap
+
+    async def merge_from(self, other: Options) -> dict[str, tuple[Any, Any]]:
+        """Pull ``other``'s values into self via ``self.set()`` for every spec where they differ.
+
+        Conditions land before their dependents (see ``_ordered_for_merge``) so the dependent's
+        scope-aware validation sees the new branch when it runs. A single ``flush()`` plus
+        ``post_update()`` runs at the end, only if anything actually changed — callers don't
+        pay the per-set JSONC flush cost and downstream post-update subscribers see one
+        coalesced tick. Returns ``{resolved_name: (old, new)}`` for what actually moved, with
+        ``old`` snapshotted pre-merge so cascade-driven transitions are reported against the
+        user's starting state rather than against an intermediate one.
+        """
+        # Snapshot pre-merge state. Without this, a spec whose value flipped via a cascade
+        # triggered by an earlier set() in this same merge would report its ``old`` as the
+        # intermediate (post-cascade) value, which is misleading.
+        initial: dict[str, Any] = {
+            spec.resolved_name: self.get(spec)
+            for spec in self.spec()
+            if spec.scope >= self._scope
+        }
+
+        for spec in self._ordered_for_merge():
+            # Defensive: skip specs ``other`` carries that self can't actually set (e.g. a Root
+            # spec being merged into a Session instance). In practice ``other`` is always a
+            # clone of self, so this is dead code — but the public method signature doesn't
+            # enforce that.
+            if spec.scope < self._scope:
+                continue
+            new = other.get(spec)
+            if self.get(spec) == new:
+                continue
+            await self.set(spec, new, flush=False)
+
+        changes: dict[str, tuple[Any, Any]] = {}
+        for spec in self.spec():
+            if spec.scope < self._scope:
+                continue
+            old = initial[spec.resolved_name]
+            new = self.get(spec)
+            if old != new:
+                changes[spec.resolved_name] = (old, new)
+
+        if changes:
+            self.flush()
+            await self.post_update()
+
+        return changes
+
+    def _ordered_for_merge(self) -> list[OptionSpec]:
+        """Topo order: condition specs before their dependents.
+
+        Without this, a merge that flips both ``provider`` and ``model`` simultaneously could
+        process ``model`` first against the OLD provider — and reject a value valid only in
+        the new branch.
+        """
+        cond_of: dict[OptionSpec, OptionSpec] = {
+            s: s.condition
+            for s in self.spec()
+            if isinstance(s, (ConditionalChoicesOptionSpec, ConditionalIntRangeOptionSpec))
+        }
+        seen: set[OptionSpec] = set()
+        out: list[OptionSpec] = []
+
+        def visit(spec: OptionSpec) -> None:
+            if spec in seen:
+                return
+            seen.add(spec)
+            if spec in cond_of:
+                visit(cond_of[spec])
+            out.append(spec)
+
+        for spec in self.spec():
+            visit(spec)
+        return out
 
     # -- Subscriptions --
 
