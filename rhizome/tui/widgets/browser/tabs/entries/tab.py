@@ -120,29 +120,19 @@ class EntryTab(Vertical):
     EntryTab #entries-table.-multi-select > .datatable--even-row {
         background: $surface-darken-1 50%;
     }
-    /* State-driven layout swap. Both right-hand views are mounted up front; the ``-state-*``
-       class toggles which is visible. */
+    /* Right pane is lazy-mounted (see ``_swap_right_pane``) — only the active pane lives in the
+       DOM at any time, which keeps the StyleSheet apply scope small on state flips. ``-state-*``
+       still drives the table-column width / table height / preview visibility on the left side. */
     EntryTab.-state-entries #table-column {
         width: 60%;
-    }
-    EntryTab.-state-entries EntryDetails {
-        width: 1fr;
-        height: 1fr;
-        display: block;
-    }
-    EntryTab.-state-entries LinkedFlashcardsPanel {
-        display: none;
     }
     EntryTab.-state-linked-flashcards #table-column {
         width: 50%;
     }
-    EntryTab.-state-linked-flashcards LinkedFlashcardsPanel {
+    EntryTab EntryDetails,
+    EntryTab LinkedFlashcardsPanel {
         width: 1fr;
         height: 1fr;
-        display: block;
-    }
-    EntryTab.-state-linked-flashcards EntryDetails {
-        display: none;
     }
     /* Status row sits in #table-column so it aligns with the linked-flashcards docked status. */
     EntryTab #tab-status {
@@ -151,16 +141,14 @@ class EntryTab(Vertical):
         text-style: dim;
         padding: 0 1;
     }
+    /* Dialogs are lazy-mounted — at most one lives in the DOM, only while open. No default
+       ``display: none`` / ``.-visible`` toggle: presence in the DOM is what makes them visible. */
     EntryTab #delete-confirm {
         height: 4;
         margin: 1 0 0 0;
         padding: 0 1;
         border-top: solid #3a3a3a;
         color: rgb(200,200,200);
-        display: none;
-    }
-    EntryTab #delete-confirm.-visible {
-        display: block;
     }
     EntryTab #delete-confirm:focus {
         border-top: solid $accent;
@@ -171,10 +159,6 @@ class EntryTab(Vertical):
         padding: 0 1;
         border-top: solid #3a3a3a;
         color: rgb(200,200,200);
-        display: none;
-    }
-    EntryTab #sort-bar.-visible {
-        display: block;
     }
     EntryTab #sort-bar:focus {
         border-top: solid $accent;
@@ -185,10 +169,6 @@ class EntryTab(Vertical):
         padding: 0 1;
         border-top: solid #3a3a3a;
         color: rgb(200,200,200);
-        display: none;
-    }
-    EntryTab #filter-dialog.-visible {
-        display: block;
     }
     EntryTab #filter-dialog:focus {
         border-top: solid $accent;
@@ -231,10 +211,6 @@ class EntryTab(Vertical):
         padding: 0 1;
         border-top: solid #3a3a3a;
         color: rgb(200,200,200);
-        display: none;
-    }
-    EntryTab #edit-bar.-visible {
-        display: block;
     }
     EntryTab #edit-bar:focus {
         border-top: solid $accent;
@@ -319,14 +295,14 @@ class EntryTab(Vertical):
                 yield Static("", id="tab-status")
 
             yield Rule(orientation="vertical", line_style="solid", id="tab-body-rule")
-            # Both right-hand views mount up front; CSS ``-state-*`` flips visibility. Mounting
-            # once avoids re-subscribing each child's vm.dirty on every state flip.
-            yield EntryDetails(self._vm.details)
-            yield LinkedFlashcardsPanel(self._vm.linked_flashcards)
-        yield EntriesDeleteMenu(self._vm, self, id="delete-confirm")
-        yield EntriesSortMenu(self._vm, on_close=self.hide_dialog, id="sort-bar")
-        yield FilterMenu(self._vm, self, id="filter-dialog")
-        yield EditMenu(self._vm, self, id="edit-bar")
+            # Only the active pane is in the DOM at any time. ``_swap_right_pane`` (driven from
+            # ``_refresh`` on state change) unmounts the outgoing widget and mounts the incoming
+            # one; each pane re-subscribes its ``vm.dirty`` from ``on_mount`` so the subscription
+            # lifetime tracks the mount lifetime.
+            yield self._make_right_pane(self._vm.state)
+        # Dialogs are lazy-mounted between ``#tab-body`` and ``#tab-keybindings-rule`` via
+        # ``_mount_dialog_widget``; at most one lives in the DOM at a time. See the orchestration
+        # block below.
         yield Rule(line_style="solid", id="tab-keybindings-rule")
         yield Static(self._keybindings_text(), id="tab-keybindings")
 
@@ -398,8 +374,16 @@ class EntryTab(Vertical):
         self._vm.transition_to(target)
 
     # ------------------------------------------------------------------
-    # Dialog orchestration
+    # Dialog orchestration — lazy mount, mutex of one
     # ------------------------------------------------------------------
+    #
+    # At most one dialog is mounted at a time, lifted in/out of the slot between ``#tab-body`` and
+    # ``#tab-keybindings-rule`` as the user opens / closes / swaps them. Presence in the DOM is what
+    # makes the dialog visible — no ``.-visible`` class needed.
+    #
+    # ``prepare_for_show`` + ``focus`` run via ``call_after_refresh`` because ``mount`` only queues
+    # the insertion; the widget hasn't composed yet when ``mount`` returns. Deferring until the next
+    # refresh tick guarantees children (if the dialog has any) are queryable by the time setup runs.
 
     def toggle_dialog(self, name: _DialogName) -> None:
         if self._active_dialog == name:
@@ -410,37 +394,67 @@ class EntryTab(Vertical):
     def show_dialog(self, name: _DialogName) -> None:
         if self._active_dialog == name:
             return
+        self._unmount_dialog_widget(self._active_dialog)
         self._active_dialog = name
-        self._refresh_dialog_visibility()
+        self._mount_dialog_widget(name)
 
     def hide_dialog(self) -> None:
         if self._active_dialog is None:
             return
+        name = self._active_dialog
         self._active_dialog = None
-        self._refresh_dialog_visibility()
+        # Park focus on the entries table before unmount so it isn't orphaned when the dialog (which
+        # likely held focus) is removed.
+        try:
+            self.query_one("#entries-table", DataTable).focus()
+        except Exception:
+            pass
+        self._unmount_dialog_widget(name)
 
-    def _refresh_dialog_visibility(self) -> None:
-        # Toggle ``-visible`` on the active dialog (and clear it on the others), run each newly-
-        # active widget's ``prepare_for_show`` hook, then focus it; fall back to the entries table
-        # when nothing's active.
-        for name, widget_id in self._DIALOG_WIDGETS:
-            try:
-                # Widget (not Static) because FilterMenu is a Vertical container.
-                widget = self.query_one(widget_id, Widget)
-            except Exception:
-                continue
-            is_visible = name == self._active_dialog
-            widget.set_class(is_visible, "-visible")
-            if is_visible:
-                prepare = getattr(widget, "prepare_for_show", None)
-                if prepare is not None:
-                    prepare()
-                widget.focus()
-        if self._active_dialog is None:
-            try:
-                self.query_one("#entries-table", DataTable).focus()
-            except Exception:
-                pass
+    def _make_dialog(self, name: _DialogName) -> Widget:
+        if name == "delete":
+            return EntriesDeleteMenu(self._vm, self, id="delete-confirm")
+        if name == "sort":
+            return EntriesSortMenu(self._vm, on_close=self.hide_dialog, id="sort-bar")
+        if name == "filter":
+            return FilterMenu(self._vm, self, id="filter-dialog")
+        if name == "edit":
+            return EditMenu(self._vm, self, id="edit-bar")
+        raise ValueError(f"unknown dialog: {name!r}")
+
+    def _mount_dialog_widget(self, name: _DialogName) -> None:
+        dialog = self._make_dialog(name)
+        try:
+            anchor = self.query_one("#tab-keybindings-rule")
+        except Exception:
+            return
+        self.mount(dialog, before=anchor)
+        self.call_after_refresh(self._post_mount_dialog_setup)
+
+    def _unmount_dialog_widget(self, name: _DialogName | None) -> None:
+        if name is None:
+            return
+        widget_id = dict(self._DIALOG_WIDGETS)[name]
+        try:
+            self.query_one(widget_id, Widget).remove()
+        except Exception:
+            pass
+
+    def _post_mount_dialog_setup(self) -> None:
+        # ``self._active_dialog`` is the source of truth — if the user toggled again before this
+        # callback fired, the currently-mounted dialog may differ from what was passed to mount.
+        name = self._active_dialog
+        if name is None:
+            return
+        widget_id = dict(self._DIALOG_WIDGETS)[name]
+        try:
+            widget = self.query_one(widget_id, Widget)
+        except Exception:
+            return
+        prepare = getattr(widget, "prepare_for_show", None)
+        if prepare is not None:
+            prepare()
+        widget.focus()
 
     # ------------------------------------------------------------------
     # Relink mode entry point
@@ -478,11 +492,13 @@ class EntryTab(Vertical):
         self.set_class(state is self._vm.State.ENTRIES, "-state-entries")
         self.set_class(state is self._vm.State.LINKED_FLASHCARDS, "-state-linked-flashcards")
 
-        # State transitions auto-dismiss any open dialog — its targets/axes/options aren't generally
-        # meaningful across a layout switch.
+        # State transitions auto-dismiss any open dialog (its targets/axes/options aren't generally
+        # meaningful across a layout switch) and swap the right-pane widget (lazy-mount: only the
+        # pane for the current state lives in the DOM).
         if self._last_state is not None and state != self._last_state:
             if self._active_dialog is not None:
                 self.hide_dialog()
+            self._swap_right_pane(state)
         self._last_state = state
 
         # Three refresh paths:
@@ -554,6 +570,56 @@ class EntryTab(Vertical):
 
         status = self.query_one("#tab-status", Static)
         status.update(self._format_status())
+
+    # ------------------------------------------------------------------
+    # Right-pane lazy mount — only the active pane lives in the DOM
+    # ------------------------------------------------------------------
+    #
+    # The right pane (``EntryDetails`` in ``ENTRIES``, ``LinkedFlashcardsPanel`` in
+    # ``LINKED_FLASHCARDS``) is mounted on demand rather than mounted-and-hidden, so state flips
+    # don't drag the inactive subtree through every ``StyleSheet.apply``. Each pane subscribes its
+    # own ``vm.dirty`` in ``on_mount`` and unsubscribes in ``on_unmount`` — re-subscribe cost on
+    # mode switch is O(1) per pane, dwarfed by the avoided CSS work.
+
+    def _make_right_pane(self, state: EntryTabVM.State) -> Widget:
+        """Construct the right-pane widget for ``state``. Pure factory — the caller is responsible
+        for yielding it from ``compose`` or mounting it in ``_swap_right_pane``."""
+        if state is self._vm.State.ENTRIES:
+            return EntryDetails(self._vm.details)
+        return LinkedFlashcardsPanel(self._vm.linked_flashcards)
+
+    def _current_right_pane(self) -> Widget | None:
+        """Whichever right-pane widget is currently mounted (``EntryDetails`` or
+        ``LinkedFlashcardsPanel``), or ``None`` if neither is mounted yet."""
+        for cls in (EntryDetails, LinkedFlashcardsPanel):
+            try:
+                return self.query_one(cls)
+            except Exception:
+                continue
+        return None
+
+    def _swap_right_pane(self, new_state: EntryTabVM.State) -> None:
+        """Unmount the outgoing pane and mount the one for ``new_state``. Rescues focus to the
+        entries table first if it'd otherwise be orphaned inside the outgoing pane."""
+        try:
+            body = self.query_one("#tab-body", Horizontal)
+        except Exception:
+            return
+
+        current = self._current_right_pane()
+        if current is not None:
+            focused = self.screen.focused if self.screen else None
+            focus_inside = focused is not None and (
+                focused is current or current in focused.ancestors_with_self
+            )
+            if focus_inside:
+                try:
+                    self.query_one("#entries-table", DataTable).focus()
+                except Exception:
+                    pass
+            current.remove()
+
+        body.mount(self._make_right_pane(new_state))
 
     # ------------------------------------------------------------------
     # Cross-region focus — see module docstring for the full graph table

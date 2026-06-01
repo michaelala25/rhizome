@@ -1,8 +1,11 @@
 """ActionMenu — vertical action menu for the topic tree.
 
-Sits to the left of the tree inside the panel body. Collapsed by default (single-letter shorthand,
-no cursor marker, narrow rail); on focus, the widget renders full ``► label`` rows and toggles
-``-actions-expanded`` on the surrounding ``TopicTreePanel`` so the panel CSS widens the rail.
+Sits to the left of the tree inside the panel body and always renders in expanded form (``Actions``
+header + full ``► label`` rows). The ``-actions-expanded`` class on the surrounding
+``TopicTreePanel`` is set at panel construction time; the auto-toggle on focus / blur that used to
+narrow the rail when the menu lost focus is retired. The class and ``_set_pane_expanded`` method
+remain as a skeleton so a manual collapse path can be re-introduced later — re-enabling the
+rendering switch is the missing piece on top of what's here today.
 
 This view is intentionally **VM-less** — the menu has no data-model state of its own and exists
 solely to announce action requests upward. Each entry in ``CHOICES`` resolves to an action method
@@ -20,9 +23,9 @@ from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
 class ActionMenu(ChoiceList[None]):
-    """Vertical ``ChoiceList`` rendered to the left of the tree. Overrides ``_render_choice`` to
-    show a single-letter shorthand when blurred and the full ``► label`` when focused, and toggles
-    the panel's ``-actions-expanded`` class on focus/blur so the rail width follows."""
+    """Vertical ``ChoiceList`` rendered to the left of the tree. Always renders in expanded form
+    (``Actions`` header + full ``► label`` rows); see module docstring for the retired collapse
+    behaviour."""
 
     ORIENTATION = "vertical"
     CHOICES = {
@@ -32,25 +35,15 @@ class ActionMenu(ChoiceList[None]):
     }
 
     DEFAULT_CSS = """
-    /* Collapsed default: zero horizontal padding so the shorthand letter sits flush against both
-       sides — the visual breathing room around the rule comes from the *tree*'s left-padding. */
+    /* Permanent expanded padding — horizontal room for the labels and the cursor marker. The
+       panel's ``-actions-expanded`` class is set at construction and isn't auto-toggled, so the
+       class-keyed override that used to drive this padding is gone. */
     ActionMenu {
         width: auto;
         height: 1fr;
-        padding: 1 0 0 0;
-    }
-    /* Expanded: add horizontal padding so the labels don't crowd the rule. Driven by the same
-       ``-actions-expanded`` class the rail width is keyed off, toggled on the panel view. */
-    TopicTreePanel.-actions-expanded ActionMenu {
         padding: 1 2 0 1;
     }
     """
-
-    _COLLAPSED_SHORTHAND = {
-        "rename": "r",
-        "create": "c",
-        "delete": "d",
-    }
 
     # ------------------------------------------------------------------
     # Messages — one per action; the panel handles them via on_<snake>.
@@ -68,27 +61,15 @@ class ActionMenu(ChoiceList[None]):
     def __init__(self, **kwargs) -> None:
         super().__init__(view_model=None, **kwargs)
 
-    def _render_choice(self, label: str, selected: bool) -> Text:
-        # When focused the base's ``► bold`` / ``  dim`` rendering is exactly what we want; only the
-        # blurred state diverges (single-letter shorthand, no cursor marker — cursor reappears at
-        # its retained index on next focus).
-        if self.has_focus:
-            return super()._render_choice(label, selected)
-        display = self._COLLAPSED_SHORTHAND.get(label, label[:1].upper())
-        return Text(display, style="dim")
-
-    def on_focus(self) -> None:
-        super().on_focus()
-        self._set_pane_expanded(True)
-
-    def on_blur(self) -> None:
-        super().on_blur()
-        self._set_pane_expanded(False)
+    def _render_header(self) -> Text | None:
+        # Plain (non-bold) text in the default foreground — pairs visually with the panel-level
+        # bold ``Topics`` title across the body.
+        return Text("Actions")
 
     def _set_pane_expanded(self, expanded: bool) -> None:
-        # Type-name string query (not a class import) to avoid the circular import the panel view
-        # induces by importing this widget. Best-effort: if the ancestor isn't mounted yet during
-        # compose-time focus, silently skip — Textual will fire focus again post-mount.
+        # Skeleton — no longer called from focus/blur. Retained as the manual hook for re-enabling
+        # collapse later; bringing the rail back also requires restoring the renderer's
+        # expanded-vs-collapsed gating, since ``_render_choice`` no longer responds to it.
         try:
             pane = self.screen.query_one("TopicTreePanel")
         except Exception:

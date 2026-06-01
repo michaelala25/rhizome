@@ -1,0 +1,102 @@
+==============================================================================================================
+Stylesheet instrumentation report
+==============================================================================================================
+
+Note: ``apply`` totals include re-entrant calls from ``_process_component_classes`` (which calls
+      ``apply`` on a virtual node per component class). To isolate outer-apply time, subtract
+      the ``_process_component_classes`` total from the ``apply`` total.
+
+Per-method totals:
+  Stylesheet._check_rule                                   88 calls       0.000s
+  Stylesheet.replace_rules                                 22 calls       0.002s
+  Stylesheet._process_component_classes                    25 calls       0.004s
+  Stylesheet.apply                                         25 calls       0.014s
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet._check_rule
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    DOMNode                                                     54 calls       0.000s  ( 58.4%)
+    TopicTree                                                   12 calls       0.000s  ( 13.5%)
+    EntryTable                                                   9 calls       0.000s  ( 11.5%)
+    ScrollBar                                                    6 calls       0.000s  (  5.8%)
+    ToastHolder                                                  2 calls       0.000s  (  4.3%)
+    Toast                                                        3 calls       0.000s  (  3.6%)
+    ScrollBarCorner                                              2 calls       0.000s  (  2.8%)
+
+  Top 20 by total time (class + id):
+    DOMNode                                                                         54 calls       0.000s  ( 58.4%)
+    TopicTree                                                                       12 calls       0.000s  ( 13.5%)
+    EntryTable#entries-table                                                         9 calls       0.000s  ( 11.5%)
+    ScrollBar                                                                        6 calls       0.000s  (  5.8%)
+    ToastHolder#--textual-toast-27627f31-bd9e-4f30-be39-1f3b68289e73                 2 calls       0.000s  (  4.3%)
+    Toast                                                                            3 calls       0.000s  (  3.6%)
+    ScrollBarCorner                                                                  2 calls       0.000s  (  2.8%)
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet.replace_rules
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    EntryTable                                                   1 calls       0.001s  ( 44.9%)
+    TopicTree                                                    1 calls       0.001s  ( 26.4%)
+    ScrollBar                                                    3 calls       0.000s  ( 12.3%)
+    DOMNode                                                     14 calls       0.000s  (  8.3%)
+    Toast                                                        1 calls       0.000s  (  3.4%)
+    ScrollBarCorner                                              1 calls       0.000s  (  2.9%)
+    ToastHolder                                                  1 calls       0.000s  (  1.8%)
+
+  Top 20 by total time (class + id):
+    EntryTable#entries-table                                                         1 calls       0.001s  ( 44.9%)
+    TopicTree                                                                        1 calls       0.001s  ( 26.4%)
+    ScrollBar                                                                        3 calls       0.000s  ( 12.3%)
+    DOMNode                                                                         14 calls       0.000s  (  8.3%)
+    Toast                                                                            1 calls       0.000s  (  3.4%)
+    ScrollBarCorner                                                                  1 calls       0.000s  (  2.9%)
+    ToastHolder#--textual-toast-27627f31-bd9e-4f30-be39-1f3b68289e73                 1 calls       0.000s  (  1.8%)
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet._process_component_classes
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    EntryTable                                                   1 calls       0.002s  ( 53.2%)
+    TopicTree                                                    1 calls       0.002s  ( 41.5%)
+    Toast                                                        1 calls       0.000s  (  4.4%)
+    DOMNode                                                     17 calls       0.000s  (  0.5%)
+    ToastHolder                                                  1 calls       0.000s  (  0.2%)
+    ScrollBar                                                    3 calls       0.000s  (  0.1%)
+    ScrollBarCorner                                              1 calls       0.000s  (  0.0%)
+
+  Top 20 by total time (class + id):
+    EntryTable#entries-table                                                         1 calls       0.002s  ( 53.2%)
+    TopicTree                                                                        1 calls       0.002s  ( 41.5%)
+    Toast                                                                            1 calls       0.000s  (  4.4%)
+    DOMNode                                                                         17 calls       0.000s  (  0.5%)
+    ToastHolder#--textual-toast-27627f31-bd9e-4f30-be39-1f3b68289e73                 1 calls       0.000s  (  0.2%)
+    ScrollBar                                                                        3 calls       0.000s  (  0.1%)
+    ScrollBarCorner                                                                  1 calls       0.000s  (  0.0%)
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet.apply
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    DOMNode                                                     17 calls       0.004s  ( 27.3%)
+    EntryTable                                                   1 calls       0.004s  ( 25.9%)
+    TopicTree                                                    1 calls       0.003s  ( 20.0%)
+    Toast                                                        1 calls       0.002s  ( 12.7%)
+    ScrollBar                                                    3 calls       0.001s  (  6.4%)
+    ToastHolder                                                  1 calls       0.001s  (  5.4%)
+    ScrollBarCorner                                              1 calls       0.000s  (  2.4%)
+
+  Top 20 by total time (class + id):
+    DOMNode                                                                         17 calls       0.004s  ( 27.3%)
+    EntryTable#entries-table                                                         1 calls       0.004s  ( 25.9%)
+    TopicTree                                                                        1 calls       0.003s  ( 20.0%)
+    Toast                                                                            1 calls       0.002s  ( 12.7%)
+    ScrollBar                                                                        3 calls       0.001s  (  6.4%)
+    ToastHolder#--textual-toast-27627f31-bd9e-4f30-be39-1f3b68289e73                 1 calls       0.001s  (  5.4%)
+    ScrollBarCorner                                                                  1 calls       0.000s  (  2.4%)
+

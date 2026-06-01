@@ -92,3 +92,58 @@
 - Cartesian explosion
     - N boolean attributes corresponds to 2^N different states in the state machine to keep track of
     - Thus, attributes should be preferred to states to restrict the size of the state/transition space whenever possible
+
+
+# Performance
+
+## Stylesheets are the biggest TUI bottleneck
+
+- Textual's CSS engine is the most common source of perceptible lag in interactive UIs (focus shifts, navigation, dialog open/close). The pyinstrument flame graph almost always shows `StyleSheet.apply`, `_process_component_classes`, and `replace_rules` at the top of the active time.
+
+- Cost model:
+    - **`apply`** — runs the full selector engine for a node, matching every rule against the node's path, then merging matching styles. Called once per "node needs restyle" event.
+    - **`_process_component_classes`** (PCC) — for each component class on the node, creates a virtual child node and calls `apply` on it. Widgets like `DataTable`, `Tree`, `Input`, and `TextArea` carry many component classes — each PCC call triggers an inner cascade of `apply` calls.
+    - **`replace_rules`** — final rules-map swap + diff on the node.
+    - **`_check_rule`** — the selector-matching primitive. Hot but individually cheap; rarely the bottleneck.
+
+- A single focus shift in a complex tree can trigger 100+ `apply` calls. The amplifier is usually a single pseudo-selector or ancestor class-change that causes Textual to defensively reapply styles to an entire subtree.
+
+
+## Avoid `:focus-within` and ancestor-class toggles
+
+- The biggest stylesheet smell in Textual is using `:focus-within` on a node with many descendants. When focus shifts anywhere inside the subtree, Textual reapplies styles to every descendant of that node — even if no descendant rule actually keys on the focus state. The engine doesn't analyze descendant selectors; it just walks the subtree defensively.
+
+- The same trap applies to `widget.set_class("-foo")` on an ancestor. The class change triggers a descendant cascade for the same reason — Textual can't tell whether any descendant rule keys on `-foo` without re-running the matcher, so it doesn't try.
+
+- **The remedy: inline styles for ancestor-keyed visual state.** Inline styles (e.g. `widget.styles.border = ("solid", "#6a6a6a")`) are *node-scoped*. They can't be selectors, so the engine doesn't have to revisit descendants when they change. Track the state in Python — `on_descendant_focus` / `on_descendant_blur` for focus-within, `on_enter` / `on_leave` for hover, etc. — and assign the inline style directly.
+
+- `widget.styles.border = None` clears the inline override and lets CSS rules take over again — so you can mix CSS for default/hover with inline for the cascade-triggering state.
+
+- **What's safe:** pseudo-selectors that only match the node itself (`:focus`, `:hover`, `:disabled`) don't cascade. The cascade fires when an *ancestor's* state changes, not the matched node's own state.
+
+
+## Prefer lazy mounting over CSS-driven visibility
+
+- A widget that's `display: none` still pays the full `apply` / `_process_component_classes` cost on every style invalidation in its subtree. Hidden-but-mounted ≠ free.
+
+- For mode-driven or rarely-shown subtrees (mutex of dialogs, alternative panes that swap on a state flip, etc.), mount only the active widget and unmount on transition. The pattern is small: a `_make_<thing>` factory, a `_mount_<thing>` / `_unmount_<thing>` pair, and a sync method that's called when the controlling state changes.
+
+- Trade-off: each mount re-runs `compose` and `on_mount`, including any VM subscription wiring. For mode switches that fire on explicit user action (`tab` key, dialog open) the cost is dwarfed by the avoided CSS work; for state that flips on every refresh, lazy-mount is the wrong move.
+
+
+## The named-handler MRO gotcha
+
+- Textual auto-dispatches named `on_<event>` handlers (`on_focus`, `on_blur`, `on_mount`, etc.) at *every level of the MRO*. A subclass's `on_focus` does **not** replace the base class's — both fire on every event, automatically.
+
+- **Don't call `super().on_focus(event)` in a named handler.** The base's handler is already being called by the dispatcher; the explicit `super()` makes it fire a second time. Subclass-specific behavior just goes in the subclass's named handler — no `super()` glue needed.
+
+- Same dynamic with the `@on(EventType)` decorator form: Textual collects all decorated handlers in the MRO chain. Decorating in both the base and subclass causes both to fire without any explicit `super()` call.
+
+
+## Knowing when you're hitting it
+
+- The pyinstrument profiler (`ctrl+f12` in the app) gives stack-level visibility. `StyleSheet.apply` near the top of the flame graph is the smoke signal.
+
+- For per-widget granularity (pyinstrument is sampling-based, so it never captures function args), `rhizome/tui/_profiling.py` monkey-patches the four core `Stylesheet` methods and produces a text report keyed by `(widget_class, widget_id)`. It runs alongside the pyinstrument session — same `ctrl+f12` toggle, the report lands next to the HTML in `/tmp/rhizome-profiles`.
+
+- A healthy focus-shift cost is ~20 `apply` calls, dominated by the widget losing focus, the widget gaining focus, and their scrollbars. If a single shift is producing 100+ `apply` calls, something is firing a subtree cascade — look for `:focus-within`, ancestor class toggles, or any pseudo-selector matching at high frequency on a heavy ancestor.

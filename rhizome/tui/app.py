@@ -119,20 +119,31 @@ class RhizomeApp(App):
 
     def action_toggle_profile(self) -> None:
         from pyinstrument import Profiler
+        from rhizome.tui._profiling import (
+            start_stylesheet_instrumentation,
+            stop_stylesheet_instrumentation,
+        )
 
         if self._profiler is None:
             self._profiler = Profiler(async_mode="enabled")
+            start_stylesheet_instrumentation()
             self._profiler.start()
             self.notify("Profiling started", severity="warning", timeout=2)
             return
 
         self._profiler.stop()
+        stylesheet_report = stop_stylesheet_instrumentation()
         PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out = PROFILE_DIR / f"profile-{stamp}.html"
-        out.write_text(self._profiler.output_html())
+        html_out = PROFILE_DIR / f"profile-{stamp}.html"
+        txt_out = PROFILE_DIR / f"profile-{stamp}-stylesheet.txt"
+        html_out.write_text(self._profiler.output_html())
+        txt_out.write_text(stylesheet_report)
         self._profiler = None
-        self.notify(f"Profile written: {out}", severity="information", timeout=5)
+        self.notify(
+            f"Profile written: {html_out.name} + .txt",
+            severity="information", timeout=5,
+        )
 
     @property
     def active_chat_pane(self) -> ChatPane | None:

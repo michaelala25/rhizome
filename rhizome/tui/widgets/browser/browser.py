@@ -16,6 +16,7 @@ from rich.text import Text
 from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.events import DescendantBlur, DescendantFocus
 from textual.widgets import ContentSwitcher, Static
 
 from rhizome.logs import get_logger
@@ -63,7 +64,10 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         height: 1fr;
         border: solid #3a3a3a;
     }
-    Browser #browser-right-tab:focus-within {
+    /* ``-focus-within`` is set manually from ``on_descendant_focus``/``on_descendant_blur`` rather
+       than via the ``:focus-within`` pseudo-selector. Pseudo-classes invalidate every ancestor on
+       any focus shift in the subtree; a class flip is local to the node that toggled it. */
+    Browser #browser-right-tab.-focus-within {
         border: solid #6a6a6a;
     }
     Browser #browser-tab-bar {
@@ -104,8 +108,10 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         self.focus()
 
     def on_focus(self, event) -> None:
-        # Bounce focus inward off the bare container onto the topic panel.
-        super().on_focus(event)
+        # Bounce focus inward off the bare container onto the topic panel. No ``super()`` call —
+        # Textual auto-dispatches ``on_focus`` at every MRO level, so ``ViewBase.on_focus`` (VM
+        # notify) and ``NavigableFeedItemViewBase.on_focus`` (inline border sync) already fire on
+        # their own. An explicit ``super().on_focus(event)`` here double-fires them.
         panel = self._panel_view()
         if panel is not None:
             panel.focus()
@@ -119,6 +125,42 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         if panel is not None:
             panel.focus()
         return self
+
+    # ------------------------------------------------------------------
+    # Focus-within tracking — inline ``styles.border`` on the right tab (no CSS class involved)
+    # ------------------------------------------------------------------
+    #
+    # Textual exposes ``on_descendant_focus`` and ``on_descendant_blur``, but neither is a clean signal
+    # for "focus entered subtree" or "focus left subtree" — both fire on every focus shift among
+    # descendants, including sibling-to-sibling moves where focus stays inside. The asymmetry that
+    # matters is in the post-conditions: after a descendant-focus event, focus is *definitely* inside
+    # the subtree (the event is its own proof). A descendant-blur is ambiguous, but it doesn't matter
+    # here — both handlers funnel into the same ``screen.focused``-derived check.
+    #
+    # The border color is set via the right-tab's ``styles.border`` rather than by toggling a class.
+    # Inline styles are node-scoped, so Textual doesn't re-evaluate descendant selectors when they
+    # change — avoiding the defensive subtree reapply that a class change triggers on a node with
+    # many descendants (the right tab holds EntryTable + EntryDetails + EntryPreview, all heavy).
+    #
+    # The right-tab container is a plain ``Vertical`` with an id (not a custom Widget subclass), so
+    # the handlers live here on ``Browser`` and assign to the queried element's ``styles``.
+
+    def on_descendant_focus(self, event: DescendantFocus) -> None:
+        self._sync_right_tab_focus_within()
+
+    def on_descendant_blur(self, event: DescendantBlur) -> None:
+        self._sync_right_tab_focus_within()
+
+    def _sync_right_tab_focus_within(self) -> None:
+        try:
+            right_tab = self.query_one("#browser-right-tab")
+        except Exception:
+            return
+        focused = self.screen.focused if self.screen else None
+        inside = focused is not None and (
+            focused is right_tab or right_tab in focused.ancestors_with_self
+        )
+        right_tab.styles.border = ("solid", "#6a6a6a" if inside else "#3a3a3a")
 
     # ------------------------------------------------------------------
     # VM → View

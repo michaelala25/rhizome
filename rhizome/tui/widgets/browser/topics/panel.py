@@ -10,9 +10,11 @@ Layout::
     │  topic-details (name/desc)      │  ← #browser-topic-details
     └─────────────────────────────────┘
 
-Rail expansion: the actions widget toggles ``-actions-expanded`` on this view when it gains/loses
-focus, which CSS uses to widen the rail. ``Browser`` doesn't participate — the right pane's
-``width: 1fr`` absorbs the difference.
+Width: panel takes a proportional slice of the ``Browser``'s horizontal space; the action menu
+sizes to its content (``Actions`` header + longest label) and the topic tree fills whatever's left,
+with a horizontal scrollbar when nodes overflow. ``-actions-expanded`` is set at construction; the
+focus-driven auto-toggle that used to widen the rail is retired — the class remains as a skeleton
+hook (see ``ActionMenu._set_pane_expanded``) but no automatic state-flipping happens on navigation.
 
 Alt-arrow navigation: the panel owns its own ``alt+arrow`` bindings and resolves one step within
 its focus graph via ``nav_<dir>``. When a step has no in-graph target, the action raises
@@ -34,6 +36,7 @@ from typing import Any
 from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.events import DescendantBlur, DescendantFocus
 from textual.widgets import Static
 
 from rhizome.logs import get_logger
@@ -51,17 +54,17 @@ class TopicTreePanel(Vertical):
     """View for ``TopicTreePanelVM``. See module docstring."""
 
     DEFAULT_CSS = """
+    /* Panel takes a proportional slice of ``Browser`` (sibling to ``#browser-right-tab``'s
+       ``width: 1fr``); inside, the action menu sizes to content and the tree fills the rest. */
     TopicTreePanel {
-        width: 23%;
+        width: 25%;
         border: solid #3a3a3a;
         padding: 0;
     }
-    /* Widen when the actions menu is focused so the full labels (rendered in place of the
-       single-letter shorthand) fit. */
-    TopicTreePanel.-actions-expanded {
-        width: 33%;
-    }
-    TopicTreePanel:focus-within {
+    /* ``-focus-within`` is set manually from ``on_descendant_focus``/``on_descendant_blur`` rather
+       than via the ``:focus-within`` pseudo-selector, which forces a full ancestor invalidation on
+       every focus shift in the subtree. The class flip is local to this node. */
+    TopicTreePanel.-focus-within {
         border: solid #6a6a6a;
     }
     TopicTreePanel #browser-tree-title {
@@ -72,12 +75,16 @@ class TopicTreePanel(Vertical):
     TopicTreePanel #browser-tree-body {
         height: 1fr;
     }
-    /* Vertical rule between the actions menu and the tree lives on the tree (not the menu) so
-       it spans the full body height regardless of how few action rows the menu renders. */
+    /* Vertical rule between the actions menu and the tree lives on the tree (not the menu) so it
+       spans the full body height regardless of how few action rows the menu renders. The tree
+       fills the remaining body width and scrolls horizontally when deep / long node labels
+       overflow. */
     TopicTreePanel TopicTree {
+        width: 1fr;
         padding: 1 0 0 1;
         height: 1fr;
         border-left: solid #3a3a3a;
+        overflow-x: auto;
     }
     TopicTreePanel.-actions-expanded TopicTree {
         border-left: solid #6a6a6a;
@@ -107,6 +114,11 @@ class TopicTreePanel(Vertical):
         # *as of* when the dialog opened, so an alt+up→tree→arrow→alt+down round-trip can't end
         # up deleting a different topic than the one the prompt named.
         self._delete_target_id: int | None = None
+        # Actions menu is permanently expanded — the class is set once here so CSS rules keyed on
+        # it (action padding, tree border-left highlight) take effect from first paint. The
+        # focus-driven auto-toggle is retired; ``ActionMenu._set_pane_expanded`` remains as a
+        # manual hook if collapse is ever restored.
+        self.add_class("-actions-expanded")
 
     @property
     def view_model(self) -> TopicTreePanelVM:
@@ -135,6 +147,34 @@ class TopicTreePanel(Vertical):
             self.query_one(TopicTree).update_node_label(topic.id, topic.name)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Focus-within tracking — inline ``styles.border`` (no CSS class involved)
+    # ------------------------------------------------------------------
+    #
+    # Textual exposes ``on_descendant_focus`` and ``on_descendant_blur``, but neither is a clean signal
+    # for "focus entered subtree" or "focus left subtree" — both fire on every focus shift among
+    # descendants, including sibling-to-sibling moves where focus stays inside. The asymmetry that
+    # matters is in the post-conditions: after a descendant-focus event, focus is *definitely* inside
+    # the subtree (the event is its own proof). A descendant-blur is ambiguous, but it doesn't matter
+    # here — both handlers funnel into the same ``screen.focused``-derived check.
+    #
+    # The border color is set via ``self.styles.border`` rather than by toggling a ``-focus-within``
+    # CSS class. Inline styles are node-scoped, so Textual doesn't re-evaluate descendant selectors
+    # when they change — which avoids the defensive subtree reapply that a class change triggers
+    # (every TextArea / Tree / Table in the panel was getting restyled on every focus shift, even
+    # though no rule actually keys descendants off ``-focus-within``).
+
+    def on_descendant_focus(self, event: DescendantFocus) -> None:
+        self._sync_focus_within()
+
+    def on_descendant_blur(self, event: DescendantBlur) -> None:
+        self._sync_focus_within()
+
+    def _sync_focus_within(self) -> None:
+        focused = self.screen.focused if self.screen else None
+        inside = focused is not None and (focused is self or self in focused.ancestors_with_self)
+        self.styles.border = ("solid", "#6a6a6a" if inside else "#3a3a3a")
 
     # ------------------------------------------------------------------
     # ActionMenu message handlers — stubs for now; real dialogs land later.

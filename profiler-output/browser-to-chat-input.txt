@@ -1,0 +1,206 @@
+==============================================================================================================
+Stylesheet instrumentation report
+==============================================================================================================
+
+Note: ``apply`` totals include re-entrant calls from ``_process_component_classes`` (which calls
+      ``apply`` on a virtual node per component class). To isolate outer-apply time, subtract
+      the ``_process_component_classes`` total from the ``apply`` total.
+
+Per-method totals:
+  Stylesheet._check_rule                                  685 calls       0.001s
+  Stylesheet.replace_rules                                174 calls       0.017s
+  Stylesheet._process_component_classes                   179 calls       0.027s
+  Stylesheet.apply                                        179 calls       0.086s
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet._check_rule
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    DOMNode                                                    315 calls       0.000s  ( 52.5%)
+    ConfirmableTextArea                                         66 calls       0.000s  (  7.1%)
+    Static                                                      40 calls       0.000s  (  4.7%)
+    EntryTable                                                  27 calls       0.000s  (  3.6%)
+    EntryPreview                                                24 calls       0.000s  (  2.9%)
+    _ClearButton                                                12 calls       0.000s  (  2.9%)
+    Vertical                                                    22 calls       0.000s  (  2.7%)
+    Rule                                                        20 calls       0.000s  (  2.4%)
+    _SearchField                                                20 calls       0.000s  (  2.3%)
+    ScrollBar                                                   12 calls       0.000s  (  1.7%)
+    Horizontal                                                  12 calls       0.000s  (  1.6%)
+    EntryDetails                                                10 calls       0.000s  (  1.6%)
+    EntryDetailChoices                                          12 calls       0.000s  (  1.5%)
+    ChatInput                                                   10 calls       0.000s  (  1.5%)
+    SearchBar                                                   10 calls       0.000s  (  1.5%)
+    ContentSwitcher                                             10 calls       0.000s  (  1.2%)
+    TopicTree                                                   12 calls       0.000s  (  1.2%)
+    EntryTab                                                     8 calls       0.000s  (  1.1%)
+    ScrollBarCorner                                              6 calls       0.000s  (  1.0%)
+    TopicsDeleteMenu                                             6 calls       0.000s  (  1.0%)
+
+  Top 20 by total time (class + id):
+    DOMNode                                                                        315 calls       0.000s  ( 52.5%)
+    EntryTable#entries-table                                                        27 calls       0.000s  (  3.6%)
+    EntryPreview#entry-content-preview                                              24 calls       0.000s  (  2.9%)
+    _ClearButton                                                                    12 calls       0.000s  (  2.9%)
+    ConfirmableTextArea#details-title                                               22 calls       0.000s  (  2.4%)
+    ConfirmableTextArea#details-content                                             22 calls       0.000s  (  2.3%)
+    _SearchField#search-input                                                       20 calls       0.000s  (  2.3%)
+    ScrollBar                                                                       12 calls       0.000s  (  1.7%)
+    EntryDetails                                                                    10 calls       0.000s  (  1.6%)
+    EntryDetailChoices#details-choices                                              12 calls       0.000s  (  1.5%)
+    ChatInput#chat-input                                                            10 calls       0.000s  (  1.5%)
+    SearchBar                                                                       10 calls       0.000s  (  1.5%)
+    Vertical#table-column                                                           12 calls       0.000s  (  1.4%)
+    Static#tab-keybindings                                                          10 calls       0.000s  (  1.3%)
+    Rule#tab-body-rule                                                              10 calls       0.000s  (  1.3%)
+    Vertical#browser-right-tab                                                      10 calls       0.000s  (  1.3%)
+    ContentSwitcher#browser-tab-area                                                10 calls       0.000s  (  1.2%)
+    TopicTree                                                                       12 calls       0.000s  (  1.2%)
+    Static#browser-tab-bar                                                          10 calls       0.000s  (  1.2%)
+    ConfirmableTextArea#topic-details-description                                   11 calls       0.000s  (  1.2%)
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet.replace_rules
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    EntryTable                                                   3 calls       0.002s  ( 13.7%)
+    Static                                                       8 calls       0.002s  (  9.3%)
+    ConfirmableTextArea                                          6 calls       0.002s  (  9.0%)
+    Vertical                                                     4 calls       0.001s  (  8.2%)
+    Browser                                                      1 calls       0.001s  (  6.6%)
+    DOMNode                                                    110 calls       0.001s  (  5.7%)
+    Rule                                                         4 calls       0.001s  (  5.2%)
+    _ClearButton                                                 2 calls       0.001s  (  3.9%)
+    Horizontal                                                   3 calls       0.001s  (  3.5%)
+    TopicTree                                                    1 calls       0.001s  (  3.1%)
+    EntryPreview                                                 2 calls       0.001s  (  3.0%)
+    ScrollBar                                                    7 calls       0.000s  (  3.0%)
+    EntryDetails                                                 2 calls       0.000s  (  2.8%)
+    EntryDetailChoices                                           2 calls       0.000s  (  2.7%)
+    _SearchField                                                 2 calls       0.000s  (  2.6%)
+    ChatInput                                                    1 calls       0.000s  (  2.4%)
+    ContentSwitcher                                              2 calls       0.000s  (  2.4%)
+    SearchBar                                                    2 calls       0.000s  (  2.4%)
+    EntryTab                                                     2 calls       0.000s  (  2.4%)
+    TopicDetails                                                 1 calls       0.000s  (  1.8%)
+
+  Top 20 by total time (class + id):
+    EntryTable#entries-table                                                         3 calls       0.002s  ( 13.7%)
+    Browser                                                                          1 calls       0.001s  (  6.6%)
+    Vertical#browser-right-tab                                                       2 calls       0.001s  (  5.9%)
+    DOMNode                                                                        110 calls       0.001s  (  5.7%)
+    _ClearButton                                                                     2 calls       0.001s  (  3.9%)
+    ConfirmableTextArea#details-content                                              2 calls       0.001s  (  3.1%)
+    TopicTree                                                                        1 calls       0.001s  (  3.1%)
+    EntryPreview#entry-content-preview                                               2 calls       0.001s  (  3.0%)
+    ScrollBar                                                                        7 calls       0.000s  (  3.0%)
+    ConfirmableTextArea#details-title                                                2 calls       0.000s  (  2.8%)
+    EntryDetails                                                                     2 calls       0.000s  (  2.8%)
+    EntryDetailChoices#details-choices                                               2 calls       0.000s  (  2.7%)
+    Rule#tab-body-rule                                                               2 calls       0.000s  (  2.6%)
+    _SearchField#search-input                                                        2 calls       0.000s  (  2.6%)
+    Rule#tab-keybindings-rule                                                        2 calls       0.000s  (  2.6%)
+    Horizontal#tab-body                                                              2 calls       0.000s  (  2.5%)
+    ChatInput#chat-input                                                             1 calls       0.000s  (  2.4%)
+    ContentSwitcher#browser-tab-area                                                 2 calls       0.000s  (  2.4%)
+    SearchBar                                                                        2 calls       0.000s  (  2.4%)
+    EntryTab#browser-tab-0                                                           2 calls       0.000s  (  2.4%)
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet._process_component_classes
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    ConfirmableTextArea                                          6 calls       0.011s  ( 40.9%)
+    EntryTable                                                   3 calls       0.007s  ( 25.1%)
+    EntryPreview                                                 2 calls       0.003s  ( 12.9%)
+    _SearchField                                                 2 calls       0.002s  (  8.1%)
+    TopicTree                                                    1 calls       0.002s  (  5.8%)
+    ChatInput                                                    1 calls       0.001s  (  5.4%)
+    Toast                                                        1 calls       0.000s  (  0.9%)
+    DOMNode                                                    115 calls       0.000s  (  0.6%)
+    Static                                                       8 calls       0.000s  (  0.0%)
+    ScrollBar                                                    7 calls       0.000s  (  0.0%)
+    Vertical                                                     4 calls       0.000s  (  0.0%)
+    Rule                                                         4 calls       0.000s  (  0.0%)
+    Horizontal                                                   3 calls       0.000s  (  0.0%)
+    ScrollBarCorner                                              3 calls       0.000s  (  0.0%)
+    _ClearButton                                                 2 calls       0.000s  (  0.0%)
+    EntryTab                                                     2 calls       0.000s  (  0.0%)
+    ToastHolder                                                  1 calls       0.000s  (  0.0%)
+    SearchBar                                                    2 calls       0.000s  (  0.0%)
+    EntryDetailChoices                                           2 calls       0.000s  (  0.0%)
+    ContentSwitcher                                              2 calls       0.000s  (  0.0%)
+
+  Top 20 by total time (class + id):
+    EntryTable#entries-table                                                         3 calls       0.007s  ( 25.1%)
+    ConfirmableTextArea#details-content                                              2 calls       0.004s  ( 14.4%)
+    ConfirmableTextArea#details-title                                                2 calls       0.004s  ( 13.7%)
+    EntryPreview#entry-content-preview                                               2 calls       0.003s  ( 12.9%)
+    _SearchField#search-input                                                        2 calls       0.002s  (  8.1%)
+    ConfirmableTextArea#topic-details-name                                           1 calls       0.002s  (  6.5%)
+    ConfirmableTextArea#topic-details-description                                    1 calls       0.002s  (  6.2%)
+    TopicTree                                                                        1 calls       0.002s  (  5.8%)
+    ChatInput#chat-input                                                             1 calls       0.001s  (  5.4%)
+    Toast                                                                            1 calls       0.000s  (  0.9%)
+    DOMNode                                                                        115 calls       0.000s  (  0.6%)
+    ScrollBar                                                                        7 calls       0.000s  (  0.0%)
+    Vertical#browser-right-tab                                                       2 calls       0.000s  (  0.0%)
+    ScrollBarCorner                                                                  3 calls       0.000s  (  0.0%)
+    _ClearButton                                                                     2 calls       0.000s  (  0.0%)
+    EntryTab#browser-tab-0                                                           2 calls       0.000s  (  0.0%)
+    Horizontal#tab-body                                                              2 calls       0.000s  (  0.0%)
+    ToastHolder#--textual-toast-ba45ccc7-4e98-43ab-838e-695587da9160                 1 calls       0.000s  (  0.0%)
+    Rule#tab-keybindings-rule                                                        2 calls       0.000s  (  0.0%)
+    SearchBar                                                                        2 calls       0.000s  (  0.0%)
+
+--------------------------------------------------------------------------------------------------------------
+Stylesheet.apply
+--------------------------------------------------------------------------------------------------------------
+
+  Top 20 by total time (class):
+    DOMNode                                                    115 calls       0.024s  ( 28.1%)
+    ConfirmableTextArea                                          6 calls       0.015s  ( 17.3%)
+    EntryTable                                                   3 calls       0.010s  ( 12.1%)
+    EntryPreview                                                 2 calls       0.005s  (  5.5%)
+    Static                                                       8 calls       0.004s  (  4.1%)
+    _SearchField                                                 2 calls       0.003s  (  4.0%)
+    Vertical                                                     4 calls       0.003s  (  3.0%)
+    TopicTree                                                    1 calls       0.002s  (  2.8%)
+    ChatInput                                                    1 calls       0.002s  (  2.6%)
+    Rule                                                         4 calls       0.002s  (  2.3%)
+    ScrollBar                                                    7 calls       0.002s  (  2.2%)
+    _ClearButton                                                 2 calls       0.002s  (  1.9%)
+    Horizontal                                                   3 calls       0.001s  (  1.6%)
+    Browser                                                      1 calls       0.001s  (  1.6%)
+    EntryDetailChoices                                           2 calls       0.001s  (  1.3%)
+    EntryDetails                                                 2 calls       0.001s  (  1.3%)
+    SearchBar                                                    2 calls       0.001s  (  1.2%)
+    ScrollBarCorner                                              3 calls       0.001s  (  1.2%)
+    EntryTab                                                     2 calls       0.001s  (  1.1%)
+    ContentSwitcher                                              2 calls       0.001s  (  1.0%)
+
+  Top 20 by total time (class + id):
+    DOMNode                                                                        115 calls       0.024s  ( 28.1%)
+    EntryTable#entries-table                                                         3 calls       0.010s  ( 12.1%)
+    ConfirmableTextArea#details-content                                              2 calls       0.005s  (  6.0%)
+    ConfirmableTextArea#details-title                                                2 calls       0.005s  (  5.7%)
+    EntryPreview#entry-content-preview                                               2 calls       0.005s  (  5.5%)
+    _SearchField#search-input                                                        2 calls       0.003s  (  4.0%)
+    ConfirmableTextArea#topic-details-name                                           1 calls       0.002s  (  2.8%)
+    TopicTree                                                                        1 calls       0.002s  (  2.8%)
+    ConfirmableTextArea#topic-details-description                                    1 calls       0.002s  (  2.7%)
+    ChatInput#chat-input                                                             1 calls       0.002s  (  2.6%)
+    ScrollBar                                                                        7 calls       0.002s  (  2.2%)
+    _ClearButton                                                                     2 calls       0.002s  (  1.9%)
+    Vertical#browser-right-tab                                                       2 calls       0.002s  (  1.9%)
+    Browser                                                                          1 calls       0.001s  (  1.6%)
+    EntryDetailChoices#details-choices                                               2 calls       0.001s  (  1.3%)
+    EntryDetails                                                                     2 calls       0.001s  (  1.3%)
+    SearchBar                                                                        2 calls       0.001s  (  1.2%)
+    ScrollBarCorner                                                                  3 calls       0.001s  (  1.2%)
+    Vertical#table-column                                                            2 calls       0.001s  (  1.2%)
+    Horizontal#tab-body                                                              2 calls       0.001s  (  1.2%)
+
