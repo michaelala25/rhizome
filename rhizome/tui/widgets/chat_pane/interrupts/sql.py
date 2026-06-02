@@ -17,7 +17,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import DataTable, Static
 
-from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
 

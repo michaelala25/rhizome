@@ -21,7 +21,7 @@ from textual.events import Focus
 from textual.message import Message
 from textual.widgets import Static
 
-from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
 from rhizome.app.chat_pane.branch import BranchPointVM
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId

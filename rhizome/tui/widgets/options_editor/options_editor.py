@@ -10,7 +10,7 @@ from textual.widgets import Static
 
 from rhizome.app.options import OptionScope
 from rhizome.app.options_editor import OptionsEditorVM
-from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.options_editor.actions import OptionsEditorActions
 from rhizome.tui.widgets.options_editor.list_container import OptionsListContainer
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin

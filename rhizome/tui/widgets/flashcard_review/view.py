@@ -20,7 +20,7 @@ from rhizome.app.flashcard_review.review import (
     FlashcardReviewAction,
     FlashcardReviewVM,
 )
-from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 
 
 # Throbber frames — pulsing dot used in both the counter (think-time) and

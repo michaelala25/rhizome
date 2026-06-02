@@ -25,7 +25,7 @@ from rhizome.app.browser.tabs.entries.tab import EntryTabVM
 from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab
 from rhizome.app.browser.tab_base import BrowserTabVM
 from rhizome.tui.widgets.browser.topics.panel import TopicTreePanel
-from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 from rhizome.app.browser.browser import BrowserVM
 

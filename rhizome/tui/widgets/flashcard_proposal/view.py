@@ -59,7 +59,7 @@ from rhizome.tui.widgets.flashcard_proposal.flashcard_details import FlashcardDe
 from rhizome.tui.widgets.flashcard_proposal.flashcard_list import FlashcardList
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.flashcard_proposal.shared_topic_setter import SharedTopicSetter
-from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 
 
