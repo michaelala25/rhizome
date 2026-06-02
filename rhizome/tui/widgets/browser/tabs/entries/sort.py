@@ -6,7 +6,7 @@ from __future__ import annotations
 from rich.text import Text
 
 from rhizome.app.browser.tabs.entries.tab import EntryTabVM
-from rhizome.tui.widgets.browser.shared.sort_menu import SortMenu
+from rhizome.tui.widgets.shared.sort_menu import SortMenu
 
 
 class EntriesSortMenu(SortMenu[EntryTabVM]):

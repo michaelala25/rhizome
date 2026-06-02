@@ -34,7 +34,7 @@ from textual.widgets import DataTable, Input, Rule, Static, TextArea
 
 from rhizome.app.browser.tabs.entries.tab import EntryTabVM
 from rhizome.db.models import EntryType
-from rhizome.tui.widgets.browser.shared.search_bar import SearchBar
+from rhizome.tui.widgets.shared.search_bar import SearchBar
 from rhizome.tui.widgets.browser.tabs.entries.delete import EntriesDeleteMenu
 from rhizome.tui.widgets.browser.tabs.entries.details import EntryDetails
 from rhizome.tui.widgets.browser.tabs.entries.edit import EditMenu

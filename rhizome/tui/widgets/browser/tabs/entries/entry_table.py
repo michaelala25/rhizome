@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from rhizome.app.browser.tabs.entries.tab import EntryTabVM
-from rhizome.tui.widgets.browser.shared.multiselect_table import MultiSelectableDataTable
+from rhizome.tui.widgets.shared.multiselect_table import MultiSelectableDataTable
 
 if TYPE_CHECKING:
     from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab

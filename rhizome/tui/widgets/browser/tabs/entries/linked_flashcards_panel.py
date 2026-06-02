@@ -21,7 +21,7 @@ from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Static
 
 from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
-from rhizome.tui.widgets.browser.shared.search_bar import SearchBar
+from rhizome.tui.widgets.shared.search_bar import SearchBar
 from rhizome.tui.widgets.browser.tabs.entries.flashcard_preview import FlashcardPreview
 from rhizome.tui.widgets.browser.tabs.entries.linked_flashcards_table import LinkedFlashcardsTable
 from rhizome.tui.widgets.browser.tabs.entries.relink import RelinkMenu
