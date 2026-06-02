@@ -123,6 +123,13 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         padding: 0 1;
         margin-top: 1;
     }
+    /* Bump specificity above FlashcardDetails' own type selector so the inherited
+       Vertical { height: 1fr } default can't win same-specificity ties — under certain
+       mount orderings Textual's stylesheet resolution flips and 1fr wins, which stretches
+       FlashcardDetails to fill fp-middle and feeds a runaway loop in _sync_list_area_height. */
+    FlashcardProposal #fp-flashcard-details {
+        height: auto;
+    }
     FlashcardProposal #fp-middle {
         height: auto;
         padding: 0 1;
@@ -330,19 +337,25 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
     def _sync_list_area_height(self) -> None:
         # Pin flashcard-list-area's height to ``max(its own natural content height, details
         # height)`` so a tall FlashcardDetails doesn't leave dead vertical space between the
-        # bordered table and the FlashcardProposalChoices row below. Runs after layout settles so
-        # children sizes are real.
+        # bordered table and the FlashcardProposalChoices row below.
+        #
+        # Both sides read ``virtual_size``, not ``size``: ``area``'s rendered size tracks whatever
+        # we just wrote to ``area.styles.height`` (the flashcard list fills the area), and
+        # ``details``' rendered size tracks ``fp-middle``'s height (the Horizontal stretches
+        # siblings), so ``size`` on either widget would let this function read its own previous
+        # output. Skipping while DONE-collapsed because the entire ``fp-middle`` subtree is
+        # ``display: none``.
         def _apply() -> None:
+            if self._vm.state == FlashcardProposalVM.State.DONE and self._collapsed:
+                return
             try:
                 area = self.query_one("#fp-flashcard-list-area", Vertical)
                 details = self.query_one("#fp-flashcard-details", Widget)
                 flashcard_list = self.query_one("#fp-flashcard-list", FlashcardList)
             except Exception:
                 return
-            # FlashcardList + hints (1 row) + border (top + bottom = 2). Take FlashcardList's
-            # actual rendered height so this tracks the auto-sized table content.
-            natural = flashcard_list.size.height + 1 + 2
-            target = max(natural, details.size.height)
+            natural = flashcard_list.virtual_size.height + 1 + 2
+            target = max(natural, details.virtual_size.height)
             area.styles.height = target
         self.call_after_refresh(_apply)
 

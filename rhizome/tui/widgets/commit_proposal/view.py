@@ -121,6 +121,13 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         padding: 0 1;
         margin-top: 1;
     }
+    /* Bump specificity above EntryDetails' own type selector so the inherited
+       Vertical { height: 1fr } default can't win same-specificity ties — under certain
+       mount orderings Textual's stylesheet resolution flips and 1fr wins, which stretches
+       EntryDetails to fill cp-middle and feeds a runaway loop in _sync_entry_area_height. */
+    CommitProposal #cp-entry-details {
+        height: auto;
+    }
     CommitProposal #cp-middle {
         height: auto;
         padding: 0 1;
@@ -330,17 +337,23 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         # Pin entry-list-area's height to ``max(its own natural content height, details height)``
         # so a tall EntryDetails doesn't leave dead vertical space between the bordered table and
         # the CommitProposalChoices row below. Runs after layout settles so children sizes are real.
+        #
+        # Both sides read ``virtual_size``, not ``size``: ``area``'s rendered size tracks whatever
+        # we just wrote to ``area.styles.height`` (the entry list fills the area), and ``details``'
+        # rendered size tracks ``cp-middle``'s height (the Horizontal stretches siblings), so
+        # ``size`` on either widget would let this function read its own previous output. Skipping
+        # while DONE-collapsed because the entire ``cp-middle`` subtree is ``display: none``.
         def _apply() -> None:
+            if self._vm.state == CommitProposalVM.State.DONE and self._collapsed:
+                return
             try:
                 area = self.query_one("#cp-entry-list-area", Vertical)
-                details = self.query_one("#cp-entry-details", Widget)
+                details = self.query_one("#cp-entry-details", EntryDetails)
                 entry_list = self.query_one("#cp-entry-list", EntryList)
             except Exception:
                 return
-            # EntryList + hints (1 row) + border (top + bottom = 2). Take EntryList's actual
-            # rendered height so this tracks the auto-sized table content.
-            natural = entry_list.size.height + 1 + 2
-            target = max(natural, details.size.height)
+            natural = entry_list.virtual_size.height + 1 + 2
+            target = max(natural, details.virtual_size.height)
             area.styles.height = target
         self.call_after_refresh(_apply)
 
