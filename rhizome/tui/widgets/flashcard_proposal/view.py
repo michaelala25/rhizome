@@ -60,6 +60,7 @@ from rhizome.tui.widgets.flashcard_proposal.flashcard_list import FlashcardList
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.flashcard_proposal.shared_topic_setter import SharedTopicSetter
 from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 
 
 # Final-state colours shown in the collapsed DONE summary header. Matched against the commit-
@@ -69,63 +70,7 @@ _EDITS_YELLOW = "rgb(235,180,90)"
 _CANCEL_RED = "rgb(235,100,100)"
 
 
-# Static focus graph. Each entry maps a node id to its alt+arrow neighbours. ``None`` means "no
-# neighbour in this direction." Some neighbours are conditional on VM state (details-choices
-# visible only while the per-flashcard edit is dirty; edit-instructions visible only when the
-# area is open); ``_resolve_neighbour`` filters those out at lookup time.
-_FOCUS_GRAPH: dict[str, dict[str, str | None]] = {
-    "fp-shared-topic-setter": {
-        "up": None,
-        "down": "fp-flashcard-list",
-        "left": None,
-        "right": None,
-    },
-    "fp-flashcard-list": {
-        "up": "fp-shared-topic-setter",
-        "down": "fp-global-choices",
-        "left": None,
-        "right": "fp-details-question",
-    },
-    "fp-details-question": {
-        "up": "fp-shared-topic-setter",
-        "down": "fp-details-answer",
-        "left": "fp-flashcard-list",
-        "right": None,
-    },
-    "fp-details-answer": {
-        "up": "fp-details-question",
-        "down": "fp-details-testing-notes",
-        "left": "fp-flashcard-list",
-        "right": None,
-    },
-    "fp-details-testing-notes": {
-        "up": "fp-details-answer",
-        "down": "fp-details-choices",  # falls through to global-choices if not visible
-        "left": "fp-flashcard-list",
-        "right": None,
-    },
-    "fp-details-choices": {
-        "up": "fp-details-testing-notes",
-        "down": "fp-global-choices",
-        "left": "fp-flashcard-list",
-        "right": None,
-    },
-    "fp-global-choices": {
-        "up": "fp-flashcard-list",
-        "down": "fp-edit-instructions",  # falls through to None if not visible
-        "left": None,
-        "right": None,
-    },
-    "fp-edit-instructions": {
-        "up": "fp-global-choices",
-        "down": None,
-        "left": None,
-        "right": None,
-    },
-}
-
-
-class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
+class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrchestrationMixin):
     """Parent view for the flashcard-proposal interrupt."""
 
     DEFAULT_CSS = """
@@ -247,6 +192,48 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         Binding("enter", "toggle_collapsed", show=False),
     ]
 
+    # Static focus graph. The fallback list on ``fp-details-testing-notes``'s ``down`` skips
+    # ``fp-details-choices`` when the per-flashcard edit isn't dirty (gated by
+    # ``_is_node_available`` below), landing on ``fp-global-choices`` instead.
+    FOCUS_GRAPH = FocusGraph(
+        source="fp-flashcard-list",
+        edges={
+            "fp-shared-topic-setter": {"down": "fp-flashcard-list"},
+            "fp-flashcard-list": {
+                "up":    "fp-shared-topic-setter",
+                "down":  "fp-global-choices",
+                "right": "fp-details-question",
+            },
+            "fp-details-question": {
+                "up":   "fp-shared-topic-setter",
+                "down": "fp-details-answer",
+                "left": "fp-flashcard-list",
+            },
+            "fp-details-answer": {
+                "up":   "fp-details-question",
+                "down": "fp-details-testing-notes",
+                "left": "fp-flashcard-list",
+            },
+            "fp-details-testing-notes": {
+                "up":   "fp-details-answer",
+                "down": ["fp-details-choices", "fp-global-choices"],
+                "left": "fp-flashcard-list",
+            },
+            "fp-details-choices": {
+                "up":   "fp-details-testing-notes",
+                "down": "fp-global-choices",
+                "left": "fp-flashcard-list",
+            },
+            "fp-global-choices": {
+                "up":   "fp-flashcard-list",
+                "down": "fp-edit-instructions",
+            },
+            "fp-edit-instructions": {
+                "up": "fp-global-choices",
+            },
+        },
+    )
+
     def __init__(self, vm: FlashcardProposalVM, *, session_factory: Any | None = None, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         # Used by the topic-picker modal. ``None`` disables the modal — useful for unit tests and
@@ -317,8 +304,10 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
     def on_mount(self) -> None:
         # ``ViewBase`` wires the vm.dirty → _refresh subscription. The FlashcardProposal parent
         # itself owns no rendered surface (children handle their own paint), so ``_refresh`` is a
-        # no-op. We override on_mount to land focus on the FlashcardList per the spec.
-        self._focus_first()
+        # no-op. We land focus on the FlashcardList per the spec, but only in EDITING — a re-mount
+        # after the interrupt resolves shouldn't steal focus from the chat input.
+        if self._vm.state == FlashcardProposalVM.State.EDITING:
+            self.focus_first()
         # Drives the programmatic flashcard-area↔details height pin. ``vm.details.dirty`` fires
         # when the focused flashcard changes or its content edits land — both can shift the
         # details panel's rendered height, which is what we're tracking.
@@ -330,16 +319,13 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
     def on_resize(self) -> None:
         self._sync_list_area_height()
 
-    def on_focus(self, event) -> None:
-        # Bounce focus inward off the bare container — except in DONE-collapsed, where ``enter`` on
-        # the parent toggles back open and we want the binding to actually fire here.
-        super().on_focus(event)
+    def focus_first(self) -> str | None:
+        # DONE-collapsed: the parent itself stays focused so ``enter`` toggles re-expand. Skipping
+        # the inward delegation is enough — the mixin's ``on_focus`` calls this and respects the
+        # ``None`` return.
         if self._vm.state == FlashcardProposalVM.State.DONE and self._collapsed:
-            return
-        try:
-            self.query_one("#fp-flashcard-list", FlashcardList).focus()
-        except Exception:
-            pass
+            return None
+        return super().focus_first()
 
     def _sync_list_area_height(self) -> None:
         # Pin flashcard-list-area's height to ``max(its own natural content height, details
@@ -474,29 +460,16 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
     # Focus orchestration
     # ------------------------------------------------------------------
 
-    def _focus_first(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
-            return
-        self.query_one("#fp-flashcard-list", FlashcardList).focus()
-
     def action_focus_neighbour(self, direction: str) -> None:
         """Hard refocus along the focus graph (``alt+arrow``). Leaves target cursors untouched."""
-        focused = self.screen.focused if self.screen is not None else None
-        source_id = self._owning_focus_node_id(focused)
-        target_id = self._resolve_neighbour(source_id, direction)
-        if target_id is None:
-            return
-        self._focus_node(target_id)
+        self.focus_neighbour(direction)  # type: ignore[arg-type]
 
     def action_navigate_cursor(self, direction: str) -> None:
         """Plain ``up``/``down`` cross-region jump — refocuses and resets the target's cursor to
         the natural entry side (top when arriving from above, bottom from below)."""
-        focused = self.screen.focused if self.screen is not None else None
-        source_id = self._owning_focus_node_id(focused)
-        target_id = self._resolve_neighbour(source_id, direction)
+        target_id = self.focus_neighbour(direction)  # type: ignore[arg-type]
         if target_id is None:
             return
-        self._focus_node(target_id)
         self._reset_target_cursor_for_continuation(target_id, direction)
 
     def _reset_target_cursor_for_continuation(self, target_id: str, direction: str) -> None:
@@ -515,29 +488,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
             widget._cursor = 0 if direction == "down" else max(0, n - 1)
             widget._refresh()
 
-    def _owning_focus_node_id(self, widget: Widget | None) -> str | None:
-        """Walk up from ``widget`` until we hit a node that's in the focus graph. Handles the case
-        where the actually-focused widget is a nested TextArea inside ``FlashcardDetails`` — we
-        want to identify which graph node it lives under."""
-        node: Widget | None = widget
-        while node is not None and node is not self:
-            wid = node.id
-            if wid in _FOCUS_GRAPH:
-                return wid
-            node = node.parent
-        return None
-
-    def _resolve_neighbour(self, source_id: str | None, direction: str) -> str | None:
-        if source_id is None or source_id not in _FOCUS_GRAPH:
-            return None
-        target = _FOCUS_GRAPH[source_id].get(direction)
-        # State-conditional skip: hop past nodes that are currently hidden.
-        while target is not None and not self._is_focus_node_available(target):
-            next_hop = _FOCUS_GRAPH.get(target, {}).get(direction)
-            target = next_hop
-        return target
-
-    def _is_focus_node_available(self, node_id: str) -> bool:
+    def _is_node_available(self, node_id: str) -> bool:
         # In DONE only the flashcard-list stays in the graph — the user browses the proposal but
         # can't edit anything.
         if self._vm.state == FlashcardProposalVM.State.DONE:
@@ -547,16 +498,6 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
         if node_id == "fp-edit-instructions":
             return self._vm.edit_instructions_visible
         return True
-
-    def _focus_node(self, node_id: str) -> None:
-        # ``FlashcardDetails`` is a container — its graph nodes map to three TextAreas + a
-        # ChoiceList. Map by the actual graph-node id, which is the id we put on the individual
-        # children.
-        try:
-            widget = self.query_one(f"#{node_id}", Widget)
-        except Exception:
-            return
-        widget.focus()
 
     # ------------------------------------------------------------------
     # Lifecycle actions
@@ -582,7 +523,10 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM]):
             return
         self._vm.toggle_edit_instructions_area()
         if self._vm.edit_instructions_visible:
-            self._focus_node("fp-edit-instructions")
+            try:
+                self.query_one("#fp-edit-instructions", Widget).focus()
+            except Exception:
+                pass
 
     def action_set_topic_all(self) -> None:
         if self._vm.state != FlashcardProposalVM.State.EDITING:

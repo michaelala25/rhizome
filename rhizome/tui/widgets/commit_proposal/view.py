@@ -29,7 +29,7 @@ DONE state
 ----------
 On the EDITING→DONE transition the view flips its own ``_collapsed`` flag to True, blurs whatever
 descendant currently has focus, and tightens the focus graph so only ``cp-entry-list`` remains
-available (every other node returns False from ``_is_focus_node_available``). The TextAreas in the
+available (every other node returns False from ``_is_node_available``). The TextAreas in the
 details panel and the edit-instructions area are flipped to ``can_focus = False`` so they leave the
 global focus chain too; the entry-list keeps its cursor so the user can still browse the proposal.
 
@@ -58,6 +58,7 @@ from rhizome.tui.widgets.commit_proposal.entry_list import EntryList
 from rhizome.tui.widgets.commit_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.commit_proposal.shared_topic_setter import SharedTopicSetter
 from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 
 
 # Final-state colours shown in the collapsed DONE summary header. Matched against the trio used in
@@ -67,57 +68,7 @@ _EDITS_YELLOW = "rgb(235,180,90)"
 _CANCEL_RED = "rgb(235,100,100)"
 
 
-# Static focus graph. Each entry maps a node id to its alt+arrow neighbours. ``None`` means "no
-# neighbour in this direction." Some neighbours are conditional on VM state (entry-details-choices
-# visible only while the per-entry edit is dirty; edit-instructions visible only when the area is
-# open); ``_resolve_neighbour`` filters those out at lookup time.
-_FOCUS_GRAPH: dict[str, dict[str, str | None]] = {
-    "cp-shared-topic-setter": {
-        "up": None,
-        "down": "cp-entry-list",
-        "left": None,
-        "right": None,
-    },
-    "cp-entry-list": {
-        "up": "cp-shared-topic-setter",
-        "down": "cp-global-choices",
-        "left": None,
-        "right": "cp-details-title",
-    },
-    "cp-details-title": {
-        "up": "cp-shared-topic-setter",
-        "down": "cp-details-content",
-        "left": "cp-entry-list",
-        "right": None,
-    },
-    "cp-details-content": {
-        "up": "cp-details-title",
-        "down": "cp-details-choices",  # falls through to global-choices if not visible
-        "left": "cp-entry-list",
-        "right": None,
-    },
-    "cp-details-choices": {
-        "up": "cp-details-content",
-        "down": "cp-global-choices",
-        "left": "cp-entry-list",
-        "right": None,
-    },
-    "cp-global-choices": {
-        "up": "cp-entry-list",
-        "down": "cp-edit-instructions",  # falls through to None if not visible
-        "left": None,
-        "right": None,
-    },
-    "cp-edit-instructions": {
-        "up": "cp-global-choices",
-        "down": None,
-        "left": None,
-        "right": None,
-    },
-}
-
-
-class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
+class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestrationMixin):
     """Parent view for the commit-proposal interrupt."""
 
     DEFAULT_CSS = """
@@ -239,6 +190,43 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         Binding("enter", "toggle_collapsed", show=False),
     ]
 
+    # Static focus graph. The fallback list on ``cp-details-content``'s ``down`` skips
+    # ``cp-details-choices`` when the per-entry edit isn't dirty (that node is gated by
+    # ``_is_node_available`` below), landing on ``cp-global-choices`` instead.
+    FOCUS_GRAPH = FocusGraph(
+        source="cp-entry-list",
+        edges={
+            "cp-shared-topic-setter": {"down": "cp-entry-list"},
+            "cp-entry-list": {
+                "up":    "cp-shared-topic-setter",
+                "down":  "cp-global-choices",
+                "right": "cp-details-title",
+            },
+            "cp-details-title": {
+                "up":   "cp-shared-topic-setter",
+                "down": "cp-details-content",
+                "left": "cp-entry-list",
+            },
+            "cp-details-content": {
+                "up":   "cp-details-title",
+                "down": ["cp-details-choices", "cp-global-choices"],
+                "left": "cp-entry-list",
+            },
+            "cp-details-choices": {
+                "up":   "cp-details-content",
+                "down": "cp-global-choices",
+                "left": "cp-entry-list",
+            },
+            "cp-global-choices": {
+                "up":   "cp-entry-list",
+                "down": "cp-edit-instructions",
+            },
+            "cp-edit-instructions": {
+                "up": "cp-global-choices",
+            },
+        },
+    )
+
     def __init__(self, vm: CommitProposalVM, *, session_factory: Any | None = None, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         # Used by the topic-picker modal. ``None`` disables the modal — useful for unit tests and
@@ -315,8 +303,10 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
     def on_mount(self) -> None:
         # ``ViewBase`` wires the vm.dirty → _refresh subscription. The CommitProposal parent itself
         # owns no rendered surface (children handle their own paint), so ``_refresh`` is a no-op.
-        # We override to land focus on the EntryList per the spec.
-        self._focus_first()
+        # We land focus on the EntryList per the spec, but only in EDITING — a re-mount after the
+        # interrupt resolves shouldn't steal focus from the chat input.
+        if self._vm.state == CommitProposalVM.State.EDITING:
+            self.focus_first()
         # Drives the programmatic entry-area↔details height pin. ``vm.details.dirty`` fires when
         # the focused entry changes or its content edits land — both can shift the details panel's
         # rendered height, which is what we're tracking.
@@ -328,16 +318,13 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
     def on_resize(self) -> None:
         self._sync_entry_area_height()
 
-    def on_focus(self, event) -> None:
-        # Bounce focus inward off the bare container — except in DONE-collapsed, where ``enter`` on
-        # the parent toggles back open and we want the binding to actually fire here.
-        super().on_focus(event)
+    def focus_first(self) -> str | None:
+        # DONE-collapsed: the parent itself stays focused so ``enter`` toggles re-expand. Skipping
+        # the inward delegation is enough — the mixin's ``on_focus`` calls this and respects the
+        # ``None`` return.
         if self._vm.state == CommitProposalVM.State.DONE and self._collapsed:
-            return
-        try:
-            self.query_one("#cp-entry-list", EntryList).focus()
-        except Exception:
-            pass
+            return None
+        return super().focus_first()
 
     def _sync_entry_area_height(self) -> None:
         # Pin entry-list-area's height to ``max(its own natural content height, details height)``
@@ -452,7 +439,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         self._collapsed = True
 
         # Tear down the editable surface. Beyond removing each node from the parent's focus graph
-        # (handled by ``_is_focus_node_available``), each widget gets ``can_focus = False`` so it
+        # (handled by ``_is_node_available``), each widget gets ``can_focus = False`` so it
         # also leaves the screen-level tab chain — important because the interrupt will resolve
         # imminently and we don't want a stale TextArea to soak up programmatic focus from the
         # chat pane's post-resolve refocus.
@@ -488,31 +475,16 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
     # Focus orchestration
     # ------------------------------------------------------------------
 
-    def _focus_first(self) -> None:
-        # ``on_mount`` runs before the VM could possibly reach DONE in practice, but guard anyway
-        # so a re-mount after resolution doesn't grab focus from the chat input.
-        if self._vm.state != CommitProposalVM.State.EDITING:
-            return
-        self.query_one("#cp-entry-list", EntryList).focus()
-
     def action_focus_neighbour(self, direction: str) -> None:
         """Hard refocus along the focus graph (``alt+arrow``). Leaves target cursors untouched."""
-        focused = self.screen.focused if self.screen is not None else None
-        source_id = self._owning_focus_node_id(focused)
-        target_id = self._resolve_neighbour(source_id, direction)
-        if target_id is None:
-            return
-        self._focus_node(target_id)
+        self.focus_neighbour(direction)  # type: ignore[arg-type]
 
     def action_navigate_cursor(self, direction: str) -> None:
         """Plain ``up``/``down`` cross-region jump — refocuses and resets the target's cursor to
         the natural entry side (top when arriving from above, bottom from below)."""
-        focused = self.screen.focused if self.screen is not None else None
-        source_id = self._owning_focus_node_id(focused)
-        target_id = self._resolve_neighbour(source_id, direction)
+        target_id = self.focus_neighbour(direction)  # type: ignore[arg-type]
         if target_id is None:
             return
-        self._focus_node(target_id)
         self._reset_target_cursor_for_continuation(target_id, direction)
 
     def _reset_target_cursor_for_continuation(self, target_id: str, direction: str) -> None:
@@ -531,31 +503,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
             widget._cursor = 0 if direction == "down" else max(0, n - 1)
             widget._refresh()
 
-    def _owning_focus_node_id(self, widget: Widget | None) -> str | None:
-        """Walk up from ``widget`` until we hit a node that's in the focus graph. Handles the case
-        where the actually-focused widget is a nested TextArea inside ``EntryDetails`` — we want to
-        identify which graph node it lives under."""
-        node: Widget | None = widget
-        while node is not None and node is not self:
-            wid = node.id
-            if wid in _FOCUS_GRAPH:
-                return wid
-            node = node.parent
-        return None
-
-    def _resolve_neighbour(self, source_id: str | None, direction: str) -> str | None:
-        if source_id is None or source_id not in _FOCUS_GRAPH:
-            return None
-        target = _FOCUS_GRAPH[source_id].get(direction)
-        # State-conditional skip: hop past nodes that are currently hidden.
-        while target is not None and not self._is_focus_node_available(target):
-            # Continue traversing in the same direction from the hidden node so we land on the
-            # first available downstream / upstream neighbour.
-            next_hop = _FOCUS_GRAPH.get(target, {}).get(direction)
-            target = next_hop
-        return target
-
-    def _is_focus_node_available(self, node_id: str) -> bool:
+    def _is_node_available(self, node_id: str) -> bool:
         # In DONE only the entry-list stays in the graph — the user browses the proposal but can't
         # edit anything. Alt+arrow traversals from the entry list dead-end at every neighbour.
         if self._vm.state == CommitProposalVM.State.DONE:
@@ -565,15 +513,6 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
         if node_id == "cp-edit-instructions":
             return self._vm.edit_instructions_visible
         return True
-
-    def _focus_node(self, node_id: str) -> None:
-        # ``EntryDetails`` is a container — its graph-id maps to two TextAreas + a ChoiceList. Map
-        # by the actual graph-node id, which is the id we put on the individual children.
-        try:
-            widget = self.query_one(f"#{node_id}", Widget)
-        except Exception:
-            return
-        widget.focus()
 
     # ------------------------------------------------------------------
     # Lifecycle actions
@@ -599,7 +538,10 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM]):
             return
         self._vm.toggle_edit_instructions_area()
         if self._vm.edit_instructions_visible:
-            self._focus_node("cp-edit-instructions")
+            try:
+                self.query_one("#cp-edit-instructions", Widget).focus()
+            except Exception:
+                pass
 
     def action_set_topic_all(self) -> None:
         if self._vm.state != CommitProposalVM.State.EDITING:

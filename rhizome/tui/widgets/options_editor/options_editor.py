@@ -7,16 +7,16 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
-from textual.widget import Widget
 
 from rhizome.app.options import OptionScope
 from rhizome.app.options_editor import OptionsEditorVM
 from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
 from rhizome.tui.widgets.options_editor.actions import OptionsEditorActions
 from rhizome.tui.widgets.options_editor.list_container import OptionsListContainer
+from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 
 
-class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM]):
+class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM], FocusOrchestrationMixin):
 
     class Dismissed(Message):
         """Public-surface dismiss request — the chat pane catches this and drops the feed
@@ -63,11 +63,19 @@ class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM]):
         Binding("alt+up", "focus_neighbour('up')"),
         Binding("alt+down", "focus_neighbour('down')"),
 
-        # Fall-through for key-events not processed by children - indicates cursor navigation at boundaries 
+        # Fall-through for key-events not processed by children - indicates cursor navigation at boundaries
         # (up from first action item, down from last option row) - translates to a focus_neighbour + set cursor.
         Binding("up", "navigate_cursor('up')", show=False),
         Binding("down", "navigate_cursor('down')", show=False),
     ]
+
+    FOCUS_GRAPH = FocusGraph(
+        source="oe-list",
+        edges={
+            "oe-list":    {"down": "oe-actions"},
+            "oe-actions": {"up":   "oe-list"},
+        },
+    )
 
     def __init__(self, vm: OptionsEditorVM, **kwargs: Any) -> None:
         super().__init__(vm, **kwargs)
@@ -123,19 +131,11 @@ class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM]):
     # ------------------------------------------------------------------
 
     def on_mount(self) -> None:
-        self._focus_first()
+        self.focus_first()
 
     def on_unmount(self) -> None:
         self.vm.detach()
         super().on_unmount()
-
-    def _focus_first(self) -> None:
-        if self.options_list:
-            self.options_list.focus()
-
-    def on_focus(self, event) -> None:
-        super().on_focus(event)
-        self._focus_first()
 
     def _refresh(self) -> None:
         # Subwidgets subscribe to vm.dirty independently, parent has no rendered surface.
@@ -169,51 +169,24 @@ class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM]):
 
     def action_focus_neighbour(self, direction: str) -> None:
         """``alt+arrow`` hard refocus across the two-node graph. Leaves cursors untouched."""
-        focused = self.screen.focused if self.screen is not None else None
-        source = self._owning_focus_node_id(focused)
-        target = self._neighbour_id(source, direction)
-        if target is not None:
-            self._focus_node(target)
+        self.focus_neighbour(direction)  # type: ignore[arg-type]
 
     def action_navigate_cursor(self, direction: str) -> None:
-        focused = self.screen.focused if self.screen is not None else None
-        source = self._owning_focus_node_id(focused)
-        target = self._neighbour_id(source, direction)
-        
-        if target == "oe-list":
-            assert self.options_list
-            if not self.options_list._option_rows:
-                return
-            self.options_list._cursor = len(self.options_list._option_rows) - 1
-            self.options_list.focus()
-        elif target == "oe-actions":
-            assert self.actions_list
-            self.actions_list._cursor = 0
-            self.actions_list.focus()
+        """Plain up/down at a boundary — move focus across nodes AND seed the target cursor so
+        the entry row matches the direction of travel (arriving from below lands at the last row;
+        arriving from above lands at the first choice)."""
+        target_id = self.focus_neighbour(direction)  # type: ignore[arg-type]
+        if target_id is None:
+            return
 
-
-    def _owning_focus_node_id(self, widget: Widget | None) -> str | None:
-        # Walk up from the focused widget until we find the scroll area or the choices footer.
-        node: Widget | None = widget
-        while node is not None and node is not self:
-            if node.id in ("oe-list", "oe-actions"):
-                return node.id
-            # An OptionSpecView is a descendant of the scroll area, but the loop's parent walk
-            # will hit oe-scroll naturally on the next iteration.
-            node = node.parent
-        return None
-    
-    def _neighbour_id(self, source: str | None, direction: str) -> str | None:
-        if source == "oe-list" and direction == "down":
-            return "oe-actions"
-        if source == "oe-actions" and direction == "up":
-            return "oe-list"
-        return None
-
-    def _focus_node(self, node_id: str, *, direction: str | None = None) -> None:
-        if node_id == "oe-list":
-            if self.options_list:
-                self.options_list.focus()
-        if node_id == "oe-actions":
-            if self.actions_list:
-                self.actions_list.focus()    
+        if target_id == "oe-list":
+            opts = self.options_list
+            if opts and opts._option_rows:
+                opts._cursor = len(opts._option_rows) - 1
+                if opts.current_option_row:
+                    opts.current_option_row.focus()
+        elif target_id == "oe-actions":
+            acts = self.actions_list
+            if acts:
+                acts._cursor = 0
+                acts._refresh()

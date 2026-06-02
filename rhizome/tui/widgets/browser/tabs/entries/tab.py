@@ -6,40 +6,18 @@ Dialog mutex: a single ``_active_dialog`` slot toggled via ``show_dialog`` / ``h
 ``prepare_for_show()`` hook, and run focus rescue (focus the new dialog, or fall back to the
 entries table on hide). State transitions auto-dismiss any open dialog.
 
-Alt-arrow navigation: the tab owns its own ``alt+arrow`` bindings; each ``action_nav_<dir>``
-resolves one step within the focus graph below via ``nav_<dir>``, and raises ``SkipAction``
-when the step has no in-graph target (or returns the ``"topic_tree"`` sentinel) so the key
-bubbles to ``Browser`` for the cross-region hop back to the panel.
+Alt-arrow navigation: the tab uses ``FocusOrchestrationMixin`` to walk its focus graph (see
+``FOCUS_GRAPH``). When a step has no in-graph target, ``action_focus_neighbour`` raises
+``SkipAction`` so the key bubbles to ``Browser`` for the cross-region hop back to the topic
+panel — that's how alt+left from search/table/dialog escapes the tab.
 
-The dialog node collapses all four dialogs to one ``"dialog"`` name.
-
-| Node                        | Widget id                          | Present when                                                  |
-|-----------------------------|------------------------------------|---------------------------------------------------------------|
-| entry_search                | search-input                       | always                                                        |
-| entry_table                 | entries-table                      | always                                                        |
-| dialog                      | currently-shown dialog             | ``_active_dialog is not None``                                |
-| entry_title                 | details-title                      | ``ENTRIES`` and not multi-select-frozen                       |
-| entry_content               | details-content                    | ``ENTRIES`` and not multi-select-frozen                       |
-| entry_modification_accept   | details-choices                    | ``ENTRIES``, not frozen, and ``details.is_dirty``             |
-| flashcard_search            | linked-flashcards-search-input     | ``LINKED_FLASHCARDS``                                         |
-| flashcard_table             | linked-flashcards-table            | ``LINKED_FLASHCARDS``                                         |
-| relink_choices              | linked-flashcards-relink-choices   | ``LINKED_FLASHCARDS`` and ``linked_flashcards.is_relink_dirty`` |
-
-Edges per direction (target gated on ``_node_present``; fall-throughs use ``or``):
-
-- alt+up:    dialog→entry_table · entry_table→entry_search · flashcard_table→flashcard_search ·
-             relink_choices→flashcard_table · entry_modification_accept→entry_content ·
-             entry_content→entry_title · entry_title→entry_search
-- alt+down:  entry_search→entry_table · flashcard_search→flashcard_table ·
-             entry_table→dialog · flashcard_table→(relink_choices or dialog) ·
-             relink_choices→dialog · entry_title→entry_content ·
-             entry_content→(entry_modification_accept or dialog) ·
-             entry_modification_accept→dialog
-- alt+left:  entry_search/entry_table/dialog→"topic_tree" sentinel · entry_title→entry_search ·
-             entry_content/entry_modification_accept→entry_table · flashcard_search→entry_search ·
-             flashcard_table/relink_choices→entry_table
-- alt+right: entry_search→entry_title (ENTRIES) / flashcard_search (LINKED_FLASHCARDS) ·
-             entry_table→entry_content (ENTRIES) / flashcard_table (LINKED_FLASHCARDS)
+The graph uses widget ids 1:1, with one pseudo-id ``"dialog"`` for the dialog mutex slot —
+``_resolve_node`` maps it to the currently-mounted dialog widget, ``_current_focus_node``
+maps a focused dialog widget back to it, and ``_is_node_available("dialog")`` gates on
+``_active_dialog is not None``. State-dependent nodes (details-* in ENTRIES,
+linked-flashcards-* in LINKED_FLASHCARDS, plus the multi-select-frozen exclusion of the
+details panel) are gated in ``_is_node_available`` as well, so the fallback lists on the right
+edges of search/entries-table resolve to whichever pane is live at the time.
 """
 
 from __future__ import annotations
@@ -66,12 +44,18 @@ from rhizome.tui.widgets.browser.tabs.entries.filter import FilterMenu
 from rhizome.tui.widgets.browser.tabs.entries.linked_flashcards_panel import LinkedFlashcardsPanel
 from rhizome.tui.widgets.browser.tabs.entries.sort import EntriesSortMenu
 from rhizome.tui.widgets.browser.tabs.entries.type_picker import TypePickerScreen
+from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 
 _DialogName = Literal["delete", "sort", "filter", "edit"]
 
 
-class EntryTab(Vertical):
+class EntryTab(Vertical, FocusOrchestrationMixin):
     """Tab container. See module docstring for the dialog mutex and focus-graph contracts."""
+
+    # Vertical's own ``can_focus = False`` (in its ``__dict__``) wins MRO over the mixin's True,
+    # so we restore it explicitly here — required for the mixin's ``on_focus`` delegation to fire
+    # when external callers focus the tab.
+    can_focus = True
 
     DEFAULT_CSS = """
     EntryTab {
@@ -249,11 +233,67 @@ class EntryTab(Vertical):
         Binding("l", "tab_toggle_relink", show=False),
         Binding("m", "tab_toggle_multi_select", show=False),
         Binding("tab", "tab_cycle_mode", show=False),
-        Binding("alt+left", "nav_left", show=False),
-        Binding("alt+right", "nav_right", show=False),
-        Binding("alt+up", "nav_up", show=False),
-        Binding("alt+down", "nav_down", show=False),
+        Binding("alt+left", "focus_neighbour('left')", show=False),
+        Binding("alt+right", "focus_neighbour('right')", show=False),
+        Binding("alt+up", "focus_neighbour('up')", show=False),
+        Binding("alt+down", "focus_neighbour('down')", show=False),
     ]
+
+    # Static focus graph. The ``"dialog"`` node is a pseudo-id that resolves to whichever dialog
+    # is currently mounted (see ``_resolve_node``); ``_current_focus_node`` maps a focused
+    # dialog widget back to it. State-dependent right-pane nodes (``details-*`` in ENTRIES,
+    # ``linked-flashcards-*`` in LINKED_FLASHCARDS) are gated in ``_is_node_available``, so the
+    # fallback lists on the right edges of search/entries-table resolve to whichever pane is live.
+    # Nodes with no ``left`` edge (search-input, entries-table, dialog) bubble via SkipAction so
+    # ``Browser`` runs the cross-region hop back to the topic panel.
+    FOCUS_GRAPH = FocusGraph(
+        source="entries-table",
+        edges={
+            "search-input": {
+                "down":  "entries-table",
+                "right": ["details-title", "linked-flashcards-table"],
+            },
+            "entries-table": {
+                "up":    "search-input",
+                "down":  "dialog",
+                "right": ["details-content", "linked-flashcards-table"],
+            },
+            "dialog": {
+                "up": "entries-table",
+            },
+            # ENTRIES right pane
+            "details-title": {
+                "up":   "search-input",
+                "down": "details-content",
+                "left": "search-input",
+            },
+            "details-content": {
+                "up":   "details-title",
+                "down": ["details-choices", "dialog"],
+                "left": "entries-table",
+            },
+            "details-choices": {
+                "up":   "details-content",
+                "down": "dialog",
+                "left": "entries-table",
+            },
+            # LINKED_FLASHCARDS right pane
+            "linked-flashcards-search-input": {
+                "down": "linked-flashcards-table",
+                "left": "search-input",
+            },
+            "linked-flashcards-table": {
+                "up":   "linked-flashcards-search-input",
+                "down": ["linked-flashcards-relink-choices", "dialog"],
+                "left": "entries-table",
+            },
+            "linked-flashcards-relink-choices": {
+                "up":   "linked-flashcards-table",
+                "down": "dialog",
+                "left": "entries-table",
+            },
+        },
+    )
 
     def __init__(
         self,
@@ -622,206 +662,70 @@ class EntryTab(Vertical):
         body.mount(self._make_right_pane(new_state))
 
     # ------------------------------------------------------------------
-    # Cross-region focus — see module docstring for the full graph table
+    # Cross-region focus — mixin walks the graph above; we just contribute the dialog-pseudo-node
+    # plumbing and the state-dependent availability gating.
     # ------------------------------------------------------------------
 
-    # Node name → focusable widget id. The dialog node is handled separately because its target
-    # depends on ``_active_dialog``.
-    _NODE_TO_WIDGET_ID: dict[str, str] = {
-        "entry_table": "entries-table",
-        "entry_search": "search-input",
-        "entry_title": "details-title",
-        "entry_content": "details-content",
-        "entry_modification_accept": "details-choices",
-        "flashcard_table": "linked-flashcards-table",
-        "flashcard_search": "linked-flashcards-search-input",
-        "relink_choices": "linked-flashcards-relink-choices",
-    }
+    def action_focus_neighbour(self, direction: str) -> None:
+        # Raise SkipAction on no-handle so the keystroke bubbles to ``Browser`` for cross-region
+        # handling (e.g., alt+left from search/table/dialog hops to the topic panel).
+        if self.focus_neighbour(direction) is None:  # type: ignore[arg-type]
+            raise SkipAction()
 
-    # Override so external ``tab.focus()`` calls land on the entries table (leftmost in the focus
-    # graph) rather than no-op'ing on the non-focusable ``Vertical`` container. Always the entries
-    # table regardless of dialog state — caller intent is "enter the tab", not "resume".
-    def focus(self, scroll_visible: bool = True) -> "EntryTab":
-        try:
-            self.query_one("#entries-table", DataTable).focus()
-        except Exception:
-            pass
-        return self
-
-    def _focused_node(self) -> str | None:
-        # All four dialogs collapse to one ``"dialog"`` node — their outgoing edges are identical.
-        focused = self.screen.focused if self.screen else None
-        if focused is None:
-            return None
-        if self._active_dialog is not None:
+    def _resolve_node(self, node_id: str) -> Widget | None:
+        # The ``"dialog"`` pseudo-node resolves to whichever of the four dialog widgets is
+        # currently mounted — the dialog mutex guarantees at most one is live at a time.
+        if node_id == "dialog":
+            if self._active_dialog is None:
+                return None
             widget_id = dict(self._DIALOG_WIDGETS)[self._active_dialog]
             try:
-                if focused is self.query_one(widget_id, Widget):
-                    return "dialog"
+                return self.query_one(widget_id, Widget)
             except Exception:
-                pass
-        fid = focused.id
-        if fid == "entries-table":
-            return "entry_table"
-        if fid == "search-input":
-            return "entry_search"
-        if fid == "details-title":
-            return "entry_title"
-        if fid == "details-content":
-            return "entry_content"
-        if fid == "details-choices":
-            return "entry_modification_accept"
-        if fid == "linked-flashcards-table":
-            return "flashcard_table"
-        if fid == "linked-flashcards-search-input":
-            return "flashcard_search"
-        if fid == "linked-flashcards-relink-choices":
-            return "relink_choices"
-        return None
+                return None
+        return super()._resolve_node(node_id)
 
-    def _node_present(self, node: str) -> bool:
-        """Whether ``node`` is in the focus graph right now. The multi-select-frozen details panel
-        is treated as absent (TextAreas are read-only, choices widget is hidden)."""
-        if node == "dialog":
+    def _current_focus_node(self) -> str | None:
+        # Map a focused dialog widget back to the ``"dialog"`` graph node. Matches the original
+        # equality-only behavior: focus on a dialog child (e.g. the filter dialog's inputs) is
+        # NOT treated as "in dialog" — it falls through and the keystroke bubbles, same as before.
+        if self._active_dialog is not None:
+            focused = self.screen.focused if self.screen else None
+            if focused is not None:
+                widget_id = dict(self._DIALOG_WIDGETS)[self._active_dialog]
+                try:
+                    if focused is self.query_one(widget_id, Widget):
+                        return "dialog"
+                except Exception:
+                    pass
+        return super()._current_focus_node()
+
+    def _is_node_available(self, node_id: str) -> bool:
+        # Multi-select-frozen details panel is treated as absent (TextAreas are read-only, choices
+        # widget is hidden). Otherwise gating follows the layout: details-* live in ENTRIES,
+        # linked-flashcards-* live in LINKED_FLASHCARDS, and the bottom-most edit nodes
+        # (-choices / relink-choices) additionally require a dirty buffer.
+        if node_id == "dialog":
             return self._active_dialog is not None
         state = self._vm.state
         frozen = self._vm.multi_select_active
-        if node in ("entry_title", "entry_content"):
+        if node_id in ("details-title", "details-content"):
             return state is self._vm.State.ENTRIES and not frozen
-        if node == "entry_modification_accept":
+        if node_id == "details-choices":
             return (
                 state is self._vm.State.ENTRIES
                 and not frozen
                 and self._vm.details.is_dirty
             )
-        if node in ("flashcard_table", "flashcard_search"):
+        if node_id in ("linked-flashcards-table", "linked-flashcards-search-input"):
             return state is self._vm.State.LINKED_FLASHCARDS
-        if node == "relink_choices":
+        if node_id == "linked-flashcards-relink-choices":
             return (
                 state is self._vm.State.LINKED_FLASHCARDS
                 and self._vm.linked_flashcards.is_relink_dirty
             )
-        # entry_table / entry_search are always present.
-        return node in ("entry_table", "entry_search")
-
-    def _focus_node(self, node: str) -> bool:
-        """Focus ``node``'s widget. Returns False (no focus call) when the node is absent."""
-        if not self._node_present(node):
-            return False
-        if node == "dialog":
-            assert self._active_dialog is not None  # implied by _node_present
-            widget_id = dict(self._DIALOG_WIDGETS)[self._active_dialog]
-            try:
-                self.query_one(widget_id, Widget).focus()
-                return True
-            except Exception:
-                return False
-        target_id = self._NODE_TO_WIDGET_ID[node]
-        try:
-            self.query_one(f"#{target_id}").focus()
-            return True
-        except Exception:
-            return False
-
-    # Action wrappers: bubble (via SkipAction) on no-handle so ``Browser`` can run the
-    # cross-region fall-through for ``alt+left``/``alt+right``. ``nav_left`` returning the
-    # ``"topic_tree"`` sentinel is also a bubble-up — the orchestrator owns the panel-jump.
-
-    def action_nav_left(self) -> None:
-        result = self.nav_left()
-        if result is False or result == "topic_tree":
-            raise SkipAction()
-
-    def action_nav_right(self) -> None:
-        if not self.nav_right():
-            raise SkipAction()
-
-    def action_nav_up(self) -> None:
-        if not self.nav_up():
-            raise SkipAction()
-
-    def action_nav_down(self) -> None:
-        if not self.nav_down():
-            raise SkipAction()
-
-    def nav_up(self) -> bool:
-        node = self._focused_node()
-        if node is None or not self._node_present(node):
-            return False
-        if node == "dialog":
-            return self._focus_node("entry_table")
-        if node == "entry_table":
-            return self._focus_node("entry_search")
-        if node == "flashcard_table":
-            return self._focus_node("flashcard_search")
-        if node == "relink_choices":
-            return self._focus_node("flashcard_table")
-        if node == "entry_modification_accept":
-            return self._focus_node("entry_content")
-        if node == "entry_content":
-            return self._focus_node("entry_title")
-        if node == "entry_title":
-            return self._focus_node("entry_search")
-        return False
-
-    def nav_down(self) -> bool:
-        node = self._focused_node()
-        if node is None or not self._node_present(node):
-            return False
-        if node == "entry_search":
-            return self._focus_node("entry_table")
-        if node == "flashcard_search":
-            return self._focus_node("flashcard_table")
-        if node == "entry_table":
-            return self._focus_node("dialog")
-        if node == "flashcard_table":
-            # Mirrors entry_content: accept/cancel wins while dirty, else fall through to dialog.
-            return self._focus_node("relink_choices") or self._focus_node("dialog")
-        if node == "relink_choices":
-            return self._focus_node("dialog")
-        if node == "entry_title":
-            return self._focus_node("entry_content")
-        if node == "entry_content":
-            return self._focus_node("entry_modification_accept") or self._focus_node("dialog")
-        if node == "entry_modification_accept":
-            return self._focus_node("dialog")
-        return False
-
-    def nav_left(self) -> bool | str:
-        """Returns ``"topic_tree"`` sentinel for edges that escape the tab, otherwise a bool."""
-        node = self._focused_node()
-        if node is None or not self._node_present(node):
-            return False
-        if node in ("entry_search", "entry_table", "dialog"):
-            return "topic_tree"
-        if node == "entry_title":
-            return self._focus_node("entry_search")
-        if node in ("entry_content", "entry_modification_accept"):
-            return self._focus_node("entry_table")
-        if node == "flashcard_search":
-            return self._focus_node("entry_search")
-        if node == "flashcard_table":
-            return self._focus_node("entry_table")
-        if node == "relink_choices":
-            return self._focus_node("entry_table")
-        return False
-
-    def nav_right(self) -> bool:
-        node = self._focused_node()
-        if node is None or not self._node_present(node):
-            return False
-        state = self._vm.state
-        if node == "entry_search":
-            if state is self._vm.State.ENTRIES:
-                return self._focus_node("entry_title")
-            if state is self._vm.State.LINKED_FLASHCARDS:
-                return self._focus_node("flashcard_table")
-        if node == "entry_table":
-            if state is self._vm.State.ENTRIES:
-                return self._focus_node("entry_content")
-            if state is self._vm.State.LINKED_FLASHCARDS:
-                return self._focus_node("flashcard_table")
-        return False
+        # entries-table / search-input — always available
+        return True
 
     # ------------------------------------------------------------------
     # Edit-dialog choice dispatch — called from EditMenu with the chosen label

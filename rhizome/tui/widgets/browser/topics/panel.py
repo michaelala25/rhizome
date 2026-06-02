@@ -16,17 +16,18 @@ with a horizontal scrollbar when nodes overflow. ``-actions-expanded`` is set at
 focus-driven auto-toggle that used to widen the rail is retired — the class remains as a skeleton
 hook (see ``ActionMenu._set_pane_expanded``) but no automatic state-flipping happens on navigation.
 
-Alt-arrow navigation: the panel owns its own ``alt+arrow`` bindings and resolves one step within
-its focus graph via ``nav_<dir>``. When a step has no in-graph target, the action raises
+Alt-arrow navigation: the panel uses ``FocusOrchestrationMixin`` to walk its focus graph (see
+``FOCUS_GRAPH``). When a step has no in-graph target, ``action_focus_neighbour`` raises
 ``SkipAction`` so the key bubbles to ``Browser`` for cross-region handling (e.g., ``alt+right``
 at the rightmost panel widget hops into the active tab).
 
 Focus graph (alt-arrows):
 
-  * alt+down:  tree → details_name → details_description → details_accept (when dirty)
-  * alt+up:    reverse — details_accept → details_description → details_name → tree
-  * alt+left:  tree → actions; details fields → no-op (leftmost)
-  * alt+right: actions → tree; details fields → no-op (caller hops to active tab)
+  * alt+down:  topic-tree → (delete-dialog if active, else topic-details-name) →
+               topic-details-description → topic-details-choices (when dirty)
+  * alt+up:    reverse path
+  * alt+left:  topic-tree → browser-tree-actions; details fields → bubble (caller stays in panel)
+  * alt+right: browser-tree-actions → topic-tree; details fields → bubble (caller hops into tab)
 """
 
 from __future__ import annotations
@@ -45,13 +46,19 @@ from rhizome.tui.widgets.browser.topics.tree import TopicTree
 from rhizome.tui.widgets.browser.topics.actions import ActionMenu
 from rhizome.tui.widgets.browser.topics.delete import TopicsDeleteMenu
 from rhizome.tui.widgets.browser.topics.details import TopicDetails
+from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 from rhizome.app.browser.topics.panel import TopicTreePanelVM
 
 _logger = get_logger("browser.topic_tree_panel")
 
 
-class TopicTreePanel(Vertical):
+class TopicTreePanel(Vertical, FocusOrchestrationMixin):
     """View for ``TopicTreePanelVM``. See module docstring."""
+
+    # Vertical's own ``can_focus = False`` (in its ``__dict__``) wins MRO over the mixin's True,
+    # so we restore it explicitly here — required for the mixin's ``on_focus`` delegation to fire
+    # when external callers focus the panel.
+    can_focus = True
 
     DEFAULT_CSS = """
     /* Panel takes a proportional slice of ``Browser`` (sibling to ``#browser-right-tab``'s
@@ -96,16 +103,47 @@ class TopicTreePanel(Vertical):
     """
 
     BINDINGS = [
-        Binding("alt+left", "nav_left", show=False),
-        Binding("alt+right", "nav_right", show=False),
-        Binding("alt+up", "nav_up", show=False),
-        Binding("alt+down", "nav_down", show=False),
+        Binding("alt+left", "focus_neighbour('left')", show=False),
+        Binding("alt+right", "focus_neighbour('right')", show=False),
+        Binding("alt+up", "focus_neighbour('up')", show=False),
+        Binding("alt+down", "focus_neighbour('down')", show=False),
         Binding("r", "rename", show=False),
         # ``c`` creates under the cursor (``(root)`` cursor → no parent); ``shift+c`` always at root.
         Binding("c", "create", show=False),
         Binding("shift+c", "create_root", show=False),
         Binding("d", "delete", show=False),
     ]
+
+    # Static focus graph. Tree-down has a two-element fallback so when ``-deleting`` is active the
+    # delete dialog wins (gated by ``has_class("-deleting")`` in ``_is_node_available``), otherwise
+    # focus lands on the topic-name field — which is itself gated on ``details.topic is not None``,
+    # so an empty cursor (``(root)`` row) just skips the details branch entirely.
+    FOCUS_GRAPH = FocusGraph(
+        source="topic-tree",
+        edges={
+            "topic-tree": {
+                "left": "browser-tree-actions",
+                "down": ["browser-topic-delete", "topic-details-name"],
+            },
+            "browser-tree-actions": {
+                "right": "topic-tree",
+            },
+            "topic-details-name": {
+                "up":   "topic-tree",
+                "down": "topic-details-description",
+            },
+            "topic-details-description": {
+                "up":   "topic-details-name",
+                "down": "topic-details-choices",
+            },
+            "topic-details-choices": {
+                "up": "topic-details-description",
+            },
+            "browser-topic-delete": {
+                "up": "topic-tree",
+            },
+        },
+    )
 
     def __init__(self, view_model: TopicTreePanelVM, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -128,7 +166,7 @@ class TopicTreePanel(Vertical):
         yield Static("Topics", id="browser-tree-title")
         with Horizontal(id="browser-tree-body"):
             yield ActionMenu(id="browser-tree-actions")
-            yield TopicTree(self._vm.tree)
+            yield TopicTree(self._vm.tree, id="topic-tree")
         yield TopicDetails(self._vm.details, id="browser-topic-details")
         yield TopicsDeleteMenu(id="browser-topic-delete")
 
@@ -185,7 +223,7 @@ class TopicTreePanel(Vertical):
     ) -> None:
         # "Rename" is just a shortcut to the name field in the details panel — the buffered-edit
         # flow there already handles the commit. No-ops if no topic is loaded.
-        self._focus_details_node("name")
+        self.action_rename()
 
     def on_action_menu_view_create_requested(
         self, event: ActionMenu.CreateRequested
@@ -237,30 +275,40 @@ class TopicTreePanel(Vertical):
     def _end_delete(self) -> None:
         self._delete_target_id = None
         self.remove_class("-deleting")
-        self.focus_tree()
+        try:
+            self.query_one("#topic-tree").focus()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
-    # Alt-arrow nav — actions wrap the in-graph resolvers and bubble on no-handle
+    # Alt-arrow nav — mixin handles the graph walk; we just bubble on no-handle so the keystroke
+    # can reach ``Browser`` for cross-region handling (e.g., alt+right at the rightmost panel
+    # widget hops into the active tab).
     # ------------------------------------------------------------------
 
-    def action_nav_left(self) -> None:
-        if not self.nav_left():
+    def action_focus_neighbour(self, direction: str) -> None:
+        if self.focus_neighbour(direction) is None:  # type: ignore[arg-type]
             raise SkipAction()
 
-    def action_nav_right(self) -> None:
-        if not self.nav_right():
-            raise SkipAction()
-
-    def action_nav_up(self) -> None:
-        if not self.nav_up():
-            raise SkipAction()
-
-    def action_nav_down(self) -> None:
-        if not self.nav_down():
-            raise SkipAction()
+    def _is_node_available(self, node_id: str) -> bool:
+        # Tree + actions are always available. The delete dialog only competes for the tree-down
+        # slot while the panel is in ``-deleting`` state, and the details fields require a
+        # selected topic; ``-choices`` additionally requires a dirty buffer.
+        if node_id == "browser-topic-delete":
+            return self.has_class("-deleting")
+        if node_id in ("topic-details-name", "topic-details-description"):
+            return self._vm.details.topic is not None
+        if node_id == "topic-details-choices":
+            return self._vm.details.is_dirty
+        return True
 
     def action_rename(self) -> None:
-        self._focus_details_node("name")
+        if self._vm.details.topic is None:
+            return
+        try:
+            self.query_one("#topic-details-name").focus()
+        except Exception:
+            pass
 
     def action_create(self) -> None:
         # Cursor on ``(root)`` → ``cursor_topic_id is None`` → create at root level.
@@ -286,126 +334,3 @@ class TopicTreePanel(Vertical):
         except Exception:
             return
         await tree_view.add_created_topic(topic)
-
-    # Override so external ``panel.focus()`` calls land on the tree rather than no-op'ing on the
-    # non-focusable ``Vertical`` container.
-    def focus(self, scroll_visible: bool = True) -> "TopicTreePanel":
-        self.focus_tree()
-        return self
-
-    def focus_tree(self) -> None:
-        self._focus_widget("TopicTree")
-
-    def nav_left(self) -> bool:
-        node = self._focused_node()
-        if node == "tree":
-            return self._focus_widget("ActionMenu")
-        # Actions / details fields → leftmost edge (no-op; caller stays in panel).
-        return False
-
-    def nav_right(self) -> bool:
-        node = self._focused_node()
-        if node == "actions":
-            self.focus_tree()
-            return True
-        # tree / details fields → False → caller (Browser) advances into the active tab.
-        return False
-
-    def nav_down(self) -> bool:
-        node = self._focused_node()
-        if node == "tree":
-            # The delete dialog takes over the bottom slot while ``-deleting`` is active.
-            if self._delete_active():
-                return self._focus_delete_dialog()
-            return self._focus_details_node("name")
-        if node == "details_name":
-            return self._focus_details_node("description")
-        if node == "details_description":
-            return self._focus_details_node("accept")
-        # actions / details_accept / delete_dialog → no further down step.
-        return False
-
-    def nav_up(self) -> bool:
-        node = self._focused_node()
-        if node == "delete_dialog":
-            self.focus_tree()
-            return True
-        if node == "details_accept":
-            return self._focus_details_node("description")
-        if node == "details_description":
-            return self._focus_details_node("name")
-        if node == "details_name":
-            self.focus_tree()
-            return True
-        # tree / actions → no row above the body / details.
-        return False
-
-    # ------------------------------------------------------------------
-    # Focus probes + dispatch
-    # ------------------------------------------------------------------
-
-    _DETAILS_NODE_IDS: dict[str, str] = {
-        "name": "topic-details-name",
-        "description": "topic-details-description",
-        "accept": "topic-details-choices",
-    }
-
-    def _focused_node(self) -> str | None:
-        focused = self.screen.focused if self.screen else None
-        if focused is None:
-            return None
-        fid = focused.id
-        if fid == "browser-topic-delete":
-            return "delete_dialog"
-        if fid == "topic-details-name":
-            return "details_name"
-        if fid == "topic-details-description":
-            return "details_description"
-        if fid == "topic-details-choices":
-            return "details_accept"
-        if self._focus_is_in_widget("TopicTree"):
-            return "tree"
-        if self._focus_is_in_widget("ActionMenu"):
-            return "actions"
-        return None
-
-    def _delete_active(self) -> bool:
-        return self.has_class("-deleting")
-
-    def _focus_delete_dialog(self) -> bool:
-        try:
-            self.query_one(TopicsDeleteMenu).focus()
-            return True
-        except Exception:
-            return False
-
-    def _focus_details_node(self, key: str) -> bool:
-        # ``accept`` is conditional on ``is_dirty`` — present in the graph only while the choices
-        # row is rendered (``.-visible`` toggled in TopicDetails._refresh).
-        if key == "accept" and not self._vm.details.is_dirty:
-            return False
-        if key in ("name", "description") and self._vm.details.topic is None:
-            return False
-        widget_id = self._DETAILS_NODE_IDS[key]
-        try:
-            self.query_one(f"#{widget_id}").focus()
-            return True
-        except Exception:
-            return False
-
-    def _focus_widget(self, type_name: str) -> bool:
-        try:
-            self.query_one(type_name).focus()
-            return True
-        except Exception:
-            return False
-
-    def _focus_is_in_widget(self, type_name: str) -> bool:
-        focused = self.screen.focused if self.screen else None
-        if focused is None:
-            return False
-        try:
-            target = self.query_one(type_name)
-        except Exception:
-            return False
-        return focused is target or target in focused.ancestors_with_self

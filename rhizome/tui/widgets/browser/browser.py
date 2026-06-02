@@ -26,6 +26,7 @@ from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab
 from rhizome.app.browser.tab_base import BrowserTabVM
 from rhizome.tui.widgets.browser.topics.panel import TopicTreePanel
 from rhizome.tui.widgets.navigable_feed_item_view_base import NavigableFeedItemViewBase
+from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 from rhizome.app.browser.browser import BrowserVM
 
 _logger = get_logger("browser.view")
@@ -42,7 +43,7 @@ def _view_for_tab(tab_vm: BrowserTabVM):
     )
 
 
-class Browser(NavigableFeedItemViewBase[BrowserVM]):
+class Browser(NavigableFeedItemViewBase[BrowserVM], FocusOrchestrationMixin):
     """Takes a caller-constructed ``BrowserVM`` and drives it through its mount lifecycle.
 
     ``await self._vm.start()`` runs from ``on_mount`` after Textual finishes mounting children — by
@@ -86,12 +87,12 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         # Cross-region fall-through only — fires when the focused region's own alt+arrow action
         # raised SkipAction (i.e., the step had no in-graph target). Up/down have no cross-region
         # meaning, so they're left for the regions alone.
-        Binding("alt+right", "nav_right", show=False),
-        Binding("alt+left", "nav_left", show=False),
+        Binding("alt+right", "focus_neighbour('right')", show=False),
+        Binding("alt+left", "focus_neighbour('left')", show=False),
     ]
 
     def compose(self):
-        yield TopicTreePanel(self._vm.panel)
+        yield TopicTreePanel(self._vm.panel, id="topic-tree-panel")
         with Vertical(id="browser-right-tab"):
             yield Static("", id="browser-tab-bar")
             initial_id = self._tab_widget_id(self._vm.active_index)
@@ -106,25 +107,6 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         self._refresh()
         await self._vm.start()
         self.focus()
-
-    def on_focus(self, event) -> None:
-        # Bounce focus inward off the bare container onto the topic panel. No ``super()`` call —
-        # Textual auto-dispatches ``on_focus`` at every MRO level, so ``ViewBase.on_focus`` (VM
-        # notify) and ``NavigableFeedItemViewBase.on_focus`` (inline border sync) already fire on
-        # their own. An explicit ``super().on_focus(event)`` here double-fires them.
-        panel = self._panel_view()
-        if panel is not None:
-            panel.focus()
-
-    # Browser is a composite — focus belongs on its inner regions, not the outer container. Route
-    # external focus requests (including the ``vm.focus → self.focus`` subscription wired by
-    # ``ViewBase``) through the panel, which in turn lands focus on the topic tree via its own
-    # ``focus()`` override.
-    def focus(self, scroll_visible: bool = True) -> "Browser":
-        panel = self._panel_view()
-        if panel is not None:
-            panel.focus()
-        return self
 
     # ------------------------------------------------------------------
     # Focus-within tracking — inline ``styles.border`` on the right tab (no CSS class involved)
@@ -205,65 +187,36 @@ class Browser(NavigableFeedItemViewBase[BrowserVM]):
         self._vm.prev_tab()
 
     # ------------------------------------------------------------------
-    # Cross-region focus graph — two nodes (panel, tab), two edges (panel ↔ tab)
+    # Cross-region focus graph — two nodes (panel, active tab), two edges (panel ↔ tab)
     # ------------------------------------------------------------------
     #
-    # These actions only fire when the focused region's own ``alt+arrow`` action bubbled (raised
-    # ``SkipAction``) because the step had no in-graph next step. Up/down have no cross-region
+    # The action fires when a focused region's own ``alt+arrow`` returned None and raised
+    # ``SkipAction`` because the step had no in-graph next step. Up/down have no cross-region
     # meaning, so they aren't bound here at all.
 
-    def action_nav_left(self) -> None:
-        if not self.nav_left():
+    def action_focus_neighbour(self, direction: str) -> None:
+        if self.focus_neighbour(direction) is None:  # type: ignore[arg-type]
             raise SkipAction()
 
-    def action_nav_right(self) -> None:
-        if not self.nav_right():
-            raise SkipAction()
+    # Graph is dynamic in ``vm.tabs``: ``topic-tree-panel`` right → every tab id as a fallback
+    # candidate, and ``_is_node_available`` keeps only the one ContentSwitcher currently shows.
+    # Each tab's left always points back to the panel. When tab count is 1 the fallback list is
+    # degenerate, but the shape is correct as soon as more tab VMs are added.
+    def _get_focus_graph(self) -> FocusGraph:
+        tab_ids = [self._tab_widget_id(i) for i in range(len(self._vm.tabs))]
+        edges: dict[str, dict[str, str | list[str]]] = {
+            "topic-tree-panel": {"right": tab_ids},
+        }
+        for tid in tab_ids:
+            edges[tid] = {"left": "topic-tree-panel"}
+        return FocusGraph(source="topic-tree-panel", edges=edges)
 
-    def nav_left(self) -> bool:
-        if self._focused_node() == "tab":
-            return self._focus_node("panel")
-        return False
-
-    def nav_right(self) -> bool:
-        if self._focused_node() == "panel":
-            return self._focus_node("tab")
-        return False
-
-    # ------------------------------------------------------------------
-    # Focus probes
-    # ------------------------------------------------------------------
-
-    def _focused_node(self) -> str | None:
-        focused = self.screen.focused if self.screen else None
-        if focused is None:
-            return None
-        panel = self._panel_view()
-        if panel is not None and (focused is panel or panel in focused.ancestors_with_self):
-            return "panel"
-        tab = self._active_tab_view()
-        if tab is not None and (focused is tab or tab in focused.ancestors_with_self):
-            return "tab"
-        return None
-
-    def _focus_node(self, node: str) -> bool:
-        """Focus the named region. Each region's own ``focus()`` override routes to the right
-        inner widget (panel → topic tree, tab → entries table)."""
-        target = self._panel_view() if node == "panel" else self._active_tab_view()
-        if target is None:
+    def _is_node_available(self, node_id: str) -> bool:
+        # Panel always available. Tab nodes are gated by whichever the ContentSwitcher is showing.
+        if node_id == "topic-tree-panel":
+            return True
+        try:
+            switcher = self.query_one("#browser-tab-area", ContentSwitcher)
+        except Exception:
             return False
-        target.focus()
-        return True
-
-    def _panel_view(self) -> TopicTreePanel | None:
-        try:
-            return self.query_one(TopicTreePanel)
-        except Exception:
-            return None
-
-    def _active_tab_view(self):
-        target_id = self._tab_widget_id(self._vm.active_index)
-        try:
-            return self.query_one(f"#{target_id}")
-        except Exception:
-            return None
+        return node_id == switcher.current
