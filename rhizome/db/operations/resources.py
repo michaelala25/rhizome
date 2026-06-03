@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from rhizome.logs import get_logger
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -97,6 +99,56 @@ async def list_resources(session: AsyncSession) -> list[Resource]:
         select(Resource).order_by(Resource.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+def _apply_resource_pool_filters(stmt, *, exclude_ids: Iterable[int] | None, search: str | None):
+    """Apply the shared (exclude_ids, search) filter to a SELECT on Resource. Shared by the windowed
+    and count variants of the linker's pool query so the count matches the window exactly.
+
+    ``exclude_ids`` drops resources already linked to the topic (they belong in the linker's pinned
+    section, not the pool); ``None`` or empty means no exclusion. ``search`` is a case-insensitive
+    LIKE against name + summary."""
+    if exclude_ids is not None:
+        excl = list(exclude_ids)
+        if excl:
+            stmt = stmt.where(~Resource.id.in_(excl))
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(or_(Resource.name.ilike(pattern), Resource.summary.ilike(pattern)))
+    return stmt
+
+
+async def list_resources_paginated(
+    session: AsyncSession,
+    *,
+    exclude_ids: Iterable[int] | None = None,
+    search: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[Resource]:
+    """A window of resources, optionally excluding a set of ids and narrowed by a name/summary search.
+
+    The linker's "remaining pool" query: every resource not already linked to the current topic
+    (``exclude_ids`` carries the linked-ids set). Stable order by name."""
+    stmt = _apply_resource_pool_filters(select(Resource), exclude_ids=exclude_ids, search=search)
+    stmt = stmt.order_by(Resource.name).limit(limit).offset(offset)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def count_resources(
+    session: AsyncSession,
+    *,
+    exclude_ids: Iterable[int] | None = None,
+    search: str | None = None,
+) -> int:
+    """Count companion to ``list_resources_paginated``; shares the filter helper so the count matches
+    the window exactly."""
+    stmt = _apply_resource_pool_filters(
+        select(func.count()).select_from(Resource), exclude_ids=exclude_ids, search=search,
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()
 
 
 async def delete_resource(
