@@ -2,6 +2,9 @@
 from .view_base import ViewBase
 from rhizome.app.vm import CallbackGroup, Emitter, ViewModelBase
 
+# Shared widgets
+from .shared.topic_tree import TopicTree
+
 # Legacy widgets (in-place re-exports — sourced from .legacy)
 from .legacy.agent_message_harness import AgentMessageHarness
 from .legacy.chat_input import ChatInput
@@ -26,7 +29,6 @@ from .legacy.resource.viewer import ResourceViewer
 from .legacy.status_bar import StatusBar
 from .legacy.thinking import Spinner, ThinkingIndicator
 from .legacy.tool_call_list import ToolCallList
-from .legacy.topic_tree import TopicTree
 from .legacy.welcome import WelcomeHeader
 
 # Kept-in-place (slated for rewrite but still wired into both legacy and new code paths)
