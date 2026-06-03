@@ -42,8 +42,6 @@ that buffer.
 
 from __future__ import annotations
 
-from typing import Any
-
 from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -234,11 +232,11 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         },
     )
 
-    def __init__(self, vm: CommitProposalVM, *, session_factory: Any | None = None, **kwargs) -> None:
+    def __init__(self, vm: CommitProposalVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
-        # Used by the topic-picker modal. ``None`` disables the modal — useful for unit tests and
-        # for the ``/test-commit-proposal`` slash command which doesn't need real topic data.
-        self._session_factory = session_factory
+        # Carried on the VM. Used by the topic-picker modal; ``None`` disables it — useful for unit
+        # tests and the ``/test-commit-proposal`` slash command which doesn't need real topic data.
+        self._session_factory = vm.session_factory
 
         # DONE-state display flag, owned entirely by the view. Defaults to False; the EDITING→DONE
         # transition in ``_refresh`` flips it to True on first observation (and never again from

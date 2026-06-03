@@ -43,8 +43,12 @@ class CommitProposalVM(ViewModelBase):
         EDITING = auto()
         DONE = auto()
 
-    def __init__(self, entries: list[Entry]) -> None:
+    def __init__(self, entries: list[Entry], *, session_factory=None) -> None:
         super().__init__()
+
+        # Carried for the view's topic-picker modal (the VM doesn't use it itself). ``None`` disables
+        # the modal — useful for unit tests and the ``/test-commit-proposal`` slash command.
+        self.session_factory = session_factory
 
         # Snapshot for ``reset()``. We clone on both the snapshot and the working list so neither
         # aliases the caller's input — mutations on entries are entirely VM-internal.

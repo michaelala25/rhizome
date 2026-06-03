@@ -24,11 +24,13 @@ from textual.widgets import Static
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 _DIM = "rgb(100,100,100)"
 _ANSWERED = "rgb(100,200,100)"
 
 
+@register_feed_view(MultiUserChoicesVM)
 class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
     """Three-region projection of ``MultiUserChoicesVM``: tab bar, prompt, options block, hint.
 

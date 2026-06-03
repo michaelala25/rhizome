@@ -17,12 +17,14 @@ from textual.widgets import Static
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 _AMBER = "rgb(220,160,50)"
 _GREEN = "rgb(100,200,100)"
 _DIM = "rgb(100,100,100)"
 
 
+@register_feed_view(WarningUserChoicesVM)
 class WarningUserChoices(NavigableFeedItemViewBase[WarningUserChoicesVM]):
     """Amber warning header + numbered options + cancel hint. On resolution collapses to a one-line
     ``⚠  <message> → <selected>`` summary. Ctrl+C cancels the pending future and is consumed in

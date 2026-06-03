@@ -12,12 +12,14 @@ from textual.widgets import Static
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
 _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _TICK_RATE = 0.1
 
 
+@register_feed_view(ThinkingIndicatorVM)
 class ThinkingIndicator(ViewBase[ThinkingIndicatorVM]):
     """Braille-spinner with a 'thinking...' label."""
 

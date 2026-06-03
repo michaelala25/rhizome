@@ -9,8 +9,10 @@ carries ``InterruptVMBase`` surface for any future hooks).
 from __future__ import annotations
 
 from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.tui.widgets.flashcard_proposal.view import FlashcardProposal
 
 
+@register_feed_view(FlashcardProposalInterruptVM)
 class FlashcardProposalInterrupt(FlashcardProposal):
     _vm: FlashcardProposalInterruptVM  # type: ignore[assignment]

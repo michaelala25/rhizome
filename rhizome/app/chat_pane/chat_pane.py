@@ -25,7 +25,7 @@ from rhizome.resources.manager import ResourceManager
 from rhizome.app.resource_viewer import ResourceViewerVM
 from rhizome.app.command_registry import CommandRegistry
 from rhizome.app.options import Options
-from rhizome.tui.types import ChatMessageData, Mode, Role
+from rhizome.tui.types import Mode, Role
 
 from rhizome.app.browser.browser import BrowserVM
 from rhizome.app.options_editor import OptionsEditorVM
@@ -48,13 +48,14 @@ from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposa
 from rhizome.app.commit_proposal import Entry, EntryType
 from rhizome.app.flashcard_proposal import Flashcard
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
+from rhizome.app.chat_pane.messages.static import ChatMessageVM
 from rhizome.app.chat_pane.status import StatusBarVM
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
 from rhizome.app.chat_pane.messages.tool import ToolMessageVM
 
 
 FeedEntry = (
-    ChatMessageData
+    ChatMessageVM
     | AgentMessageVM
     | ToolMessageVM
     | ThinkingIndicatorVM
@@ -361,9 +362,9 @@ class ChatPaneVM(ViewModelBase):
           the chat input — completing a single-key round-trip out of the feed.
         - With no navigable entries: no-op.
         """
-        # ``getattr`` guard: ``ChatMessageData`` (a plain dataclass) lives in the feed alongside VMs
-        # and doesn't inherit ``is_navigable`` from ``ViewModelBase``.
-        navigables = [item for item in self.visible_feed if getattr(item.entry, "is_navigable", False)]
+        # Every feed entry is a VM, so ``is_navigable`` (defaulting to False on ``ViewModelBase``) is
+        # always present — only interrupts flip it on.
+        navigables = [item for item in self.visible_feed if item.entry.is_navigable]
         if not navigables:
             return
 
@@ -498,7 +499,7 @@ class ChatPaneVM(ViewModelBase):
 
     def append_message(
         self,
-        msg: ChatMessageData,
+        msg: ChatMessageVM,
         *,
         include_in_agent_context: bool = True,
         cursor: ConversationGraphCursor | None = None,
@@ -530,12 +531,12 @@ class ChatPaneVM(ViewModelBase):
         tail_entry = visible[-1].entry if visible else None
         if (
             msg.role == Role.SYSTEM
-            and isinstance(tail_entry, ChatMessageData)
+            and isinstance(tail_entry, ChatMessageVM)
             and tail_entry.role == Role.SYSTEM
             and tail_entry.content == msg.content
         ):
             # TODO: ping the existing entry. Will likely flow through a per-entry dirty once
-            # ChatMessageData (or a wrapping sub-VM) owns its own emit channel.
+            # ChatMessageVM owns its own emit channel.
             return
 
         self._append_feed(msg, cursor=target)
@@ -712,10 +713,10 @@ class ChatPaneVM(ViewModelBase):
             return
 
         if self.agent_session is None:
-            self.append_message(ChatMessageData(role=Role.ERROR, content="Agent session not bootstrapped."))
+            self.append_message(ChatMessageVM(role=Role.ERROR, content="Agent session not bootstrapped."))
             return
 
-        self.append_message(ChatMessageData(role=Role.USER, content=user_text))
+        self.append_message(ChatMessageVM(role=Role.USER, content=user_text))
         self._start_agent_turn()
 
     def _start_agent_turn(self) -> None:
@@ -773,7 +774,7 @@ class ChatPaneVM(ViewModelBase):
 
         except asyncio.CancelledError:
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content="(user cancelled)"),
+                ChatMessageVM(role=Role.SYSTEM, content="(user cancelled)"),
                 cursor=pinned_cursor,
             )
             raise
@@ -781,7 +782,7 @@ class ChatPaneVM(ViewModelBase):
         except Exception as exc:  # noqa: BLE001 — surface stream errors as ERROR messages
             if pinned_node.current_router is router:
                 self.append_message(
-                    ChatMessageData(role=Role.ERROR, content=f"Agent error: {exc}"),
+                    ChatMessageVM(role=Role.ERROR, content=f"Agent error: {exc}"),
                     cursor=pinned_cursor,
                 )
 
@@ -843,7 +844,7 @@ class ChatPaneVM(ViewModelBase):
         if self.session_mode == mode:
             if not silent:
                 self.append_message(
-                    ChatMessageData(role=Role.SYSTEM, content=f"Already in {mode.value} mode.")
+                    ChatMessageVM(role=Role.SYSTEM, content=f"Already in {mode.value} mode.")
                 )
             return
 
@@ -870,7 +871,7 @@ class ChatPaneVM(ViewModelBase):
             if not silent:
                 # Feed-only: set_pending_user_mode handles the agent side when the queue drains.
                 self.append_message(
-                    ChatMessageData(role=Role.SYSTEM, content=message, mode=mode),
+                    ChatMessageVM(role=Role.SYSTEM, content=message, mode=mode),
                     include_in_agent_context=False,
                 )
         else:
@@ -879,7 +880,7 @@ class ChatPaneVM(ViewModelBase):
                 for session in self._all_sessions():
                     session.add_system_notification(message)
             else:
-                self.append_message(ChatMessageData(role=Role.SYSTEM, content=message, mode=mode))
+                self.append_message(ChatMessageVM(role=Role.SYSTEM, content=message, mode=mode))
 
         self.emit(self.dirty)
 
@@ -1362,7 +1363,7 @@ class ChatPaneVM(ViewModelBase):
         ]
         if not selectable:
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content="No selectable messages to commit."),
+                ChatMessageVM(role=Role.SYSTEM, content="No selectable messages to commit."),
                 include_in_agent_context=False,
             )
             return
@@ -1448,14 +1449,14 @@ class ChatPaneVM(ViewModelBase):
 
         if not payload:
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content="No messages selected for commit."),
+                ChatMessageVM(role=Role.SYSTEM, content="No messages selected for commit."),
                 include_in_agent_context=False,
             )
             return
 
         if self.agent_session is None:
             self.append_message(
-                ChatMessageData(role=Role.ERROR, content="Agent session not bootstrapped."),
+                ChatMessageVM(role=Role.ERROR, content="Agent session not bootstrapped."),
             )
             return
 
@@ -1470,7 +1471,7 @@ class ChatPaneVM(ViewModelBase):
 
             {"index": int, "content": str, "user_context": str | None}
 
-        ``user_context`` is the most recent USER ``ChatMessageData`` preceding this agent message
+        ``user_context`` is the most recent USER ``ChatMessageVM`` preceding this agent message
         in the feed, bailing on an earlier ``AgentMessageVM`` so we capture the immediate
         prompt rather than stale conversation. Messages with empty bodies are skipped.
         """
@@ -1486,7 +1487,7 @@ class ChatPaneVM(ViewModelBase):
         return payload
 
     def _preceding_user_context(self, vm: AgentMessageVM) -> str | None:
-        """Scan backwards in the feed from ``vm``'s position for the nearest USER ChatMessageData.
+        """Scan backwards in the feed from ``vm``'s position for the nearest USER ChatMessageVM.
         Stop and return None if we hit an earlier AgentMessageVM first — that means the
         prompt for this segment is somewhere upstream we shouldn't conflate.
 
@@ -1501,7 +1502,7 @@ class ChatPaneVM(ViewModelBase):
             entry = item.entry
             if isinstance(entry, AgentMessageVM):
                 return None
-            if isinstance(entry, ChatMessageData) and entry.role == Role.USER:
+            if isinstance(entry, ChatMessageVM) and entry.role == Role.USER:
                 return entry.content
         return None
 
@@ -1579,15 +1580,15 @@ class ChatPaneVM(ViewModelBase):
         try:
             result = await self._command_registry.execute(line)
         except KeyError as exc:
-            self.append_message(ChatMessageData(role=Role.ERROR, content=str(exc).strip("'")))
+            self.append_message(ChatMessageVM(role=Role.ERROR, content=str(exc).strip("'")))
             return
         except Exception as exc:  # noqa: BLE001 — surface unexpected handler errors as ERROR messages
-            self.append_message(ChatMessageData(role=Role.ERROR, content=f"Command error: {exc}"))
+            self.append_message(ChatMessageVM(role=Role.ERROR, content=f"Command error: {exc}"))
             return
 
         if result is not None:
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=str(result), rich=True),
+                ChatMessageVM(role=Role.SYSTEM, content=str(result), rich=True),
                 include_in_agent_context=False,
             )
 
@@ -1687,7 +1688,7 @@ class ChatPaneVM(ViewModelBase):
             # message instead of mounting a non-functional widget.
             if self._session_factory is None:
                 self.append_message(
-                    ChatMessageData(
+                    ChatMessageVM(
                         role=Role.SYSTEM,
                         content="/browse requires a session factory; none is configured.",
                     ),
@@ -1703,7 +1704,7 @@ class ChatPaneVM(ViewModelBase):
             # an inert panel. The view owns the actual mount/unmount — we just request the toggle.
             if self.resource_viewer is None:
                 self.append_message(
-                    ChatMessageData(
+                    ChatMessageVM(
                         role=Role.SYSTEM,
                         content="/resources requires a session factory; none is configured.",
                     ),
@@ -1719,7 +1720,7 @@ class ChatPaneVM(ViewModelBase):
             # mounting a non-functional widget.
             if self._options is None:
                 self.append_message(
-                    ChatMessageData(
+                    ChatMessageVM(
                         role=Role.SYSTEM,
                         content="/options is unavailable until the agent session is bootstrapped.",
                     ),
@@ -1732,7 +1733,7 @@ class ChatPaneVM(ViewModelBase):
         @click.argument("words", nargs=-1)
         def _echo(words: tuple[str, ...]) -> None:
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=" ".join(words) if words else ""),
+                ChatMessageVM(role=Role.SYSTEM, content=" ".join(words) if words else ""),
                 include_in_agent_context=False,
             )
 
@@ -1756,12 +1757,12 @@ class ChatPaneVM(ViewModelBase):
             result = await self.present_interrupt(interrupt)
             if result is None:
                 self.append_message(
-                    ChatMessageData(role=Role.SYSTEM, content="interrupt cancelled"),
+                    ChatMessageVM(role=Role.SYSTEM, content="interrupt cancelled"),
                     include_in_agent_context=False,
                 )
             else:
                 self.append_message(
-                    ChatMessageData(role=Role.SYSTEM, content=f"interrupt resolved: {result!r}"),
+                    ChatMessageVM(role=Role.SYSTEM, content=f"interrupt resolved: {result!r}"),
                     include_in_agent_context=False,
                 )
 
@@ -1774,7 +1775,7 @@ class ChatPaneVM(ViewModelBase):
             result = await self.present_interrupt(interrupt)
             content = "choices cancelled" if result is None else f"choices resolved: {result!r}"
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 
@@ -1791,7 +1792,7 @@ class ChatPaneVM(ViewModelBase):
                 else f"warning-choices resolved: {result!r}"
             )
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 
@@ -1823,7 +1824,7 @@ class ChatPaneVM(ViewModelBase):
                 else f"multiple-choices resolved: {result!r}"
             )
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 
@@ -1853,7 +1854,7 @@ class ChatPaneVM(ViewModelBase):
                 else f"sql-confirmation resolved: {result!r}"
             )
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 
@@ -1933,7 +1934,7 @@ class ChatPaneVM(ViewModelBase):
                 else f"flashcards resolved: completed={result['completed']}, {len(result['cards'])} cards"
             )
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 
@@ -1979,7 +1980,7 @@ class ChatPaneVM(ViewModelBase):
             if big:
                 sample_entries = [e.clone() for e in sample_entries for _ in range(10)]
 
-            interrupt = CommitProposalInterruptVM(sample_entries)
+            interrupt = CommitProposalInterruptVM(sample_entries, session_factory=self._session_factory)
             result = await self.present_interrupt(interrupt)
             if result is None or result["accepted"] is None:
                 content = "commit-proposal cancelled"
@@ -1991,7 +1992,7 @@ class ChatPaneVM(ViewModelBase):
                     + (f" · edits: {ei!r}" if ei else "")
                 )
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 
@@ -2040,7 +2041,7 @@ class ChatPaneVM(ViewModelBase):
             if big:
                 sample_flashcards = [f.clone() for f in sample_flashcards for _ in range(10)]
 
-            interrupt = FlashcardProposalInterruptVM(sample_flashcards)
+            interrupt = FlashcardProposalInterruptVM(sample_flashcards, session_factory=self._session_factory)
             result = await self.present_interrupt(interrupt)
             if result is None or result["accepted"] is None:
                 content = "flashcard-proposal cancelled"
@@ -2052,7 +2053,7 @@ class ChatPaneVM(ViewModelBase):
                     + (f" · edits: {ei!r}" if ei else "")
                 )
             self.append_message(
-                ChatMessageData(role=Role.SYSTEM, content=content),
+                ChatMessageVM(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
 

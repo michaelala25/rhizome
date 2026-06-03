@@ -25,8 +25,10 @@ from rhizome.tui.types import Mode
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.messages.agent import AgentMessageVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
+@register_feed_view(AgentMessageVM)
 class AgentMessage(ViewBase[AgentMessageVM]):
     """Renders an ``AgentMessageVM`` with adaptive markdown streaming.
 

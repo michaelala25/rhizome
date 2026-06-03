@@ -16,8 +16,10 @@ from textual.widgets import Static
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.messages.tool import ToolMessageVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
+@register_feed_view(ToolMessageVM)
 class ToolMessage(ViewBase[ToolMessageVM]):
     """Renders ``ToolMessageVM.tools`` as a Unicode box-drawing tree."""
 

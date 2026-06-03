@@ -45,8 +45,12 @@ class FlashcardProposalVM(ViewModelBase):
         EDITING = auto()
         DONE = auto()
 
-    def __init__(self, flashcards: list[Flashcard]) -> None:
+    def __init__(self, flashcards: list[Flashcard], *, session_factory=None) -> None:
         super().__init__()
+
+        # Carried for the view's topic-picker modal (the VM doesn't use it itself). ``None`` disables
+        # the modal — useful for unit tests and the ``/test-flashcard-proposal`` slash command.
+        self.session_factory = session_factory
 
         # Snapshot for ``reset()``. Clone on both the snapshot and the working list so neither
         # aliases the caller's input — mutations on flashcards are entirely VM-internal.

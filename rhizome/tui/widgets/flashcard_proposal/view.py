@@ -44,8 +44,6 @@ the three details TextAreas, both ChoiceLists, and the edit-instructions area. T
 
 from __future__ import annotations
 
-from typing import Any
-
 from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -241,11 +239,11 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         },
     )
 
-    def __init__(self, vm: FlashcardProposalVM, *, session_factory: Any | None = None, **kwargs) -> None:
+    def __init__(self, vm: FlashcardProposalVM, **kwargs) -> None:
         super().__init__(vm, **kwargs)
-        # Used by the topic-picker modal. ``None`` disables the modal — useful for unit tests and
-        # for the ``/test-flashcard-proposal`` slash command which doesn't need real topic data.
-        self._session_factory = session_factory
+        # Carried on the VM. Used by the topic-picker modal; ``None`` disables it — useful for unit
+        # tests and the ``/test-flashcard-proposal`` slash command which doesn't need real topic data.
+        self._session_factory = vm.session_factory
 
         # DONE-state display flag, owned entirely by the view. Defaults to False; the EDITING→DONE
         # transition in ``_refresh`` flips it to True on first observation.

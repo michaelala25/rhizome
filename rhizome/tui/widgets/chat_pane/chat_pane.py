@@ -18,46 +18,20 @@ from textual.css.query import NoMatches
 
 from textual.widget import Widget
 
-from rhizome.app.browser.browser import BrowserVM
-from rhizome.tui.widgets.browser.browser import Browser
-from rhizome.app.options_editor import OptionsEditorVM
-from rhizome.tui.widgets.options_editor import OptionsEditor
 from rhizome.tui.widgets.resource_viewer import ResourceViewer
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.tui.widgets.chat_pane.messages.agent import AgentMessage
-from rhizome.app.chat_pane.messages.agent import AgentMessageVM
-from rhizome.tui.widgets.chat_pane.branch import BranchPoint
-from rhizome.app.chat_pane.branch import BranchPointVM
 from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
-from rhizome.tui.widgets.chat_pane.messages.base import ChatMessage
-from rhizome.tui.widgets.chat_pane.interrupts.user_choices import UserChoices
-from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
 from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
-from rhizome.app.chat_pane.conversation_graph import NodeId
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.tui.widgets.chat_pane.interrupts.test import TestInterrupt
-from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
-from rhizome.tui.widgets.chat_pane.interrupts.multi_choices import MultiUserChoices
-from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
-from rhizome.tui.widgets.chat_pane.interrupts.sql import SqlConfirmation
-from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
-from rhizome.tui.widgets.chat_pane.interrupts.warning import WarningUserChoices
-from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
-from rhizome.tui.widgets.chat_pane.interrupts.flashcard_review import FlashcardReviewInterrupt
-from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptVM
-from rhizome.tui.widgets.chat_pane.interrupts.commit_proposal import CommitProposalInterrupt
-from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptVM
-from rhizome.tui.widgets.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterrupt
-from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptVM
-from rhizome.tui.widgets.chat_pane.messages.shell import ShellCommandMessage
-from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.tui.widgets.chat_pane.status import StatusBar
-from rhizome.tui.widgets.chat_pane.thinking import ThinkingIndicator
-from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
-from rhizome.tui.widgets.chat_pane.messages.tool import ToolMessage
-from rhizome.app.chat_pane.messages.tool import ToolMessageVM
+from rhizome.tui.widgets.options_editor import OptionsEditor
+from rhizome.app.chat_pane.conversation_graph import NodeId
+from rhizome.app.chat_pane.messages.static import ChatMessageVM
 from rhizome.app.chat_pane.chat_pane import ChatPaneVM
 from rhizome.tui.types import ChatMessageData
+# Feed dispatch: ``feed_views`` is imported for its side effect — it populates the registry that
+# ``view_for`` reads. Without that import every lookup would return ``None`` (see feed_registry.py).
+from rhizome.tui.widgets.chat_pane import feed_views  # noqa: F401
+from rhizome.tui.widgets.chat_pane.feed_registry import view_for
 
 
 FeedEntryWidget = Widget
@@ -347,44 +321,11 @@ class ChatPane(ViewBase[ChatPaneVM]):
     # ------------------------------------------------------------------
 
     def _build_entry_widget(self, entry) -> FeedEntryWidget:
-        """Dispatch a feed entry's runtime type to its concrete view widget."""
-        if isinstance(entry, ChatMessageData):
-            return ChatMessage(
-                role=entry.role, content=entry.content, mode=entry.mode, rich=entry.rich,
-            )
-        if isinstance(entry, AgentMessageVM):
-            return AgentMessage(entry)
-        if isinstance(entry, ToolMessageVM):
-            return ToolMessage(entry)
-        if isinstance(entry, ThinkingIndicatorVM):
-            return ThinkingIndicator(entry)
-        if isinstance(entry, ShellCommandVM):
-            return ShellCommandMessage(entry)
-        if isinstance(entry, BranchPointVM):
-            return BranchPoint(entry)
-        if isinstance(entry, BrowserVM):
-            return Browser(entry)
-        if isinstance(entry, OptionsEditorVM):
-            return OptionsEditor(entry)
-        if isinstance(entry, TestInterruptVM):
-            return TestInterrupt(entry)
-        if isinstance(entry, UserChoicesVM):
-            return UserChoices(entry)
-        if isinstance(entry, WarningUserChoicesVM):
-            return WarningUserChoices(entry)
-        if isinstance(entry, MultiUserChoicesVM):
-            return MultiUserChoices(entry)
-        if isinstance(entry, SqlConfirmationVM):
-            return SqlConfirmation(entry)
-        if isinstance(entry, FlashcardReviewInterruptVM):
-            return FlashcardReviewInterrupt(entry)
-        if isinstance(entry, CommitProposalInterruptVM):
-            return CommitProposalInterrupt(entry, session_factory=self._session_factory)
-        if isinstance(entry, FlashcardProposalInterruptVM):
-            return FlashcardProposalInterrupt(entry, session_factory=self._session_factory)
-        if isinstance(entry, InterruptVMBase):
-            raise TypeError(f"No view registered for interrupt type: {type(entry).__name__}")
-        raise TypeError(f"Unhandled feed entry type: {type(entry).__name__}")
+        """Dispatch a feed entry's runtime type to its concrete view via the feed-view registry."""
+        view_cls = view_for(entry)
+        if view_cls is None:
+            raise TypeError(f"No view registered for feed entry type: {type(entry).__name__}")
+        return view_cls(entry)
 
     def _container_for_node(self, node_id: NodeId) -> Widget:
         """Return the widget that owns feed entries for ``node_id``.
@@ -521,8 +462,12 @@ class ChatPane(ViewBase[ChatPaneVM]):
     # permanent.
     # ------------------------------------------------------------------
 
-    def append_message(self, msg) -> None:
-        self._vm.append_message(msg)
+    def append_message(self, msg: ChatMessageData) -> None:
+        # MainScreen builds the legacy ``ChatMessageData`` for whichever pane is active; the MVVM
+        # feed speaks ``ChatMessageVM``, so convert at this boundary. Drops out with the shim.
+        self._vm.append_message(
+            ChatMessageVM(role=msg.role, content=msg.content, mode=msg.mode, rich=msg.rich)
+        )
 
     # ------------------------------------------------------------------
     # Actions

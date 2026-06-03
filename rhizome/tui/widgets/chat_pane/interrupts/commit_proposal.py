@@ -9,8 +9,10 @@ between the interrupt VM and its rendering is explicit (and so the typed ``self.
 from __future__ import annotations
 
 from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.tui.widgets.commit_proposal.view import CommitProposal
 
 
+@register_feed_view(CommitProposalInterruptVM)
 class CommitProposalInterrupt(CommitProposal):
     _vm: CommitProposalInterruptVM  # type: ignore[assignment]

@@ -23,11 +23,13 @@ from textual.widgets import Static
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.messages.shell import ShellCommandVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
 SHELL_TIMEOUT = 30
 
 
+@register_feed_view(ShellCommandVM)
 class ShellCommandMessage(ViewBase[ShellCommandVM]):
     """Renders a ``ShellCommandVM``: header line, output area, elapsed display (while running and on
     completion if >=10s), and a trailing exit-code line on non-zero exits.

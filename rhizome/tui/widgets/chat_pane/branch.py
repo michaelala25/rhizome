@@ -24,6 +24,7 @@ from textual.widgets import Static
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
 from rhizome.app.chat_pane.branch import BranchPointVM
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ class RenameTextArea(ConfirmableTextArea):
         await super()._on_key(event)
 
 
+@register_feed_view(BranchPointVM)
 class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
     """Bright-grey banner with the navigable-feed-item border (dim → hover → focus). Focusable via
     click; keystrokes only fire when focused so they never compete with the chat input's word-nav."""

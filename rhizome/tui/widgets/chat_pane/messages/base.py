@@ -1,8 +1,7 @@
-"""ChatMessage — a static, non-streaming chat message (user / system / error).
+"""ChatMessage — view for ``ChatMessageVM``, a static (non-streaming) user / system / error message.
 
-``ChatMessageData`` is an immutable dataclass — content is fixed at append time, so this view binds
-to data, not a VM. Agent messages live in ``agent_message.py`` (separate VM + view, with streaming
-drain).
+Binds to an immutable VM whose content is fixed at append time, so it holds no state and never
+refreshes. Streaming agent output is a separate VM + view (``messages/agent.py``).
 
 Two render modes:
   * ``rich=False`` (default) — markdown via Textual's ``Markdown`` widget. Used for normal user /
@@ -16,10 +15,12 @@ from __future__ import annotations
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal
-from textual.widget import Widget
 from textual.widgets import Markdown, Static
 
+from rhizome.app.chat_pane.messages.static import ChatMessageVM
 from rhizome.tui.types import Mode, Role
+from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
+from rhizome.tui.widgets.view_base import ViewBase
 
 
 _ROLE_PREFIXES = {
@@ -29,7 +30,8 @@ _ROLE_PREFIXES = {
 }
 
 
-class ChatMessage(Widget):
+@register_feed_view(ChatMessageVM)
+class ChatMessage(ViewBase[ChatMessageVM]):
     """Renders an immutable chat message with role prefix and styling."""
 
     DEFAULT_CSS = f"""
@@ -63,34 +65,23 @@ class ChatMessage(Widget):
     }}
     """
 
-    def __init__(
-        self,
-        *,
-        role: Role,
-        content: str,
-        mode: Mode = Mode.IDLE,
-        rich: bool = False,
-        **kwargs,
-    ) -> None:
-        super().__init__(**kwargs)
-        if role == Role.AGENT:
+    def __init__(self, vm: ChatMessageVM, **kwargs) -> None:
+        super().__init__(vm, **kwargs)
+        if vm.role == Role.AGENT:
             raise ValueError(
                 "ChatMessage does not render AGENT messages — use AgentMessage instead."
             )
-        self._role = role
-        self._prefix = _ROLE_PREFIXES.get(role, "")
-        self._body = content
-        self._rich = rich
-        self.add_class(f"{role.value}-message")
-        if mode == Mode.LEARN:
+        self._prefix = _ROLE_PREFIXES.get(vm.role, "")
+        self.add_class(f"{vm.role.value}-message")
+        if vm.mode == Mode.LEARN:
             self.add_class("learn-mode")
-        elif mode == Mode.REVIEW:
+        elif vm.mode == Mode.REVIEW:
             self.add_class("review-mode")
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="msg-header"):
             yield Static(self._prefix, classes="msg-prefix")
-        if self._rich:
-            yield Static(Text.from_ansi(self._body), classes="msg-content")
+        if self._vm.rich:
+            yield Static(Text.from_ansi(self._vm.content), classes="msg-content")
         else:
-            yield Markdown(self._body, classes="msg-content")
+            yield Markdown(self._vm.content, classes="msg-content")
