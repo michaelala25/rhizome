@@ -1,6 +1,7 @@
-"""Tests for rhizome.tui.widgets.flashcard_review.view_model.
+"""Tests for the FlashcardReview view-model (rhizome.app.flashcard_review).
 
-Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewViewModel`` classes.
+Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewVM`` classes (imported here under the
+``FlashcardReviewViewModel`` alias).
 FSRS state lives entirely in memory now — no DB stubbing is required for the
 rating path. The shared ``recording_scheduler`` fixture wraps a real
 ``fsrs.Scheduler`` so tests can assert rating mappings while still exercising
@@ -28,20 +29,9 @@ from types import SimpleNamespace
 import pytest
 from fsrs import Card, Rating, Scheduler, State
 
-from rhizome.tui.widgets.flashcard_review.keymap import key_to_action
-from rhizome.tui.widgets.flashcard_review.view_model import (
-    Flashcard,
-    FlashcardReviewViewModel,
-    Timer,
-)
-
-
-def _press(vm: FlashcardReviewViewModel, key: str) -> None:
-    """Simulate a keypress at the View boundary: resolve to a FlashcardReviewAction via the
-    binding layer, then dispatch it. Mirrors what view.py's on_key does."""
-    action = key_to_action(key, vm)
-    if action is not None:
-        vm.dispatch(action)
+from rhizome.app.flashcard_review.flashcard import Flashcard
+from rhizome.app.flashcard_review.review import FlashcardReviewVM as FlashcardReviewViewModel
+from rhizome.app.flashcard_review.timer import Timer
 
 
 # ---------------------------------------------------------------------------
@@ -1049,13 +1039,51 @@ class TestReviewBatchAutoScore:
         assert review.current_card.auto_scoring_failed
         assert review.current_card.state == Flashcard.State.REVEALED_NOT_SCORED
 
-        # Simulate the user pressing enter (via the key handler). Must rate
-        # GOOD, not re-defer to AUTO (which would assert).
-        _press(review, "enter")
+        # Enter on this REVEALED_NOT_SCORED card resolves to manual GOOD, not a re-defer to AUTO
+        # (which would assert), because auto-scoring failed for it. The view selects the flavor via
+        # ``auto_score_active_for_current_card`` — assert that predicate, then run the command.
+        assert not review.auto_score_active_for_current_card
+        review.score_current_card(Flashcard.Score.GOOD)
 
         assert review.current_card.state == Flashcard.State.SCORED
         assert review.current_card.score == Flashcard.Score.GOOD
         assert review.state == FlashcardReviewViewModel.State.DONE
+
+
+# ---------------------------------------------------------------------------
+# auto_score_active_for_current_card predicate
+# ---------------------------------------------------------------------------
+
+
+class TestAutoScoreActivePredicate:
+    """``auto_score_active_for_current_card`` is the one disambiguation predicate the view's
+    ``check_action`` reads: it decides whether enter on a REVEALED_NOT_SCORED card defers to the
+    auto-scorer or falls back to manual GOOD, and labels the rating row accordingly."""
+
+    def test_true_when_enabled_and_card_unsuppressed(self, review):
+        review.begin()
+        assert review.auto_score_active_for_current_card is True
+
+    def test_false_in_start_state(self, review):
+        # Pre-session there is no current card, so the predicate is False regardless of the flag.
+        assert review.current_card is None
+        assert review.auto_score_active_for_current_card is False
+
+    def test_false_when_auto_score_disabled(self, review):
+        review.begin()
+        review.auto_score_enabled = False
+        assert review.auto_score_active_for_current_card is False
+
+    def test_false_when_card_auto_score_suppressed(self, review):
+        review.begin()
+        card = review.current_card
+
+        card._auto_scoring_failed = True
+        assert review.auto_score_active_for_current_card is False
+
+        card._auto_scoring_failed = False
+        card._auto_score_discarded = True
+        assert review.auto_score_active_for_current_card is False
 
 
 # ---------------------------------------------------------------------------
@@ -1182,14 +1210,14 @@ class TestRegressions:
         # Cursor on card 2 (FRONT)
         assert review.current_card.id == 2
 
-        # alt+s skip card 2
-        _press(review, "alt+s")
+        # Skip card 2 (the alt+s action).
+        review.toggle_skip_current_card()
         assert review._cards[1].score == Flashcard.Score.SKIPPED
 
-        # Navigate to card 3 and alt+s skip
+        # Navigate to card 3 and skip.
         while review.current_card.id != 3:
             review.next_card()
-        _press(review, "alt+s")
+        review.toggle_skip_current_card()
         assert review._cards[2].score == Flashcard.Score.SKIPPED
 
         # The fix: alt+s now calls _check_ready_to_autoscore, which finds
@@ -1341,9 +1369,9 @@ class TestScoredPendingApproval:
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
-        # Approve each pending-approval card via enter.
+        # Approve each pending-approval card (the enter action).
         for _ in range(3):
-            _press(review, "enter")
+            review.approve_pending_score()
 
         for c in review._cards:
             assert c.state == Flashcard.State.SCORED
@@ -1368,7 +1396,7 @@ class TestScoredPendingApproval:
             review.next_card()
         assert review.current_card.pending_score == Flashcard.Score.AGAIN
 
-        _press(review, "enter")
+        review.approve_pending_score()
 
         card1 = next(c for c in review._cards if c.id == 1)
         assert card1.state == Flashcard.State.AWAITING_REVEAL
@@ -1392,7 +1420,7 @@ class TestScoredPendingApproval:
         target_id = target.id
         fsrs_before = target.fsrs_card.state
 
-        _press(review, "d")
+        review.reject_pending_score()
 
         assert target.state == Flashcard.State.REVEALED_NOT_SCORED
         assert target.pending_score is None
@@ -1416,7 +1444,7 @@ class TestScoredPendingApproval:
 
         while review.current_card.id != 1:
             review.next_card()
-        _press(review, "4")  # SCORE_EASY
+        review.score_current_card(Flashcard.Score.EASY)  # the "4" rating action
 
         card1 = next(c for c in review._cards if c.id == 1)
         assert card1.state == Flashcard.State.SCORED
@@ -1445,7 +1473,7 @@ class TestScoredPendingApproval:
         target_id = target.id
         fsrs_before = target.fsrs_card.state
 
-        _press(review, "alt+s")
+        review.toggle_skip_current_card()
 
         assert target.state == Flashcard.State.SCORED
         assert target.score == Flashcard.Score.SKIPPED
@@ -1465,7 +1493,7 @@ class TestScoredPendingApproval:
         await review._autoscore_task
 
         for _ in range(3):
-            _press(review, "enter")
+            review.approve_pending_score()
 
         scores = {c.id: c.score for c in review._cards}
         assert scores == {

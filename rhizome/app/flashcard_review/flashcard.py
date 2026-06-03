@@ -428,7 +428,7 @@ class Flashcard:
         """Fully reset the card: clear session metadata AND restore FSRS state to the session's initial
         snapshot.
 
-        Called when the user explicitly opts to retry the card from scratch (alt+x, or unskip via alt+s on
+        Called when the user explicitly opts to retry the card from scratch (alt+r, or unskip via alt+s on
         a SKIPPED card). Because FSRS state hasn't been committed mid-session, restoring
         ``_current_fsrs_card`` to ``_initial_fsrs_card`` is fully consistent — the next rating starts from
         a true initial state.

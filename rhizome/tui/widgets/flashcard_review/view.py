@@ -6,6 +6,7 @@ from typing import Any
 
 from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Rule, Static, TextArea
@@ -13,11 +14,9 @@ from textual.widgets import Button, Rule, Static, TextArea
 from fsrs import Rating
 
 from rhizome.tui.widgets.flashcard_review.dot_strips import _DotStrip
-from rhizome.tui.widgets.flashcard_review.keymap import KEYBINDINGS, key_to_action
 from rhizome.app.flashcard_review.review import (
     Flashcard,
     FlashcardData,
-    FlashcardReviewAction,
     FlashcardReviewVM,
 )
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
@@ -102,13 +101,65 @@ class _AnswerInput(TextArea):
             self.post_message(self.Submitted())
             return
         # Let alt+<whatever> bubble up to the parent so app-level bindings
-        # (alt+x reset, alt+s skip, alt+h help, alt+left/right nav) don't
+        # (alt+r reset, alt+s skip, alt+t timer, alt+h help, alt+left/right nav) don't
         # get swallowed as literal text input.
         if event.key.startswith("alt+"):
             event.prevent_default()
 
 
 class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
+
+    # Key → action map. Each binding is gated by ``check_action`` against VM state, so several
+    # bindings can share a key and Textual falls through to the first whose guard passes. "enter"
+    # is the prime case: one flavor per context (begin / reveal / score-default / approve / advance /
+    # expand). All "enter" flavors share the ``confirm`` id so a keymap rebinds the confirm key
+    # everywhere at once. Bindings carry ids (for a future user keymap) but ``show=False`` — the
+    # widget renders its own on-screen prompts and help list rather than a Footer.
+    BINDINGS = [
+        # Cross-state
+        Binding("alt+h", "toggle_help", "Toggle help", id="flashcard_review.toggle_help", show=False),
+
+        # START
+        Binding("enter", "begin", "Begin", id="flashcard_review.confirm", show=False),
+
+        # REVIEWING — contextual "enter" flavors (one card-state each; gated in check_action)
+        Binding("enter", "reveal_back", "Reveal answer", id="flashcard_review.confirm", show=False),
+        Binding("enter", "reveal_front", "Hide answer", id="flashcard_review.confirm", show=False),
+        Binding("enter", "score_default", "Score (auto)", id="flashcard_review.confirm", show=False),
+        Binding("enter", "score_default_good", "Score good", id="flashcard_review.confirm", show=False),
+        Binding("enter", "approve_auto_score", "Approve auto-score", id="flashcard_review.confirm", show=False),
+        Binding("enter", "advance_next", "Next card", id="flashcard_review.confirm", show=False),
+
+        # REVIEWING — manual ratings + auto-score reject
+        Binding("1", "score_again", "Score again", id="flashcard_review.score_again", show=False),
+        Binding("2", "score_hard", "Score hard", id="flashcard_review.score_hard", show=False),
+        Binding("3", "score_good", "Score good", id="flashcard_review.score_good", show=False),
+        Binding("4", "score_easy", "Score easy", id="flashcard_review.score_easy", show=False),
+        Binding("d", "reject_auto_score", "Reject auto-score", id="flashcard_review.reject_auto_score", show=False),
+
+        # REVIEWING / DONE — navigation + lifecycle
+        Binding("alt+left", "prev_card", "Previous card", id="flashcard_review.prev_card", show=False),
+        Binding("alt+right", "next_card", "Next card", id="flashcard_review.next_card", show=False),
+        Binding("ctrl+c", "cancel", "Cancel session", id="flashcard_review.cancel", show=False),
+
+        # REVIEWING — toggles / card ops
+        # alt+ rather than ctrl+ on purpose: while a FRONT card is shown the answer-input TextArea is
+        # focused, and it binds several ctrl+ keys (e.g. ctrl+k = delete-to-end-of-line). The focused
+        # input sits ahead of this widget in the binding chain, so a ctrl+ key it owns would win over
+        # ours. TextArea binds no alt+ editing keys, so alt+ combos reach us cleanly.
+        Binding("alt+t", "toggle_timer", "Toggle timer", id="flashcard_review.toggle_timer", show=False),
+        Binding("alt+m", "toggle_flag", "Flag / unflag", id="flashcard_review.toggle_flag", show=False),
+        Binding("alt+r", "reset_card", "Reset card", id="flashcard_review.reset_card", show=False),
+        Binding("alt+s", "toggle_skip", "Skip / unskip", id="flashcard_review.toggle_skip", show=False),
+        Binding("shift+tab", "toggle_auto_approve", "Toggle auto-approve", id="flashcard_review.toggle_auto_approve", show=False),
+        Binding("alt+a", "toggle_auto_score", "Toggle auto-score default", id="flashcard_review.toggle_auto_score", show=False),
+        # ctrl+enter arrives as ctrl+j on most terminals — bind the byte we actually receive and
+        # show the friendly form in the help text.
+        Binding("ctrl+j", "accept_all_auto_scores", "Approve all", id="flashcard_review.accept_all", show=False, key_display="ctrl+enter"),
+
+        # DONE
+        Binding("enter", "toggle_collapsed", "Expand / collapse", id="flashcard_review.confirm", show=False),
+    ]
 
     DEFAULT_CSS = """
     FlashcardReview {
@@ -338,26 +389,12 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
-    def on_key(self, event: events.Key) -> None:
-        # Resolve the key to a semantic FlashcardReviewAction via the binding layer. If it
-        # maps to nothing in the current VM state, let Textual handle it
-        # normally (focus traversal, app-level bindings, etc.).
-        action = key_to_action(event.key, self._vm)
-        if action is None:
-            return
-        self._vm.dispatch(action)
-        event.stop()
-        event.prevent_default()
-
     def on__answer_input_submitted(
         self, event: _AnswerInput.Submitted
     ) -> None:
-        # Route the enter keypress the TextArea swallowed through the binding
-        # layer just like any other on_key — the action it resolves to depends
-        # on the current card state (FRONT → REVEAL_BACK during normal flow).
-        action = key_to_action("enter", self._vm)
-        if action is not None:
-            self._vm.dispatch(action)
+        # The answer input is only ever shown on a FRONT card, and the TextArea swallows enter
+        # before the "enter" bindings can see it — so bridge that submit to the reveal directly.
+        self._vm.reveal_back_current_card()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "fr-answer-input":
@@ -374,6 +411,98 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
             event.stop()
             self._vm.toggle_collapsed()
             self.focus()
+
+    # ------------------------------------------------------------------
+    # Bindings → VM actions
+    #
+    # ``check_action`` gates each binding against VM state; ``action_*`` forwards to a VM command.
+    # For the contextual "enter" flavors it returns True for the single applicable flavor and False
+    # for the rest, so Textual hides the inactive ones and falls through to the live one.
+    # ------------------------------------------------------------------
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        vm = self._vm
+        S = FlashcardReviewVM.State
+        CS = Flashcard.State
+        card = vm.current_card
+        card_state = card.state if card is not None else None
+
+        match action:
+            case "toggle_help":
+                return True
+
+            case "begin":
+                return vm.state == S.START
+            case "cancel":
+                return vm.state != S.DONE
+            case "prev_card" | "next_card":
+                return vm.state != S.START
+
+            # Contextual "enter" flavors — one card-state each.
+            case "reveal_back":
+                return vm.state == S.REVIEWING and card_state == CS.FRONT
+            case "reveal_front":
+                return vm.state == S.REVIEWING and card_state == CS.AWAITING_REVEAL
+            case "score_default":
+                return (vm.state == S.REVIEWING and card_state == CS.REVEALED_NOT_SCORED
+                        and vm.auto_score_active_for_current_card)
+            case "score_default_good":
+                return (vm.state == S.REVIEWING and card_state == CS.REVEALED_NOT_SCORED
+                        and not vm.auto_score_active_for_current_card)
+            case "approve_auto_score":
+                return vm.state == S.REVIEWING and card_state == CS.SCORED_PENDING_APPROVAL
+            case "advance_next":
+                return vm.state == S.REVIEWING and card_state in (CS.SCORED, CS.REVEALED_PENDING_AUTO_SCORE)
+
+            # Manual ratings apply to any revealed / pending card; reject only to a staged auto-score.
+            case "score_again" | "score_hard" | "score_good" | "score_easy":
+                return vm.state == S.REVIEWING and card_state in (
+                    CS.REVEALED_NOT_SCORED, CS.REVEALED_PENDING_AUTO_SCORE, CS.SCORED_PENDING_APPROVAL,
+                )
+            case "reject_auto_score":
+                return vm.state == S.REVIEWING and card_state == CS.SCORED_PENDING_APPROVAL
+
+            case ("toggle_timer" | "toggle_flag" | "reset_card" | "toggle_skip"
+                  | "toggle_auto_approve" | "toggle_auto_score" | "accept_all_auto_scores"):
+                return vm.state == S.REVIEWING
+
+            case "toggle_collapsed":
+                return vm.state == S.DONE
+
+        return True
+
+    def action_toggle_help(self) -> None: self._vm.toggle_help_visible()
+    def action_begin(self) -> None: self._vm.begin()
+    def action_cancel(self) -> None: self._vm.cancel()
+    def action_prev_card(self) -> None: self._vm.prev_card()
+    def action_next_card(self) -> None: self._vm.next_card()
+    def action_reveal_back(self) -> None: self._vm.reveal_back_current_card()
+    def action_reveal_front(self) -> None: self._vm.reveal_front_current_card()
+    def action_score_default(self) -> None: self._vm.score_current_card(Flashcard.Score.AUTO)
+    def action_score_default_good(self) -> None: self._vm.score_current_card(Flashcard.Score.GOOD)
+    def action_approve_auto_score(self) -> None: self._vm.approve_pending_score()
+    def action_advance_next(self) -> None: self._vm.advance_to_next_unscored()
+    def action_score_again(self) -> None: self._vm.score_current_card(Flashcard.Score.AGAIN)
+    def action_score_hard(self) -> None: self._vm.score_current_card(Flashcard.Score.HARD)
+    def action_score_good(self) -> None: self._vm.score_current_card(Flashcard.Score.GOOD)
+    def action_score_easy(self) -> None: self._vm.score_current_card(Flashcard.Score.EASY)
+    def action_reject_auto_score(self) -> None: self._vm.reject_pending_score()
+    def action_toggle_timer(self) -> None: self._vm.toggle_timers_visible()
+    def action_toggle_flag(self) -> None: self._vm.toggle_flag_current_card()
+    def action_reset_card(self) -> None: self._vm.reset_current_card()
+    def action_toggle_skip(self) -> None: self._vm.toggle_skip_current_card()
+    def action_toggle_auto_approve(self) -> None: self._vm.toggle_auto_approve_auto_score()
+    def action_toggle_auto_score(self) -> None: self._vm.toggle_auto_score_enabled()
+    def action_accept_all_auto_scores(self) -> None: self._vm.accept_all_auto_scores()
+    def action_toggle_collapsed(self) -> None: self._vm.toggle_collapsed()
+
+    def _key_for(self, action: str) -> str:
+        """Display key for an action, read from ``BINDINGS`` — the single source of truth so the
+        on-screen hints stay in sync with what's actually bound (incl. the ctrl+enter key_display)."""
+        for binding in self.BINDINGS:
+            if binding.action == action:
+                return binding.key_display or binding.key
+        return "?"
 
     # ------------------------------------------------------------------
     # Rendering
@@ -405,7 +534,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
             status = f"[bold {_APPROVAL_YELLOW}]auto-approve enabled[/]"
         else:
             status = f"[{_HINT_DIM}]auto-approve disabled[/]"
-        binding = KEYBINDINGS[FlashcardReviewAction.TOGGLE_AUTO_APPROVE_AUTO_SCORE]
+        binding = self._key_for("toggle_auto_approve")
         hint.update(
             f"{status}  [{_HINT_DIM}]({binding} to toggle)[/]"
         )
@@ -443,7 +572,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         if self._vm.help_visible:
             hint.update("")
         else:
-            hint.update(f"[bold]{KEYBINDINGS[FlashcardReviewAction.TOGGLE_HELP]}[/]  show help")
+            hint.update(f"[bold]{self._key_for('toggle_help')}[/]  show help")
 
         full = self.query_one("#fr-help", Static)
         full.display = self._vm.help_visible
@@ -456,16 +585,16 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         current_default = "auto" if self._vm.auto_score_enabled else "good"
         auto_label = f"enter default = {current_default}"
         rows = [
-            (FlashcardReviewAction.TOGGLE_HELP, "hide help"),
-            (FlashcardReviewAction.CANCEL, "cancel session"),
-            (FlashcardReviewAction.TOGGLE_TIMER, "toggle timer"),
-            (FlashcardReviewAction.RESET_CARD, "reset current card"),
-            (FlashcardReviewAction.TOGGLE_SKIP, "skip / unskip card"),
-            (FlashcardReviewAction.TOGGLE_FLAG, "flag / unflag card"),
-            (FlashcardReviewAction.TOGGLE_AUTO_SCORE, auto_label),
+            ("toggle_help", "hide help"),
+            ("cancel", "cancel session"),
+            ("toggle_timer", "toggle timer"),
+            ("reset_card", "reset current card"),
+            ("toggle_skip", "skip / unskip card"),
+            ("toggle_flag", "flag / unflag card"),
+            ("toggle_auto_score", auto_label),
         ]
         return "    ".join(
-            f"[bold]{KEYBINDINGS[action]}[/]  {label}"
+            f"[bold]{self._key_for(action)}[/]  {label}"
             for action, label in rows
         )
 
@@ -759,12 +888,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
             prefix = f"[{_APPROVAL_YELLOW}]Auto-score rejected — rate manually:[/]  "
         else:
             prefix = ""
-        auto_default_active = (
-            self._vm.auto_score_enabled
-            and not card.auto_scoring_failed
-            and not card.auto_score_discarded
-        )
-        enter_label = "auto" if auto_default_active else "good"
+        enter_label = "auto" if self._vm.auto_score_active_for_current_card else "good"
         previews = card.rating_previews()
         pairs = [
             (1, "again", Rating.Again),
@@ -820,9 +944,9 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         row = "    ".join(segments)
 
         # Bold yellow for [approve]
-        approve_binding     = KEYBINDINGS[FlashcardReviewAction.APPROVE_AUTO_SCORE]
-        approve_all_binding = KEYBINDINGS[FlashcardReviewAction.ACCEPT_ALL_AUTO_SCORES]
-        reject_binding      = KEYBINDINGS[FlashcardReviewAction.REJECT_AUTO_SCORE]
+        approve_binding     = self._key_for("approve_auto_score")
+        approve_all_binding = self._key_for("accept_all_auto_scores")
+        reject_binding      = self._key_for("reject_auto_score")
 
         hint = (
             f"[bold {_APPROVAL_YELLOW}]\\[{approve_binding}] to approve[/]  ·  "

@@ -183,58 +183,6 @@ from rhizome.app.vm import Emitter, ViewModelBase
 _logger = get_logger("tui.flashcard_review_vm")
 
 
-class FlashcardReviewAction(Enum):
-    """Semantic actions handled by the view-model — the VM's action vocabulary.
-
-    The keymap layer (``keymap.py``) resolves raw keys to one of these; the VM's
-    ``dispatch(action)`` routes each to its handler method. Multiple actions can
-    map to the same key (e.g. all five ``enter`` flavors in REVIEWING — REVEAL_BACK
-    / REVEAL_FRONT / SCORE_DEFAULT / SCORE_DEFAULT_GOOD / ADVANCE_NEXT /
-    APPROVE_AUTO_SCORE — share ``"enter"``); ``key_to_action`` disambiguates by
-    state. Keeping them as separate FlashcardReviewAction members lets a help dropdown show
-    contextual labels per state.
-    """
-    # START
-    BEGIN = auto()             # enter
-
-    # Cross-state navigation / lifecycle
-    CANCEL = auto()            # ctrl+c (START + REVIEWING)
-    PREV_CARD = auto()         # alt+left  (REVIEWING + DONE)
-    NEXT_CARD = auto()         # alt+right (REVIEWING + DONE)
-
-    # REVIEWING — enter flavors (all map to "enter"; key_to_action disambiguates)
-    REVEAL_BACK = auto()       # enter on FRONT
-    REVEAL_FRONT = auto()      # enter on AWAITING_REVEAL
-    SCORE_DEFAULT = auto()     # enter on REVEALED_NOT_SCORED (auto path)
-    SCORE_DEFAULT_GOOD = auto()# enter on REVEALED_NOT_SCORED (manual fallback)
-    ADVANCE_NEXT = auto()      # enter on SCORED / PENDING_AUTO_SCORE
-    APPROVE_AUTO_SCORE = auto()# enter on SCORED_PENDING_APPROVAL
-
-    # REVIEWING — digit / letter ratings
-    SCORE_AGAIN = auto()       # 1
-    SCORE_HARD = auto()        # 2
-    SCORE_GOOD = auto()        # 3
-    SCORE_EASY = auto()        # 4
-    REJECT_AUTO_SCORE = auto() # d   on SCORED_PENDING_APPROVAL
-
-    # REVIEWING — toggles
-    TOGGLE_TIMER = auto()      # ctrl+k
-    RESET_CARD = auto()        # alt+x
-    TOGGLE_SKIP = auto()       # alt+s
-    TOGGLE_FLAG = auto()       # alt+m
-    TOGGLE_AUTO_APPROVE_AUTO_SCORE = auto()  # shift+tab
-
-    # DONE
-    TOGGLE_COLLAPSED = auto()  # enter
-
-    # Cross-state UI toggle
-    TOGGLE_HELP = auto()       # alt+h
-    TOGGLE_AUTO_SCORE = auto() # alt+a
-
-    # Bulk action
-    ACCEPT_ALL_AUTO_SCORES = auto()  # ctrl+enter (alias: ctrl+j)
-
-
 class FlashcardReviewVM(ViewModelBase):
 
     class State(Enum):
@@ -288,48 +236,6 @@ class FlashcardReviewVM(ViewModelBase):
 
 
     # ========================================================================================================================
-    # FlashcardReviewAction dispatch
-    # ========================================================================================================================
-
-    def dispatch(self, action: FlashcardReviewAction) -> None:
-        """Run the VM-side handler for a semantic FlashcardReviewAction.
-
-        Bindings are resolved upstream by ``keymap.key_to_action`` — by the time
-        an action reaches here, it has already been disambiguated against the
-        current VM state (e.g. one of the five "enter" flavors in REVIEWING).
-        Each branch is a thin wrapper around an existing public method or a
-        small inline operation that emits ``dirty`` exactly once.
-        """
-        _logger.info("dispatch: state=%s action=%s", self.state.name, action.name)
-
-        match action:
-            case FlashcardReviewAction.BEGIN:                          self.begin()
-            case FlashcardReviewAction.CANCEL:                         self.cancel()
-            case FlashcardReviewAction.PREV_CARD:                      self.prev_card()
-            case FlashcardReviewAction.NEXT_CARD:                      self.next_card()
-            case FlashcardReviewAction.REVEAL_BACK:                    self.reveal_back_current_card()
-            case FlashcardReviewAction.REVEAL_FRONT:                   self.reveal_front_current_card()
-            case FlashcardReviewAction.ADVANCE_NEXT:                   self.advance_to_next_unscored()
-            case FlashcardReviewAction.APPROVE_AUTO_SCORE:             self.approve_pending_score()
-            case FlashcardReviewAction.REJECT_AUTO_SCORE:              self.reject_pending_score()
-            case FlashcardReviewAction.SCORE_DEFAULT:                  self.score_current_card(Flashcard.Score.AUTO)
-            case FlashcardReviewAction.SCORE_DEFAULT_GOOD:             self.score_current_card(Flashcard.Score.GOOD)
-            case FlashcardReviewAction.SCORE_AGAIN:                    self.score_current_card(Flashcard.Score.AGAIN)
-            case FlashcardReviewAction.SCORE_HARD:                     self.score_current_card(Flashcard.Score.HARD)
-            case FlashcardReviewAction.SCORE_GOOD:                     self.score_current_card(Flashcard.Score.GOOD)
-            case FlashcardReviewAction.SCORE_EASY:                     self.score_current_card(Flashcard.Score.EASY)
-            case FlashcardReviewAction.TOGGLE_TIMER:                   self.toggle_timers_visible()
-            case FlashcardReviewAction.RESET_CARD:                     self.reset_current_card()
-            case FlashcardReviewAction.TOGGLE_SKIP:                    self.toggle_skip_current_card()
-            case FlashcardReviewAction.TOGGLE_FLAG:                    self.toggle_flag_current_card()
-            case FlashcardReviewAction.TOGGLE_AUTO_APPROVE_AUTO_SCORE: self.toggle_auto_approve_auto_score()
-            case FlashcardReviewAction.ACCEPT_ALL_AUTO_SCORES:         self.accept_all_auto_scores()
-            case FlashcardReviewAction.TOGGLE_COLLAPSED:               self.toggle_collapsed()
-            case FlashcardReviewAction.TOGGLE_HELP:                    self.toggle_help_visible()
-            case FlashcardReviewAction.TOGGLE_AUTO_SCORE:              self.toggle_auto_score_enabled()
-
-
-    # ========================================================================================================================
     # Public API
     # ========================================================================================================================
 
@@ -338,7 +244,20 @@ class FlashcardReviewVM(ViewModelBase):
         if self.state == FlashcardReviewVM.State.START or not self._cards:
             return None
         return self._cards[self._current_card_index]
-    
+
+    @property
+    def auto_score_active_for_current_card(self) -> bool:
+        """Whether the auto-score path applies to the current card: auto-scoring is on and the
+        card hasn't had it suppressed by a scorer failure or a user reject. Drives the enter-default
+        on a REVEALED_NOT_SCORED card (defer-to-auto vs. manual good) and the rating-row label."""
+        card = self.current_card
+        return (
+            self._auto_score_enabled
+            and card is not None
+            and not card.auto_scoring_failed
+            and not card.auto_score_discarded
+        )
+
     @property
     def cancelled(self) -> bool:
         return self._cancelled
