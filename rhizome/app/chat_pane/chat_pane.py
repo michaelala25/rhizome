@@ -22,6 +22,7 @@ from rhizome.agent.session import AgentSession, get_agent_kwargs
 from rhizome.db import Topic
 from rhizome.db.operations import get_topic
 from rhizome.resources.manager import ResourceManager
+from rhizome.app.resource_viewer import ResourceViewerVM
 from rhizome.app.command_registry import CommandRegistry
 from rhizome.app.options import Options
 from rhizome.tui.types import ChatMessageData, Mode, Role
@@ -148,6 +149,7 @@ class ChatPaneVM(ViewModelBase):
         NEW_TAB = "new_tab"
         CLOSE_TAB = "close_tab"
         OPEN_LOGS = "open_logs"
+        TOGGLE_RESOURCE_VIEWER = "toggle_resource_viewer"
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
         super().__init__()
@@ -209,6 +211,17 @@ class ChatPaneVM(ViewModelBase):
         self._session_factory = session_factory
         self.resource_manager: ResourceManager | None = (
             ResourceManager(session_factory=session_factory) if session_factory else None
+        )
+
+        # Side-panel resource viewer. Owned here (not by the view) so its load/link/cursor state
+        # survives toggling the panel open and closed — the view mounts/unmounts the widget against
+        # this persistent VM. Shares the agent's ``resource_manager`` so resources loaded in the
+        # panel reach the agent's context. ``None`` without a session (test / headless), mirroring
+        # ``resource_manager``; the ``/resources`` command surfaces a message in that case.
+        self.resource_viewer: ResourceViewerVM | None = (
+            ResourceViewerVM(session_factory, manager=self.resource_manager)
+            if session_factory
+            else None
         )
         # AgentSession now lives on the ChatPaneConversationNode itself — one per open leaf,
         # populated by ``bootstrap_agent_session`` (root leaf) and ``branch()`` (continuation + new
@@ -1682,6 +1695,22 @@ class ChatPaneVM(ViewModelBase):
                 )
                 return
             self._append_feed(BrowserVM(self._session_factory))
+
+        @reg.command(name="resources", help="Toggle the resource viewer side panel.")
+        def _resources() -> None:
+            # The panel is DB-backed (and shares the agent's ResourceManager). Without a session
+            # factory there's nothing to drive it, so surface a system message instead of toggling
+            # an inert panel. The view owns the actual mount/unmount — we just request the toggle.
+            if self.resource_viewer is None:
+                self.append_message(
+                    ChatMessageData(
+                        role=Role.SYSTEM,
+                        content="/resources requires a session factory; none is configured.",
+                    ),
+                    include_in_agent_context=False,
+                )
+                return
+            self.emit(self.notify, ChatPaneVM.NotifyAction.TOGGLE_RESOURCE_VIEWER)
 
         @reg.command(name="options", help="Open the options editor inline in the feed.")
         def _options() -> None:
