@@ -492,8 +492,32 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
         self._create_resource()
 
     def _create_resource(self) -> None:
-        # TODO: launch the resource-creation flow.
-        pass
+        """Spawn the new-resource modal, then ingest the result into the panel's VM. No-op without a
+        session factory (nothing to browse topics / persist against)."""
+        if self._vm.session_factory is None:
+            return
+
+        from rhizome.tui.screens.new_resource import NewResourceScreen, NewResourceResult
+
+        def _on_dismiss(result: NewResourceResult | None) -> None:
+            if result is None:
+                return
+            self.run_worker(self._ingest_new_resource(result))
+
+        self.app.push_screen(
+            NewResourceScreen(session_factory=self._vm.session_factory),
+            _on_dismiss,
+        )
+
+    async def _ingest_new_resource(self, result) -> None:
+        """Drive the VM's ingest coroutine and surface the outcome as a toast. The loader tree
+        refreshes itself off ``create_resource``'s internal reload."""
+        try:
+            message = await self._vm.create_resource(result)
+        except Exception as exc:
+            self.app.notify(f"Error creating resource: {exc}", severity="error")
+            return
+        self.app.notify(message)
 
     @on(ResourceViewerActions.LinkResources)
     def _on_link_resources(self, event: ResourceViewerActions.LinkResources) -> None:
