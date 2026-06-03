@@ -14,6 +14,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 
 from textual.widget import Widget
 
@@ -21,6 +22,7 @@ from rhizome.app.browser.browser import BrowserVM
 from rhizome.tui.widgets.browser.browser import Browser
 from rhizome.app.options_editor import OptionsEditorVM
 from rhizome.tui.widgets.options_editor import OptionsEditor
+from rhizome.tui.widgets.resource_viewer import ResourceViewer
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.tui.widgets.chat_pane.messages.agent import AgentMessage
 from rhizome.app.chat_pane.messages.agent import AgentMessageVM
@@ -90,8 +92,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
         #     newline / submit-instructions); when the message-area is focused they bubble to the
         #     pane and toggle / submit.
         #   - ctrl+c: priority — always behaves the same regardless of focus.
-        #   - ctrl+up / ctrl+down: priority — state-dispatched (see the nav_up/nav_down bindings
-        #     below); behavior differs by ``vm.state`` but never falls through.
+        #   - ctrl+up / ctrl+down: state-dispatched feed nav (see the nav_up/nav_down bindings
+        #     below); non-priority so the docked resource viewer can claim them when focused.
         Binding("up", "commit_cursor_up", "Commit: cursor up", show=False, priority=True),
         Binding("down", "commit_cursor_down", "Commit: cursor down", show=False, priority=True),
         Binding("space", "commit_toggle", "Commit: toggle", show=False),
@@ -105,14 +107,33 @@ class ChatPane(ViewBase[ChatPaneVM]):
         # between the message-area cursor and the chat input (the legacy commit-mode behavior); in
         # CONVERSATION they walk the navigable feed entries (interrupts, branch indicators). Both
         # branches are dispatched from ``action_nav_up`` / ``action_nav_down``.
-        Binding("ctrl+up", "nav_up", "Navigate up", show=False, priority=True),
-        Binding("ctrl+down", "nav_down", "Navigate down", show=False, priority=True),
+        #
+        # NOT priority: nothing in the chat subtree consumes ctrl+up/down (feed widgets leave them
+        # free, the input's _on_key ignores them, DataTable/Tree/VerticalScroll don't bind them), so
+        # they bubble here from any chat focus. The one widget that *does* claim them is the docked
+        # resource viewer, which binds them for its own up/down half-switch — making them priority
+        # would wrongly steal them back from the panel.
+        Binding("ctrl+up", "nav_up", "Navigate up", show=False),
+        Binding("ctrl+down", "nav_down", "Navigate down", show=False),
+        # Resource viewer: alt+r focuses (opening it first if closed), alt+w closes. Non-priority.
+        # (ctrl+shift+* is avoided — terminals can't distinguish it from ctrl+*.)
+        Binding("alt+r", "focus_resource_viewer", show=False),
+        Binding("alt+w", "close_resource_viewer", show=False),
     ]
 
     DEFAULT_CSS = """
     ChatPane {
         layout: vertical;
         height: 1fr;
+    }
+    /* Left-docked resource viewer panel. ``dock`` lifts it out of the vertical flow and pins it to
+       the left edge; the message-area / input / palette / status stack fills the remainder. Fixed
+       width here overrides the panel's own ``width: 1fr`` (id selector wins on specificity). */
+    ChatPane #resource-viewer-panel {
+        dock: left;
+        width: 56;
+        height: 1fr;
+        background: $surface-darken-1;
     }
     ChatPane #message-area {
         height: 1fr;
@@ -225,6 +246,55 @@ class ChatPane(ViewBase[ChatPaneVM]):
         if screen is not None:
             self.run_worker(screen._add_log_tab())
 
+    def _notify_toggle_resource_viewer(self) -> None:
+        # Toggle the left-docked panel. Mounted/unmounted here; the VM persists on the pane VM, so
+        # closing and reopening preserves the panel's load/link/cursor state. Open → focus the
+        # panel (auto-delegates inward); close → return focus to the input.
+        try:
+            panel = self.query_one("#resource-viewer-panel", ResourceViewer)
+        except NoMatches:
+            panel = None
+        if panel is not None:
+            panel.remove()
+            self.query_one("#chat-input", ChatInput).focus()
+            return
+        vm = self._vm.resource_viewer
+        if vm is None:
+            return
+        panel = ResourceViewer(vm, id="resource-viewer-panel")
+        self.mount(panel)
+        panel.focus()
+
+    def action_focus_resource_viewer(self) -> None:
+        # ctrl+r from anywhere in the pane: ensure the panel is open, then focus its tree. Reuses the
+        # persisted VM so a reopen restores prior load/link/cursor state.
+        try:
+            panel = self.query_one("#resource-viewer-panel", ResourceViewer)
+        except NoMatches:
+            vm = self._vm.resource_viewer
+            if vm is None:
+                return
+            panel = ResourceViewer(vm, id="resource-viewer-panel")
+            self.mount(panel)
+        # Deferred so it works for a just-mounted panel (the tree isn't composed until after refresh).
+        panel.call_after_refresh(lambda: self._focus_panel_tree(panel))
+
+    @staticmethod
+    def _focus_panel_tree(panel: ResourceViewer) -> None:
+        try:
+            panel.query_one("#rv-loader-tree").focus()
+        except NoMatches:
+            pass
+
+    def action_close_resource_viewer(self) -> None:
+        # ctrl+shift+r: close the panel and return focus to the input. No-op when already closed.
+        try:
+            panel = self.query_one("#resource-viewer-panel", ResourceViewer)
+        except NoMatches:
+            return
+        panel.remove()
+        self.query_one("#chat-input", ChatInput).focus()
+
     def _main_screen(self):
         from rhizome.tui.screens.main import MainScreen
         screen = self.app.screen
@@ -255,6 +325,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
         ChatPaneVM.NotifyAction.NEW_TAB: _notify_new_tab,
         ChatPaneVM.NotifyAction.CLOSE_TAB: _notify_close_tab,
         ChatPaneVM.NotifyAction.OPEN_LOGS: _notify_open_logs,
+        ChatPaneVM.NotifyAction.TOGGLE_RESOURCE_VIEWER: _notify_toggle_resource_viewer,
     }
 
     def compose(self) -> ComposeResult:
