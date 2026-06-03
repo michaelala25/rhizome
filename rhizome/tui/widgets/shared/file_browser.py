@@ -1,4 +1,4 @@
-"""FileBrowser — ncdu-style single-directory file browser."""
+"""FileBrowser — single-directory file browser."""
 
 from __future__ import annotations
 
@@ -23,10 +23,13 @@ _HEADER_COLOR = "rgb(80,80,80)"
 
 
 class FileBrowser(Widget, can_focus=True):
-    """Single-directory file browser with ncdu-style navigation.
+    """Single-directory file browser.
 
-    Left navigates to parent, right enters a directory.
-    Directories are listed before files, both sorted alphabetically.
+    A ``../`` entry sits at the top of the list whenever we're not at the filesystem
+    root; opening it navigates to the parent directory. Right or Enter opens a directory,
+    Enter selects a file. Directories are listed before files, both sorted alphabetically.
+    Left also climbs up — kept for muscle memory, but left out of the hint bar in favour
+    of the visible ``../`` entry.
     """
 
     BINDINGS = [
@@ -79,6 +82,8 @@ class FileBrowser(Widget, can_focus=True):
         self._home = (start_path or Path.cwd()).resolve()
         self._cwd = self._home
         self._entries: list[Path] = []
+        # When True, ``_entries[0]`` is the parent dir, rendered as ``../``.
+        self._has_parent: bool = False
 
     def compose(self) -> ComposeResult:
         yield Static("", id="fb-header")
@@ -103,7 +108,11 @@ class FileBrowser(Widget, can_focus=True):
 
         dirs = [p for p in children if p.is_dir() and not p.name.startswith(".")]
         files = [p for p in children if p.is_file() and not p.name.startswith(".")]
-        self._entries = dirs + files
+
+        # A ".." entry sits at the top whenever there's a parent to climb to.
+        parent = self._cwd.parent
+        self._has_parent = parent != self._cwd
+        self._entries = ([parent] if self._has_parent else []) + dirs + files
         self.cursor = 0
         self._render_header()
         self._render_list()
@@ -115,7 +124,7 @@ class FileBrowser(Widget, can_focus=True):
 
     def _update_hint(self) -> None:
         self.query_one("#fb-hint", Static).update(
-            "←: parent  →: enter dir  enter: select file  home: reset  esc: cancel"
+            "→: open dir   enter: open / select   home: reset   esc: cancel"
         )
 
     # ------------------------------------------------------------------
@@ -135,7 +144,8 @@ class FileBrowser(Widget, can_focus=True):
                 text.append("\n")
 
             is_selected = self.cursor == i
-            is_dir = entry.is_dir()
+            is_parent = self._has_parent and i == 0
+            is_dir = is_parent or entry.is_dir()
 
             if is_selected and self.has_focus:
                 style = f"bold {_CURSOR_FOCUSED}"
@@ -147,7 +157,7 @@ class FileBrowser(Widget, can_focus=True):
                 style = _DIR_COLOR if is_dir else _FILE_COLOR
                 marker = "  "
 
-            name = f"/{entry.name}" if is_dir else entry.name
+            name = "../" if is_parent else (f"/{entry.name}" if is_dir else entry.name)
             text.append(marker, style=style)
             text.append(name, style=style)
 
@@ -215,14 +225,20 @@ class FileBrowser(Widget, can_focus=True):
     def action_enter_dir(self) -> None:
         if not self._entries:
             return
-        entry = self._entries[min(self.cursor, len(self._entries) - 1)]
-        if entry.is_dir():
-            self._load_dir(entry)
+        index = min(self.cursor, len(self._entries) - 1)
+        if self._has_parent and index == 0:
+            self.action_go_parent()
+        elif self._entries[index].is_dir():
+            self._load_dir(self._entries[index])
 
     def action_select(self) -> None:
         if not self._entries:
             return
-        entry = self._entries[min(self.cursor, len(self._entries) - 1)]
+        index = min(self.cursor, len(self._entries) - 1)
+        if self._has_parent and index == 0:
+            self.action_go_parent()
+            return
+        entry = self._entries[index]
         if entry.is_dir():
             self._load_dir(entry)
         else:
