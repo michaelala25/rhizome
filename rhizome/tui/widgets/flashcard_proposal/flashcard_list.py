@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from rich.style import Style
 from rich.text import Text
+from textual import on
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
@@ -64,7 +65,7 @@ class FlashcardList(DataTable, can_focus=True):
         )
         self._vm = vm
         self._answer_key = None
-        # True for the duration of ``on_data_table_row_highlighted``. Suppresses the cursor-sync
+        # True for the duration of ``_on_row_highlighted``. Suppresses the cursor-sync
         # ``move_cursor`` in ``_refresh`` while the table is the source of truth.
         self._handling_row_highlighted: bool = False
 
@@ -146,7 +147,8 @@ class FlashcardList(DataTable, can_focus=True):
     # the bounce when the move was VM-initiated.
     # ------------------------------------------------------------------
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    @on(DataTable.RowHighlighted)
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._handling_row_highlighted = True
         try:
             self._vm.set_cursor(event.cursor_row)

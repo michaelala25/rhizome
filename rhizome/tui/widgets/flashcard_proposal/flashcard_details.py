@@ -20,6 +20,7 @@ parent so focus can return to the flashcard list. ``escape`` on any text area fi
 from __future__ import annotations
 
 from rich.text import Text
+from textual import on
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.events import Key
@@ -225,7 +226,8 @@ class FlashcardDetails(Vertical):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         wid = event.text_area.id
         if wid == "fp-details-question":
             self._vm.set_question(event.text_area.text)
@@ -234,7 +236,8 @@ class FlashcardDetails(Vertical):
         elif wid == "fp-details-testing-notes":
             self._vm.set_testing_notes(event.text_area.text)
 
-    def on_confirmable_text_area_accept_edits_requested(
+    @on(ProposalTextArea.AcceptEditsRequested)
+    def _on_accept_edits_requested(
         self, event: ProposalTextArea.AcceptEditsRequested
     ) -> None:
         if self._vm.is_dirty:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from rich.style import Style
 from rich.text import Text
 
+from textual import on
 from textual.reactive import reactive
 from textual.widgets import Tree
 from textual.widgets._tree import TreeNode, TOGGLE_STYLE
@@ -79,7 +80,8 @@ class TopicTree(Tree[Topic]):
         elif self.root.children:
             self.move_cursor(self.root.children[0])
 
-    async def on_tree_node_expanded(self, event: Tree.NodeExpanded[Topic]) -> None:
+    @on(Tree.NodeExpanded)
+    async def _on_node_expanded(self, event: Tree.NodeExpanded[Topic]) -> None:
         node: TreeNode[Topic] = event.node
         if node.data is None:
             return
@@ -100,7 +102,8 @@ class TopicTree(Tree[Topic]):
                 node.add_leaf(child.name, data=child)
         self._refresh_height()
 
-    def on_tree_node_collapsed(self, event: Tree.NodeCollapsed[Topic]) -> None:
+    @on(Tree.NodeCollapsed)
+    def _on_node_collapsed(self, event: Tree.NodeCollapsed[Topic]) -> None:
         self._refresh_height()
 
     def _on_key(self, event) -> None:

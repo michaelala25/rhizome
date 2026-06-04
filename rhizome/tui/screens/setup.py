@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual import on
 from textual.app import ComposeResult
 from textual.containers import Center, Vertical
 from textual.screen import Screen
@@ -122,7 +123,8 @@ class SetupScreen(Screen[bool]):
     def on_mount(self) -> None:
         self.query_one("#name-input", Input).focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(Input.Submitted)
+    def _on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "name-input":
             self._advance_to_key_step(event.value.strip())
         elif event.input.id == "key-input":

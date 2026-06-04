@@ -20,6 +20,7 @@ from typing import Any
 
 from rich.text import Text
 
+from textual import on
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
@@ -195,7 +196,8 @@ class ResourceLinkerTable(DataTable):
             return True if self._vm.is_dirty_staging else None
         return True
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    @on(DataTable.RowHighlighted)
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         # Mirror the highlighted row into the VM (feeds the preview). Equality-guarded VM-side, so
         # the programmatic ``move_cursor`` in ``_refresh`` doesn't loop.
         self._vm.set_cursor(event.cursor_row)

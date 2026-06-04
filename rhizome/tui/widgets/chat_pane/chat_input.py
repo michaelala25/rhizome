@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 from enum import Enum
 
+from textual import on
 from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
@@ -84,7 +85,8 @@ class ChatInput(TextArea):
         re-park it here after the VM round-trip."""
         self.move_cursor(self.document.end)
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_buffer_changed(self, event: TextArea.Changed) -> None:
         # Echoes from our own _refresh write also land here; the VM no-ops when the buffer hasn't changed, so
         # we don't need to gate on it.
         event.stop()

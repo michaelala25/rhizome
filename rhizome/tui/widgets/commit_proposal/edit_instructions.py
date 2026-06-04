@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 
+from textual import on
 from textual.events import Key
 from textual.widgets import TextArea
 
@@ -77,7 +78,8 @@ class EditInstructionsArea(ProposalTextArea):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         # Belt-and-suspenders: in DONE the parent view flips ``can_focus`` False so the user can't
         # type here, but a programmatic load (e.g. a ``self.text =`` assignment from ``_refresh``)
         # would still fire this. Guard so we don't crash ``vm.set_edit_instructions``'s

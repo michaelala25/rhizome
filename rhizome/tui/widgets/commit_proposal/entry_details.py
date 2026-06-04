@@ -12,6 +12,7 @@ fires ``vm.cancel()`` (silent discard).
 
 from __future__ import annotations
 
+from textual import on
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.events import Key
@@ -161,14 +162,16 @@ class EntryDetails(Vertical):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         wid = event.text_area.id
         if wid == "cp-details-title":
             self._vm.set_title(event.text_area.text)
         elif wid == "cp-details-content":
             self._vm.set_content(event.text_area.text)
 
-    def on_confirmable_text_area_accept_edits_requested(
+    @on(ProposalTextArea.AcceptEditsRequested)
+    def _on_accept_edits_requested(
         self, event: ProposalTextArea.AcceptEditsRequested
     ) -> None:
         if self._vm.is_dirty:

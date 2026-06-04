@@ -5,7 +5,7 @@ its entry list — ``reset()`` re-clones in place), so rows are added once and o
 contents are mutated thereafter via ``update_cell_at``. That side-steps the spurious ``Row-
 Highlighted`` events ``clear`` + ``add_row`` would otherwise post (Textual posts ``RH(0)`` whenever
 the table goes from zero to one rows, which would round-trip back through
-``on_data_table_row_highlighted`` and oscillate the VM cursor).
+``_on_row_highlighted`` and oscillate the VM cursor).
 
 Cursor movement is driven by ``DataTable``'s default ``cursor_up`` / ``cursor_down`` actions; the
 resulting ``RowHighlighted`` is forwarded to ``vm.set_cursor``. ``check_action`` disables the
@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from rich.style import Style
 from rich.text import Text
+from textual import on
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
@@ -78,7 +79,7 @@ class EntryList(DataTable, can_focus=True):
         )
         self._vm = vm
         self._content_key = None
-        # True for the duration of ``on_data_table_row_highlighted``. ``_refresh`` checks this
+        # True for the duration of ``_on_row_highlighted``. ``_refresh`` checks this
         # to skip its cursor-sync ``move_cursor`` — see the module docstring for the fast-scroll
         # feedback loop it guards against.
         self._handling_row_highlighted: bool = False
@@ -166,7 +167,8 @@ class EntryList(DataTable, can_focus=True):
     # the bounce when the move was VM-initiated.
     # ------------------------------------------------------------------
 
-    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+    @on(DataTable.RowHighlighted)
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         # The flag scopes for the entire ``vm.set_cursor`` call — both the ``vm.details.dirty``
         # subscriber (fired from ``_sync_details``) and the ``vm.dirty`` subscriber run
         # synchronously inside the emit chain, so both ``_refresh`` invocations see the flag.

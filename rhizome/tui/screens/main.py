@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -35,7 +36,8 @@ class LogTabPane(TabPane):
         tab_widget = tabbed_content.get_tab(self.id)
         tab_widget.label = self._truncated_label()
 
-    def on_user_feedback(self, event: UserFeedback) -> None:
+    @on(UserFeedback)
+    def _on_user_feedback(self, event: UserFeedback) -> None:
         self.notify(event.text, severity=event.severity)
 
     def compose(self) -> ComposeResult:
@@ -87,7 +89,8 @@ class ChatTabPane(TabPane):
         if hasattr(pane, "notify_database_committed"):
             pane.notify_database_committed(event)
 
-    def on_user_feedback(self, event: UserFeedback) -> None:
+    @on(UserFeedback)
+    def _on_user_feedback(self, event: UserFeedback) -> None:
         self.chat_pane.append_message(ChatMessageData(role=Role.SYSTEM, content=event.text))
 
     def compose(self) -> ComposeResult:

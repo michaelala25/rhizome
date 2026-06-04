@@ -43,6 +43,7 @@ that buffer.
 from __future__ import annotations
 
 from rich.text import Text
+from textual import on
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Button, Static
@@ -567,7 +568,8 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
             return
         self._toggle_collapsed()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    @on(Button.Pressed)
+    def _on_collapse_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "cp-collapse":
             return
         event.stop()
@@ -593,7 +595,8 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
     # Topic picker
     # ------------------------------------------------------------------
 
-    def on_set_topic_requested(self, event: SetTopicRequested) -> None:
+    @on(SetTopicRequested)
+    def _on_set_topic_requested(self, event: SetTopicRequested) -> None:
         if self._vm.state != CommitProposalVM.State.EDITING:
             return
         self._open_topic_picker(scope=event.scope)

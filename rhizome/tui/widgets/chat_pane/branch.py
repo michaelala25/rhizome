@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from textual import events
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.events import Focus
@@ -303,7 +303,8 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
         if self._hint_static is not None:
             self._hint_static.update(self._render_hint())
 
-    def on_confirmable_text_area_accept_edits_requested(
+    @on(ConfirmableTextArea.AcceptEditsRequested)
+    def _on_accept_rename(
         self, message: ConfirmableTextArea.AcceptEditsRequested
     ) -> None:
         if not self._renaming or self._rename_editor is None:
@@ -313,7 +314,8 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
         self._end_rename()
         self._vm.request_rename(new_name)
 
-    def on_rename_text_area_cancel_edits_requested(
+    @on(RenameTextArea.CancelEditsRequested)
+    def _on_cancel_rename(
         self, message: RenameTextArea.CancelEditsRequested
     ) -> None:
         if not self._renaming:

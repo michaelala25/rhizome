@@ -11,6 +11,7 @@ to the input VM directly — the pane is no longer in the path.
 
 from __future__ import annotations
 
+from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -565,7 +566,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
                 return fid
         return None
 
-    def on_options_editor_dismissed(self, event: OptionsEditor.Dismissed) -> None:
+    @on(OptionsEditor.Dismissed)
+    def _on_options_editor_dismissed(self, event: OptionsEditor.Dismissed) -> None:
         """Drop the dismissing ``OptionsEditor`` from the feed and return focus to the chat
         input — the dismissal semantically means "I'm done with this side-task, back to
         typing." The footer's ``OptionsEditorActions.Dismissed`` is funnelled by the editor

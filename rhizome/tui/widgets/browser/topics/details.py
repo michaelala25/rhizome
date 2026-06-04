@@ -7,6 +7,7 @@ from typing import Any
 
 from rich.text import Text
 
+from textual import on
 from textual.containers import Vertical
 from textual.widgets import Static, TextArea
 
@@ -193,14 +194,16 @@ class TopicDetails(Vertical):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         wid = event.text_area.id
         if wid == "topic-details-name":
             self._vm.set_name(event.text_area.text)
         elif wid == "topic-details-description":
             self._vm.set_description(event.text_area.text)
 
-    async def on_confirmable_text_area_accept_edits_requested(
+    @on(ConfirmableTextArea.AcceptEditsRequested)
+    async def _on_accept_edits_requested(
         self, event: ConfirmableTextArea.AcceptEditsRequested
     ) -> None:
         if self._vm.is_dirty:

@@ -44,6 +44,7 @@ from time import monotonic
 from typing import Any, Generic, TypeVar
 
 from rich.text import Text
+from textual import on
 from textual.containers import Horizontal
 from textual.events import Click
 from textual.widgets import Input, Static
@@ -84,10 +85,11 @@ class _SearchField(Input):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(compact=True, **kwargs)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Submit handler lives on the inner Input so the parent's ``on_input_submitted`` slot
-        # stays free for siblings (the inner field is the only Input under SearchBar, but
-        # routing through the field keeps the wiring explicit).
+    @on(Input.Submitted)
+    def _on_submitted(self, event: Input.Submitted) -> None:
+        # Submit handler lives on the inner Input so the parent's submit slot stays free for
+        # siblings (the inner field is the only Input under SearchBar, but routing through the
+        # field keeps the wiring explicit).
         if event.input is not self:
             return
         parent = self.parent

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from textual import on
 from textual.containers import Vertical
 from textual.widgets import TextArea
 
@@ -170,7 +171,8 @@ class EntryDetails(Vertical):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         # Dispatch by id since both fields are ``TextArea``s. ``text_area.text`` is read live, and the
         # VM mutators' equality guards absorb the round-trip from our own ``_refresh`` assignments.
         wid = event.text_area.id
@@ -179,7 +181,8 @@ class EntryDetails(Vertical):
         elif wid == "details-content":
             self._vm.set_content(event.text_area.text)
 
-    async def on_confirmable_text_area_accept_edits_requested(
+    @on(ConfirmableTextArea.AcceptEditsRequested)
+    async def _on_accept_edits_requested(
         self, event: ConfirmableTextArea.AcceptEditsRequested
     ) -> None:
         if self._vm.is_dirty and not self._vm.multi_select_active:

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from textual import on
 from textual.actions import SkipAction
 from textual.containers import Horizontal, Vertical
 from textual.events import DescendantBlur, DescendantFocus
@@ -218,21 +219,18 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
     # ActionMenu message handlers — stubs for now; real dialogs land later.
     # ------------------------------------------------------------------
 
-    def on_action_menu_view_rename_requested(
-        self, event: ActionMenu.RenameRequested
-    ) -> None:
+    @on(ActionMenu.RenameRequested)
+    def _on_rename_requested(self, event: ActionMenu.RenameRequested) -> None:
         # "Rename" is just a shortcut to the name field in the details panel — the buffered-edit
         # flow there already handles the commit. No-ops if no topic is loaded.
         self.action_rename()
 
-    def on_action_menu_view_create_requested(
-        self, event: ActionMenu.CreateRequested
-    ) -> None:
+    @on(ActionMenu.CreateRequested)
+    def _on_create_requested(self, event: ActionMenu.CreateRequested) -> None:
         self._dispatch_create(self._vm.tree.cursor_topic_id)
 
-    def on_action_menu_view_delete_requested(
-        self, event: ActionMenu.DeleteRequested
-    ) -> None:
+    @on(ActionMenu.DeleteRequested)
+    def _on_delete_requested(self, event: ActionMenu.DeleteRequested) -> None:
         self._begin_delete()
 
     def _begin_delete(self) -> None:
@@ -249,14 +247,12 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
         self.add_class("-deleting")
         dialog.focus()
 
-    def on_topics_delete_menu_accepted(
-        self, event: TopicsDeleteMenu.Accepted
-    ) -> None:
+    @on(TopicsDeleteMenu.Accepted)
+    def _on_delete_confirmed(self, event: TopicsDeleteMenu.Accepted) -> None:
         self.run_worker(self._delete_worker(), exclusive=False)
 
-    def on_topics_delete_menu_cancelled(
-        self, event: TopicsDeleteMenu.Cancelled
-    ) -> None:
+    @on(TopicsDeleteMenu.Cancelled)
+    def _on_delete_cancelled(self, event: TopicsDeleteMenu.Cancelled) -> None:
         self._end_delete()
 
     async def _delete_worker(self) -> None:

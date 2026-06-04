@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.text import Text
+from textual import on
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -193,12 +194,14 @@ class NewResourceScreen(ModalScreen[NewResourceResult | None]):
     # File browser
     # ------------------------------------------------------------------
 
-    def on_file_browser_file_selected(self, event: FileBrowser.FileSelected) -> None:
+    @on(FileBrowser.FileSelected)
+    def _on_file_selected(self, event: FileBrowser.FileSelected) -> None:
         event.stop()
         self._selected_path = event.path
         self.focus_section = _Focus.TOPICS
 
-    def on_file_browser_dismissed(self, event: FileBrowser.Dismissed) -> None:
+    @on(FileBrowser.Dismissed)
+    def _on_browser_dismissed(self, event: FileBrowser.Dismissed) -> None:
         event.stop()
         self.dismiss(None)
 
@@ -206,7 +209,8 @@ class NewResourceScreen(ModalScreen[NewResourceResult | None]):
     # Topic tree
     # ------------------------------------------------------------------
 
-    def on_togglable_topic_tree_confirmed(self, event: TogglableTopicTree.Confirmed) -> None:
+    @on(TogglableTopicTree.Confirmed)
+    def _on_topic_tree_confirmed(self, event: TogglableTopicTree.Confirmed) -> None:
         event.stop()
         self.focus_section = _Focus.NAME
 
@@ -214,7 +218,8 @@ class NewResourceScreen(ModalScreen[NewResourceResult | None]):
     # Name input
     # ------------------------------------------------------------------
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(Input.Submitted)
+    def _on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         self.focus_section = _Focus.PREFERENCE
 

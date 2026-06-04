@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from textual import on
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static, Tree
@@ -49,7 +50,8 @@ class TopicSelectorScreen(ModalScreen[tuple[int, str] | None]):
             yield Static(f"Select a topic  (arrows navigate, {binding_hint(self.BINDINGS, sep=', ')})")
             yield TopicTree(session_factory=self._session_factory)
 
-    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+    @on(Tree.NodeSelected)
+    def _on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         if event.node.data is not None:
             self.dismiss((event.node.data.id, event.node.data.name))
 

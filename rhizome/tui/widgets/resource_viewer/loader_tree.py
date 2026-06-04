@@ -31,6 +31,7 @@ from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 
+from textual import on
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
@@ -224,7 +225,8 @@ class ResourceLoaderTree(MultilineTree[ResourceTreeNodeData]):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+    @on(Tree.NodeHighlighted)
+    def _on_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
         # Mirror the highlighted node into the VM (feeds the preview). Identity-guarded VM-side.
         self._vm.set_cursor(event.node.data)
 

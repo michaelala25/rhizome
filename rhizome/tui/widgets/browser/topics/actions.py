@@ -10,7 +10,7 @@ rendering switch is the missing piece on top of what's here today.
 This view is intentionally **VM-less** — the menu has no data-model state of its own and exists
 solely to announce action requests upward. Each entry in ``CHOICES`` resolves to an action method
 that posts one of the nested ``Requested`` messages; the surrounding ``TopicTreePanel`` catches
-them through Textual's message pump (``on_action_menu_view_<name>_requested``).
+them through Textual's message pump via ``@on(ActionMenu.<Name>Requested)`` handlers.
 """
 
 from __future__ import annotations

@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from rich.text import Text
+from textual import on
 from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Static
@@ -295,7 +296,8 @@ class LinkedFlashcardsPanel(Vertical):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_data_table_row_highlighted(
+    @on(DataTable.RowHighlighted)
+    def _on_linked_row_highlighted(
         self,
         event: DataTable.RowHighlighted,
     ) -> None:

@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
+from textual import on
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, Static
@@ -326,7 +327,8 @@ class FilterMenu(Vertical, can_focus=True):
         self._refresh()
         self.focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(Input.Submitted)
+    def _on_input_submitted(self, event: Input.Submitted) -> None:
         # _OneOfInput is the only Input under this dialog — guard against future re-parenting.
         if isinstance(event.input, _OneOfInput):
             self.submit_one_of(event.value)

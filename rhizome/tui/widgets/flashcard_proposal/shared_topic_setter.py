@@ -53,7 +53,7 @@ class SharedTopicSetter(Static, can_focus=True):
         self.call_after_refresh(self._refresh)
 
     def action_set_topic_all(self) -> None:
-        # Defensive: the parent FlashcardProposal's ``on_set_topic_requested`` already gates on
+        # Defensive: the parent FlashcardProposal's ``_on_set_topic_requested`` already gates on
         # EDITING, but stop the message at the source so we don't fire spurious traffic during
         # DONE (when this widget is non-focusable anyway, but a mouse click could still hit the
         # binding through some future surface).

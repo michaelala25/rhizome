@@ -15,6 +15,7 @@ from typing import Any
 from rich.style import Style
 from rich.text import Text
 
+from textual import on
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
@@ -113,7 +114,8 @@ class TopicTree(Tree[Topic]):
     # View → VM
     # ------------------------------------------------------------------
 
-    async def on_tree_node_expanded(self, event: Tree.NodeExpanded[Topic]) -> None:
+    @on(Tree.NodeExpanded)
+    async def _on_node_expanded(self, event: Tree.NodeExpanded[Topic]) -> None:
         node = event.node
         if node.data is None:
             return
@@ -126,7 +128,8 @@ class TopicTree(Tree[Topic]):
             else:
                 node.add_leaf(lt.topic.name, data=lt.topic)
 
-    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted[Topic]) -> None:
+    @on(Tree.NodeHighlighted)
+    def _on_node_highlighted(self, event: Tree.NodeHighlighted[Topic]) -> None:
         # Synthetic ``(root)`` row → ``None`` cursor; real topic rows → their id.
         if event.node.data is None:
             self._vm.set_cursor(None)

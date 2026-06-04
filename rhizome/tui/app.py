@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from textual import messages
+from textual import messages, on
 from textual.app import App
 from textual.binding import Binding
 from textual.widgets import TabbedContent
@@ -111,7 +111,8 @@ class RhizomeApp(App):
         if isinstance(screen, MainScreen):
             screen.notify_database_committed(event)
 
-    def on_exit_app(self, event: messages.ExitApp) -> None:
+    @on(messages.ExitApp)
+    def _on_exit_app(self, event: messages.ExitApp) -> None:
         for pane in self.query(ChatPane):
             pane._close_agent_log()
 

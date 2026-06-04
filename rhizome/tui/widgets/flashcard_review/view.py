@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual import events
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -389,14 +389,16 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
-    def on__answer_input_submitted(
+    @on(_AnswerInput.Submitted)
+    def _on_answer_input_submitted(
         self, event: _AnswerInput.Submitted
     ) -> None:
         # The answer input is only ever shown on a FRONT card, and the TextArea swallows enter
         # before the "enter" bindings can see it — so bridge that submit to the reveal directly.
         self._vm.reveal_back_current_card()
 
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+    @on(TextArea.Changed)
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id != "fr-answer-input":
             return
         if self._suppress_text_change:
@@ -406,7 +408,8 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
             return
         card.set_user_answer(event.text_area.text.strip())
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    @on(Button.Pressed)
+    def _on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "fr-collapse":
             event.stop()
             self._vm.toggle_collapsed()
@@ -785,7 +788,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
 
         The input is only ever visible during REVIEWING — hiding it in DONE (e.g. after
         cancellation) prevents the input from remaining focusable past session end. The
-        draft sync suppresses the echo back through ``on_text_area_changed``.
+        draft sync suppresses the echo back through ``_on_text_area_changed``.
 
         Focus management: route focus to the input when it's visible (so typing lands
         there), to ``self`` otherwise (so enter/1-4/nav keys reach ``on_key``). Only

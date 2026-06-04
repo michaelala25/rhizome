@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from rich.text import Text
+from textual import on
 from textual.actions import SkipAction
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
@@ -798,7 +799,8 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
     # View → VM
     # ------------------------------------------------------------------
 
-    def on_data_table_row_highlighted(
+    @on(DataTable.RowHighlighted)
+    def _on_entries_row_highlighted(
         self,
         event: DataTable.RowHighlighted,
     ) -> None:
