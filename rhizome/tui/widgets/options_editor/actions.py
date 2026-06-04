@@ -4,6 +4,7 @@ from rich.text import Text
 from textual.message import Message
 
 from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
@@ -31,9 +32,9 @@ class OptionsEditorActions(ChoiceList[OptionsEditorVM]):
     }
 
     _ACTION_INFO: ClassVar[dict[str, tuple[str, str]]] = {
-        "Apply":   ("ctrl+a", "apply staged edits"),
-        "Reset":   ("ctrl+r", "discard staged edits"),
-        "Dismiss": ("ctrl+c", "close the editor"),
+        "Apply":   (Keybind.OptionsApply.default_key,   "apply staged edits"),
+        "Reset":   (Keybind.OptionsReset.default_key,   "discard staged edits"),
+        "Dismiss": (Keybind.OptionsDismiss.default_key, "close the editor"),
     }
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:

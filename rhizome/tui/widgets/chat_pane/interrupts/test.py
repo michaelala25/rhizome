@@ -6,6 +6,7 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 
@@ -32,9 +33,9 @@ class TestInterrupt(NavigableFeedItemViewBase[TestInterruptVM]):
     """
 
     BINDINGS = [
-        ("up", "move_cursor(-1)", "Up"),
-        ("down", "move_cursor(1)", "Down"),
-        ("enter", "confirm", "Confirm"),
+        Keybind.CursorUp.   as_binding("move_cursor(-1)", "Up",      show=False),
+        Keybind.CursorDown. as_binding("move_cursor(1)",  "Down",    show=False),
+        Keybind.MenuConfirm.as_binding("confirm",         "Confirm", show=True),
     ]
 
     can_focus = True

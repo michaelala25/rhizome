@@ -12,10 +12,10 @@ bubble to the parent's arrow bindings without any local plumbing.
 from __future__ import annotations
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.widgets import Static
 
 from rhizome.app.commit_proposal.commit_proposal import CommitProposalVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.commit_proposal.messages import SetTopicRequested
 
 
@@ -30,7 +30,7 @@ class SharedTopicSetter(Static, can_focus=True):
     """
 
     BINDINGS = [
-        Binding("enter", "set_topic_all", show=False),
+        Keybind.MenuConfirm.as_binding("set_topic_all", show=False),
     ]
 
     def __init__(self, vm: CommitProposalVM, **kwargs) -> None:

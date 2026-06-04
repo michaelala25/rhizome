@@ -14,6 +14,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import Static
 
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
@@ -44,10 +45,10 @@ class WarningUserChoices(NavigableFeedItemViewBase[WarningUserChoicesVM]):
     """
 
     BINDINGS = [
-        ("up", "move_cursor(-1)", "Up"),
-        ("down", "move_cursor(1)", "Down"),
-        ("enter", "confirm", "Confirm"),
-        ("ctrl+c", "cancel", "Cancel"),
+        Keybind.CursorUp.    as_binding("move_cursor(-1)", "Up",      show=False),
+        Keybind.CursorDown.  as_binding("move_cursor(1)",  "Down",    show=False),
+        Keybind.MenuConfirm. as_binding("confirm",         "Confirm", show=True),
+        Keybind.DialogCancel.as_binding("cancel",          "Cancel",  show=True),
     ]
 
     can_focus = True

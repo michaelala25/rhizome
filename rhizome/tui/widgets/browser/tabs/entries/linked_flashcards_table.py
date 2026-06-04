@@ -5,15 +5,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual.binding import Binding
 from textual.widgets import DataTable
 
 from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
+from rhizome.tui.keybindings import Keybind
 
 
 class LinkedFlashcardsTable(DataTable):
     BINDINGS = [
-        Binding("space", "toggle_relink_selection", show=False),
+        Keybind.Toggle.as_binding("toggle_relink_selection", show=False),
     ]
 
     def __init__(

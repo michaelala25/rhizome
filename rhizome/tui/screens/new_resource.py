@@ -7,13 +7,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from rhizome.db.models import LoadingPreference
+from rhizome.tui.keybindings import Keybind, binding_hint
 from rhizome.tui.widgets.shared.file_browser import FileBrowser
 from rhizome.tui.widgets.shared.togglable_topic_tree import TogglableTopicTree
 
@@ -59,8 +59,8 @@ class NewResourceScreen(ModalScreen[NewResourceResult | None]):
     """
 
     BINDINGS = [
-        Binding("escape", "back", show=False),
-        Binding("ctrl+c", "force_cancel", show=False, priority=True),
+        Keybind.DialogBack  .as_binding("back",   "Back",   show=True),
+        Keybind.DialogCancel.as_binding("cancel", "Cancel", show=True, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -146,7 +146,7 @@ class NewResourceScreen(ModalScreen[NewResourceResult | None]):
         with Vertical():
             with Horizontal(id="nr-header"):
                 yield Static("New Resource", id="nr-title")
-                yield Static("esc: back (prev step)  ctrl+c: cancel", id="nr-cancel-hint")
+                yield Static(binding_hint(self.BINDINGS), id="nr-cancel-hint")
             with Horizontal(id="nr-browser-row"):
                 yield FileBrowser(id="nr-browser")
                 with Vertical(id="nr-topic-pane"):
@@ -287,5 +287,5 @@ class NewResourceScreen(ModalScreen[NewResourceResult | None]):
         else:
             self.focus_section = _Focus(self.focus_section - 1)
 
-    def action_force_cancel(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss(None)

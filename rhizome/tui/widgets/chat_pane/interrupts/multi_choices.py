@@ -18,9 +18,9 @@ from typing import Any
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.widgets import Static
 
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
@@ -74,14 +74,14 @@ class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
     """
 
     BINDINGS = [
-        Binding("up", "move_cursor(-1)", "Up", show=False),
-        Binding("down", "move_cursor(1)", "Down", show=False),
-        Binding("enter", "confirm", "Confirm", show=False),
-        Binding("ctrl+left", "prev_question", "Previous question", show=False),
-        Binding("ctrl+right", "next_question", "Next question", show=False),
+        Keybind.CursorUp.             as_binding("move_cursor(-1)", "Up",                show=False),
+        Keybind.CursorDown.           as_binding("move_cursor(1)",  "Down",              show=False),
+        Keybind.MenuConfirm.          as_binding("confirm",         "Confirm",           show=True),
+        Keybind.InterruptPrevQuestion.as_binding("prev_question",   "Previous question", show=True),
+        Keybind.InterruptNextQuestion.as_binding("next_question",   "Next question",     show=True),
         # Legacy bound ctrl+enter to ctrl+j (Textual emits ctrl+j for ctrl+enter in many terminals).
-        Binding("ctrl+j", "submit", "Submit answers", show=False, priority=True),
-        Binding("ctrl+c", "cancel", "Cancel", show=False),
+        Keybind.InterruptSubmit.      as_binding("submit",          "Submit answers",    show=True, priority=True),
+        Keybind.DialogCancel.         as_binding("cancel",          "Cancel",            show=True),
     ]
 
     can_focus = True

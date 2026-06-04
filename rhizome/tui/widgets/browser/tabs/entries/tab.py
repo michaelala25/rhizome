@@ -26,7 +26,6 @@ from typing import Any, Literal
 
 from rich.text import Text
 from textual.actions import SkipAction
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.coordinate import Coordinate
 from textual.widget import Widget
@@ -34,6 +33,7 @@ from textual.widgets import DataTable, Input, Rule, Static, TextArea
 
 from rhizome.app.browser.tabs.entries.tab import EntryTabVM
 from rhizome.db.models import EntryType
+from rhizome.tui.keybindings import Keybind, binding_hint
 from rhizome.tui.widgets.shared.search_bar import SearchBar
 from rhizome.tui.widgets.browser.tabs.entries.delete import EntriesDeleteMenu
 from rhizome.tui.widgets.browser.tabs.entries.details import EntryDetails
@@ -226,17 +226,17 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
     # up for free. Each open dialog's own ``d``/``s``/``f``/``e`` bindings still win while focused
     # (focused widget's bindings take precedence over an ancestor's).
     BINDINGS = [
-        Binding("d", "tab_toggle_dialog('delete')", show=False),
-        Binding("s", "tab_toggle_dialog('sort')", show=False),
-        Binding("f", "tab_toggle_dialog('filter')", show=False),
-        Binding("e", "tab_toggle_dialog('edit')", show=False),
-        Binding("l", "tab_toggle_relink", show=False),
-        Binding("m", "tab_toggle_multi_select", show=False),
-        Binding("tab", "tab_cycle_mode", show=False),
-        Binding("alt+left", "focus_neighbour('left')", show=False),
-        Binding("alt+right", "focus_neighbour('right')", show=False),
-        Binding("alt+up", "focus_neighbour('up')", show=False),
-        Binding("alt+down", "focus_neighbour('down')", show=False),
+        Keybind.BrowserDelete.     as_binding("tab_toggle_dialog('delete')", "Delete",          show=True),
+        Keybind.BrowserSort.       as_binding("tab_toggle_dialog('sort')",   "Sort",            show=True),
+        Keybind.BrowserFilter.     as_binding("tab_toggle_dialog('filter')", "Filter",          show=True),
+        Keybind.BrowserEdit.       as_binding("tab_toggle_dialog('edit')",   "Edit",            show=True),
+        Keybind.BrowserRelink.     as_binding("tab_toggle_relink",           "Link flashcards", show=True),
+        Keybind.BrowserMultiSelect.as_binding("tab_toggle_multi_select",     "Multi-select",    show=True),
+        Keybind.BrowserCycleMode.  as_binding("tab_cycle_mode",              "Cycle mode",      show=True),
+        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
+        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.FocusUp   .as_binding("focus_neighbour('up')",    show=False),
+        Keybind.FocusDown .as_binding("focus_neighbour('down')",  show=False),
     ]
 
     # Static focus graph. The ``"dialog"`` node is a pseudo-id that resolves to whichever dialog
@@ -360,17 +360,12 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
 
     def _keybindings_text(self) -> str:
         # Per-dialog keys (← / → / enter / esc inside an open dialog) are documented by the dialog
-        # widgets themselves.
+        # widgets themselves. Command rows come from BINDINGS; the combined focus-nav row is appended.
         rows = [
-            ("e", "edit"),
-            ("f", "filter"),
-            ("s", "sort"),
-            ("d", "delete"),
-            ("l", "link flashcards"),
-            ("m", "multi-select"),
-            ("tab", "cycle mode"),
-            ("alt+←↑→↓", "navigate"),
+            (b.key_display or b.key.split(",")[0], b.description.lower())
+            for b in self.BINDINGS if b.show and b.description
         ]
+        rows.append(("alt+←↑→↓", "navigate"))
         return "   ".join(
             f"[#a0a0a0]{key}[/] [#707070]{label}[/]" for key, label in rows
         )

@@ -4,7 +4,6 @@ from typing import Any
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
 
@@ -14,6 +13,7 @@ from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemView
 from rhizome.tui.widgets.options_editor.actions import OptionsEditorActions
 from rhizome.tui.widgets.options_editor.list_container import OptionsListContainer
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
+from rhizome.tui.keybindings import Keybind
 
 
 class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM], FocusOrchestrationMixin):
@@ -55,18 +55,18 @@ class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM], FocusOrchestrati
 
     BINDINGS = [
         # Lifecycle
-        Binding("ctrl+a", "apply"),
-        Binding("ctrl+r", "reset"),
-        Binding("ctrl+c", "dismiss"),
+        Keybind.OptionsApply.  as_binding("apply",   "Apply",   show=True),
+        Keybind.OptionsReset.  as_binding("reset",   "Reset",   show=True),
+        Keybind.OptionsDismiss.as_binding("dismiss", "Dismiss", show=True),
 
         # Focus graph navigation
-        Binding("alt+up", "focus_neighbour('up')"),
-        Binding("alt+down", "focus_neighbour('down')"),
+        Keybind.FocusUp.  as_binding("focus_neighbour('up')",   show=False),
+        Keybind.FocusDown.as_binding("focus_neighbour('down')", show=False),
 
         # Fall-through for key-events not processed by children - indicates cursor navigation at boundaries
         # (up from first action item, down from last option row) - translates to a focus_neighbour + set cursor.
-        Binding("up", "navigate_cursor('up')", show=False),
-        Binding("down", "navigate_cursor('down')", show=False),
+        Keybind.CursorUp.  as_binding("navigate_cursor('up')",   show=False),
+        Keybind.CursorDown.as_binding("navigate_cursor('down')", show=False),
     ]
 
     FOCUS_GRAPH = FocusGraph(

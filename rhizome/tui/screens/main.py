@@ -8,6 +8,7 @@ from textual.screen import Screen
 from textual.widgets import TabbedContent, TabPane
 
 from rhizome.app.options import Options
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Role, UserFeedback
 from rhizome.tui.widgets import ChatPane, LoggingPane
 from rhizome.tui.widgets.chat_pane import ChatPane
@@ -100,13 +101,11 @@ class MainScreen(Screen):
     """Primary screen: composes tabbed panes and a StatusBar."""
 
     BINDINGS = [
-        ("ctrl+n", "new_tab", "New tab"),
-        # priority=True so the screen captures Ctrl+W before focused child
-        # widgets (e.g. ChatInput) consume it.
-        Binding("ctrl+w", "close_tab", "Close tab", priority=True),
-        Binding("ctrl+pagedown", "next_tab", "Next tab", show=False, priority=True),
-        Binding("ctrl+pageup", "prev_tab", "Previous tab", show=False, priority=True),
-        Binding("ctrl+l", "refocus_input", "Refocus input", show=False, priority=True),
+        Keybind.NewTab.   as_binding("new_tab",    "New tab",      show=True),
+        Keybind.CloseTab. as_binding("close_tab",  "Close tab",    show=True, priority=True),
+        Keybind.NextTab.  as_binding("next_tab",   "Next tab",     show=True, priority=True),
+        Keybind.PrevTab.  as_binding("prev_tab",   "Previous tab", show=True, priority=True),
+        Keybind.FocusChat.as_binding("focus_chat", "Focus chat",   show=True, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -241,7 +240,7 @@ class MainScreen(Screen):
     def action_prev_tab(self) -> None:
         self._switch_tab(1)
 
-    def action_refocus_input(self) -> None:
+    def action_focus_chat(self) -> None:
         """Focus the chat input in the active tab."""
         tabs = self.query_one("#tabs", TabbedContent)
         pane = tabs.active_pane

@@ -20,12 +20,12 @@ from typing import Any
 
 from rich.text import Text
 
-from textual.binding import Binding
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
 from rhizome.app.resource_viewer.linker import ResourceLinkerVM
 from rhizome.db import Resource
+from rhizome.tui.keybindings import Keybind
 
 # Boundary sentinel for the row-signature tuple. Negative is safe — resource ids are positive
 # autoincrement ints, so it can't collide with a real row's id.
@@ -52,14 +52,13 @@ class ResourceLinkerTable(DataTable):
     """Staged link/unlink table over ``ResourceLinkerVM``. See module docstring."""
 
     BINDINGS = [
-        Binding("space", "toggle_link", show=False),
-        Binding("ctrl+f", "focus_search", show=False),
+        Keybind.Toggle.             as_binding("toggle_link",  show=False),
+        Keybind.ResourceFocusSearch.as_binding("focus_search", show=False),
         # Commit / discard the staged diff without travelling to the Accept/Cancel menu — mirrors a
         # ConfirmableTextArea (ctrl+enter accepts, esc discards). ``ctrl+j`` is the legacy-terminal
         # alias for ctrl+enter. Both confirm/discard bubble when nothing is staged.
-        Binding("ctrl+enter", "confirm_edits", show=False),
-        Binding("ctrl+j", "confirm_edits", show=False),
-        Binding("escape", "discard_edits", show=False),
+        Keybind.ResourceConfirmEdits.as_binding("confirm_edits", show=False),
+        Keybind.CloseMenu.           as_binding("discard_edits", show=False),
     ]
 
     DEFAULT_CSS = """

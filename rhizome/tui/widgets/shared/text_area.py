@@ -15,9 +15,10 @@ It additionally bubbles ``ctrl+e`` so the parent view's "toggle edit instruction
 from __future__ import annotations
 
 from textual.actions import SkipAction
-from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import TextArea
+
+from rhizome.tui.keybindings import Keybind
 
 
 class ConfirmableTextArea(TextArea):
@@ -25,8 +26,8 @@ class ConfirmableTextArea(TextArea):
     See the module docstring for the rationale."""
 
     BINDINGS = [
-        Binding("ctrl+j", "accept_edits", show=False),
-        Binding("ctrl+a", "select_all", show=False),
+        Keybind.EditAccept.   as_binding("accept_edits", show=False),
+        Keybind.EditSelectAll.as_binding("select_all",   show=False),
     ]
 
     class AcceptEditsRequested(Message):
@@ -41,7 +42,7 @@ class ProposalTextArea(ConfirmableTextArea):
     parent's ``toggle_edit_instructions`` binding fires even with this TextArea focused."""
 
     BINDINGS = [
-        Binding("ctrl+e", "bubble_ctrl_e", show=False),
+        Keybind.ProposalToggleEditInstructions.as_binding("bubble_ctrl_e", show=False),
     ]
 
     def action_bubble_ctrl_e(self) -> None:

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static, Tree
 
+from rhizome.tui.keybindings import Keybind, binding_hint
 from rhizome.tui.widgets import TopicTree
 
 
@@ -17,8 +17,9 @@ class TopicSelectorScreen(ModalScreen[tuple[int, str] | None]):
     """
 
     BINDINGS = [
-        Binding("escape", "cancel", show=False),
-        Binding("enter,ctrl+j", "select", show=False),
+        Keybind.DialogConfirm.as_binding("select", "Select", show=True),
+        Keybind.DialogBack   .as_binding("back",   "Back",   show=True),
+        Keybind.DialogCancel .as_binding("cancel", "Cancel", show=True, priority=True),
     ]
 
     def __init__(self, *, session_factory=None, **kwargs) -> None:
@@ -45,7 +46,7 @@ class TopicSelectorScreen(ModalScreen[tuple[int, str] | None]):
 
     def compose(self):
         with Vertical():
-            yield Static("Select a topic  (arrows navigate, ctrl+enter select, esc cancel)")
+            yield Static(f"Select a topic  (arrows navigate, {binding_hint(self.BINDINGS, sep=', ')})")
             yield TopicTree(session_factory=self._session_factory)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -57,6 +58,10 @@ class TopicSelectorScreen(ModalScreen[tuple[int, str] | None]):
         node = tree.cursor_node
         if node is not None and node.data is not None:
             self.dismiss((node.data.id, node.data.name))
+
+    # Single-step picker: "back" and "cancel" both just leave.
+    def action_back(self) -> None:
+        self.dismiss(None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

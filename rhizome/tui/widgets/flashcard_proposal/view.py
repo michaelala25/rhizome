@@ -45,7 +45,6 @@ the three details TextAreas, both ChoiceLists, and the edit-instructions area. T
 from __future__ import annotations
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Button, Static
@@ -59,6 +58,7 @@ from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 from rhizome.tui.widgets.flashcard_proposal.shared_topic_setter import SharedTopicSetter
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
+from rhizome.tui.keybindings import Keybind
 
 
 # Final-state colours shown in the collapsed DONE summary header. Matched against the commit-
@@ -174,27 +174,27 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
 
     BINDINGS = [
         # alt+arrows: always-on focus orchestration (works from any focused descendant).
-        Binding("alt+up", "focus_neighbour('up')", show=False),
-        Binding("alt+down", "focus_neighbour('down')", show=False),
-        Binding("alt+left", "focus_neighbour('left')", show=False),
-        Binding("alt+right", "focus_neighbour('right')", show=False),
+        Keybind.FocusUp   .as_binding("focus_neighbour('up')",    show=False),
+        Keybind.FocusDown .as_binding("focus_neighbour('down')",  show=False),
+        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
+        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
         # Plain up/down catch-all: leaves either don't bind these (SharedTopicSetter) or report
         # them as inactive via ``check_action`` when at a boundary (FlashcardList,
         # FlashcardProposalChoices). Either way the key bubbles here.
-        Binding("up", "navigate_cursor('up')", show=False),
-        Binding("down", "navigate_cursor('down')", show=False),
+        Keybind.CursorUp  .as_binding("navigate_cursor('up')",   show=False),
+        Keybind.CursorDown.as_binding("navigate_cursor('down')", show=False),
         # ``e`` from anywhere that doesn't consume it (i.e. FlashcardList) jumps focus into the
         # details panel, equivalent to alt+right from the flashcard list.
-        Binding("e", "focus_neighbour('right')", show=False),
-        Binding("ctrl+a", "accept_all", show=False),
-        Binding("ctrl+r", "reset", show=False),
-        Binding("ctrl+c", "cancel", show=False),
-        Binding("ctrl+e", "toggle_edit_instructions", show=False),
-        Binding("shift+t", "set_topic_all", show=False),
+        Keybind.ProposalEdit.as_binding("focus_neighbour('right')", show=False),
+        Keybind.ProposalAcceptAll.             as_binding("accept_all",                show=False),
+        Keybind.ProposalReset.                 as_binding("reset",                     show=False),
+        Keybind.ProposalCancel.                as_binding("cancel",                    show=False),
+        Keybind.ProposalToggleEditInstructions.as_binding("toggle_edit_instructions", show=False),
+        Keybind.ProposalSetTopicAll.           as_binding("set_topic_all",             show=False),
         # DONE-state collapse toggle — same dual-meaning ``enter`` strategy as commit-proposal.
         # The action no-ops in EDITING so it doesn't fight with SharedTopicSetter / TextArea /
         # ChoiceList enter consumers there.
-        Binding("enter", "toggle_collapsed", show=False),
+        Keybind.ProposalToggleCollapsed.as_binding("toggle_collapsed", show=False),
     ]
 
     # Static focus graph. The fallback list on ``fp-details-testing-notes``'s ``down`` skips
@@ -289,9 +289,9 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
 
     def _flashcard_list_hints_text(self) -> str:
         rows = [
-            ("t", "set topic"),
-            ("shift+t", "set topic for all"),
-            ("d", "exclude"),
+            (Keybind.ProposalSetTopic.default_key,      "set topic"),
+            (Keybind.ProposalSetTopicAll.default_key,   "set topic for all"),
+            (Keybind.ProposalToggleExclude.default_key, "exclude"),
             ("alt+←↑→↓", "navigate"),
         ]
         return "   ".join(f"[#a0a0a0]{k}[/] [#707070]{label}[/]" for k, label in rows)

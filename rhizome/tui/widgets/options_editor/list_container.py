@@ -4,12 +4,12 @@ from typing import Any
 from rich.text import Text
 from textual.actions import SkipAction
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.events import DescendantFocus, Focus
 from textual.widgets import Rule, Static
 
 from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.app.options import (
     OptionNamespace,
     OptionNamespaceNode,
@@ -44,10 +44,10 @@ class OptionsListContainer(VerticalScroll):
 
     BINDINGS = [
         # Cursor navigation (rows arranged top-to-bottom with 0 at the top, hence up == -1)
-        Binding("up", "navigate_cursor(-1)", show=False),
-        Binding("down", "navigate_cursor(1)", show=False),
-        Binding("pageup", "navigate_cursor(-5)", show=False),
-        Binding("pagedown", "navigate_cursor(5)", show=False)
+        Keybind.CursorUp.  as_binding("navigate_cursor(-1)", show=False),
+        Keybind.CursorDown.as_binding("navigate_cursor(1)",  show=False),
+        Keybind.PageUp.    as_binding("navigate_cursor(-5)", show=False),
+        Keybind.PageDown.  as_binding("navigate_cursor(5)",  show=False),
     ]
 
     def __init__(self, vm: OptionsEditorVM, **kwargs: Any) -> None:

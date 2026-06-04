@@ -35,7 +35,6 @@ from __future__ import annotations
 from typing import Any
 
 from textual.actions import SkipAction
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import DescendantBlur, DescendantFocus
 from textual.widgets import Static
@@ -47,6 +46,7 @@ from rhizome.tui.widgets.browser.topics.actions import ActionMenu
 from rhizome.tui.widgets.browser.topics.delete import TopicsDeleteMenu
 from rhizome.tui.widgets.browser.topics.details import TopicDetails
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
+from rhizome.tui.keybindings import Keybind
 from rhizome.app.browser.topics.panel import TopicTreePanelVM
 
 _logger = get_logger("browser.topic_tree_panel")
@@ -103,15 +103,15 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
     """
 
     BINDINGS = [
-        Binding("alt+left", "focus_neighbour('left')", show=False),
-        Binding("alt+right", "focus_neighbour('right')", show=False),
-        Binding("alt+up", "focus_neighbour('up')", show=False),
-        Binding("alt+down", "focus_neighbour('down')", show=False),
-        Binding("r", "rename", show=False),
+        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
+        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.FocusUp   .as_binding("focus_neighbour('up')",    show=False),
+        Keybind.FocusDown .as_binding("focus_neighbour('down')",  show=False),
+        Keybind.BrowserRenameTopic.as_binding("rename", "Rename", show=True),
         # ``c`` creates under the cursor (``(root)`` cursor → no parent); ``shift+c`` always at root.
-        Binding("c", "create", show=False),
-        Binding("shift+c", "create_root", show=False),
-        Binding("d", "delete", show=False),
+        Keybind.BrowserCreateTopic.      as_binding("create",      "Create",         show=True),
+        Keybind.BrowserCreateTopicAtRoot.as_binding("create_root", "Create at root", show=True),
+        Keybind.BrowserDeleteTopic.      as_binding("delete",      "Delete",         show=True),
     ]
 
     # Static focus graph. Tree-down has a two-element fallback so when ``-deleting`` is active the

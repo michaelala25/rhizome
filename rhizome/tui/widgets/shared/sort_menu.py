@@ -25,21 +25,21 @@ from __future__ import annotations
 from typing import Any, Callable, Generic, TypeVar
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.widgets import Static
 
 from rhizome.app.browser.shared.sortable import SortableVMMixin, SortDirection
+from rhizome.tui.keybindings import Keybind
 
 VM = TypeVar("VM", bound=SortableVMMixin)
 
 
 class SortMenu(Static, Generic[VM], can_focus=True):
     BINDINGS = [
-        Binding("left", "cursor_left", show=False),
-        Binding("right", "cursor_right", show=False),
-        Binding("enter", "apply", show=False),
-        Binding("r", "reset", show=False),
-        Binding("escape", "cancel", show=False),
+        Keybind.CursorLeft. as_binding("cursor_left",  show=False),
+        Keybind.CursorRight.as_binding("cursor_right", show=False),
+        Keybind.MenuConfirm.as_binding("apply",        show=False),
+        Keybind.MenuReset.  as_binding("reset",        show=False),
+        Keybind.CloseMenu.  as_binding("cancel",       show=False),
     ]
 
     def __init__(

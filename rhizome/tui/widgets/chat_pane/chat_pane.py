@@ -12,7 +12,6 @@ to the input VM directly — the pane is no longer in the path.
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
 
@@ -20,6 +19,7 @@ from textual.widget import Widget
 
 from rhizome.tui.widgets.resource_viewer import ResourceViewer
 from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
 from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
 from rhizome.tui.widgets.chat_pane.status import StatusBar
@@ -54,8 +54,8 @@ class DepthWrapper(Vertical):
 class ChatPane(ViewBase[ChatPaneVM]):
 
     BINDINGS = [
-        Binding("shift+tab", "cycle_mode", "Cycle mode", show=False),
-        Binding("ctrl+b", "cycle_verbosity", "Cycle verbosity", show=False, priority=True),
+        Keybind.ChatCycleMode.     as_binding("cycle_mode",      "Cycle mode",      show=False),
+        Keybind.ChatCycleVerbosity.as_binding("cycle_verbosity", "Cycle verbosity", show=False, priority=True),
         # Commit-mode bindings. Guarded inside the action via ``check_action`` so they only fire
         # while ``state == COMMIT``. Priority handling:
         #   - up/down: priority so VerticalScroll's scroll bindings don't eat them when the
@@ -68,15 +68,15 @@ class ChatPane(ViewBase[ChatPaneVM]):
         #   - ctrl+c: priority — always behaves the same regardless of focus.
         #   - ctrl+up / ctrl+down: state-dispatched feed nav (see the nav_up/nav_down bindings
         #     below); non-priority so the docked resource viewer can claim them when focused.
-        Binding("up", "commit_cursor_up", "Commit: cursor up", show=False, priority=True),
-        Binding("down", "commit_cursor_down", "Commit: cursor down", show=False, priority=True),
-        Binding("space", "commit_toggle", "Commit: toggle", show=False),
-        Binding("enter", "commit_toggle", "Commit: toggle", show=False),
-        Binding("ctrl+j", "commit_submit", "Commit: submit", show=False),
+        Keybind.CursorUp.  as_binding("commit_cursor_up",   "Commit: cursor up",   show=False, priority=True),
+        Keybind.CursorDown.as_binding("commit_cursor_down", "Commit: cursor down", show=False, priority=True),
+        Keybind.Toggle.     as_binding("commit_toggle", "Commit: toggle", show=False),
+        Keybind.MenuConfirm.as_binding("commit_toggle", "Commit: toggle", show=False),
+        Keybind.ChatCommitSubmit.as_binding("commit_submit", "Commit: submit", show=False),
         # ctrl+c dispatches by state: copy selection → exit commit (in COMMIT) → abandon turn
         # (CONVERSATION + current branch busy). Lives on the pane, not commit-prefixed, so it
         # bypasses ``check_action``'s commit-only gate.
-        Binding("ctrl+c", "cancel", "Cancel", show=False, priority=False),
+        Keybind.ChatCancel.as_binding("cancel", "Cancel", show=False, priority=False),
         # ctrl+up / ctrl+down do double duty depending on ``vm.state``: in COMMIT they flip focus
         # between the message-area cursor and the chat input (the legacy commit-mode behavior); in
         # CONVERSATION they walk the navigable feed entries (interrupts, branch indicators). Both
@@ -87,12 +87,12 @@ class ChatPane(ViewBase[ChatPaneVM]):
         # they bubble here from any chat focus. The one widget that *does* claim them is the docked
         # resource viewer, which binds them for its own up/down half-switch — making them priority
         # would wrongly steal them back from the panel.
-        Binding("ctrl+up", "nav_up", "Navigate up", show=False),
-        Binding("ctrl+down", "nav_down", "Navigate down", show=False),
+        Keybind.ChatNavUp.  as_binding("nav_up",   "Navigate up",   show=False),
+        Keybind.ChatNavDown.as_binding("nav_down", "Navigate down", show=False),
         # Resource viewer: alt+r focuses (opening it first if closed), alt+w closes. Non-priority.
         # (ctrl+shift+* is avoided — terminals can't distinguish it from ctrl+*.)
-        Binding("alt+r", "focus_resource_viewer", show=False),
-        Binding("alt+w", "close_resource_viewer", show=False),
+        Keybind.ChatFocusResourceViewer.as_binding("focus_resource_viewer", show=False),
+        Keybind.ChatCloseResourceViewer.as_binding("close_resource_viewer", show=False),
     ]
 
     DEFAULT_CSS = """

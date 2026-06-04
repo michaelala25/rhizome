@@ -18,6 +18,7 @@ from typing import ClassVar
 from rich.text import Text
 
 from rhizome.app.commit_proposal.commit_proposal import CommitProposalVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
@@ -45,10 +46,10 @@ class CommitProposalChoices(ChoiceList[CommitProposalVM]):
     # Per-label keybinding + description shown alongside the choice. Kept here rather than in the
     # parent's BINDINGS list so the rendering owns the display strings outright.
     _ACTION_INFO: ClassVar[dict[str, tuple[str, str]]] = {
-        "Approve": ("ctrl+a", "approve (including all user edits)"),
-        "Edit":    ("ctrl+e", "toggle edit instructions"),
-        "Reset":   ("ctrl+r", "reset all user edits"),
-        "Cancel":  ("ctrl+c", "cancel/deny the commit proposal"),
+        "Approve": (Keybind.ProposalAcceptAll.default_key,              "approve (including all user edits)"),
+        "Edit":    (Keybind.ProposalToggleEditInstructions.default_key, "toggle edit instructions"),
+        "Reset":   (Keybind.ProposalReset.default_key,                  "reset all user edits"),
+        "Cancel":  (Keybind.ProposalCancel.default_key,                 "cancel/deny the commit proposal"),
     }
 
     # ------------------------------------------------------------------

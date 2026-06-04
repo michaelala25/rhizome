@@ -34,7 +34,6 @@ from rich.text import Text
 
 from textual import on
 from textual.actions import SkipAction
-from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Rule, Static
 
@@ -47,6 +46,7 @@ from rhizome.tui.widgets.resource_viewer.preview import ResourcePreview
 from rhizome.tui.widgets.resource_viewer.status import ResourceStatus
 from rhizome.tui.widgets.shared.search_bar import SearchBar
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableViewBase
 
 
@@ -179,19 +179,15 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
     """
 
     BINDINGS = [
-        Binding("alt+up", "focus_neighbour('up')", show=False),
-        Binding("alt+down", "focus_neighbour('down')", show=False),
-        # Temporary testing shortcut: pick the panel's topic via the modal selector. Likely becomes
-        # a proper <topic> action/button later.
-        Binding("ctrl+t", "select_topic", show=False),
+        Keybind.FocusUp.  as_binding("focus_neighbour('up')",   show=False),
+        Keybind.FocusDown.as_binding("focus_neighbour('down')", show=False),
+        Keybind.ResourceSelectTopic.as_binding("select_topic", show=False),
         # Panel-internal focus / create shortcuts (fire from anywhere in the panel; no priority
         # ancestor grabs these keys). ctrl+up/down jump between the two halves; alt+r / alt+l name
         # the halves directly (ctrl+shift+* avoided — terminals can't distinguish it from ctrl+*).
-        Binding("alt+r", "focus_resource_tree", show=False),
-        Binding("ctrl+up", "focus_resource_tree", show=False),
-        Binding("alt+l", "focus_linker", show=False),
-        Binding("ctrl+down", "focus_linker", show=False),
-        Binding("ctrl+n", "create_resource", show=False),
+        Keybind.ResourceFocusTree.  as_binding("focus_resource_tree", show=False),
+        Keybind.ResourceFocusLinker.as_binding("focus_linker",        show=False),
+        Keybind.ResourceCreate.     as_binding("create_resource",     show=False),
     ]
 
     FOCUS_GRAPH = FocusGraph(

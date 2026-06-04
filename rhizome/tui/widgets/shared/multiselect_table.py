@@ -15,21 +15,21 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from textual.binding import Binding
 from textual.widgets import DataTable
 
 from rhizome.app.browser.shared.multiselectable import MultiSelectableVMMixin
+from rhizome.tui.keybindings import Keybind
 
 VM = TypeVar("VM", bound=MultiSelectableVMMixin)
 
 
 class MultiSelectableDataTable(DataTable, Generic[VM]):
     BINDINGS = [
-        Binding("space", "toggle_selection", show=False),
+        Keybind.Toggle.    as_binding("toggle_selection", show=False),
         # Bound as two separate keys (not a "shift+up,shift+down" combo) because each
         # direction needs its own cursor step after the idempotent add.
-        Binding("shift+down", "select_down", show=False),
-        Binding("shift+up", "select_up", show=False),
+        Keybind.SelectDown.as_binding("select_down", show=False),
+        Keybind.SelectUp.  as_binding("select_up",   show=False),
     ]
 
     def __init__(self, view_model: VM, **kwargs: Any) -> None:

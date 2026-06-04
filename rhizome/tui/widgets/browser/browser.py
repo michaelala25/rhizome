@@ -14,7 +14,6 @@ from __future__ import annotations
 from rich.text import Text
 
 from textual.actions import SkipAction
-from textual.binding import Binding
 from textual.containers import Vertical
 from textual.events import DescendantBlur, DescendantFocus
 from textual.widgets import ContentSwitcher, Static
@@ -27,6 +26,7 @@ from rhizome.app.browser.tab_base import BrowserTabVM
 from rhizome.tui.widgets.browser.topics.panel import TopicTreePanel
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
+from rhizome.tui.keybindings import Keybind
 from rhizome.app.browser.browser import BrowserVM
 
 _logger = get_logger("browser.view")
@@ -82,13 +82,13 @@ class Browser(NavigableFeedItemViewBase[BrowserVM], FocusOrchestrationMixin):
     """
 
     BINDINGS = [
-        Binding("ctrl+right", "next_tab", show=False),
-        Binding("ctrl+left", "prev_tab", show=False),
+        Keybind.BrowserNextTab.as_binding("next_tab", show=False),
+        Keybind.BrowserPrevTab.as_binding("prev_tab", show=False),
         # Cross-region fall-through only — fires when the focused region's own alt+arrow action
         # raised SkipAction (i.e., the step had no in-graph target). Up/down have no cross-region
         # meaning, so they're left for the regions alone.
-        Binding("alt+right", "focus_neighbour('right')", show=False),
-        Binding("alt+left", "focus_neighbour('left')", show=False),
+        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
     ]
 
     def compose(self):

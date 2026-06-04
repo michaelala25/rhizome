@@ -31,7 +31,9 @@ class RhizomeApp(App):
     TITLE = "rhizome"
 
     BINDINGS = [
-        Binding("ctrl+f12", "toggle_profile", "Toggle profiler", show=False, priority=True),
+        # Developer tool (toggles the pyinstrument profiler). Private + hidden from the HelpPanel.
+        Binding("ctrl+f12", "toggle_profile", "Toggle profiler", id="app._toggle_profile",
+                show=False, system=True, priority=True),
     ]
 
     CSS = """

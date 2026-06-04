@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.binding import Binding
+from rhizome.tui.keybindings import Keybind
 from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
@@ -33,13 +33,13 @@ class FileBrowser(Widget, can_focus=True):
     """
 
     BINDINGS = [
-        Binding("up", "cursor_up", show=False),
-        Binding("down", "cursor_down", show=False),
-        Binding("left", "go_parent", show=False),
-        Binding("right", "enter_dir", show=False),
-        Binding("enter", "select", show=False),
-        Binding("home", "go_home", show=False),
-        Binding("escape", "dismiss", show=False),
+        Keybind.CursorUp.           as_binding("cursor_up",   show=False),
+        Keybind.CursorDown.         as_binding("cursor_down", show=False),
+        Keybind.FileBrowserParent.  as_binding("go_parent",   show=False),
+        Keybind.FileBrowserEnterDir.as_binding("enter_dir",   show=False),
+        Keybind.MenuConfirm.        as_binding("select",      show=False),
+        Keybind.FileBrowserHome.    as_binding("go_home",     show=False),
+        Keybind.CloseMenu.          as_binding("dismiss",     show=False),
     ]
 
     DEFAULT_CSS = """

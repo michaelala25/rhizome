@@ -5,11 +5,11 @@ from __future__ import annotations
 from rich.style import Style
 from rich.text import Text
 
-from textual.binding import Binding
 from textual.message import Message
 from textual.widgets._tree import TreeNode, TOGGLE_STYLE
 
 from rhizome.db import Topic
+from rhizome.tui.keybindings import Keybind
 from .topic_tree import TopicTree
 
 _CHECKED_COLOR = Style(color="rgb(100,200,100)")
@@ -47,8 +47,8 @@ class TogglableTopicTree(TopicTree):
     """
 
     BINDINGS = [
-        Binding("space", "toggle_check", show=False),
-        Binding("enter", "confirm", "Confirm", show=False, priority=True),
+        Keybind.Toggle.     as_binding("toggle_check", show=False),
+        Keybind.MenuConfirm.as_binding("confirm", "Confirm", show=False, priority=True),
     ]
 
     class Confirmed(Message):

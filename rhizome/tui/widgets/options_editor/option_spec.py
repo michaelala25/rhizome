@@ -3,7 +3,6 @@ from typing import Any
 from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
@@ -20,6 +19,7 @@ from rhizome.app.options import (
     ToggleOptionSpec,
 )
 from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
 
 
@@ -165,7 +165,7 @@ class SelectOptionSpecView(OptionSpecView):
     }
     """
 
-    BINDINGS = [Binding("enter", "edit", show=False)]
+    BINDINGS = [Keybind.MenuConfirm.as_binding("edit", show=False)]
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
@@ -262,8 +262,8 @@ class _OptionTextArea(ConfirmableTextArea):
     """
 
     BINDINGS = [
-        Binding("enter", "accept_edits", show=False),
-        Binding("escape", "cancel_edits", show=False),
+        Keybind.MenuConfirm.as_binding("accept_edits", show=False),
+        Keybind.CloseMenu.  as_binding("cancel_edits", show=False),
     ]
 
     class CancelEditsRequested(Message):
@@ -317,7 +317,7 @@ class TextEditOptionSpecView(OptionSpecView):
     }
     """
 
-    BINDINGS = [Binding("enter", "edit", show=False)]
+    BINDINGS = [Keybind.MenuConfirm.as_binding("edit", show=False)]
 
     def compose(self) -> ComposeResult:
         yield from super().compose()
@@ -464,7 +464,7 @@ class ToggleOptionSpecView(OptionSpecView):
     }
     """
 
-    BINDINGS = [Binding("enter", "toggle", show=False)]
+    BINDINGS = [Keybind.MenuConfirm.as_binding("toggle", show=False)]
 
     def compose(self) -> ComposeResult:
         yield from super().compose()

@@ -25,11 +25,11 @@ from __future__ import annotations
 
 from rich.style import Style
 from rich.text import Text
-from textual.binding import Binding
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
 from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 
 
@@ -45,8 +45,8 @@ class FlashcardList(DataTable, can_focus=True):
     """
 
     BINDINGS = [
-        Binding("d", "toggle_exclude", show=False),
-        Binding("t", "set_topic", show=False),
+        Keybind.ProposalToggleExclude.as_binding("toggle_exclude", show=False),
+        Keybind.ProposalSetTopic.     as_binding("set_topic",      show=False),
         # ``up`` / ``down`` use the inherited ``DataTable`` bindings — see module docstring for
         # the cursor-routing rationale. ``e`` is not bound locally either; it bubbles to the
         # parent FlashcardProposal's "e" binding, which forwards focus into the details panel.

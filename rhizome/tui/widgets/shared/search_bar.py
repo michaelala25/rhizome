@@ -44,12 +44,12 @@ from time import monotonic
 from typing import Any, Generic, TypeVar
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.events import Click
 from textual.widgets import Input, Static
 
 from rhizome.app.browser.shared.searchable import SearchableVMMixin
+from rhizome.tui.keybindings import Keybind
 
 VM = TypeVar("VM", bound=SearchableVMMixin)
 
@@ -66,7 +66,7 @@ class _SearchField(Input):
     borderless inside the parent's bordered chrome via ``compact=True``."""
 
     BINDINGS = [
-        Binding("escape", "handle_escape", show=False),
+        Keybind.CloseMenu.as_binding("handle_escape", show=False),
     ]
 
     # ``background: transparent`` overrides Input's default ``$surface`` so the inner field

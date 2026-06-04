@@ -18,10 +18,10 @@ import inspect
 from typing import Any, ClassVar, Generic, Literal, TypeVar
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.widgets import Static
 
 from rhizome.app.vm import ViewModelBase
+from rhizome.tui.keybindings import Keybind
 
 VM = TypeVar("VM", bound=ViewModelBase)
 
@@ -37,12 +37,12 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
     HINT: ClassVar[str | None] = None
 
     BINDINGS = [
-        Binding("left", "cursor_left", show=False),
-        Binding("right", "cursor_right", show=False),
-        Binding("up", "cursor_up", show=False),
-        Binding("down", "cursor_down", show=False),
-        Binding("enter", "confirm", show=False),
-        Binding("escape", "cancel", show=False),
+        Keybind.CursorLeft. as_binding("cursor_left",  show=False),
+        Keybind.CursorRight.as_binding("cursor_right", show=False),
+        Keybind.CursorUp.   as_binding("cursor_up",    show=False),
+        Keybind.CursorDown. as_binding("cursor_down",  show=False),
+        Keybind.MenuConfirm.as_binding("confirm",      show=False),
+        Keybind.CloseMenu.  as_binding("cancel",       show=False),
     ]
 
     def __init__(self, view_model: VM | None = None, **kwargs: Any) -> None:

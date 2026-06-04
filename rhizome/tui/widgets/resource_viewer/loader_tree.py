@@ -31,7 +31,6 @@ from rich.cells import cell_len
 from rich.style import Style
 from rich.text import Text
 
-from textual.binding import Binding
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
@@ -40,6 +39,7 @@ from rhizome.db import Resource
 from rhizome.db.models import ResourceSection
 from rhizome.resources import ResourceLoadType
 from rhizome.tui.widgets.shared.multiline_tree import MultilineTree
+from rhizome.tui.keybindings import Keybind
 
 # Load-state glyph colours. Green = indexed, amber = context-stuffed; dim grey for unloaded and for
 # the secondary info text (token/section/chunk counts).
@@ -62,12 +62,11 @@ class ResourceLoaderTree(MultilineTree[ResourceTreeNodeData]):
     """Load/unload tree over ``ResourceLoaderVM``. See module docstring."""
 
     BINDINGS = [
-        Binding("space", "toggle_index", show=False),
+        Keybind.Toggle.as_binding("toggle_index", show=False),
         # ctrl+enter toggles CONTEXT. ``ctrl+j`` is kept alongside as the legacy-terminal alias —
         # many terminals emit it for ctrl+enter (both are LF), so the binding still fires without the
         # enhanced keyboard protocol.
-        Binding("ctrl+enter", "toggle_context", show=False),
-        Binding("ctrl+j", "toggle_context", show=False),
+        Keybind.ResourceToggleContext.as_binding("toggle_context", show=False),
     ]
 
     DEFAULT_CSS = """

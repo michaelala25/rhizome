@@ -9,12 +9,12 @@ from __future__ import annotations
 from typing import Any
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from rhizome.db.models import EntryType
+from rhizome.tui.keybindings import Keybind, binding_hint
 
 
 class TypePickerScreen(ModalScreen[EntryType | None]):
@@ -41,10 +41,11 @@ class TypePickerScreen(ModalScreen[EntryType | None]):
     """
 
     BINDINGS = [
-        Binding("up", "cursor_up", show=False),
-        Binding("down", "cursor_down", show=False),
-        Binding("enter", "select", show=False),
-        Binding("escape", "cancel", show=False),
+        Keybind.CursorUp.     as_binding("cursor_up",   show=False),
+        Keybind.CursorDown.   as_binding("cursor_down", show=False),
+        Keybind.DialogConfirm.as_binding("select", "Select", show=True),
+        Keybind.DialogBack.   as_binding("cancel", "Cancel", show=True),
+        Keybind.DialogCancel. as_binding("cancel", "Cancel", show=True)
     ]
 
     def __init__(self, *, current: EntryType | None = None, **kwargs: Any) -> None:
@@ -59,7 +60,7 @@ class TypePickerScreen(ModalScreen[EntryType | None]):
     def compose(self):
         with Vertical():
             yield Static(
-                "Select entry type  (↑/↓ navigate, enter select, esc cancel)",
+                f"Select entry type  (↑/↓ navigate, {binding_hint(self.BINDINGS, sep=', ')})",
                 id="type-picker-header",
             )
             yield Static(self._render_options(), id="type-picker-options")

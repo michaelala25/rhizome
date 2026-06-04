@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 from textual import events
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.events import Focus
 from textual.message import Message
@@ -24,6 +23,7 @@ from textual.widgets import Static
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
 from rhizome.app.chat_pane.branch import BranchPointVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId
 
@@ -45,8 +45,8 @@ class RenameTextArea(ConfirmableTextArea):
     """
 
     BINDINGS = [
-        Binding("enter", "accept_edits", show=False),
-        Binding("escape", "cancel_edits", show=False),
+        Keybind.MenuConfirm.as_binding("accept_edits", show=False),
+        Keybind.CloseMenu.  as_binding("cancel_edits", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -96,11 +96,11 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
     # framed as expand/collapse (descend into the leftmost child / pop back to this indicator's
     # parent), which reads more naturally for a branch tree than ascend/descend.
     BINDINGS = [
-        Binding("alt+left", "sibling_left", "Sibling left", show=False),
-        Binding("alt+right", "sibling_right", "Sibling right", show=False),
-        Binding("alt+up", "ascend", "Collapse", show=False),
-        Binding("alt+down", "descend", "Expand", show=False),
-        Binding("r", "begin_rename", "Rename", show=False),
+        Keybind.ChatBranchSiblingLeft. as_binding("sibling_left",  "Sibling left",  show=False),
+        Keybind.ChatBranchSiblingRight.as_binding("sibling_right", "Sibling right", show=False),
+        Keybind.ChatBranchAscend.      as_binding("ascend",        "Collapse",      show=False),
+        Keybind.ChatBranchDescend.     as_binding("descend",       "Expand",        show=False),
+        Keybind.ChatBranchRename.      as_binding("begin_rename",  "Rename",        show=False),
     ]
 
     # Override the navigable-base border so only the top/bottom edges draw — the bare horizontal

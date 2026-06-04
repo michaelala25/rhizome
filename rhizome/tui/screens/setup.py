@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Center, Vertical
 from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from rhizome.credentials import store_api_key
 from rhizome.app.options import Options
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.legacy.welcome import ASCII_ART
 
 
@@ -17,7 +17,8 @@ class SetupScreen(Screen[bool]):
     """Two-step setup wizard: name → API key."""
 
     BINDINGS = [
-        Binding("escape", "go_back", "Back", show=False),
+        Keybind.DialogBack.  as_binding("back",   "Back",   show=True),
+        Keybind.DialogCancel.as_binding("cancel", "Cancel", show=True, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -163,7 +164,7 @@ class SetupScreen(Screen[bool]):
         store_api_key("anthropic", key)
         self.dismiss(True)
 
-    def action_go_back(self) -> None:
+    def action_back(self) -> None:
         step_key = self.query_one("#step-key")
         if step_key.styles.display != "none":
             step_key.styles.display = "none"
@@ -171,3 +172,6 @@ class SetupScreen(Screen[bool]):
             self.query_one("#name-input", Input).focus()
         else:
             self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)

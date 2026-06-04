@@ -15,11 +15,11 @@ from typing import Any
 from rich.style import Style
 from rich.text import Text
 
-from textual.binding import Binding
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
 from rhizome.app.browser.topics.tree import TopicTreeVM
+from rhizome.tui.keybindings import Keybind
 from rhizome.db import Topic
 
 _CHECKED_STYLE = Style(color="rgb(100,200,100)")
@@ -42,7 +42,7 @@ class TopicTree(Tree[Topic]):
     changes through user-driven event handlers."""
 
     BINDINGS = [
-        Binding("space", "toggle_selection", show=False),
+        Keybind.Toggle.as_binding("toggle_selection", show=False),
     ]
 
     DEFAULT_CSS = """

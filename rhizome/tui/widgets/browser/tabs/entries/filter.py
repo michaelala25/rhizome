@@ -30,6 +30,7 @@ from textual.widgets import Input, Static
 from rhizome.db.models import EntryType
 
 from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.tui.keybindings import Keybind
 
 if TYPE_CHECKING:
     from .view import EntryTab
@@ -59,7 +60,7 @@ class _OneOfInput(Input):
     placeholder doubles as the format hint."""
 
     BINDINGS = [
-        Binding("escape", "handle_escape", show=False),
+        Keybind.BrowserFilterCloseSubarea.as_binding("handle_escape", show=False),
     ]
 
     def __init__(self, dialog: "FilterMenu", **kwargs: Any) -> None:
@@ -78,17 +79,19 @@ class FilterMenu(Vertical, can_focus=True):
     """See the module docstring for layout, the "One of" sub-flow, and the keybindings."""
 
     BINDINGS = [
-        Binding("up", "cursor_up", show=False),
-        Binding("down", "cursor_down", show=False),
-        Binding("left", "cursor_left", show=False),
-        Binding("right", "cursor_right", show=False),
-        Binding("space", "toggle", show=False),
-        Binding("r", "reset", show=False),
-        Binding("s", "swap_to('sort')", show=False),
-        # Symmetric with the ``f``-opens-it binding on the entries table.
-        Binding("f", "cancel", show=False),
-        Binding("e", "swap_to('edit')", show=False),
-        Binding("escape", "cancel", show=False),
+        Keybind.CursorUp.   as_binding("cursor_up",    show=False),
+        Keybind.CursorDown. as_binding("cursor_down",  show=False),
+        Keybind.CursorLeft. as_binding("cursor_left",  show=False),
+        Keybind.CursorRight.as_binding("cursor_right", show=False),
+        Keybind.Toggle.     as_binding("toggle",       show=False),
+        Keybind.CloseMenu.  as_binding("cancel",       show=True),
+        Keybind.MenuReset.  as_binding("reset",        show=True),
+
+        # TODO: these really shouldn't live here at all, they should just bubble up to the EntryTab and
+        # be handled there.
+        Keybind.BrowserSort  .as_binding("swap_to('sort')", show=False),
+        Keybind.BrowserFilter.as_binding("cancel",          show=False),
+        Keybind.BrowserEdit  .as_binding("swap_to('edit')", show=False)
     ]
 
     def __init__(

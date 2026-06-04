@@ -12,9 +12,9 @@ from typing import Any
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.widgets import Static
 
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
@@ -40,10 +40,10 @@ class UserChoices(NavigableFeedItemViewBase[UserChoicesVM]):
     """
 
     BINDINGS = [
-        Binding("up", "move_cursor(-1)", "Up"),
-        Binding("down", "move_cursor(1)", "Down"),
-        Binding("enter", "confirm", "Confirm"),
-        Binding("ctrl+c", "cancel", "Cancel"),
+        Keybind.CursorUp.    as_binding("move_cursor(-1)", "Up",      show=False),
+        Keybind.CursorDown.  as_binding("move_cursor(1)",  "Down",    show=False),
+        Keybind.MenuConfirm. as_binding("confirm",         "Confirm", show=True),
+        Keybind.DialogCancel.as_binding("cancel",          "Cancel",  show=True),
     ]
 
     can_focus = True
