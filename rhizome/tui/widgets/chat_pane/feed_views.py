@@ -20,6 +20,7 @@ from rhizome.tui.widgets.chat_pane.messages.agent import AgentMessage  # noqa: F
 from rhizome.tui.widgets.chat_pane.messages.tool import ToolMessage  # noqa: F401
 from rhizome.tui.widgets.chat_pane.messages.shell import ShellCommandMessage  # noqa: F401
 from rhizome.tui.widgets.chat_pane.thinking import ThinkingIndicator  # noqa: F401
+from rhizome.tui.widgets.chat_pane.welcome_message import WelcomeMessage  # noqa: F401
 from rhizome.tui.widgets.chat_pane.branch import BranchPoint  # noqa: F401
 from rhizome.tui.widgets.chat_pane.interrupts.test import TestInterrupt  # noqa: F401
 from rhizome.tui.widgets.chat_pane.interrupts.user_choices import UserChoices  # noqa: F401

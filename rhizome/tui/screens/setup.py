@@ -11,7 +11,7 @@ from textual.widgets import Input, Static
 from rhizome.credentials import store_api_key
 from rhizome.app.options import Options
 from rhizome.tui.keybindings import Keybind
-from rhizome.tui.widgets.legacy.welcome import ASCII_ART
+from rhizome.tui.widgets.chat_pane.welcome_message import ASCII_ART
 
 
 class SetupScreen(Screen[bool]):

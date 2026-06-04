@@ -145,8 +145,8 @@ class ChatPane(ViewBase[ChatPaneVM]):
     }
     """
 
-    def __init__(self, *, session_factory=None, **kwargs) -> None:
-        super().__init__(ChatPaneVM(session_factory=session_factory), **kwargs)
+    def __init__(self, *, session_factory=None, show_welcome: bool = False, **kwargs) -> None:
+        super().__init__(ChatPaneVM(session_factory=session_factory, show_welcome=show_welcome), **kwargs)
         # Retained for view-side modal pushes (TopicSelectorScreen needs it) when constructing
         # interrupt views that have their own session-aware UX.
         self._session_factory = session_factory
@@ -315,6 +315,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
             self.app.options,  # type: ignore[attr-defined]
             debug=getattr(self.app, "debug_logging", False),
         )
+        self._vm.bootstrap_welcome(self.app.options)  # type: ignore[attr-defined]
         self.query_one("#chat-input", ChatInput).focus()
 
     # ------------------------------------------------------------------

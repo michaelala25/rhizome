@@ -19,7 +19,6 @@ from .legacy.choices import Choices
 from .legacy.multiple_choices import MultipleChoices
 from .legacy.sql_confirmation import SqlConfirmation
 from .legacy.warning import WarningChoices
-from .legacy.logging_pane import LoggingPane
 from .legacy.message import ChatMessage, MarkdownChatMessage, RichChatMessage
 from .legacy.options_editor import OptionsEditor
 from .legacy.resource.linker import ResourceLinker
@@ -29,7 +28,6 @@ from .legacy.resource.viewer import ResourceViewer
 from .legacy.status_bar import StatusBar
 from .legacy.thinking import Spinner, ThinkingIndicator
 from .legacy.tool_call_list import ToolCallList
-from .legacy.welcome import WelcomeHeader
 
 # Kept-in-place (slated for rewrite but still wired into both legacy and new code paths)
 from .commit_proposal import CommitProposal
@@ -56,7 +54,6 @@ __all__ = [
     "FlashcardReview",
     "HintHigherVerbosity",
     "InterruptWidgetBase",
-    "LoggingPane",
     "MarkdownChatMessage",
     "NavigableWidgetMixin",
     "MultipleChoices",
@@ -73,6 +70,5 @@ __all__ = [
     "ToolCallList",
     "TopicTree",
     "WarningChoices",
-    "WelcomeHeader",
     "WidgetDeactivated",
 ]

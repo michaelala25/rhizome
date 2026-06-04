@@ -51,6 +51,7 @@ from rhizome.app.chat_pane.messages.shell import ShellCommandVM
 from rhizome.app.chat_pane.messages.static import ChatMessageVM
 from rhizome.app.chat_pane.status import StatusBarVM
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
+from rhizome.app.chat_pane.welcome_message import WelcomeMessageVM
 from rhizome.app.chat_pane.messages.tool import ToolMessageVM
 
 
@@ -59,6 +60,7 @@ FeedEntry = (
     | AgentMessageVM
     | ToolMessageVM
     | ThinkingIndicatorVM
+    | WelcomeMessageVM
     | InterruptVMBase
     | ShellCommandVM
     | BranchPointVM
@@ -152,8 +154,17 @@ class ChatPaneVM(ViewModelBase):
         OPEN_LOGS = "open_logs"
         TOGGLE_RESOURCE_VIEWER = "toggle_resource_viewer"
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        show_welcome: bool = False,
+    ) -> None:
         super().__init__()
+
+        # Whether to seed the feed with a welcome banner on bootstrap. Cleared once shown so a
+        # view re-mount (tab churn) doesn't append a second banner.
+        self._show_welcome = show_welcome
 
         self._feed_append = self._make_group(ChatPaneVM.Callbacks.FEED_APPEND)
         self._feed_remove = self._make_group(ChatPaneVM.Callbacks.FEED_REMOVE)
@@ -434,6 +445,17 @@ class ChatPaneVM(ViewModelBase):
         # post-update to every per-leaf AgentSession so each one rebuilds in lockstep. Bootstrap is
         # idempotent (early-returns above) so this subscription is wired exactly once.
         app_options.subscribe_post_update(self._on_options_post_update)
+
+    def bootstrap_welcome(self, app_options: Options) -> None:
+        """Seed a fresh feed with the welcome banner when the pane was constructed with
+        ``show_welcome``. Called from the view's ``on_mount`` (the user name lives on app options).
+        Independent of the agent session, so it works even in session-less / headless setups. Fires
+        at most once — the flag is cleared on first append.
+        """
+        if not self._show_welcome:
+            return
+        self._show_welcome = False
+        self._append_feed(WelcomeMessageVM(user_name=app_options.get(Options.UserName)))
 
     def _on_token_usage_changed(self, session: AgentSession) -> None:
         """Route a session's token-usage update to the status bar only if that session is the

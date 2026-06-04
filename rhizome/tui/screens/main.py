@@ -11,8 +11,8 @@ from textual.widgets import TabbedContent, TabPane
 from rhizome.app.options import Options
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Role, UserFeedback
-from rhizome.tui.widgets import ChatPane, LoggingPane
 from rhizome.tui.widgets.chat_pane import ChatPane
+from rhizome.tui.widgets.logging_pane import LoggingPane
 
 
 class LogTabPane(TabPane):
@@ -94,10 +94,7 @@ class ChatTabPane(TabPane):
         self.chat_pane.append_message(ChatMessageData(role=Role.SYSTEM, content=event.text))
 
     def compose(self) -> ComposeResult:
-        if self._new_chat_pane:
-            yield ChatPane(session_factory=self._session_factory)
-        else:
-            yield ChatPane(session_factory=self._session_factory, show_welcome=self._show_welcome)
+        yield ChatPane(session_factory=self._session_factory, show_welcome=self._show_welcome)
 
 
 class MainScreen(Screen):
