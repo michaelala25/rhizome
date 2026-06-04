@@ -19,22 +19,16 @@ from rhizome.tui.app import PROFILE_DIR, RhizomeApp
 )
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging of agent stream events.")
 @click.option(
-    "--new-chat-pane",
-    is_flag=True,
-    default=False,
-    help="(temporary) Use the in-progress MVVM chat pane rewrite. Step 1 only — no agent, no commands.",
-)
-@click.option(
     "--profile",
     is_flag=True,
     default=False,
     help="Wrap the entire session in a pyinstrument profile. Writes HTML to /tmp/rhizome-profiles on exit.",
 )
-def main(db: str | None, debug: bool, new_chat_pane: bool, profile: bool) -> None:
+def main(db: str | None, debug: bool, profile: bool) -> None:
     """Launch the rhizome TUI."""
     db_path = db or str(get_default_db_path())
     init_db(db_path)
-    app = RhizomeApp(db_path=db_path, debug=debug, new_chat_pane=new_chat_pane)
+    app = RhizomeApp(db_path=db_path, debug=debug)
 
     if not profile:
         app.run()

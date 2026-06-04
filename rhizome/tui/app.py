@@ -4,10 +4,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from textual import messages, on
 from textual.app import App
 from textual.binding import Binding
-from textual.widgets import TabbedContent
 
 from rhizome.config import get_default_db_path
 from rhizome.credentials import has_api_key
@@ -19,7 +17,6 @@ from rhizome.app.sql_session import NotifyingSessionFactory
 from rhizome.tui.screens.main import MainScreen, ChatTabPane, LogTabPane
 from rhizome.tui.screens.setup import SetupScreen
 from rhizome.tui.types import DatabaseCommitted
-from rhizome.tui.widgets import ChatPane
 
 
 PROFILE_DIR = Path("/tmp/rhizome-profiles")
@@ -58,14 +55,10 @@ class RhizomeApp(App):
         self,
         db_path: str | Path | None = None,
         debug: bool = False,
-        new_chat_pane: bool = False,
     ) -> None:
         super().__init__()
         self.debug_logging = debug
         self._profiler = None  # type: ignore[assignment]
-        # Temporary: opt-in to the MVVM chat-pane rewrite. Read by MainScreen /
-        # ChatTabPane to pick which widget to mount.
-        self.new_chat_pane = new_chat_pane
         engine = get_engine(db_path or get_default_db_path())
         self.session_factory = NotifyingSessionFactory(
             get_session_factory(engine),
@@ -111,11 +104,6 @@ class RhizomeApp(App):
         if isinstance(screen, MainScreen):
             screen.notify_database_committed(event)
 
-    @on(messages.ExitApp)
-    def _on_exit_app(self, event: messages.ExitApp) -> None:
-        for pane in self.query(ChatPane):
-            pane._close_agent_log()
-
     # ------------------------------------------------------------------
     # Profiling (ctrl+f12 toggles a pyinstrument session)
     # ------------------------------------------------------------------
@@ -147,12 +135,3 @@ class RhizomeApp(App):
             f"Profile written: {html_out.name} + .txt",
             severity="information", timeout=5,
         )
-
-    @property
-    def active_chat_pane(self) -> ChatPane | None:
-        """Return the ChatPane in the currently active tab."""
-        tabs = self.screen.query_one("#tabs", TabbedContent)
-        active = tabs.active_pane
-        if active is None:
-            return active
-        return active.query_one(ChatPane)

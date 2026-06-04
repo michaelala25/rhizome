@@ -458,10 +458,9 @@ class ChatPane(ViewBase[ChatPaneVM]):
         self.query_one("#message-area", VerticalScroll).scroll_end(animate=False)
 
     # ------------------------------------------------------------------
-    # Compatibility shims for the --new-chat-pane integration. These let
-    # MainScreen / ChatTabPane treat the MVVM widget like the legacy
-    # ChatPane for the limited surface they use; remove once the swap is
-    # permanent.
+    # Compatibility shims. These let MainScreen / ChatTabPane drive the MVVM
+    # widget through the limited surface they relied on from the legacy
+    # ChatPane; fold them away as those call sites migrate to VM-native APIs.
     # ------------------------------------------------------------------
 
     def append_message(self, msg: ChatMessageData) -> None:

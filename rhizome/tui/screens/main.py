@@ -51,19 +51,16 @@ class ChatTabPane(TabPane):
     the displayed label when ``tab_name_len`` changes.
     """
 
-    def __init__(self, title: str, *, session_factory=None, tab_max_length: int = 20, show_welcome: bool = False, new_chat_pane: bool = False, **kwargs) -> None:
+    def __init__(self, title: str, *, session_factory=None, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
         self.full_name: str = title
         self._session_factory = session_factory
         self._tab_max_length: int = tab_max_length
         self._show_welcome = show_welcome
-        self._new_chat_pane = new_chat_pane
         super().__init__(self._truncated_label(), **kwargs)
 
     @property
-    def chat_pane(self):
-        """Return the mounted chat pane (legacy or MVVM)."""
-        if self._new_chat_pane:
-            return self.query_one(ChatPane)
+    def chat_pane(self) -> ChatPane:
+        """Return the mounted chat pane."""
         return self.query_one(ChatPane)
 
     def _truncated_label(self) -> str:
@@ -137,14 +134,12 @@ class MainScreen(Screen):
 
     def compose(self) -> ComposeResult:
         max_len = self.app.options.get(Options.TabMaxLength)  # type: ignore[attr-defined]
-        new_chat_pane = getattr(self.app, "new_chat_pane", False)
         with TabbedContent(id="tabs"):
             yield ChatTabPane(
                 "Session 1",
                 session_factory=self.app.session_factory,
                 tab_max_length=max_len,
                 show_welcome=True,
-                new_chat_pane=new_chat_pane,
                 id="session-1",
             )
 
@@ -173,7 +168,6 @@ class MainScreen(Screen):
             tab_label,
             session_factory=self.app.session_factory,
             tab_max_length=max_len,
-            new_chat_pane=getattr(self.app, "new_chat_pane", False),
             id=tab_id,
         )
         await tabs.add_pane(pane)
