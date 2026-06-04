@@ -249,12 +249,12 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
         self.add_class("-deleting")
         dialog.focus()
 
-    def on_delete_dialog_view_accepted(
+    def on_topics_delete_menu_accepted(
         self, event: TopicsDeleteMenu.Accepted
     ) -> None:
         self.run_worker(self._delete_worker(), exclusive=False)
 
-    def on_delete_dialog_view_cancelled(
+    def on_topics_delete_menu_cancelled(
         self, event: TopicsDeleteMenu.Cancelled
     ) -> None:
         self._end_delete()
