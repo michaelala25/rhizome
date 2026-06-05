@@ -55,8 +55,8 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
 
     Inherits ``NavigableViewBase`` for the focus-aware border treatment, but narrows it to the right
     edge only: the panel docks to the left of the chat pane, so its border reads as the *divider*
-    between the two. ``_sync_focus_border`` is overridden to drive ``border_right`` (the base drives
-    all four sides); the default / hover right-border lives in ``DEFAULT_CSS`` below.
+    between the two. ``_sync_border`` is overridden to drive ``border_right`` (the base drives all
+    four sides); the default / hover right-border lives in ``DEFAULT_CSS`` below.
     """
 
     # Both bases want the panel focusable; set it explicitly since the mixin (listed last for CSS
@@ -66,7 +66,7 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
 
     DEFAULT_CSS = """
     /* Right-edge divider only — overrides NavigableViewBase's full ``border``. The default/hover
-       tones live here; the focus tone is set inline by the ``_sync_focus_border`` override. */
+       tones live here; the focus tone is set inline by the ``_sync_border`` override. */
     ResourceViewer {
         layout: vertical;
         background: transparent;
@@ -76,9 +76,9 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
         border: none;
         border-right: solid rgb(60, 60, 60);
     }
-    /* ``border: none`` has to be repeated here: NavigableViewBase's own ``:hover`` rule sets a full
-       ``border`` at this same specificity, so without re-zeroing the other three sides they'd leak
-       back in on hover (and reflow the content box). */
+    /* ``border: none`` is repeated as defensive scaffolding — if NavigableViewBase ever regains a
+       full-border ``:hover`` rule at the same specificity, the other three sides would leak in here
+       and reflow the content box. */
     ResourceViewer:hover {
         border: none;
         border-right: solid rgb(120, 120, 120);
@@ -373,10 +373,11 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
     # Focus-within border — right edge only (the divider against the chat pane)
     # ------------------------------------------------------------------
 
-    def _sync_focus_border(self) -> None:
+    def _sync_border(self) -> None:
         # Mirror NavigableViewBase's treatment, but paint only ``border_right`` — setting
         # ``styles.border`` would light up all four sides. ``None`` clears the inline override so the
-        # CSS default / ``:hover`` right-border takes back over.
+        # CSS default / ``:hover`` right-border takes back over (hover handling for ResourceViewer
+        # still lives in CSS via its own ``ResourceViewer:hover`` rule below).
         focused = self.screen.focused if self.screen else None
         inside = focused is not None and (focused is self or self in focused.ancestors_with_self)
         self.styles.border_right = ("solid", "rgb(90, 140, 200)") if inside else None
