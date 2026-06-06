@@ -39,7 +39,7 @@ The adjacency walks these steps need (parent / child / descendant / ancestor) co
 Cursor & embedding
 ------------------
 The cursor lives in the view; this VM mirrors only the highlighted *node* (pushed via
-:meth:`set_cursor`, emitting ``CURSOR_CHANGED``) so the orchestrator can feed the preview without
+:meth:`set_cursor`, emitting ``Callbacks.OnCursorChanged``) so the orchestrator can feed the preview without
 poking the widget. Embedding runs off the injected worker scheduler (see
 :meth:`set_worker_scheduler`): the VM owns the orchestration coroutine, the view supplies Textual's
 ``run_worker`` so the worker's lifecycle binds to the widget.
@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Callable, Coroutine
 
 from rhizome.app.query_backed_model import QueryBackedViewModel
@@ -186,10 +185,10 @@ class _ResourceTreeIndex:
 class ResourceLoaderModel(QueryBackedViewModel):
     """Loader VM. Owns the topic's resources, the load state, and the cursor mirror."""
 
-    class Callbacks(Enum):
-        # No payload — listeners read ``cursor_target``. Split from ``dirty`` so the preview feed
+    class Callbacks(QueryBackedViewModel.Callbacks):
+        # No payload — listeners read ``cursor_target``. Split from ``OnDirty`` so the preview feed
         # doesn't treat a highlight move as a load-state change.
-        CURSOR_CHANGED = "cursor_changed"
+        OnCursorChanged = "OnCursorChanged"
 
     # The "auto" loading preference resolves by size: resources estimated at or below this many
     # tokens are context-stuffed, larger ones are indexed.
@@ -200,7 +199,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
         self._session_factory = session_factory
         self._manager = manager
 
-        self._cursor_changed = self.make_callback_group(ResourceLoaderModel.Callbacks.CURSOR_CHANGED)
+        self.make_callback_groups({self.Callbacks.OnCursorChanged: None})
 
         # Topic scope. ``None`` = no active topic (empty tree).
         self._topic_id: int | None = None
@@ -226,10 +225,6 @@ class ResourceLoaderModel(QueryBackedViewModel):
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
-
-    @property
-    def cursor_changed(self):
-        return self._cursor_changed
 
     @property
     def resources(self) -> list[Resource]:
@@ -327,11 +322,11 @@ class ResourceLoaderModel(QueryBackedViewModel):
 
     def set_cursor(self, target: ResourceTreeNodeData | None) -> None:
         """Mirror the view's highlighted node. Identity-guarded to kill the highlight↔repaint bounce;
-        emits ``CURSOR_CHANGED`` (not ``dirty``) so only the preview feed reacts."""
+        emits ``Callbacks.OnCursorChanged`` (not ``OnDirty``) so only the preview feed reacts."""
         if target is self._cursor_target:
             return
         self._cursor_target = target
-        self.emit(self._cursor_changed)
+        self.emit(self.Callbacks.OnCursorChanged)
 
     # ------------------------------------------------------------------
     # Load mutators + the facts a view reads to drive them
@@ -368,7 +363,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
             return
 
         self._apply(key, target_type)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
         # A load may introduce an INDEX entry that lacks embeddings; defer the manager sync until the
         # worker lands. Otherwise sync immediately.
@@ -515,7 +510,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
     def _start_embedding(self, resource: Resource) -> None:
         """Mark the resource pending and spawn the embedding worker. Sync is deferred to completion."""
         self._pending_resources.add(resource.id)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
         self._schedule_worker(self._embed(resource))
 
     async def _embed(self, resource: Resource) -> None:
@@ -524,7 +519,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
         self._pending_resources.discard(resource.id)
         if not success:
             self._apply(("resource", resource.id), None)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
         self._sync_manager()
 
     def _sync_manager(self) -> None:

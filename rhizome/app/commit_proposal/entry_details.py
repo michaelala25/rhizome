@@ -74,7 +74,7 @@ class EntryDetailsModel(ViewModelBase):
         self._entry = entry
         self._title_buffer = "" if entry is None else entry.title
         self._content_buffer = "" if entry is None else entry.content
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Mutators — view-side (TextArea change handlers)
@@ -86,7 +86,7 @@ class EntryDetailsModel(ViewModelBase):
         if value == self._title_buffer:
             return
         self._title_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_content(self, value: str) -> None:
         if self._entry is None:
@@ -94,7 +94,7 @@ class EntryDetailsModel(ViewModelBase):
         if value == self._content_buffer:
             return
         self._content_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Accept / Cancel
@@ -108,7 +108,7 @@ class EntryDetailsModel(ViewModelBase):
             return
         self._entry.title = self._title_buffer
         self._entry.content = self._content_buffer
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def cancel(self) -> None:
         """Discard the buffers and return to the entry's stored values."""
@@ -116,4 +116,4 @@ class EntryDetailsModel(ViewModelBase):
             return
         self._title_buffer = self._entry.title
         self._content_buffer = self._entry.content
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

@@ -10,15 +10,14 @@ and buffers are unconditionally reseeded once the new topic resolves. While the 
 buffers stay on the prior topic — short-lived because ``QueryBackedViewModel`` collapses bursts.
 
 Callback groups:
-  * ``dirty`` — standard repaint signal.
-  * ``SAVED`` — fires only after a successful Accept. The panel view subscribes so it can repaint
-    the tree node's label after a rename.
+  * ``Callbacks.OnDirty`` — standard repaint signal.
+  * ``Callbacks.OnSaved`` — fires only after a successful Accept. The panel view subscribes so it
+    can repaint the tree node's label after a rename.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
 from rhizome.db import Topic
@@ -53,13 +52,13 @@ class TopicDetailsModel(QueryBackedViewModel):
     """Buffered-edit VM for the topic details panel. Accept/Cancel are the explicit exits from dirty;
     nothing reaches the DB until the user Accepts."""
 
-    class Callbacks(Enum):
-        SAVED = "saved"
+    class Callbacks(QueryBackedViewModel.Callbacks):
+        OnSaved = "OnSaved"
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self.make_callback_group(TopicDetailsModel.Callbacks.SAVED)
+        self.make_callback_groups({self.Callbacks.OnSaved: None})
 
         self._topic_id: int | None = None
         self._topic: Topic | None = None
@@ -77,10 +76,6 @@ class TopicDetailsModel(QueryBackedViewModel):
     # ------------------------------------------------------------------
     # Read-only accessors
     # ------------------------------------------------------------------
-
-    @property
-    def saved(self):
-        return self._saved
 
     @property
     def topic(self) -> Topic | None:
@@ -149,7 +144,7 @@ class TopicDetailsModel(QueryBackedViewModel):
             self._subtree_entries = 0
             self._direct_flashcards = 0
             self._subtree_flashcards = 0
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
             return
         self._request_fetch()
 
@@ -201,7 +196,7 @@ class TopicDetailsModel(QueryBackedViewModel):
         if value == self._name_buffer:
             return
         self._name_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_description(self, value: str) -> None:
         if self._topic is None:
@@ -209,7 +204,7 @@ class TopicDetailsModel(QueryBackedViewModel):
         if value == self._description_buffer:
             return
         self._description_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Accept / Cancel
@@ -238,8 +233,8 @@ class TopicDetailsModel(QueryBackedViewModel):
         # Reseed the name buffer with the trimmed value so the field reflects what was actually
         # persisted (the user may have typed trailing whitespace).
         self._name_buffer = new_name
-        self.emit(self.dirty)
-        self.emit(self._saved)
+        self.emit(self.Callbacks.OnDirty)
+        self.emit(self.Callbacks.OnSaved)
 
     def cancel(self) -> None:
         """Discard the buffers and return to the topic's stored values."""
@@ -247,4 +242,4 @@ class TopicDetailsModel(QueryBackedViewModel):
             return
         self._name_buffer = self.original_name
         self._description_buffer = self.original_description
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

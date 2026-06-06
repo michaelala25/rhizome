@@ -38,11 +38,11 @@ class SharedTopicSetter(Static, can_focus=True):
         self._vm = vm
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     def on_focus(self) -> None:
         # Both the cursor arrow and the text color flip on focus; re-render so the focused styling

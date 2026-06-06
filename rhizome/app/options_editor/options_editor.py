@@ -44,7 +44,7 @@ class OptionsEditorModel(ViewModelBase):
             target.subscribe(spec, self._on_external_change)
 
     async def _on_external_change(self, old: Any, new: Any) -> None:
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Reads
@@ -116,7 +116,7 @@ class OptionsEditorModel(ViewModelBase):
             await self._target.post_update()
         else:
             await self._clone.set(spec, value)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def apply(self) -> dict[str, tuple[Any, Any]]:
         """Commit staged changes to target in one fell swoop. Returns ``{resolved_name:
@@ -130,7 +130,7 @@ class OptionsEditorModel(ViewModelBase):
         if not self.has_staged_changes:
             return
         self._clone = self._target.clone()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Teardown

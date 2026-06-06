@@ -91,7 +91,7 @@ class EntryTabModel(
         # Detail panel sub-VM. Subscribe to its SAVED group so we can repaint the DataTable row
         # after an Accept (the in-memory ``KnowledgeEntry`` was mutated in place).
         self._details = EntryDetailsModel(session_factory)
-        self._details.subscribe(self._details.saved, self._on_details_saved)
+        self._details.subscribe(self._details.Callbacks.OnSaved, self._on_details_saved)
 
         # Linked-flashcards sub-VM. Fed via ``_sync_linked_flashcards``, which is state-gated so it
         # doesn't fire fetches outside ``LINKED_FLASHCARDS``.
@@ -210,7 +210,7 @@ class EntryTabModel(
             self._linked_flashcards.exit_relink_mode()
             self._linked_flashcards.set_entry_ids(frozenset())
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_topic_filter(self, topic_ids: Iterable[int] | None) -> None:
         # Push to the panel first so the sub-VM sees the new filter at the same logical moment we
@@ -288,7 +288,7 @@ class EntryTabModel(
         self._cursor = new
         self._sync_details()
         self._sync_linked_flashcards()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def toggle_multi_select(self) -> None:
         # Drop relink first — relink is single-select only, so its precondition vanishes the
@@ -311,12 +311,12 @@ class EntryTabModel(
         if self._state is not self.State.LINKED_FLASHCARDS:
             self.transition_to(self.State.LINKED_FLASHCARDS)
         self._linked_flashcards.enter_relink_mode()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def exit_relink_mode(self) -> None:
         # Stays in LINKED_FLASHCARDS — only ``transition_to(ENTRIES)`` walks all the way out.
         self._linked_flashcards.exit_relink_mode()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Bulk actions on the selection
@@ -352,7 +352,7 @@ class EntryTabModel(
         self._sync_details()
         self._sync_linked_flashcards()
         self._details.set_multi_select(self._multi_select_active, 0)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def change_topic_on_selected_entries(self, new_topic_id: int) -> None:
         """Reassign target entries' topic + refetch (rather than in-place mutate) so any active
@@ -426,7 +426,7 @@ class EntryTabModel(
     def _on_details_saved(self) -> None:
         # Details panel mutated the in-memory ``KnowledgeEntry`` in place; just kick a repaint so
         # the DataTable row picks up the new values.
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def load_more(self) -> None:
         """Append the next page in place. No cursor move. No-op if a fetch is in flight or nothing
@@ -443,7 +443,7 @@ class EntryTabModel(
         self._entries.extend(more)
         if len(more) < self._limit:
             self._has_more = False
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # BrowserTabModel contract

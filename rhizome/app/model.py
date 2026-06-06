@@ -225,8 +225,9 @@ class ViewModelBase:
 
     Communication model
     -------------------
-    ``CallbackGroup``s (``dirty``, ``focus``, plus any subclass-defined groups) are **exclusively** a
-    VM → View communication channel. Every other direction uses direct method calls:
+    ``CallbackGroup``s (``OnDirty``, ``RequestFocus``, plus any subclass-defined groups) are
+    **exclusively** a VM → View communication channel. Every other direction uses direct method
+    calls:
 
     - View → VM: direct method call. The notable view-driven entry points are ``notify_focused()`` and
       ``notify_blurred()``, which views must call from their Textual ``on_focus`` / ``on_blur`` handlers.
@@ -234,24 +235,43 @@ class ViewModelBase:
       a public method on that sibling; the sibling emits *its own* events toward the view.
     - VM → View: the view subscribes a callback to a VM's CallbackGroup; the VM emits, the view reacts.
 
-    This is why there is no ``blurred`` CallbackGroup — the VM has no one to broadcast "I was blurred"
+    This is why there is no ``OnBlurred`` callback — the VM has no one to broadcast "I was blurred"
     to. Blur is always view-initiated; the view sees the Textual event and calls ``notify_blurred()``
     to give the VM a chance to react locally. There is no ``request_blur`` either: if one VM wants
     another unfocused, it requests focus elsewhere.
 
-    Standard CallbackGroups
-    -----------------------
-    - ``dirty`` — "something changed; please repaint." Fired by mutators on this VM; subscribers are
-      typically view-side ``_refresh`` methods.
-    - ``focus`` — "please give this VM (its widget) focus." Fired by ``request_focus()``; the canonical
-      subscriber is the view's ``Widget.focus()``.
+    Standard callbacks
+    ------------------
+    - ``Callbacks.OnDirty`` — "something changed; please repaint." Fired by mutators on this VM;
+      subscribers are typically view-side ``_refresh`` methods.
+    - ``Callbacks.RequestFocus`` — "please give this VM (its widget) focus." Fired by
+      ``request_focus()``; the canonical subscriber is the view's ``Widget.focus()``.
 
-    Subclasses define their own ``Callbacks`` enum for VM-specific groups (e.g. request observables
-    that carry arguments via ``emit(group, *args, **kwargs)``), and construct them with
-    ``self.make_callback_group(key)`` so ``owner_id`` is set correctly. Parameterize the payload type via the
-    attribute annotation:
+    Naming convention
+    -----------------
+    - ``On<Event>`` for after-the-fact observations (``OnDirty``, ``OnSelectionChanged``).
+    - ``Request<Action>`` for imperative VM → View directives (``RequestFocus``).
+    - ``notify_<event>`` / ``request_<action>`` as method names for the corresponding inbound
+      (View → VM) and outbound (VM → View) entry points.
 
-        self._link_changed: CallbackGroup[[Resource]] = self.make_callback_group(Callbacks.LINK_CHANGED)
+    Subclasses extend ``Callbacks`` via standard class inheritance and register their groups in
+    one shot through ``make_callback_groups`` — the dict-spec values document the payload shape:
+
+        class TopicTreeModel(ViewModelBase):
+            class Callbacks(ViewModelBase.Callbacks):
+                OnSelectionChanged = "OnSelectionChanged"
+                OnTopicDeleted     = "OnTopicDeleted"
+
+            def __init__(self):
+                super().__init__()
+                self.make_callback_groups({
+                    self.Callbacks.OnSelectionChanged: None,       # nullary
+                    self.Callbacks.OnTopicDeleted:     int,        # one int arg
+                })
+
+    Callbacks are reached by key (``self.Callbacks.OnFoo``) at emit / subscribe sites — no
+    ``self._foo`` attribute storage. Subclasses that want typed access can layer a ``@property``
+    over ``self._callbacks[self.Callbacks.OnFoo]`` to recover the ``CallbackGroup[P]`` annotation.
 
     Subscription lifetime
     ---------------------
@@ -295,9 +315,21 @@ class ViewModelBase:
     should call ``self.emit(...)`` directly, never thread a captured emitter across the boundary.
     """
 
-    class Callbacks(Enum):
-        DIRTY = "dirty"
-        FOCUS = "focus"
+    class Callbacks:
+        """Callback-group keys for this VM and its subclasses. A plain class (not ``Enum``) so
+        subclasses can extend the namespace via standard inheritance — ``self.Callbacks.OnDirty``
+        resolves on every subclass, alongside whatever each subclass adds:
+
+            class TopicTreeModel(ViewModelBase):
+                class Callbacks(ViewModelBase.Callbacks):
+                    OnSelectionChanged = "OnSelectionChanged"
+                    ...
+
+        Values are strings matching their attribute name. Equality and hashing are string-based,
+        so different VM classes that happen to use the same key string collide cleanly.
+        """
+        OnDirty = "OnDirty"
+        RequestFocus = "RequestFocus"
 
     # Whether this VM is part of the chat pane's ctrl+up/ctrl+down navigation rotation. Default False;
     # feed VMs that present an interactive surface (interrupts, branch indicators) flip this to True
@@ -309,13 +341,14 @@ class ViewModelBase:
 
 
     def __init__(self):
-        # Registry of every group created via ``make_callback_group``, keyed by the original
-        # Hashable. Lets callers look groups up by key without threading the attribute around.
-        # Must be initialized before the standard ``dirty`` / ``focus`` groups are built below.
+        # Registry of every group created via ``make_callback_group``. Must be initialized first so
+        # the standard groups registered below can land in it.
         self._callbacks: dict[Hashable, CallbackGroup[Any]] = {}
 
-        self._dirty: CallbackGroup[[]] = self.make_callback_group(ViewModelBase.Callbacks.DIRTY)
-        self._focus: CallbackGroup[[]] = self.make_callback_group(ViewModelBase.Callbacks.FOCUS)
+        self.make_callback_groups({
+            ViewModelBase.Callbacks.OnDirty:      None,
+            ViewModelBase.Callbacks.RequestFocus: None,
+        })
 
     def make_callback_group[**P](self, key: Hashable) -> CallbackGroup[P]:
         """Construct a CallbackGroup owned by this VM and register it in ``self._callbacks`` under
@@ -362,15 +395,6 @@ class ViewModelBase:
         """
         for key in specs:
             self.make_callback_group(key)
-
-    @property
-    def dirty(self) -> CallbackGroup[[]]:
-        return self._dirty
-
-    @property
-    def focus(self) -> CallbackGroup[[]]:
-        return self._focus
-
 
     @overload
     def emit(self, group: CallbackGroup[P], *args: P.args, **kwargs: P.kwargs) -> None: ...
@@ -457,21 +481,21 @@ class ViewModelBase:
 
 
     def request_focus(self, emitter: Emitter | None = None) -> None:
-        """Request that this VM (and its view) take focus. Emits on the ``focus`` group; the canonical
-        subscriber is the view's ``Widget.focus()``, which causes Textual to focus the widget and
-        eventually fire the view's ``on_focus`` → ``VM.notify_focused()``.
+        """Request that this VM (and its view) take focus. Emits on ``Callbacks.RequestFocus``; the
+        canonical subscriber is the view's ``Widget.focus()``, which causes Textual to focus the
+        widget and eventually fire the view's ``on_focus`` → ``VM.notify_focused()``.
 
         Callable from VM code — typically a parent VM orchestrating children, or any code path that
         wants to direct focus programmatically. Accepts an optional ``emitter`` so the focus emit can
         participate in a caller's ``emit_once`` batch on this same VM (emitters are single-VM scoped).
 
-        Does NOT emit ``dirty`` here: the downstream ``Widget.focus() → on_focus → notify_focused``
-        chain emits dirty for us. If the widget is already focused, ``Widget.focus()`` is a no-op and
+        Does NOT emit ``OnDirty`` here: the downstream ``Widget.focus() → on_focus → notify_focused``
+        chain emits it for us. If the widget is already focused, ``Widget.focus()`` is a no-op and
         ``notify_focused`` isn't called — which is correct, because nothing changed.
         """
         if emitter is None:
             emitter = self
-        emitter.emit(self.focus)
+        emitter.emit(self.Callbacks.RequestFocus)
 
 
     def notify_focused(self) -> None:
@@ -498,22 +522,22 @@ class ViewModelBase:
                 -> ChildView.focus()
                 (-> ChildView.on_focus() -> ChildVM.notify_focused() -> ...)
 
-        Default impl emits ``self.dirty``. Most VMs need a repaint on focus change (focused-region
-        styling, hint changes, etc.); Textual handles purely-CSS focus styling automatically, but
-        content changes require a refresh. Override and skip the dirty emit if your VM truly has no
-        focus-dependent rendering.
+        Default impl emits ``Callbacks.OnDirty``. Most VMs need a repaint on focus change (focused-
+        region styling, hint changes, etc.); Textual handles purely-CSS focus styling automatically,
+        but content changes require a refresh. Override and skip the OnDirty emit if your VM truly
+        has no focus-dependent rendering.
         """
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def notify_blurred(self) -> None:
         """View-side notification that this VM's view has lost focus.
 
         Symmetric to ``notify_focused``: called only from the view's Textual ``on_blur`` handler, never
-        from VM code. There is no ``request_blur`` (and no ``blurred`` CallbackGroup) because blur is
+        from VM code. There is no ``request_blur`` (and no ``OnBlurred`` callback) because blur is
         always view-initiated — if some VM wants this one unfocused, it requests focus elsewhere.
 
-        Default impl emits ``self.dirty`` for the same reasons as ``notify_focused``. Override and skip
-        the dirty emit if your VM has no blur-dependent rendering.
+        Default impl emits ``Callbacks.OnDirty`` for the same reasons as ``notify_focused``. Override
+        and skip the emit if your VM has no blur-dependent rendering.
         """
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

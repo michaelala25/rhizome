@@ -40,11 +40,11 @@ class ResourceStatus(Static):
         self._vm = view_model
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     def _refresh(self) -> None:
         self.update(self._render_stats(self._vm.load_stats()))

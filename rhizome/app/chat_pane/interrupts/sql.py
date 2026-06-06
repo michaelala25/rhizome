@@ -95,7 +95,7 @@ class SqlConfirmationModel(InterruptModelBase):
         if new == self._cursor:
             return
         self._cursor = new
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def confirm(self) -> None:
         if self.resolved:

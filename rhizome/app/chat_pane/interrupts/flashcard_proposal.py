@@ -39,7 +39,7 @@ class FlashcardProposalInterruptModel(FlashcardProposalModel, InterruptModelBase
         # Watch our own state — when lifecycle lands in DONE, resolve the interrupt future. Both
         # accept_all and cancel emit dirty after transitioning state, so a single dirty subscriber
         # catches both.
-        self.subscribe(self.dirty, self._maybe_resolve)
+        self.subscribe(self.Callbacks.OnDirty, self._maybe_resolve)
 
     def _maybe_resolve(self) -> None:
         if self.resolved:

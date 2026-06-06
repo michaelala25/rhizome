@@ -54,11 +54,11 @@ class SortMenu(Static, Generic[VM], can_focus=True):
         self._cursor: int = 0
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     def on_focus(self) -> None:
         self.call_after_refresh(self._refresh)

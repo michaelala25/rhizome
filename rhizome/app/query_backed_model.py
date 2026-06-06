@@ -139,7 +139,7 @@ class QueryBackedViewModel(ViewModelBase):
         # starts running) still sees the correct state.
         self._current_in_debounce = True
         self._is_loading = True
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
         self._current_task = asyncio.create_task(self._debounced_fetch(new_id, on_complete))
 
@@ -178,7 +178,7 @@ class QueryBackedViewModel(ViewModelBase):
             )
             if self._still_current(my_id):
                 self._is_loading = False
-                self.emit(self.dirty)
+                self.emit(self.Callbacks.OnDirty)
             return
 
         if not self._still_current(my_id):
@@ -188,7 +188,7 @@ class QueryBackedViewModel(ViewModelBase):
         self._process_fetched_data(result)
         if on_complete is not None:
             on_complete()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     @abstractmethod
     async def _fetch(self) -> Any:

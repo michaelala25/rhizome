@@ -95,7 +95,7 @@ class FlashcardDetailsModel(ViewModelBase):
         self._question_buffer = "" if flashcard is None else flashcard.question
         self._answer_buffer = "" if flashcard is None else flashcard.answer
         self._testing_notes_buffer = "" if flashcard is None else flashcard.testing_notes
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Mutators — view-side (TextArea change handlers)
@@ -107,7 +107,7 @@ class FlashcardDetailsModel(ViewModelBase):
         if value == self._question_buffer:
             return
         self._question_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_answer(self, value: str) -> None:
         if self._flashcard is None:
@@ -115,7 +115,7 @@ class FlashcardDetailsModel(ViewModelBase):
         if value == self._answer_buffer:
             return
         self._answer_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_testing_notes(self, value: str) -> None:
         if self._flashcard is None:
@@ -123,7 +123,7 @@ class FlashcardDetailsModel(ViewModelBase):
         if value == self._testing_notes_buffer:
             return
         self._testing_notes_buffer = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Accept / Cancel
@@ -138,7 +138,7 @@ class FlashcardDetailsModel(ViewModelBase):
         self._flashcard.question = self._question_buffer
         self._flashcard.answer = self._answer_buffer
         self._flashcard.testing_notes = self._testing_notes_buffer
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def cancel(self) -> None:
         """Discard the buffers and return to the flashcard's stored values."""
@@ -147,4 +147,4 @@ class FlashcardDetailsModel(ViewModelBase):
         self._question_buffer = self._flashcard.question
         self._answer_buffer = self._flashcard.answer
         self._testing_notes_buffer = self._flashcard.testing_notes
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

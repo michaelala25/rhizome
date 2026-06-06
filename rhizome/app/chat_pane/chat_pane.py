@@ -131,13 +131,13 @@ class ChatPaneModel(ViewModelBase):
         CONVERSATION = "conversation"
         COMMIT = "commit"
 
-    class Callbacks(Enum):
-        FEED_APPEND = "feed_append"
-        FEED_REMOVE = "feed_remove"
-        FEED_CLEAR = "feed_clear"
-        FEED_REPLACED = "feed_replaced"
-        TAB_RENAME = "tab_rename"
-        NOTIFY = "notify"
+    class Callbacks(ViewModelBase.Callbacks):
+        OnFeedAppended  = "OnFeedAppended"
+        OnFeedRemoved   = "OnFeedRemoved"
+        OnFeedCleared   = "OnFeedCleared"
+        OnFeedReplaced  = "OnFeedReplaced"
+        OnTabRenamed    = "OnTabRenamed"
+        OnNotification  = "OnNotification"
 
     class NotifyAction(Enum):
         """Actions the VM asks the parent view to perform. The VM specifies the action; the view
@@ -166,12 +166,17 @@ class ChatPaneModel(ViewModelBase):
         # view re-mount (tab churn) doesn't append a second banner.
         self._show_welcome = show_welcome
 
-        self._feed_append = self.make_callback_group(ChatPaneModel.Callbacks.FEED_APPEND)
-        self._feed_remove = self.make_callback_group(ChatPaneModel.Callbacks.FEED_REMOVE)
-        self._feed_clear = self.make_callback_group(ChatPaneModel.Callbacks.FEED_CLEAR)
-        self._feed_replaced = self.make_callback_group(ChatPaneModel.Callbacks.FEED_REPLACED)
-        self._tab_rename = self.make_callback_group(ChatPaneModel.Callbacks.TAB_RENAME)
-        self._notify = self.make_callback_group(ChatPaneModel.Callbacks.NOTIFY)
+        # Per-channel feed events (so a single ChatPaneModel mutation only repaints the touched
+        # region of the feed) plus the tab-rename and view-action notify hooks the parent listens
+        # to. Payload shapes are documentation only here.
+        self.make_callback_groups({
+            self.Callbacks.OnFeedAppended: int,                          # newly-appended feed id
+            self.Callbacks.OnFeedRemoved:  int,                          # removed feed id
+            self.Callbacks.OnFeedCleared:  None,
+            self.Callbacks.OnFeedReplaced: None,
+            self.Callbacks.OnTabRenamed:   str,                          # new tab name
+            self.Callbacks.OnNotification: ChatPaneModel.NotifyAction,   # action enum value
+        })
 
         # Conversation feed lives in a ConversationGraph parameterized over ``ChatPaneConversationNode``
         # so every node carries chat-pane-specific per-branch state (``agent_session`` for now;
@@ -210,7 +215,7 @@ class ChatPaneModel(ViewModelBase):
         # never reaches into the pane to filter, navigate, or decide tab-completion vs submit. The pane
         # subscribes to ``submitted`` to dispatch chat-vs-slash + agent-busy gating.
         self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
-        self.chat_input.subscribe(self.chat_input.submitted, self._on_input_submitted)
+        self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
         # Status-bar sub-VM. Projection of mode / topic_path (from this VM), token_usage + model_name
         # (from the agent session), and verbosity (from app.options). Pane mutates it through setters;
@@ -251,40 +256,15 @@ class ChatPaneModel(ViewModelBase):
         self._schedule_worker: Callable[[Coroutine[Any, Any, Any]], object] = asyncio.create_task
 
     # ------------------------------------------------------------------
-    # Callback group accessors
+    # Accessors
     # ------------------------------------------------------------------
-
-    @property
-    def feed_append(self):
-        return self._feed_append
-
-    @property
-    def feed_remove(self):
-        return self._feed_remove
-
-    @property
-    def feed_clear(self):
-        return self._feed_clear
-
-    @property
-    def feed_replaced(self):
-        """Fired when the cursor moves and the visible feed is wholesale replaced.
-
-        The view diffs ``self.feed`` (the new visible projection) against its currently-mounted
-        widget id set, unmounts what's no longer visible, and mounts what's newly visible. Because
-        any two cursor paths share a prefix corresponding to their longest common ancestor chain,
-        the delta is always a tail change — new mounts append at the end, no positional insertion
-        needed.
-        """
-        return self._feed_replaced
-
-    @property
-    def tab_rename(self):
-        return self._tab_rename
-
-    @property
-    def notify(self):
-        return self._notify
+    #
+    # ``Callbacks.OnFeedReplaced`` fires when the cursor moves and the visible feed is wholesale
+    # replaced. The view diffs ``self.feed`` (the new visible projection) against its currently-
+    # mounted widget id set, unmounts what's no longer visible, and mounts what's newly visible.
+    # Because any two cursor paths share a prefix corresponding to their longest common ancestor
+    # chain, the delta is always a tail change — new mounts append at the end, no positional
+    # insertion needed.
 
     @property
     def command_registry(self) -> CommandRegistry:
@@ -501,7 +481,7 @@ class ChatPaneModel(ViewModelBase):
         self._next_feed_id += 1
         target = cursor if cursor is not None else self._cursor
         self._conversation.node(target.head).feed.append(item)
-        self.emit(self.feed_append, item.id)
+        self.emit(self.Callbacks.OnFeedAppended, item.id)
         return item
 
     def _remove_feed(self, item_id: int, *, cursor: ConversationGraphCursor | None = None) -> None:
@@ -516,7 +496,7 @@ class ChatPaneModel(ViewModelBase):
         for i, item in enumerate(feed):
             if item.id == item_id:
                 del feed[i]
-                self.emit(self.feed_remove, item_id)
+                self.emit(self.Callbacks.OnFeedRemoved, item_id)
                 return
 
     def append_message(
@@ -586,11 +566,11 @@ class ChatPaneModel(ViewModelBase):
 
         if self.feed:
             self.feed.clear()
-            self.emit(self.feed_clear)
+            self.emit(self.Callbacks.OnFeedCleared)
 
         # The pane state may have changed (agent_busy flipped to False if we cancelled a turn);
         # repaint so the input reflects that.
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def cancel_agent_turn(self, node_id: NodeId | None = None) -> None:
         """Tear down the in-flight agent turn on a branch (current branch by default).
@@ -629,7 +609,7 @@ class ChatPaneModel(ViewModelBase):
             # but at runtime it's always cancellable (asyncio.Task or Textual Worker).
             task.cancel()  # type: ignore[attr-defined]
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Feed ordering rules
@@ -766,7 +746,7 @@ class ChatPaneModel(ViewModelBase):
         router = AgentStreamRouter(self)
         pinned_node.current_router = router
         pinned_node.agent_task = self._schedule_worker(self._run_agent_turn(pinned_node, router))
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     async def _run_agent_turn(
@@ -813,7 +793,7 @@ class ChatPaneModel(ViewModelBase):
                 router.close()
                 pinned_node.current_router = None
                 pinned_node.agent_task = None
-                self.emit(self.dirty)
+                self.emit(self.Callbacks.OnDirty)
 
 
     # ------------------------------------------------------------------
@@ -876,7 +856,7 @@ class ChatPaneModel(ViewModelBase):
 
         if source == "agent":
             self._set_session_mode(mode)
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
             # User-initiated mode set while the agent was running is superseded by the agent's tool
             # call.
             if self.agent_session is not None:
@@ -904,7 +884,7 @@ class ChatPaneModel(ViewModelBase):
             else:
                 self.append_message(ChatMessageModel(role=Role.SYSTEM, content=message, mode=mode))
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Topic / tab / verbosity (agent-tool-facing API)
@@ -917,7 +897,7 @@ class ChatPaneModel(ViewModelBase):
         self.active_topic = None
         self.topic_path = []
         self.status_bar.set_topic_path([])
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def set_topic(self, topic_id: int) -> bool:
         """Resolve ``topic_id`` and set it as the active topic. Walks parents to build ``topic_path``.
@@ -942,7 +922,7 @@ class ChatPaneModel(ViewModelBase):
         self.active_topic = topic
         self.topic_path = path
         self.status_bar.set_topic_path(path)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
         return True
 
     async def set_tab_name(self, name: str) -> None:
@@ -952,13 +932,13 @@ class ChatPaneModel(ViewModelBase):
         new_name = name.strip()
         if not new_name:
             return
-        self.emit(self.tab_rename, new_name)
+        self.emit(self.Callbacks.OnTabRenamed, new_name)
 
     def hint_higher_verbosity(self) -> None:
         """Hint to the user that a higher verbosity setting may help. The view decides how to
         present the cue.
         """
-        self.emit(self.notify, ChatPaneModel.NotifyAction.HINT_HIGHER_VERBOSITY)
+        self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.HINT_HIGHER_VERBOSITY)
 
     # ------------------------------------------------------------------
     # Branching and navigation
@@ -1037,7 +1017,7 @@ class ChatPaneModel(ViewModelBase):
             # nudge here is what triggers the re-render for the children-list change.
             for item in self._conversation.node(parent_id).feed:
                 if isinstance(item.entry, BranchPointModel):
-                    item.entry.emit(item.entry.dirty)
+                    item.entry.emit(item.entry.Callbacks.OnDirty)
                     break
 
         # Cursor moved (descended into the new branch). The visible-feed delta is at most the
@@ -1099,7 +1079,7 @@ class ChatPaneModel(ViewModelBase):
             parent_id = target.path[-2]
             for item in self._conversation.node(parent_id).feed:
                 if isinstance(item.entry, BranchPointModel):
-                    item.entry.emit(item.entry.dirty)
+                    item.entry.emit(item.entry.Callbacks.OnDirty)
                     break
 
     def _record_visit(self, cursor: ConversationGraphCursor) -> None:
@@ -1147,7 +1127,7 @@ class ChatPaneModel(ViewModelBase):
         self._cursor = ConversationGraphCursor(new_path)
         self._record_visit(self._cursor)
         self._sync_navigation_state()
-        self.emit(self.feed_replaced)
+        self.emit(self.Callbacks.OnFeedReplaced)
 
     def ascend(self, *, parent_node_id: NodeId | None = None) -> None:
         """Truncate the cursor past a branch point.
@@ -1179,7 +1159,7 @@ class ChatPaneModel(ViewModelBase):
         self._cursor = ConversationGraphCursor(new_path)
         self._record_visit(self._cursor)
         self._sync_navigation_state()
-        self.emit(self.feed_replaced)
+        self.emit(self.Callbacks.OnFeedReplaced)
 
     def swap_sibling(self, direction: int, *, parent_node_id: NodeId | None = None) -> None:
         """Swap a horizontal sibling at a specific branch point in the cursor path.
@@ -1224,7 +1204,7 @@ class ChatPaneModel(ViewModelBase):
         self._cursor = ConversationGraphCursor(new_path)
         self._record_visit(self._cursor)
         self._sync_navigation_state()
-        self.emit(self.feed_replaced)
+        self.emit(self.Callbacks.OnFeedReplaced)
 
     def _sync_navigation_state(self) -> None:
         """Push cursor-derived state to sub-VMs after any cursor mutation.
@@ -1279,7 +1259,7 @@ class ChatPaneModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def _on_input_submitted(self, text: str) -> None:
-        """Subscriber on ``chat_input.submitted``: route the submitted text to a command, a shell
+        """Subscriber on ``chat_input.Callbacks.OnSubmitted``: route the submitted text to a command, a shell
         command, or an agent turn. Text is already buffer-cleared and history-pushed by the input VM
         by the time we see it.
 
@@ -1308,7 +1288,7 @@ class ChatPaneModel(ViewModelBase):
 
             name = stripped.lstrip("/").split(maxsplit=1)[0]
             if self.agent_busy and name in self._AGENT_GATED_COMMANDS:
-                self.emit(self.notify, ChatPaneModel.NotifyAction.AGENT_BUSY)
+                self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.AGENT_BUSY)
                 return
 
             # /branch <prompt> is intercepted here instead of going through the click registry:
@@ -1327,7 +1307,7 @@ class ChatPaneModel(ViewModelBase):
             return
 
         if self.agent_busy:
-            self.emit(self.notify, ChatPaneModel.NotifyAction.AGENT_BUSY)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.AGENT_BUSY)
             return
 
         # Sitting on a non-leaf cursor (branch point) means there's no AgentSession at the current
@@ -1335,7 +1315,7 @@ class ChatPaneModel(ViewModelBase):
         # prompt the user to descend into one of the branches first. ``/branch`` and other slash
         # commands aren't gated here — eventually /branch from a non-leaf will create a sibling.
         if self._conversation.children(self._cursor.head):
-            self.emit(self.notify, ChatPaneModel.NotifyAction.DESCEND_REQUIRED)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.DESCEND_REQUIRED)
             return
 
         self.chat_input.accept_submission(text)
@@ -1403,7 +1383,7 @@ class ChatPaneModel(ViewModelBase):
         # history nav / submit. The view's focus subscription routes this to the message-area
         # scroll container; events bubble back to the pane's commit-mode bindings.
         self.request_focus()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def navigate_commit_cursor_up(self) -> None:
@@ -1579,7 +1559,7 @@ class ChatPaneModel(ViewModelBase):
         self.chat_input.set_state(ChatInputModel.State.CHAT)
         self.chat_input.reset_hint()
         self.chat_input.request_focus()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Command registry
@@ -1624,19 +1604,19 @@ class ChatPaneModel(ViewModelBase):
 
         @reg.command(name="quit", help="Quit the application.")
         def _quit() -> None:
-            self.emit(self.notify, ChatPaneModel.NotifyAction.QUIT)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.QUIT)
 
         @reg.command(name="new", help="Open a new chat session tab.")
         def _new() -> None:
-            self.emit(self.notify, ChatPaneModel.NotifyAction.NEW_TAB)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.NEW_TAB)
 
         @reg.command(name="close", help="Close the current chat session tab.")
         def _close() -> None:
-            self.emit(self.notify, ChatPaneModel.NotifyAction.CLOSE_TAB)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.CLOSE_TAB)
 
         @reg.command(name="logs", help="Open the logs viewer tab.")
         def _logs() -> None:
-            self.emit(self.notify, ChatPaneModel.NotifyAction.OPEN_LOGS)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.OPEN_LOGS)
 
         @reg.command(name="rename", help="Rename the current tab.")
         @click.argument("words", nargs=-1, required=True)
@@ -1733,7 +1713,7 @@ class ChatPaneModel(ViewModelBase):
                     include_in_agent_context=False,
                 )
                 return
-            self.emit(self.notify, ChatPaneModel.NotifyAction.TOGGLE_RESOURCE_VIEWER)
+            self.emit(self.Callbacks.OnNotification, ChatPaneModel.NotifyAction.TOGGLE_RESOURCE_VIEWER)
 
         @reg.command(name="options", help="Open the options editor inline in the feed.")
         def _options() -> None:

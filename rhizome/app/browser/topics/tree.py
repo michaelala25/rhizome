@@ -13,7 +13,6 @@ tri-state file-picker behaviour.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
 from rhizome.app.model import ViewModelBase
@@ -43,21 +42,23 @@ class LoadedTopic:
 class TopicTreeModel(ViewModelBase):
     """Multi-select topic tree VM. Holds selection + cursor id + DB reads; the view holds the rest."""
 
-    class Callbacks(Enum):
-        # No payloads — listeners read public accessors. ``CURSOR_CHANGED`` is split from ``dirty``
-        # so consumers like the topic-summary panel don't refetch on every selection-toggle repaint.
-        # ``TOPIC_DELETED`` fires after a subtree delete commits; the browser orchestrator listens so
-        # the active tab can drop rows whose topic just vanished.
-        SELECTION_CHANGED = "selection_changed"
-        CURSOR_CHANGED = "cursor_changed"
-        TOPIC_DELETED = "topic_deleted"
+    class Callbacks(ViewModelBase.Callbacks):
+        # No payloads — listeners read public accessors. ``OnCursorChanged`` is split from
+        # ``OnDirty`` so consumers like the topic-summary panel don't refetch on every selection-
+        # toggle repaint. ``OnTopicDeleted`` fires after a subtree delete commits; the browser
+        # orchestrator listens so the active tab can drop rows whose topic just vanished.
+        OnSelectionChanged = "OnSelectionChanged"
+        OnCursorChanged    = "OnCursorChanged"
+        OnTopicDeleted     = "OnTopicDeleted"
 
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._selection_changed = self.make_callback_group(TopicTreeModel.Callbacks.SELECTION_CHANGED)
-        self._cursor_changed = self.make_callback_group(TopicTreeModel.Callbacks.CURSOR_CHANGED)
-        self._topic_deleted = self.make_callback_group(TopicTreeModel.Callbacks.TOPIC_DELETED)
+        self.make_callback_groups({
+            self.Callbacks.OnSelectionChanged: None,
+            self.Callbacks.OnCursorChanged:    None,
+            self.Callbacks.OnTopicDeleted:     None,
+        })
         self._selected_ids: set[int] = set()
         # Authoritative external reference; mirrors the widget's own cursor whenever the view pushes
         # a ``set_cursor``. Other code reads it without poking the widget.
@@ -66,18 +67,6 @@ class TopicTreeModel(ViewModelBase):
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
-
-    @property
-    def selection_changed(self):
-        return self._selection_changed
-
-    @property
-    def cursor_changed(self):
-        return self._cursor_changed
-
-    @property
-    def topic_deleted(self):
-        return self._topic_deleted
 
     def is_selected(self, topic_id: int) -> bool:
         return topic_id in self._selected_ids
@@ -109,19 +98,19 @@ class TopicTreeModel(ViewModelBase):
     async def delete_topic_subtree(self, root_id: int) -> set[int]:
         """Delete ``root_id`` and its full subtree (FK cascade handles entries / flashcards).
         Drops any selected ids that just vanished and clears the cursor if it pointed into the
-        deleted subtree. Emits ``TOPIC_DELETED`` so the browser orchestrator can refetch the
-        active tab. Returns the set of deleted topic ids."""
+        deleted subtree. Emits ``Callbacks.OnTopicDeleted`` so the browser orchestrator can refetch
+        the active tab. Returns the set of deleted topic ids."""
         async with self._session_factory() as session:
             deleted_ids = await delete_topic_subtree(session, root_id)
             await session.commit()
         if deleted_ids & self._selected_ids:
             self._selected_ids -= deleted_ids
-            self.emit(self._selection_changed)
+            self.emit(self.Callbacks.OnSelectionChanged)
         if self._cursor_topic_id in deleted_ids:
             self._cursor_topic_id = None
-            self.emit(self._cursor_changed)
-        self.emit(self.dirty)
-        self.emit(self._topic_deleted)
+            self.emit(self.Callbacks.OnCursorChanged)
+        self.emit(self.Callbacks.OnDirty)
+        self.emit(self.Callbacks.OnTopicDeleted)
         return deleted_ids
 
     async def create_topic(self, parent_id: int | None) -> Topic:
@@ -141,22 +130,22 @@ class TopicTreeModel(ViewModelBase):
     async def toggle_selection(self, topic_id: int) -> None:
         """Toggle ``topic_id`` with subtree cascade — expand once via the CTE, then add the whole
         subtree if any descendant was missing or remove the whole subtree if it was fully covered.
-        Emits ``dirty`` + ``SELECTION_CHANGED`` exactly once even when the cascade moves many ids."""
+        Emits ``OnDirty`` + ``OnSelectionChanged`` exactly once even when the cascade moves many ids."""
         async with self._session_factory() as session:
             subtree = await expand_subtrees(session, [topic_id])
         if subtree.issubset(self._selected_ids):
             self._selected_ids.difference_update(subtree)
         else:
             self._selected_ids.update(subtree)
-        self.emit(self.dirty)
-        self.emit(self._selection_changed)
+        self.emit(self.Callbacks.OnDirty)
+        self.emit(self.Callbacks.OnSelectionChanged)
 
     def clear_selection(self) -> None:
         if not self._selected_ids:
             return
         self._selected_ids.clear()
-        self.emit(self.dirty)
-        self.emit(self._selection_changed)
+        self.emit(self.Callbacks.OnDirty)
+        self.emit(self.Callbacks.OnSelectionChanged)
 
     # ------------------------------------------------------------------
     # Cursor
@@ -166,8 +155,8 @@ class TopicTreeModel(ViewModelBase):
         if self._cursor_topic_id == topic_id:
             return
         self._cursor_topic_id = topic_id
-        self.emit(self.dirty)
-        self.emit(self._cursor_changed)
+        self.emit(self.Callbacks.OnDirty)
+        self.emit(self.Callbacks.OnCursorChanged)
 
     # ------------------------------------------------------------------
     # Filter projection

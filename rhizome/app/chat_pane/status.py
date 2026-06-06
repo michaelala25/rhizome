@@ -33,29 +33,29 @@ class StatusBarModel(ViewModelBase):
         if self.mode == mode:
             return
         self.mode = mode
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_topic_path(self, path: list[str]) -> None:
         if self.topic_path == path:
             return
         self.topic_path = list(path)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_model_name(self, name: str) -> None:
         if self.model_name == name:
             return
         self.model_name = name
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_verbosity(self, verbosity: str) -> None:
         if self.verbosity == verbosity:
             return
         self.verbosity = verbosity
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_token_usage(self, usage: TokenUsageData) -> None:
         """Token usage is mutated in-place on the AgentSession, so identity checks won't catch
         updates. Always emit — callers (the agent session callback) only fire on actual updates
         anyway."""
         self.token_usage = usage
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

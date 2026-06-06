@@ -107,7 +107,7 @@ class CommitProposalModel(ViewModelBase):
             return
         self.cursor = new_cursor
         self._sync_details()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Per-entry mutators — all operate on the current cursor entry.
@@ -121,7 +121,7 @@ class CommitProposalModel(ViewModelBase):
             self.excluded.remove(self.cursor)
         else:
             self.excluded.add(self.cursor)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def cycle_current_entry_type(self, *, forward: bool = True) -> None:
         self._assert_editing()
@@ -129,7 +129,7 @@ class CommitProposalModel(ViewModelBase):
             return
         entry = self.entries[self.cursor]
         entry.entry_type = cycle_entry_type(entry.entry_type, forward=forward)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_current_entry_type(self, entry_type: EntryType) -> None:
         self._assert_editing()
@@ -139,7 +139,7 @@ class CommitProposalModel(ViewModelBase):
         if entry.entry_type == entry_type:
             return
         entry.entry_type = entry_type
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_current_entry_topic(self, topic_id: int, topic_name: str) -> None:
         """Set the cursor entry's topic. ``topic_id`` + ``topic_name`` are the denormalized pair
@@ -152,7 +152,7 @@ class CommitProposalModel(ViewModelBase):
             return
         entry.topic_id = topic_id
         entry.topic_name = topic_name
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Bulk mutators
@@ -166,7 +166,7 @@ class CommitProposalModel(ViewModelBase):
         for e in self.entries:
             e.topic_id = topic_id
             e.topic_name = topic_name
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Edit-instructions area
@@ -177,14 +177,14 @@ class CommitProposalModel(ViewModelBase):
         ``discard_edit_instructions`` clears it."""
         self._assert_editing()
         self.edit_instructions_visible = not self.edit_instructions_visible
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_edit_instructions(self, text: str) -> None:
         self._assert_editing()
         if self.edit_instructions == text:
             return
         self.edit_instructions = text
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def discard_edit_instructions(self) -> None:
         """Clear the buffer. Visibility is left untouched — the area stays open so the user can
@@ -193,7 +193,7 @@ class CommitProposalModel(ViewModelBase):
         if not self.edit_instructions:
             return
         self.edit_instructions = ""
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -208,7 +208,7 @@ class CommitProposalModel(ViewModelBase):
         # not dirty.
         self._details.accept()
         self.state = CommitProposalModel.State.DONE
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def cancel(self) -> None:
         self._assert_editing()
@@ -218,7 +218,7 @@ class CommitProposalModel(ViewModelBase):
         self._details.cancel()
         self._cancelled = True
         self.state = CommitProposalModel.State.DONE
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def reset(self) -> None:
         """Restore the working list from the initial snapshot. Clears excluded set + edit-
@@ -235,7 +235,7 @@ class CommitProposalModel(ViewModelBase):
         self.edit_instructions = ""
         self.edit_instructions_visible = False
         self._sync_details()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Selection helpers — for downstream consumers of an accepted proposal.

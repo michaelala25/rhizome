@@ -46,13 +46,13 @@ class ChatInput(TextArea):
         self._prev_enabled: bool = vm.enabled
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._vm.subscribe(self._vm.focus, self.focus)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.RequestFocus, self.focus)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
-        self._vm.unsubscribe(self._vm.focus, self.focus)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.RequestFocus, self.focus)
 
     # ------------------------------------------------------------------
     # VM → view

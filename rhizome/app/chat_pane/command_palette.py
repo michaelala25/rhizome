@@ -81,7 +81,7 @@ class CommandPaletteModel(ViewModelBase):
             return
         self._all_commands = commands
         self._cursor = 0
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def update_for_input(self, buffer_text: str) -> None:
         """Derive filter + visibility from a chat input buffer.
@@ -108,11 +108,11 @@ class CommandPaletteModel(ViewModelBase):
         if prefix_changed:
             self._cursor = 0
         self._visible = next_visible
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def move_cursor(self, delta: int) -> None:
         items = self.filtered
         if not items:
             return
         self._cursor = (self._cursor + delta) % len(items)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

@@ -232,7 +232,7 @@ class FlashcardReviewModel(ViewModelBase):
         # Bridge the async due-timer reveal (which happens inside Flashcard, not a VM method) into the
         # dirty emit. Async entry point — fires directly via self, not through any caller's emitter.
         for card in self._cards:
-            card._on_due_reveal = lambda: self.emit(self.dirty)
+            card._on_due_reveal = lambda: self.emit(self.Callbacks.OnDirty)
 
 
     # ========================================================================================================================
@@ -272,7 +272,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self._collapsed == value:
             return
         self._collapsed = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     @property
@@ -284,7 +284,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self._help_visible == value:
             return
         self._help_visible = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     @property
@@ -296,7 +296,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self._timers_visible == value:
             return
         self._timers_visible = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     @property
@@ -308,7 +308,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self._auto_score_enabled == value:
             return
         self._auto_score_enabled = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     @property
@@ -320,7 +320,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self._auto_approve_auto_score == value:
             return
         self._auto_approve_auto_score = value
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def toggle_collapsed(self):
@@ -350,7 +350,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self.current_card is None:
             return
         self.current_card.toggle_flagged()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def accept_all_auto_scores(self) -> None:
@@ -378,8 +378,8 @@ class FlashcardReviewModel(ViewModelBase):
 
         self._latest_message = f"Approved {len(pending_approval)} auto-scored card(s)"
         self._goto_next_unscored_card()
-        with self.emit_once(self.dirty) as emitter:
-            emitter.emit(self.dirty)
+        with self.emit_once(self.Callbacks.OnDirty) as emitter:
+            emitter.emit(self.Callbacks.OnDirty)
             self._check_ready_to_autoscore(emitter)
             self._check_done(emitter)
 
@@ -431,7 +431,7 @@ class FlashcardReviewModel(ViewModelBase):
         # Kick off the first card's think-time timer.
         self._unpause_current_if_front()
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def reveal_back_current_card(self) -> None:
@@ -440,7 +440,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self.current_card is None or self.current_card.state != Flashcard.State.FRONT:
             return
         self.current_card.reveal_back()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def reveal_front_current_card(self) -> None:
@@ -449,7 +449,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self.current_card is None or self.current_card.state != Flashcard.State.AWAITING_REVEAL:
             return
         self.current_card.reveal_front()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def advance_to_next_unscored(self) -> None:
@@ -459,7 +459,7 @@ class FlashcardReviewModel(ViewModelBase):
         if self.current_card is None:
             return
         self._goto_next_unscored_card()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def approve_pending_score(self) -> None:
@@ -483,7 +483,7 @@ class FlashcardReviewModel(ViewModelBase):
         if card is None or card.state != Flashcard.State.SCORED_PENDING_APPROVAL:
             return
         card.discard_pending_score()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def cancel(self):
@@ -525,7 +525,7 @@ class FlashcardReviewModel(ViewModelBase):
             if card.state == Flashcard.State.AWAITING_REVEAL:
                 card.skip() # This will stop the due timer and reset the card state
 
-        emitter.emit(self.dirty)
+        emitter.emit(self.Callbacks.OnDirty)
 
 
     def next_card(self):
@@ -537,7 +537,7 @@ class FlashcardReviewModel(ViewModelBase):
         self._pause_current_if_front()
         self._step_card(1)
         self._unpause_current_if_front()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def prev_card(self):
@@ -549,7 +549,7 @@ class FlashcardReviewModel(ViewModelBase):
         self._pause_current_if_front()
         self._step_card(-1)
         self._unpause_current_if_front()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
 
     def score_current_card(self, score: Flashcard.Score):
@@ -637,8 +637,8 @@ class FlashcardReviewModel(ViewModelBase):
         # want the view to see this whole user action as a single repaint. Order still matters:
         # if a batch is dispatched, _check_done correctly stays its hand because the pending
         # cards aren't terminally scored yet.
-        with self.emit_once(self.dirty) as emitter:
-            emitter.emit(self.dirty)
+        with self.emit_once(self.Callbacks.OnDirty) as emitter:
+            emitter.emit(self.Callbacks.OnDirty)
             self._check_ready_to_autoscore(emitter)
             self._check_done(emitter)
 
@@ -662,8 +662,8 @@ class FlashcardReviewModel(ViewModelBase):
         self._next_remaining_before_batched_autoscore.discard(self.current_card.id)
 
         self._latest_message = "Reset card"
-        with self.emit_once(self.dirty) as emitter:
-            emitter.emit(self.dirty)
+        with self.emit_once(self.Callbacks.OnDirty) as emitter:
+            emitter.emit(self.Callbacks.OnDirty)
             self._check_ready_to_autoscore(emitter)
             self._check_done(emitter)
 
@@ -724,8 +724,8 @@ class FlashcardReviewModel(ViewModelBase):
         self._latest_message = (
             "Skipped card" if self.current_card.score == Flashcard.Score.SKIPPED else "Unskipped card"
         )
-        with self.emit_once(self.dirty) as emitter:
-            emitter.emit(self.dirty)
+        with self.emit_once(self.Callbacks.OnDirty) as emitter:
+            emitter.emit(self.Callbacks.OnDirty)
             self._check_ready_to_autoscore(emitter)
             self._check_done(emitter)
 
@@ -880,7 +880,7 @@ class FlashcardReviewModel(ViewModelBase):
             return
 
         self._autoscore_task = asyncio.create_task(self._handle_batched_auto_score(pending_auto_score))
-        emitter.emit(self.dirty)
+        emitter.emit(self.Callbacks.OnDirty)
 
     def _check_done(self, emitter: Emitter | None = None):
         """If every card is terminally scored (HARD/GOOD/EASY/SKIPPED in the SCORED state), transition to
@@ -951,8 +951,8 @@ class FlashcardReviewModel(ViewModelBase):
         # Pick up anything the user drained while the batch was running (may dispatch a follow-up batch),
         # then close the session if every card is now terminally scored. Batch the emits so the view
         # sees a single repaint covering the batch result + any cascading state changes.
-        with self.emit_once(self.dirty) as emitter:
-            emitter.emit(self.dirty)
+        with self.emit_once(self.Callbacks.OnDirty) as emitter:
+            emitter.emit(self.Callbacks.OnDirty)
             self._check_ready_to_autoscore(emitter)
             self._check_done(emitter)
 

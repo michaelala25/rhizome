@@ -106,11 +106,11 @@ class ResourceLoaderTree(MultilineTree[ResourceTreeNodeData]):
     def on_mount(self) -> None:
         # Bind embedding workers to this widget (the VM owns the coroutine; we supply the scheduler).
         self._vm.set_worker_scheduler(self.run_worker)
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------
     # VM → View

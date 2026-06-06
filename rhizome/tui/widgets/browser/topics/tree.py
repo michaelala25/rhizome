@@ -71,11 +71,11 @@ class TopicTree(Tree[Topic]):
 
     async def on_mount(self) -> None:
         # Subscribe AFTER mount — ``_refresh`` touches widget internals (the tree's line cache).
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         await self._populate_roots()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------
     # VM → View

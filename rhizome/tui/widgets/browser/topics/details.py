@@ -127,11 +127,11 @@ class TopicDetails(Vertical):
         yield TopicDetailChoices(self._vm, id="topic-details-choices")
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------
     # VM → View

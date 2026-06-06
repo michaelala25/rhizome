@@ -88,7 +88,7 @@ class ShellCommandModel(ViewModelBase):
 
         self.running = True
         self.started_at = time.monotonic()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -103,7 +103,7 @@ class ShellCommandModel(ViewModelBase):
                 async with asyncio.timeout(SHELL_TIMEOUT):
                     async for raw in proc.stdout:
                         self.output.append(raw.decode("utf-8", errors="replace"))
-                        self.emit(self.dirty)
+                        self.emit(self.Callbacks.OnDirty)
             except TimeoutError:
                 self.timed_out = True
                 proc.kill()
@@ -119,4 +119,4 @@ class ShellCommandModel(ViewModelBase):
         finally:
             self.finished_at = time.monotonic()
             self.running = False
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)

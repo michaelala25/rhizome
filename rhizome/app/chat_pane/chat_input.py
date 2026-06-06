@@ -5,7 +5,7 @@ holds a reference to the shared ``CommandPaletteModel`` (constructed by the pane
 can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
 typed text is a complete command — no widget-tree walks, no parent mediation.
 
-The pane subscribes to the input's ``SUBMITTED`` callback group to learn when to dispatch text (chat vs slash
+The pane subscribes to the input's ``Callbacks.OnSubmitted`` group to learn when to dispatch text (chat vs slash
 vs agent-busy gating all stays on the pane). The pane also flips ``enabled`` / ``hint`` during interrupts.
 """
 
@@ -26,8 +26,8 @@ _BLURRED_HINT = "ctrl+l to return to the chat area"
 
 class ChatInputModel(ViewModelBase):
 
-    class Callbacks(Enum):
-        SUBMITTED = "submitted"
+    class Callbacks(ViewModelBase.Callbacks):
+        OnSubmitted = "OnSubmitted"
 
     class State(Enum):
         """Coarse input-VM state, managed by the parent pane to stay in lockstep with its own state.
@@ -46,7 +46,7 @@ class ChatInputModel(ViewModelBase):
     def __init__(self, palette: CommandPaletteModel, *, default_hint: str = "") -> None:
         super().__init__()
 
-        self._submitted = self.make_callback_group(ChatInputModel.Callbacks.SUBMITTED)
+        self.make_callback_groups({self.Callbacks.OnSubmitted: str})
 
         self._palette = palette
 
@@ -64,12 +64,8 @@ class ChatInputModel(ViewModelBase):
         self._draft: str = ""
 
     # ------------------------------------------------------------------
-    # Callback group accessors
+    # Accessors
     # ------------------------------------------------------------------
-
-    @property
-    def submitted(self):
-        return self._submitted
 
     @property
     def palette(self) -> CommandPaletteModel:
@@ -96,7 +92,7 @@ class ChatInputModel(ViewModelBase):
         # the palette open, since that would steal up/down from further history traversal.
         if update_palette and self.state == ChatInputModel.State.CHAT:
             self._palette.update_for_input(text)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_state(self, state: "ChatInputModel.State") -> None:
         if self.state == state:
@@ -109,19 +105,19 @@ class ChatInputModel(ViewModelBase):
             self._palette.update_for_input("")
         else:
             self._palette.update_for_input(self.buffer)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_enabled(self, enabled: bool) -> None:
         if self.enabled == enabled:
             return
         self.enabled = enabled
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_hint(self, hint: str) -> None:
         if self.hint == hint:
             return
         self.hint = hint
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def reset_hint(self) -> None:
         self.set_hint(self.default_hint)
@@ -131,7 +127,7 @@ class ChatInputModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def submit(self) -> None:
-        """Fire SUBMITTED with the current buffer (stripped). In CHAT state, no-op on empty
+        """Fire OnSubmitted with the current buffer (stripped). In CHAT state, no-op on empty
         buffers; in COMMIT state, empty submissions are allowed (Enter submits the commit with no
         additional instructions). Does NOT clear the buffer or push history — subscribers decide
         whether the submission is accepted (e.g. the pane gates some commands while the agent is
@@ -140,7 +136,7 @@ class ChatInputModel(ViewModelBase):
         text = self.buffer.strip()
         if not text and self.state != ChatInputModel.State.COMMIT:
             return
-        self.emit(self.submitted, text)
+        self.emit(self.Callbacks.OnSubmitted, text)
 
     def accept_submission(self, text: str) -> None:
         """Commit a submission: clear the buffer and record ``text`` in history. Called by subscribers after

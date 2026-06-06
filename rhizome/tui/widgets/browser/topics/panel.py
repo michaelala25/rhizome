@@ -173,10 +173,10 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
 
     def on_mount(self) -> None:
         # Repaint the tree node's label after a successful Accept on the details panel.
-        self._vm.details.subscribe(self._vm.details.saved, self._on_details_saved)
+        self._vm.details.subscribe(self._vm.details.Callbacks.OnSaved, self._on_details_saved)
 
     def on_unmount(self) -> None:
-        self._vm.details.unsubscribe(self._vm.details.saved, self._on_details_saved)
+        self._vm.details.unsubscribe(self._vm.details.Callbacks.OnSaved, self._on_details_saved)
 
     def _on_details_saved(self) -> None:
         topic = self._vm.details.topic

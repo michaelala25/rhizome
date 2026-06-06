@@ -60,7 +60,7 @@ class InterruptModelBase(ViewModelBase):
         if not self._future.done():
             self._future.set_result(value)
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def cancel(self) -> None:
         """Cancel the future (the awaiter sees ``CancelledError``). No-op if already resolved or
@@ -74,4 +74,4 @@ class InterruptModelBase(ViewModelBase):
         if not self._future.done():
             self._future.cancel()
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

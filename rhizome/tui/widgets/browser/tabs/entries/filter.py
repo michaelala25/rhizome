@@ -122,13 +122,13 @@ class FilterMenu(Vertical, can_focus=True):
         yield Static(id="hint-row")
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         # Input starts disabled — "One of" isn't selected by default.
         self.query_one("#one-of-input", _OneOfInput).disabled = True
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     def on_focus(self) -> None:
         self.call_after_refresh(self._refresh)

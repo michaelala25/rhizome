@@ -114,7 +114,7 @@ class MultiUserChoicesModel(InterruptModelBase):
             if new == self._confirm_cursor:
                 return
             self._confirm_cursor = new
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
             return
 
         options = self._questions[self._active_question]["options"]
@@ -125,7 +125,7 @@ class MultiUserChoicesModel(InterruptModelBase):
         if new == current:
             return
         self._per_question_cursor[self._active_question] = new
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def prev_question(self) -> None:
         if self.resolved:
@@ -136,7 +136,7 @@ class MultiUserChoicesModel(InterruptModelBase):
         if n <= 1:
             return
         self._active_question = (self._active_question - 1) % n
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def next_question(self) -> None:
         if self.resolved:
@@ -147,7 +147,7 @@ class MultiUserChoicesModel(InterruptModelBase):
         if n <= 1:
             return
         self._active_question = (self._active_question + 1) % n
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def confirm(self) -> None:
         """Phase-dependent confirm:
@@ -166,7 +166,7 @@ class MultiUserChoicesModel(InterruptModelBase):
             else:
                 self._has_confirmed_once = True
                 self._phase = MultiUserChoicesModel.Phase.ANSWERING
-                self.emit(self.dirty)
+                self.emit(self.Callbacks.OnDirty)
             return
 
         options = self._questions[self._active_question]["options"]
@@ -183,7 +183,7 @@ class MultiUserChoicesModel(InterruptModelBase):
             self._confirm_cursor = 0
         # else: stay put; user must press submit() to re-resolve.
 
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def submit(self) -> None:
         """Explicit ctrl+enter submit from ANSWERING. No-op in CONFIRMING (use ``confirm()`` there)."""

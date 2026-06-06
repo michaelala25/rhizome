@@ -57,7 +57,7 @@ class UserChoicesModel(InterruptModelBase):
         if new == self.cursor:
             return
         self.cursor = new
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def confirm(self) -> None:
         if self.resolved:

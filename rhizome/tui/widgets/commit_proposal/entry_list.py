@@ -95,8 +95,8 @@ class EntryList(DataTable, can_focus=True):
         # ``clear`` / ``add_row`` ever runs again on this table.
         for i in range(len(self._vm.entries)):
             self.add_row("", "", "", "", key=str(i))
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._vm.details.subscribe(self._vm.details.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
+        self._vm.details.subscribe(self._vm.details.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_resize(self) -> None:
@@ -118,8 +118,8 @@ class EntryList(DataTable, can_focus=True):
             self.refresh(layout=True)
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
-        self._vm.details.unsubscribe(self._vm.details.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
+        self._vm.details.unsubscribe(self._vm.details.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------
     # Boundary detection — disable cursor_up at the top row and cursor_down at the bottom so the

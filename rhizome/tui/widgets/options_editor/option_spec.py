@@ -102,10 +102,10 @@ class OptionSpecView(Widget, can_focus=True):
     # ------------------------------------------------------------------
 
     def on_mount(self) -> None:
-        self.vm.subscribe(self.vm.dirty, self._on_vm_dirty)
+        self.vm.subscribe(self.vm.Callbacks.OnDirty, self._on_vm_dirty)
 
     def on_unmount(self) -> None:
-        self.vm.unsubscribe(self.vm.dirty, self._on_vm_dirty)
+        self.vm.unsubscribe(self.vm.Callbacks.OnDirty, self._on_vm_dirty)
 
     def _on_vm_dirty(self) -> None:
         self._refresh_value()

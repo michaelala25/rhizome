@@ -26,4 +26,4 @@ class ToolMessageModel(ViewModelBase):
 
     def add_tool_call(self, name: str, args: dict[str, Any] | None = None) -> None:
         self.tools.append((name, args or {}))
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

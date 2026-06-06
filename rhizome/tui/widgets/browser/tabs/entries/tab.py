@@ -348,12 +348,12 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
         yield Static(self._keybindings_text(), id="tab-keybindings")
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         # Paint immediately if the VM was bootstrapped before mount.
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------
     # Bottom keybindings line

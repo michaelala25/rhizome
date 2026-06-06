@@ -59,12 +59,12 @@ class ChoiceList(Static, Generic[VM], can_focus=True):
         # nothing on a data model can change their rendering. Focus-driven repaints still flow
         # through ``on_focus`` / ``on_blur``.
         if self._vm is not None:
-            self._vm.subscribe(self._vm.dirty, self._refresh)
+            self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
         if self._vm is not None:
-            self._vm.unsubscribe(self._vm.dirty, self._refresh)
+            self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     def on_focus(self) -> None:
         # Cursor brightness tracks focus; a CSS ``:focus`` rule wouldn't reach the per-segment

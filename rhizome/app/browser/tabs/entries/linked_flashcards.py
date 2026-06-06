@@ -222,7 +222,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
             self._remaining_total = 0
             self._remaining_has_more = False
             self._is_loading = False
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
             return
 
         self._request_fetch()
@@ -238,7 +238,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
         if self._relink_mode and self._entry_ids:
             self._request_fetch()
         else:
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
 
     def set_search(self, query: str) -> None:
         """Replace the active question/answer search. In non-relink filters the linked section;
@@ -251,7 +251,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
         self._cursor = 0
 
         if not self._entry_ids:
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
             return
 
         self._request_fetch()
@@ -270,7 +270,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
             return
 
         self._cursor = new
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def enter_relink_mode(self) -> None:
         """Turn on relink and refetch so the pool comes in. Idempotent. Selection seeds from the
@@ -282,7 +282,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
         if self._entry_ids:
             self._request_fetch()
         else:
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
 
     def exit_relink_mode(self) -> None:
         """Turn off relink, discard pool + selection, and refetch the (cheaper) linked-only
@@ -300,7 +300,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
         if self._entry_ids:
             self._request_fetch()
         else:
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
 
     def toggle_current_relink_selection(self) -> None:
         """Flip the cursor flashcard's relink-set membership. No-op outside relink, on the
@@ -312,7 +312,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
             self._relink_selected_ids.remove(fc.id)
         else:
             self._relink_selected_ids.add(fc.id)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def accept_relink(self) -> None:
         """Commit the relink diff (link adds + unlink removes) on ``FlashcardEntry``, then exit
@@ -354,7 +354,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
         if not self.is_relink_dirty:
             return
         self._relink_selected_ids = self._relink_baseline_ids()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def load_more(self) -> None:
         """Append the next page of the pool. No-op outside relink, when no target is loaded,
@@ -383,7 +383,7 @@ class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
         if len(more) < self._limit:
             self._remaining_has_more = False
         # Newly-loaded pool rows are NOT auto-selected (they aren't linked yet).
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Query helpers

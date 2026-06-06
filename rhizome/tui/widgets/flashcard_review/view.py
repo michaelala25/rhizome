@@ -301,7 +301,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         vm: FlashcardReviewModel,
         **kwargs,
     ) -> None:
-        # ViewBase wires dirty→_refresh and focus→self.focus, and stores ``vm`` as ``self._vm``.
+        # ViewBase wires dirty→_refresh and focus→self.Callbacks.RequestFocus, and stores ``vm`` as ``self._vm``.
         super().__init__(vm, **kwargs)
 
         # Set while ``_refresh`` programmatically rewrites the TextArea's

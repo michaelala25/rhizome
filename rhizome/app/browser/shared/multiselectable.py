@@ -100,7 +100,7 @@ class MultiSelectableVMMixin(ViewModelBase):
         if not self._multi_select_active:
             self._selected_ids.clear()
         self._on_selection_changed()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def toggle_current_selection(self) -> None:
         """Flip the cursor row's membership. No-op outside multi-select or on an empty window."""
@@ -112,7 +112,7 @@ class MultiSelectableVMMixin(ViewModelBase):
         else:
             self._selected_ids.add(item_id)
         self._on_selection_changed()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def add_current_to_selection(self) -> None:
         """Idempotent add for ``shift+up`` / ``shift+down`` range-select sugar. Held-key
@@ -125,7 +125,7 @@ class MultiSelectableVMMixin(ViewModelBase):
             return
         self._selected_ids.add(item_id)
         self._on_selection_changed()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Lifecycle helpers — concrete VM calls these at the right moments

@@ -164,21 +164,21 @@ class ChatPane(ViewBase[ChatPaneModel]):
         # outermost level. Populated lazily on first feed_append/feed_replaced.
         self._depth_wrappers: dict[NodeId, Widget] = {}
 
-        self._vm.subscribe(self._vm.feed_append, self._on_feed_append)
-        self._vm.subscribe(self._vm.feed_remove, self._on_feed_remove)
-        self._vm.subscribe(self._vm.feed_clear, self._on_feed_clear)
-        self._vm.subscribe(self._vm.feed_replaced, self._on_feed_replaced)
-        self._vm.subscribe(self._vm.notify, self._on_notify)
-        self._vm.subscribe(self._vm.tab_rename, self._on_tab_rename)
+        self._vm.subscribe(self._vm.Callbacks.OnFeedAppended, self._on_feed_append)
+        self._vm.subscribe(self._vm.Callbacks.OnFeedRemoved, self._on_feed_remove)
+        self._vm.subscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
+        self._vm.subscribe(self._vm.Callbacks.OnFeedReplaced, self._on_feed_replaced)
+        self._vm.subscribe(self._vm.Callbacks.OnNotification, self._on_notify)
+        self._vm.subscribe(self._vm.Callbacks.OnTabRenamed, self._on_tab_rename)
 
     def on_unmount(self) -> None:
         super().on_unmount()
-        self._vm.unsubscribe(self._vm.feed_append, self._on_feed_append)
-        self._vm.unsubscribe(self._vm.feed_remove, self._on_feed_remove)
-        self._vm.unsubscribe(self._vm.feed_clear, self._on_feed_clear)
-        self._vm.unsubscribe(self._vm.feed_replaced, self._on_feed_replaced)
-        self._vm.unsubscribe(self._vm.notify, self._on_notify)
-        self._vm.unsubscribe(self._vm.tab_rename, self._on_tab_rename)
+        self._vm.unsubscribe(self._vm.Callbacks.OnFeedAppended, self._on_feed_append)
+        self._vm.unsubscribe(self._vm.Callbacks.OnFeedRemoved, self._on_feed_remove)
+        self._vm.unsubscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
+        self._vm.unsubscribe(self._vm.Callbacks.OnFeedReplaced, self._on_feed_replaced)
+        self._vm.unsubscribe(self._vm.Callbacks.OnNotification, self._on_notify)
+        self._vm.unsubscribe(self._vm.Callbacks.OnTabRenamed, self._on_tab_rename)
 
     def _on_notify(self, action: ChatPaneModel.NotifyAction) -> None:
         handler = self._NOTIFY_HANDLERS.get(action)

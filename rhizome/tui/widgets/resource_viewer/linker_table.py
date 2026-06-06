@@ -86,11 +86,11 @@ class ResourceLinkerTable(DataTable):
         self.add_column("sel", width=3)
         self.add_column("name", width=_NAME_COLUMN_WIDTH)
         self.add_column("tokens")
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------
     # VM → View

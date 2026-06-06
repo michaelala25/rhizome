@@ -98,7 +98,7 @@ class BranchPointModel(ViewModelBase):
         if child_id == self._selected_child:
             return
         self._selected_child = child_id
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def notify_focused(self) -> None:
         """View-side focus arrival. Mirror to ``is_focused`` *before* the dirty emit so the
@@ -108,13 +108,13 @@ class BranchPointModel(ViewModelBase):
         if self.is_focused:
             return
         self.is_focused = True
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def notify_blurred(self) -> None:
         if not self.is_focused:
             return
         self.is_focused = False
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Navigation requests (called by the view on keystrokes)
@@ -149,7 +149,7 @@ class BranchPointModel(ViewModelBase):
             return
         name = new_name.strip() or None
         self._graph.rename(self._selected_child, name)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def request_sibling(self, direction: int) -> None:
         """alt+left (-1) / alt+right (+1): swap horizontal sibling at *this* branch point.

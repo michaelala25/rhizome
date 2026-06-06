@@ -7,16 +7,15 @@ which region it sits in.
 
 Linking is **staged**: toggling a row flips its membership in ``_staged_ids`` (seeded from the
 linked baseline) without touching the DB. :meth:`accept` diffs the staged set against the baseline,
-commits the link/unlink rows, and emits ``LINK_CHANGED`` so the loader can refetch the topic's
+commits the link/unlink rows, and emits ``Callbacks.OnLinkChanged`` so the loader can refetch the topic's
 resources (linking changes what the loader tree shows). :meth:`cancel` reverts the staging buffer.
 
-Like the loader, this VM mirrors the highlighted resource (``cursor_target`` + ``CURSOR_CHANGED``)
+Like the loader, this VM mirrors the highlighted resource (``cursor_target`` + ``Callbacks.OnCursorChanged``)
 so the orchestrator can feed the preview without poking the table widget.
 """
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any, Literal
 
 from rhizome.app.browser.shared.searchable import SearchableModelMixin
@@ -37,19 +36,21 @@ DEFAULT_PAGE_LIMIT = 500
 class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
     """Linker VM. Staged link/unlink over a searchable resource pool. See module docstring."""
 
-    class Callbacks(Enum):
+    class Callbacks(QueryBackedViewModel.Callbacks):
         # Fires after ``accept`` commits link/unlink changes — the root VM (or loader) listens to
-        # refetch the topic's resources. Split from ``CURSOR_CHANGED`` (preview-feed highlight).
-        LINK_CHANGED = "link_changed"
-        CURSOR_CHANGED = "cursor_changed"
+        # refetch the topic's resources. Split from ``OnCursorChanged`` (preview-feed highlight).
+        OnLinkChanged = "OnLinkChanged"
+        OnCursorChanged = "OnCursorChanged"
 
     def __init__(self, session_factory: Any, *, limit: int = DEFAULT_PAGE_LIMIT) -> None:
         super().__init__()
         self._session_factory = session_factory
         self._limit = limit
 
-        self._link_changed = self.make_callback_group(ResourceLinkerModel.Callbacks.LINK_CHANGED)
-        self._cursor_changed = self.make_callback_group(ResourceLinkerModel.Callbacks.CURSOR_CHANGED)
+        self.make_callback_groups({
+            self.Callbacks.OnLinkChanged:   None,
+            self.Callbacks.OnCursorChanged: None,
+        })
 
         # Topic the table links against. ``None`` = no active topic.
         self._topic_id: int | None = None
@@ -75,14 +76,6 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
-
-    @property
-    def link_changed(self):
-        return self._link_changed
-
-    @property
-    def cursor_changed(self):
-        return self._cursor_changed
 
     @property
     def linked_resources(self) -> list[Resource]:
@@ -167,7 +160,7 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
             self._remaining_has_more = False
             self._staged_ids = set()
             self._is_loading = False
-            self.emit(self.dirty)
+            self.emit(self.Callbacks.OnDirty)
             return
 
         self._request_fetch()
@@ -182,13 +175,13 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
 
     def set_cursor(self, index: int) -> None:
         """Move the row cursor, clamped to the display. Equality-guarded against the rebuild bounce;
-        emits ``CURSOR_CHANGED`` for the preview feed."""
+        emits ``Callbacks.OnCursorChanged`` for the preview feed."""
         total = self.display_row_count()
         new = 0 if total == 0 else max(0, min(index, total - 1))
         if new == self._cursor:
             return
         self._cursor = new
-        self.emit(self._cursor_changed)
+        self.emit(self.Callbacks.OnCursorChanged)
 
     def toggle_current(self) -> None:
         """Flip the cursor resource's staged link membership. No-op on the boundary / empty row."""
@@ -199,7 +192,7 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
             self._staged_ids.discard(resource.id)
         else:
             self._staged_ids.add(resource.id)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def load_more(self) -> None:
         """Append the next page of the pool. No-op without a topic, when a fetch is in flight, or
@@ -217,12 +210,12 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
         self._remaining_resources.extend(more)
         if len(more) < self._limit:
             self._remaining_has_more = False
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     async def accept(self) -> None:
         """Commit the staged diff against the topic: link the additions, unlink the removals, then emit
-        ``LINK_CHANGED`` (so the loader refetches the topic's resources) and refetch our own sections,
-        which rebases the linked baseline and clears the staging."""
+        ``Callbacks.OnLinkChanged`` (so the loader refetches the topic's resources) and refetch our own
+        sections, which rebases the linked baseline and clears the staging."""
         if not self.is_dirty_staging or self._topic_id is None:
             return
         baseline = self._baseline_ids()
@@ -234,7 +227,7 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
             for rid in to_unlink:
                 await unlink_resource_from_topic(session, resource_id=rid, topic_id=self._topic_id)
             await session.commit()
-        self.emit(self._link_changed)
+        self.emit(self.Callbacks.OnLinkChanged)
         self._request_fetch()
 
     def cancel(self) -> None:
@@ -242,7 +235,7 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
         if not self.is_dirty_staging:
             return
         self._staged_ids = self._baseline_ids()
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # QueryBackedViewModel contract

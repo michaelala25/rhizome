@@ -51,13 +51,13 @@ class AgentMessageModel(ViewModelBase):
         if not text:
             return
         self.body += text
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def close(self) -> None:
         if not self.streaming:
             return
         self.streaming = False
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def mark_cancelled(self) -> None:
         """Signal the view's drain loop to exit immediately instead of catching up.
@@ -74,25 +74,25 @@ class AgentMessageModel(ViewModelBase):
         if self.cancelled:
             return
         self.cancelled = True
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_selectable(self, selectable: bool) -> None:
         if self.is_selectable == selectable:
             return
         self.is_selectable = selectable
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_selected(self, selected: bool) -> None:
         if self.is_selected == selected:
             return
         self.is_selected = selected
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def set_cursor(self, cursor: bool) -> None:
         if self.is_cursor == cursor:
             return
         self.is_cursor = cursor
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def clear_commit_decoration(self) -> None:
         if not (self.is_selectable or self.is_selected or self.is_cursor):
@@ -102,4 +102,4 @@ class AgentMessageModel(ViewModelBase):
         self.is_selected = False
         self.is_cursor = False
         
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)

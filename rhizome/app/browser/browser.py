@@ -49,9 +49,9 @@ class BrowserModel(ViewModelBase):
         # Subscribed directly on the tree — the panel doesn't re-broadcast under an alias. The
         # details ``saved`` hook fires after a successful rename/edit so we can refresh any tab
         # rows that may now carry stale topic names.
-        self._panel.tree.subscribe(self._panel.tree.selection_changed, self._on_filter_changed)
-        self._panel.details.subscribe(self._panel.details.saved, self._on_topic_saved)
-        self._panel.tree.subscribe(self._panel.tree.topic_deleted, self._on_topic_deleted)
+        self._panel.tree.subscribe(self._panel.tree.Callbacks.OnSelectionChanged, self._on_filter_changed)
+        self._panel.details.subscribe(self._panel.details.Callbacks.OnSaved, self._on_topic_saved)
+        self._panel.tree.subscribe(self._panel.tree.Callbacks.OnTopicDeleted, self._on_topic_deleted)
 
         resolved_tabs = _default_tabs(session_factory) if tabs is None else tabs
         for tab in resolved_tabs:
@@ -102,7 +102,7 @@ class BrowserModel(ViewModelBase):
 
     def _add_tab(self, tab: BrowserTabModel) -> None:
         self._tabs.append(tab)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def switch_tab(self, index: int) -> None:
         if index == self._active_index:
@@ -116,7 +116,7 @@ class BrowserModel(ViewModelBase):
         # Skip the filter push before ``start()`` — nothing meaningful has been published yet.
         if self._started:
             self._tabs[index].set_topic_filter(self._panel.current_filter)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     def next_tab(self) -> None:
         if not self._tabs:

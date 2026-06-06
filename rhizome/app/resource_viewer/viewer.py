@@ -53,7 +53,7 @@ class ResourceViewerModel(ViewModelBase):
         self._linker = ResourceLinkerModel(session_factory)
 
         # Cross-child coupling: a committed link change reshapes the loader's resource set.
-        self._linker.subscribe(self._linker.link_changed, self._on_link_changed)
+        self._linker.subscribe(self._linker.Callbacks.OnLinkChanged, self._on_link_changed)
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -100,7 +100,7 @@ class ResourceViewerModel(ViewModelBase):
         self._current_topic_name = topic_name
         self._loader.set_topic(topic_id)
         self._linker.set_topic(topic_id)
-        self.emit(self.dirty)
+        self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
     # Cross-child coupling

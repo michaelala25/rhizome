@@ -27,7 +27,7 @@ class TopicTreePanelModel(ViewModelBase):
         self._tree = TopicTreeModel(session_factory)
         self._details = TopicDetailsModel(session_factory)
 
-        self._tree.subscribe(self._tree.cursor_changed, self._on_cursor_changed)
+        self._tree.subscribe(self._tree.Callbacks.OnCursorChanged, self._on_cursor_changed)
 
     @property
     def tree(self) -> TopicTreeModel:

@@ -24,12 +24,12 @@ class ViewBase[T: ViewModelBase](Widget):
 
         self._vm = vm
 
-        self._vm.subscribe(self._vm.dirty, self._refresh)
-        self._vm.subscribe(self._vm.focus, self.focus)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.RequestFocus, self.focus)
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
-        self._vm.unsubscribe(self._vm.focus, self.focus)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.RequestFocus, self.focus)
 
     def on_focus(self, event: Focus) -> None:
         self._vm.notify_focused()

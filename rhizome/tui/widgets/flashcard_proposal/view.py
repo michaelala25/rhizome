@@ -317,10 +317,10 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalModel], Focus
         # Drives the programmatic flashcard-area↔details height pin. ``vm.details.dirty`` fires
         # when the focused flashcard changes or its content edits land — both can shift the
         # details panel's rendered height, which is what we're tracking.
-        self._vm.details.subscribe(self._vm.details.dirty, self._sync_list_area_height)
+        self._vm.details.subscribe(self._vm.details.Callbacks.OnDirty, self._sync_list_area_height)
 
     def on_unmount(self) -> None:
-        self._vm.details.unsubscribe(self._vm.details.dirty, self._sync_list_area_height)
+        self._vm.details.unsubscribe(self._vm.details.Callbacks.OnDirty, self._sync_list_area_height)
 
     def on_resize(self) -> None:
         self._sync_list_area_height()

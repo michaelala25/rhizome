@@ -55,13 +55,13 @@ class ResourcePreview(VerticalScroll, can_focus=False):
         yield self._body
 
     def on_mount(self) -> None:
-        self._vm.subscribe(self._vm.cursor_changed, self._refresh)
-        self._vm.subscribe(self._vm.dirty, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnCursorChanged, self._refresh)
+        self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
-        self._vm.unsubscribe(self._vm.cursor_changed, self._refresh)
-        self._vm.unsubscribe(self._vm.dirty, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnCursorChanged, self._refresh)
+        self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     def _refresh(self) -> None:
         self._body.update(self._render_target(self._vm.cursor_target))

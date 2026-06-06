@@ -28,7 +28,7 @@ class FlashcardReviewInterruptModel(FlashcardReviewModel, InterruptModelBase):
         # Watch our own state — when the session lands in DONE, resolve the interrupt future. The
         # finish/cancel paths both emit dirty after transitioning state, so a single dirty subscriber
         # catches both.
-        self.subscribe(self.dirty, self._maybe_resolve)
+        self.subscribe(self.Callbacks.OnDirty, self._maybe_resolve)
 
     def _maybe_resolve(self) -> None:
         if self.resolved:
