@@ -1,10 +1,10 @@
 """Buffered-edit VM for the focused entry's title/content in a commit proposal.
 
-Mirrors ``rhizome.app.browser.tabs.entries.entry_details.EntryDetailsVM`` in shape — a per-field
+Mirrors ``rhizome.app.browser.tabs.entries.entry_details.EntryDetailsModel`` in shape — a per-field
 buffer seeded from the underlying object on ``set_entry``, an ``is_dirty`` derived from a plain
 string compare, and an Accept/Cancel exit pair. The difference vs. the browser variant is the
 write-back target: there is no DB here. ``accept()`` mutates the in-memory ``Entry`` dataclass in
-place; the parent ``CommitProposalVM`` is responsible for ultimately committing the proposal as a
+place; the parent ``CommitProposalModel`` is responsible for ultimately committing the proposal as a
 whole when the user accepts everything.
 
 Cursor-move-while-dirty: silent discard, matching the browser variant. The parent VM calls
@@ -14,10 +14,10 @@ Cursor-move-while-dirty: silent discard, matching the browser variant. The paren
 from __future__ import annotations
 
 from rhizome.app.commit_proposal.entry import Entry
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class EntryDetailsVM(ViewModelBase):
+class EntryDetailsModel(ViewModelBase):
     """Per-entry buffered edit of title/content. Leaf VM — emits only ``dirty``."""
 
     def __init__(self) -> None:

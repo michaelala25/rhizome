@@ -1,4 +1,4 @@
-"""``ResourceViewer`` — root view for ``ResourceViewerVM``.
+"""``ResourceViewer`` — root view for ``ResourceViewerModel``.
 
 Bones layout: a vertical stack of the panel's regions, with ``alt+up`` / ``alt+down`` focus
 orchestration down the focusable chain. The actions bar, loader tree, status box, linker
@@ -37,7 +37,7 @@ from textual.actions import SkipAction
 from textual.containers import Vertical
 from textual.widgets import Rule, Static
 
-from rhizome.app.resource_viewer import ResourceLinkerVM, ResourceViewerVM
+from rhizome.app.resource_viewer import ResourceLinkerModel, ResourceViewerModel
 from rhizome.tui.widgets.resource_viewer.actions import ResourceViewerActions
 from rhizome.tui.widgets.resource_viewer.linker_accept import ResourceLinkerAccept
 from rhizome.tui.widgets.resource_viewer.linker_table import ResourceLinkerTable
@@ -50,7 +50,7 @@ from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableViewBase
 
 
-class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixin):
+class ResourceViewer(NavigableViewBase[ResourceViewerModel], FocusOrchestrationMixin):
     """Root view for the resource viewer panel. See module docstring.
 
     Inherits ``NavigableViewBase`` for the focus-aware border treatment, but narrows it to the right
@@ -276,7 +276,7 @@ class ResourceViewer(NavigableViewBase[ResourceViewerVM], FocusOrchestrationMixi
         # SearchBar forwards the id to its inner field, so the focus node "rv-linker-search"
         # resolves to the focus-receiving widget. Driven by the linker VM (its natural owner);
         # submitting is a harmless no-op until a topic is set.
-        yield SearchBar[ResourceLinkerVM](self._vm.linker, id="rv-linker-search")
+        yield SearchBar[ResourceLinkerModel](self._vm.linker, id="rv-linker-search")
 
         # Table + Accept/Cancel share one fixed-height (``2fr``) area: when the staged-changes dialog
         # appears it eats into the table (which is ``1fr`` inside the area) rather than growing the

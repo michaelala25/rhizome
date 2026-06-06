@@ -1,6 +1,6 @@
 from textual.events import Blur, Focus
 from textual.widget import Widget
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
 class ViewBase[T: ViewModelBase](Widget):

@@ -12,10 +12,10 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class CommandPaletteVM(ViewModelBase):
+class CommandPaletteModel(ViewModelBase):
 
     def __init__(self) -> None:
         super().__init__()

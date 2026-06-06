@@ -6,9 +6,9 @@ a transient ``_current_router`` slot during the turn so the interrupt path can r
 of a turn that slot is ``None``.
 
 The router owns the routing of an agent turn's output into the feed:
-  * ``AgentMessageVM`` entries for streamed text (one per contiguous chat segment),
-  * ``ToolMessageVM`` entries for tool calls (one per contiguous run between chat segments),
-  * a ``ThinkingIndicatorVM`` that lives in the feed as its own entry and gets repinned to
+  * ``AgentMessageModel`` entries for streamed text (one per contiguous chat segment),
+  * ``ToolMessageModel`` entries for tool calls (one per contiguous run between chat segments),
+  * a ``ThinkingIndicatorModel`` that lives in the feed as its own entry and gets repinned to
     the tail whenever a new segment is appended, so it always sits beneath the latest visible
     content for the duration of the turn.
 
@@ -20,7 +20,7 @@ Mutation back-channel
 ---------------------
 The router mutates the feed by calling ``pane._append_feed`` / ``pane._remove_feed`` on the
 back-reference passed at construction. It reads ``pane.session_mode`` to seed new
-``AgentMessageVM`` instances with the right mode for border styling. No other coupling to
+``AgentMessageModel`` instances with the right mode for border styling. No other coupling to
 the pane.
 
 Reference-based routing (not feed position)
@@ -38,35 +38,35 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from langchain_core.messages import AIMessageChunk
 
-from rhizome.app.chat_pane.messages.agent import AgentMessageVM
-from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
-from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
-from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
-from rhizome.app.chat_pane.messages.tool import ToolMessageVM
-from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.app.chat_pane.messages.agent import AgentMessageModel
+from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
+from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
+from rhizome.app.chat_pane.thinking import ThinkingIndicatorModel
+from rhizome.app.chat_pane.messages.tool import ToolMessageModel
+from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesModel
 
 
 # Maps the ``"type"`` key on a graph interrupt-value dict to the VM factory that builds the matching
 # feed entry. Keys mirror the legacy ``agent_message_harness`` dispatch table verbatim — the agent
 # graph emits these strings, so we follow rather than rename them. New interrupt VMs hook in here.
-_INTERRUPT_VM_FACTORIES: dict[str, Callable[[dict[str, Any]], InterruptVMBase]] = {
-    "choices": UserChoicesVM.from_interrupt,
-    "warning": WarningUserChoicesVM.from_interrupt,
-    "multiple_choice": MultiUserChoicesVM.from_interrupt,
-    "sql_confirmation": SqlConfirmationVM.from_interrupt,
+_INTERRUPT_VM_FACTORIES: dict[str, Callable[[dict[str, Any]], InterruptModelBase]] = {
+    "choices": UserChoicesModel.from_interrupt,
+    "warning": WarningUserChoicesModel.from_interrupt,
+    "multiple_choice": MultiUserChoicesModel.from_interrupt,
+    "sql_confirmation": SqlConfirmationModel.from_interrupt,
 }
 
 
 if TYPE_CHECKING:
     from .conversation_graph import ConversationGraphCursor
-    from .view_model import ChatPaneVM
+    from .view_model import ChatPaneModel
 
 
 class AgentStreamRouter:
 
-    def __init__(self, pane: "ChatPaneVM") -> None:
+    def __init__(self, pane: "ChatPaneModel") -> None:
         self._pane = pane
 
         # Cursor snapshot at turn start. All feed mutations made by this router (append agent
@@ -80,12 +80,12 @@ class AgentStreamRouter:
 
         # The currently-open agent chat segment, if any. Cleared on tool-call transition or by
         # ``pause`` / ``close``.
-        self._current_agent_message: AgentMessageVM | None = None
+        self._current_agent_message: AgentMessageModel | None = None
 
         # The currently-open tool list, if any. Same reference-tracking rules. Tool messages have
         # no ``streaming`` flag — "open" just means new tool calls extend this VM rather than
         # opening a fresh one.
-        self._current_tool_message: ToolMessageVM | None = None
+        self._current_tool_message: ToolMessageModel | None = None
 
         # Feed id of the thinking indicator. The indicator is its own feed entry; it gets repinned
         # to the tail (remove + re-append, with a fresh id) on each new segment so it stays at the
@@ -119,7 +119,7 @@ class AgentStreamRouter:
         ``cancelled=False`` (the default — natural end of stream): if no visible output was
         produced, append a "(no response)" stub so empty turns leave a trace.
 
-        ``cancelled=True`` (user-initiated cancel, via ``ChatPaneVM.cancel_agent_turn``):
+        ``cancelled=True`` (user-initiated cancel, via ``ChatPaneModel.cancel_agent_turn``):
         mark the currently-open agent message cancelled *before* sealing it, so the view's drain
         loop bails on its next iteration instead of slowly catching up to the buffered body. Then
         skip the stub — the worker's ``CancelledError`` handler posts a "(user cancelled)"
@@ -138,7 +138,7 @@ class AgentStreamRouter:
             return
 
         if not self._had_output:
-            stub = AgentMessageVM(mode=self._pane.session_mode)
+            stub = AgentMessageModel(mode=self._pane.session_mode)
             stub.body = "(no response)"
             stub.streaming = False
             self._pane._append_feed(stub, cursor=self._cursor)
@@ -203,7 +203,7 @@ class AgentStreamRouter:
             self._show_thinking()
 
     @staticmethod
-    def _build_interrupt_vm(value: Any) -> InterruptVMBase:
+    def _build_interrupt_vm(value: Any) -> InterruptModelBase:
         """Translate a graph interrupt-value dict into the matching feed-resident VM.
 
         Raises on a missing/unknown ``"type"`` rather than falling back silently — a typo in the
@@ -232,7 +232,7 @@ class AgentStreamRouter:
             self._current_tool_message = None
 
         if self._current_agent_message is None or not self._current_agent_message.streaming:
-            vm = AgentMessageVM(mode=self._pane.session_mode)
+            vm = AgentMessageModel(mode=self._pane.session_mode)
             self._current_agent_message = vm
             self._pane._append_feed(vm, cursor=self._cursor)
             self._repin_thinking()
@@ -249,7 +249,7 @@ class AgentStreamRouter:
             self._current_agent_message = None
 
         if self._current_tool_message is None:
-            vm = ToolMessageVM()
+            vm = ToolMessageModel()
             self._current_tool_message = vm
             self._pane._append_feed(vm, cursor=self._cursor)
             self._repin_thinking()
@@ -264,7 +264,7 @@ class AgentStreamRouter:
     def _show_thinking(self) -> None:
         if self._thinking_id is not None:
             return
-        item = self._pane._append_feed(ThinkingIndicatorVM(), cursor=self._cursor)
+        item = self._pane._append_feed(ThinkingIndicatorModel(), cursor=self._cursor)
         self._thinking_id = item.id
 
     def _hide_thinking(self) -> None:

@@ -29,7 +29,7 @@ from textual import on
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 
@@ -55,7 +55,7 @@ class FlashcardList(DataTable, can_focus=True):
 
     _ANSWER_MIN_WIDTH = 15
 
-    def __init__(self, vm: FlashcardProposalVM, **kwargs) -> None:
+    def __init__(self, vm: FlashcardProposalModel, **kwargs) -> None:
         super().__init__(
             show_header=True,
             show_row_labels=False,
@@ -132,12 +132,12 @@ class FlashcardList(DataTable, can_focus=True):
     def action_toggle_exclude(self) -> None:
         # State guard: the flashcard-list stays focusable in DONE so the user can browse the
         # proposal, but every mutator must be off-limits there — the VM asserts EDITING.
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.toggle_exclude_current_flashcard()
 
     def action_set_topic(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self.post_message(SetTopicRequested(scope="current"))
 

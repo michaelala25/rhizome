@@ -969,7 +969,7 @@ class ChatPane(Widget, DockContainerMixin):
         self.update_status_bar()
 
     # ------------------------------------------------------------------
-    # Agent-tool-facing API (mirrors ChatPaneVM public surface so
+    # Agent-tool-facing API (mirrors ChatPaneModel public surface so
     # the same agent tools can drive either implementation).
     # ------------------------------------------------------------------
 

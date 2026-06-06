@@ -1,4 +1,4 @@
-"""``FlashcardProposal`` — parent view for ``FlashcardProposalVM``.
+"""``FlashcardProposal`` — parent view for ``FlashcardProposalModel``.
 
 Composes the five focusable regions and orchestrates inter-region focus via a static graph driven
 by ``alt+arrow`` bindings. Leaves whose plain-arrow bindings are inactive at a boundary (via
@@ -50,7 +50,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
 from rhizome.tui.widgets.flashcard_proposal.choices import FlashcardProposalChoices
 from rhizome.tui.widgets.flashcard_proposal.edit_instructions import EditInstructionsArea
 from rhizome.tui.widgets.flashcard_proposal.flashcard_details import FlashcardDetails
@@ -69,7 +69,7 @@ _EDITS_YELLOW = "rgb(235,180,90)"
 _CANCEL_RED = "rgb(235,100,100)"
 
 
-class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrchestrationMixin):
+class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalModel], FocusOrchestrationMixin):
     """Parent view for the flashcard-proposal interrupt."""
 
     DEFAULT_CSS = """
@@ -240,7 +240,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         },
     )
 
-    def __init__(self, vm: FlashcardProposalVM, **kwargs) -> None:
+    def __init__(self, vm: FlashcardProposalModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         # Carried on the VM. Used by the topic-picker modal; ``None`` disables it — useful for unit
         # tests and the ``/test-flashcard-proposal`` slash command which doesn't need real topic data.
@@ -312,7 +312,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         # itself owns no rendered surface (children handle their own paint), so ``_refresh`` is a
         # no-op. We land focus on the FlashcardList per the spec, but only in EDITING — a re-mount
         # after the interrupt resolves shouldn't steal focus from the chat input.
-        if self._vm.state == FlashcardProposalVM.State.EDITING:
+        if self._vm.state == FlashcardProposalModel.State.EDITING:
             self.focus_first()
         # Drives the programmatic flashcard-area↔details height pin. ``vm.details.dirty`` fires
         # when the focused flashcard changes or its content edits land — both can shift the
@@ -329,7 +329,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         # DONE-collapsed: the parent itself stays focused so ``enter`` toggles re-expand. Skipping
         # the inward delegation is enough — the mixin's ``on_focus`` calls this and respects the
         # ``None`` return.
-        if self._vm.state == FlashcardProposalVM.State.DONE and self._collapsed:
+        if self._vm.state == FlashcardProposalModel.State.DONE and self._collapsed:
             return None
         return super().focus_first()
 
@@ -345,7 +345,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         # output. Skipping while DONE-collapsed because the entire ``fp-middle`` subtree is
         # ``display: none``.
         def _apply() -> None:
-            if self._vm.state == FlashcardProposalVM.State.DONE and self._collapsed:
+            if self._vm.state == FlashcardProposalModel.State.DONE and self._collapsed:
                 return
             try:
                 area = self.query_one("#fp-flashcard-list-area", Vertical)
@@ -362,7 +362,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         # Bulk of the editing-state content is rendered by child widgets that subscribe to
         # vm.dirty independently — the parent's job here is the DONE-state surface (collapsed/
         # expanded gating, summary block, button) and the one-shot EDITING→DONE edge.
-        if self._vm.state == FlashcardProposalVM.State.DONE and not self._entered_done:
+        if self._vm.state == FlashcardProposalModel.State.DONE and not self._entered_done:
             self._handle_done_transition()
             self._entered_done = True
 
@@ -381,7 +381,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
             fp-done-instructions (dim grey readout)              →  ○  ●†  ●†     († non-empty)
             fp-done-summary-line (centered title + state)        →  ○  ○  ●
         """
-        in_done = self._vm.state == FlashcardProposalVM.State.DONE
+        in_done = self._vm.state == FlashcardProposalModel.State.DONE
         collapsed_done = in_done and self._collapsed
         expanded_done = in_done and not self._collapsed
 
@@ -503,7 +503,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
     def _is_node_available(self, node_id: str) -> bool:
         # In DONE only the flashcard-list stays in the graph — the user browses the proposal but
         # can't edit anything.
-        if self._vm.state == FlashcardProposalVM.State.DONE:
+        if self._vm.state == FlashcardProposalModel.State.DONE:
             return node_id == "fp-flashcard-list"
         if node_id == "fp-details-choices":
             return self._vm.details.is_dirty
@@ -516,22 +516,22 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
     # ------------------------------------------------------------------
 
     def action_accept_all(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.accept_all()
 
     def action_reset(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.reset()
 
     def action_cancel(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.cancel()
 
     def action_toggle_edit_instructions(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.toggle_edit_instructions_area()
         if self._vm.edit_instructions_visible:
@@ -541,7 +541,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
                 pass
 
     def action_set_topic_all(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._open_topic_picker(scope="all")
 
@@ -549,7 +549,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         """DONE-only enter binding. No-ops in EDITING so it can't fight with the EDITING-state
         ``enter`` consumers (SharedTopicSetter, the ConfirmableTextArea accept hook, the
         FlashcardProposalChoices in-list activator)."""
-        if self._vm.state != FlashcardProposalVM.State.DONE:
+        if self._vm.state != FlashcardProposalModel.State.DONE:
             return
         self._toggle_collapsed()
 
@@ -558,7 +558,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
         if event.button.id != "fp-collapse":
             return
         event.stop()
-        if self._vm.state != FlashcardProposalVM.State.DONE:
+        if self._vm.state != FlashcardProposalModel.State.DONE:
             return
         self._toggle_collapsed()
 
@@ -582,7 +582,7 @@ class FlashcardProposal(NavigableFeedItemViewBase[FlashcardProposalVM], FocusOrc
 
     @on(SetTopicRequested)
     def _on_set_topic_requested(self, event: SetTopicRequested) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._open_topic_picker(scope=event.scope)
         event.stop()

@@ -5,17 +5,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 from rhizome.tui.widgets.shared.multiselect_table import MultiSelectableDataTable
 
 if TYPE_CHECKING:
     from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab
 
 
-class EntryTable(MultiSelectableDataTable[EntryTabVM]):
+class EntryTable(MultiSelectableDataTable[EntryTabModel]):
     def __init__(
         self,
-        view_model: EntryTabVM,
+        view_model: EntryTabModel,
         tab: "EntryTab",
         **kwargs: Any,
     ) -> None:

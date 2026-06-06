@@ -1,4 +1,4 @@
-"""``OptionsEditorVM`` — feed-mounted editor for an ``Options`` instance.
+"""``OptionsEditorModel`` — feed-mounted editor for an ``Options`` instance.
 
 Mental model: hold the live ``Options`` target plus a detached ``clone()`` of it as a scratch
 buffer. Reads layer staged-on-clone over target. Writes go to the clone for stageable specs or
@@ -24,10 +24,10 @@ from rhizome.app.options import (
     OptionSpec,
     Options,
 )
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class OptionsEditorVM(ViewModelBase):
+class OptionsEditorModel(ViewModelBase):
 
     def __init__(self, target: Options) -> None:
         super().__init__()

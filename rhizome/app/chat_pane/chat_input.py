@@ -1,7 +1,7 @@
 """Chat input — sub-VM + view used by the MVVM chat pane.
 
 The input owns the visible buffer, the disabled/hint reconciliation, and the per-session history ring. It
-holds a reference to the shared ``CommandPaletteVM`` (constructed by the pane) so that buffer mutations
+holds a reference to the shared ``CommandPaletteModel`` (constructed by the pane) so that buffer mutations
 can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
 typed text is a complete command — no widget-tree walks, no parent mediation.
 
@@ -17,14 +17,14 @@ from enum import Enum
 from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
-from rhizome.app.vm import ViewModelBase
-from rhizome.app.chat_pane.command_palette import CommandPaletteVM
+from rhizome.app.model import ViewModelBase
+from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 
 
 _BLURRED_HINT = "ctrl+l to return to the chat area"
 
 
-class ChatInputVM(ViewModelBase):
+class ChatInputModel(ViewModelBase):
 
     class Callbacks(Enum):
         SUBMITTED = "submitted"
@@ -43,14 +43,14 @@ class ChatInputVM(ViewModelBase):
         CHAT = "chat"
         COMMIT = "commit"
 
-    def __init__(self, palette: CommandPaletteVM, *, default_hint: str = "") -> None:
+    def __init__(self, palette: CommandPaletteModel, *, default_hint: str = "") -> None:
         super().__init__()
 
-        self._submitted = self._make_group(ChatInputVM.Callbacks.SUBMITTED)
+        self._submitted = self._make_group(ChatInputModel.Callbacks.SUBMITTED)
 
         self._palette = palette
 
-        self.state: ChatInputVM.State = ChatInputVM.State.CHAT
+        self.state: ChatInputModel.State = ChatInputModel.State.CHAT
         self.buffer: str = ""
         self.enabled: bool = True
         self.default_hint: str = default_hint
@@ -72,7 +72,7 @@ class ChatInputVM(ViewModelBase):
         return self._submitted
 
     @property
-    def palette(self) -> CommandPaletteVM:
+    def palette(self) -> CommandPaletteModel:
         return self._palette
 
     @property
@@ -94,18 +94,18 @@ class ChatInputVM(ViewModelBase):
         # feeding it to the palette would surface a misleading "/c…" match on the first character.
         # ``update_palette=False`` is used by history nav: recalling a "/foo" entry should not pop
         # the palette open, since that would steal up/down from further history traversal.
-        if update_palette and self.state == ChatInputVM.State.CHAT:
+        if update_palette and self.state == ChatInputModel.State.CHAT:
             self._palette.update_for_input(text)
         self.emit(self.dirty)
 
-    def set_state(self, state: "ChatInputVM.State") -> None:
+    def set_state(self, state: "ChatInputModel.State") -> None:
         if self.state == state:
             return
         self.state = state
         
         # Reconcile the palette with the new state: hide on entering COMMIT, re-filter against the
         # current buffer on returning to CHAT.
-        if state == ChatInputVM.State.COMMIT:
+        if state == ChatInputModel.State.COMMIT:
             self._palette.update_for_input("")
         else:
             self._palette.update_for_input(self.buffer)
@@ -138,7 +138,7 @@ class ChatInputVM(ViewModelBase):
         busy) and call ``accept_submission(text)`` to commit the clear+history-push only on accept.
         """
         text = self.buffer.strip()
-        if not text and self.state != ChatInputVM.State.COMMIT:
+        if not text and self.state != ChatInputModel.State.COMMIT:
             return
         self.emit(self.submitted, text)
 

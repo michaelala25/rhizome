@@ -8,7 +8,7 @@ from typing import Any
 
 from textual.widgets import TextArea
 
-from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
+from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelModel
 
 
 class FlashcardPreview(TextArea):
@@ -24,7 +24,7 @@ class FlashcardPreview(TextArea):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPanelVM,
+        view_model: LinkedFlashcardsPanelModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(

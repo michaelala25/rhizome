@@ -32,7 +32,7 @@ from textual.coordinate import Coordinate
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Rule, Static, TextArea
 
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 from rhizome.db.models import EntryType
 from rhizome.tui.keybindings import Keybind, binding_hint
 from rhizome.tui.widgets.shared.search_bar import SearchBar
@@ -298,7 +298,7 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
 
     def __init__(
         self,
-        view_model: EntryTabVM,
+        view_model: EntryTabModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -307,7 +307,7 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
         # ``hide_dialog`` so visibility, focus, and ``prepare_for_show`` stay coordinated.
         self._active_dialog: _DialogName | None = None
         # VM state at last refresh — used to auto-dismiss the dialog on transitions.
-        self._last_state: EntryTabVM.State | None = None
+        self._last_state: EntryTabModel.State | None = None
         # Tuple of entry ids at last refresh — drives the three ``_refresh`` paths
         # (``extend`` / ``inplace`` / ``rebuild``). ``inplace`` and ``extend`` preserve DataTable's
         # scroll position and cursor.
@@ -328,7 +328,7 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
         table.add_column("flashcards")
         with Horizontal(id="tab-body"):
             with Vertical(id="table-column"):
-                yield SearchBar[EntryTabVM](
+                yield SearchBar[EntryTabModel](
                     self._vm, id="search-input",
                 )
                 yield table
@@ -617,7 +617,7 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
     # own ``vm.dirty`` in ``on_mount`` and unsubscribes in ``on_unmount`` — re-subscribe cost on
     # mode switch is O(1) per pane, dwarfed by the avoided CSS work.
 
-    def _make_right_pane(self, state: EntryTabVM.State) -> Widget:
+    def _make_right_pane(self, state: EntryTabModel.State) -> Widget:
         """Construct the right-pane widget for ``state``. Pure factory — the caller is responsible
         for yielding it from ``compose`` or mounting it in ``_swap_right_pane``."""
         if state is self._vm.State.ENTRIES:
@@ -634,7 +634,7 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
                 continue
         return None
 
-    def _swap_right_pane(self, new_state: EntryTabVM.State) -> None:
+    def _swap_right_pane(self, new_state: EntryTabModel.State) -> None:
         """Unmount the outgoing pane and mount the one for ``new_state``. Rescues focus to the
         entries table first if it'd otherwise be orphaned inside the outgoing pane."""
         try:

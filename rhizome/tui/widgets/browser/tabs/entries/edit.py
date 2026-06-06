@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 if TYPE_CHECKING:
@@ -35,14 +35,14 @@ _EDIT_OPTIONS_MULTI: tuple[str, ...] = (
 )
 
 
-class EditMenu(ChoiceList[EntryTabVM]):
+class EditMenu(ChoiceList[EntryTabModel]):
     """Horizontal edit-action picker. All labels route through ``_dispatch`` → the tab's handler."""
 
     HINT = "← / → move • enter select • e/esc dismiss"
 
     def __init__(
         self,
-        view_model: EntryTabVM,
+        view_model: EntryTabModel,
         tab: "EntryTab",
         **kwargs: Any,
     ) -> None:

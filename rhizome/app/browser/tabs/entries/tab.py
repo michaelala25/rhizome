@@ -23,12 +23,12 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from rhizome.app.browser.shared.searchable import SearchableVMMixin
+from rhizome.app.browser.shared.searchable import SearchableModelMixin
 from rhizome.app.browser.shared.multiselectable import MultiSelectableVMMixin
 from rhizome.app.browser.shared.sortable import SortableVMMixin
-from rhizome.app.browser.tab_base import BrowserTabVM
-from .entry_details import EntryDetailsVM
-from .linked_flashcards import LinkedFlashcardsPanelVM
+from rhizome.app.browser.tab_base import BrowserTabModel
+from .entry_details import EntryDetailsModel
+from .linked_flashcards import LinkedFlashcardsPanelModel
 
 _logger = get_logger("browser.knowledge_entry_tab")
 
@@ -37,9 +37,9 @@ _logger = get_logger("browser.knowledge_entry_tab")
 DEFAULT_PAGE_LIMIT = 500
 
 
-class EntryTabVM(
-    BrowserTabVM,
-    SearchableVMMixin,
+class EntryTabModel(
+    BrowserTabModel,
+    SearchableModelMixin,
     SortableVMMixin["EntrySortKey"],
     MultiSelectableVMMixin,
 ):
@@ -72,7 +72,7 @@ class EntryTabVM(
         self._has_more: bool = False
 
         # Search / sort / filter state. ``None`` = no filter; an empty tuple is a legal "no rows
-        # match" terminal state (mirrors ``BrowserTabVM.set_topic_filter`` semantics).
+        # match" terminal state (mirrors ``BrowserTabModel.set_topic_filter`` semantics).
         # ``_has_flashcards`` and ``_flashcard_ids`` are a tagged union — see ``set_flashcard_filter``.
         self._search: str = ""
         self._sort_by: EntrySortKey = "id"
@@ -90,12 +90,12 @@ class EntryTabVM(
 
         # Detail panel sub-VM. Subscribe to its SAVED group so we can repaint the DataTable row
         # after an Accept (the in-memory ``KnowledgeEntry`` was mutated in place).
-        self._details = EntryDetailsVM(session_factory)
+        self._details = EntryDetailsModel(session_factory)
         self._details.subscribe(self._details.saved, self._on_details_saved)
 
         # Linked-flashcards sub-VM. Fed via ``_sync_linked_flashcards``, which is state-gated so it
         # doesn't fire fetches outside ``LINKED_FLASHCARDS``.
-        self._linked_flashcards = LinkedFlashcardsPanelVM(session_factory)
+        self._linked_flashcards = LinkedFlashcardsPanelModel(session_factory)
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -153,11 +153,11 @@ class EntryTabVM(
         return self._cursor
 
     @property
-    def details(self) -> EntryDetailsVM:
+    def details(self) -> EntryDetailsModel:
         return self._details
 
     @property
-    def linked_flashcards(self) -> LinkedFlashcardsPanelVM:
+    def linked_flashcards(self) -> LinkedFlashcardsPanelModel:
         return self._linked_flashcards
 
     @property
@@ -446,7 +446,7 @@ class EntryTabVM(
         self.emit(self.dirty)
 
     # ------------------------------------------------------------------
-    # BrowserTabVM contract
+    # BrowserTabModel contract
     # ------------------------------------------------------------------
 
     def _query_kwargs(self) -> dict[str, Any]:

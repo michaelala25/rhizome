@@ -49,7 +49,7 @@ from typing import Any, Callable
 
 from rhizome.logs import get_logger
 
-from .vm import ViewModelBase
+from .model import ViewModelBase
 
 _logger = get_logger("query_backed_vm")
 

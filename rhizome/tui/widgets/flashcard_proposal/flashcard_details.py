@@ -8,7 +8,7 @@ with four fields instead of two:
   - Testing Notes (`ProposalTextArea`, editable, dirty-tracked)
   - Linked Entries (`Static`, read-only — outside the focus graph)
 
-The Accept/Cancel ``ChoiceList`` appears only while ``FlashcardDetailsVM.is_dirty``, which is
+The Accept/Cancel ``ChoiceList`` appears only while ``FlashcardDetailsModel.is_dirty``, which is
 derived from the three editable buffers.
 
 Boundary navigation: plain ``up`` from the question and plain ``down`` from the bottom-most
@@ -26,12 +26,12 @@ from textual.containers import Vertical
 from textual.events import Key
 from textual.widgets import Static, TextArea
 
-from rhizome.app.flashcard_proposal.flashcard_details import FlashcardDetailsVM
+from rhizome.app.flashcard_proposal.flashcard_details import FlashcardDetailsModel
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 from rhizome.tui.widgets.shared.text_area import ProposalTextArea
 
 
-class _FlashcardDetailChoices(ChoiceList[FlashcardDetailsVM]):
+class _FlashcardDetailChoices(ChoiceList[FlashcardDetailsModel]):
     """Accept/Cancel for the focused flashcard's question/answer/notes edit."""
 
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
@@ -66,7 +66,7 @@ class _DetailsTextArea(ProposalTextArea):
 
 
 class FlashcardDetails(Vertical):
-    """View for ``FlashcardDetailsVM``. Subscribes to ``vm.dirty``; mirrors VM state into the
+    """View for ``FlashcardDetailsModel``. Subscribes to ``vm.dirty``; mirrors VM state into the
     three editable TextAreas, refreshes the read-only linked-entries display, and toggles the
     choices' visibility based on ``is_dirty``."""
 
@@ -141,7 +141,7 @@ class FlashcardDetails(Vertical):
     }
     """
 
-    def __init__(self, vm: FlashcardDetailsVM, **kwargs) -> None:
+    def __init__(self, vm: FlashcardDetailsModel, **kwargs) -> None:
         super().__init__(**kwargs)
         self._vm = vm
         self._was_dirty = False

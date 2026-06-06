@@ -48,7 +48,7 @@ class Entry:
     topic_name: str | None
 
     def clone(self) -> "Entry":
-        """Field-by-field copy. Used by ``CommitProposalVM`` to snapshot the initial proposal so
+        """Field-by-field copy. Used by ``CommitProposalModel`` to snapshot the initial proposal so
         ``reset()`` can restore it after edits."""
         return replace(self)
 

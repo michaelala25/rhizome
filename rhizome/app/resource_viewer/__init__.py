@@ -1,9 +1,9 @@
-from .linker import ResourceLinkerVM
-from .loader import ResourceLoaderVM
-from .viewer import ResourceViewerVM
+from .linker import ResourceLinkerModel
+from .loader import ResourceLoaderModel
+from .viewer import ResourceViewerModel
 
 __all__ = [
-    "ResourceViewerVM",
-    "ResourceLoaderVM",
-    "ResourceLinkerVM",
+    "ResourceViewerModel",
+    "ResourceLoaderModel",
+    "ResourceLinkerModel",
 ]

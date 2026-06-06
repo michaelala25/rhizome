@@ -17,7 +17,7 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.widgets import DataTable, Static
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 
 
 _MAX_CELL_WIDTH = 40
@@ -32,7 +32,7 @@ def _truncate_cell(value: Any, max_len: int = _MAX_CELL_WIDTH) -> str:
     return s
 
 
-class SqlConfirmationVM(InterruptVMBase):
+class SqlConfirmationModel(InterruptModelBase):
     """Holds the SQL + preview data + Approve/Deny cursor for a SQL-modification interrupt."""
 
     def __init__(
@@ -52,7 +52,7 @@ class SqlConfirmationVM(InterruptVMBase):
         self._cursor: int = 0
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> SqlConfirmationVM:
+    def from_interrupt(cls, value: dict[str, Any]) -> SqlConfirmationModel:
         preview = value.get("preview", {})
         return cls(
             sql=value.get("sql", ""),

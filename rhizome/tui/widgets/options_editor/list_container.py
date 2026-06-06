@@ -8,7 +8,7 @@ from textual.containers import VerticalScroll
 from textual.events import DescendantFocus, Focus
 from textual.widgets import Rule, Static
 
-from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.app.options import (
     OptionNamespace,
@@ -50,7 +50,7 @@ class OptionsListContainer(VerticalScroll):
         Keybind.PageDown.  as_binding("navigate_cursor(5)",  show=False),
     ]
 
-    def __init__(self, vm: OptionsEditorVM, **kwargs: Any) -> None:
+    def __init__(self, vm: OptionsEditorModel, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = vm
         self._cursor: int | None = None

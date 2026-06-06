@@ -17,12 +17,12 @@ from typing import ClassVar
 
 from rich.text import Text
 
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
-class FlashcardProposalChoices(ChoiceList[FlashcardProposalVM]):
+class FlashcardProposalChoices(ChoiceList[FlashcardProposalModel]):
 
     DEFAULT_CSS = """
     FlashcardProposalChoices {
@@ -61,12 +61,12 @@ class FlashcardProposalChoices(ChoiceList[FlashcardProposalVM]):
     # friends. Each one guards on EDITING since the underlying VM mutators assert that state.
 
     def _approve(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.accept_all()
 
     def _edit(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.toggle_edit_instructions_area()
         if self._vm.edit_instructions_visible:
@@ -76,17 +76,17 @@ class FlashcardProposalChoices(ChoiceList[FlashcardProposalVM]):
                 pass
 
     def _reset(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.reset()
 
     def _cancel(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.cancel()
 
     def action_cancel(self) -> None:
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.cancel()
 

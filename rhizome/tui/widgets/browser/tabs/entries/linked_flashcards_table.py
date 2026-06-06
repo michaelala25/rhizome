@@ -7,7 +7,7 @@ from typing import Any
 
 from textual.widgets import DataTable
 
-from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
+from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelModel
 from rhizome.tui.keybindings import Keybind
 
 
@@ -18,7 +18,7 @@ class LinkedFlashcardsTable(DataTable):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPanelVM,
+        view_model: LinkedFlashcardsPanelModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)

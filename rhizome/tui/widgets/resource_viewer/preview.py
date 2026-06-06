@@ -24,8 +24,8 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from rhizome.app.resource_viewer.linker import ResourceLinkerVM
-from rhizome.app.resource_viewer.loader import ResourceLoaderVM
+from rhizome.app.resource_viewer.linker import ResourceLinkerModel
+from rhizome.app.resource_viewer.loader import ResourceLoaderModel
 
 _NAME_STYLE = Style(color="rgb(210,210,210)", bold=True)
 _BODY_STYLE = Style(color="rgb(150,150,150)")
@@ -46,7 +46,7 @@ class ResourcePreview(VerticalScroll, can_focus=False):
     }
     """
 
-    def __init__(self, view_model: ResourceLoaderVM | ResourceLinkerVM, **kwargs: Any) -> None:
+    def __init__(self, view_model: ResourceLoaderModel | ResourceLinkerModel, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
         self._body = Static()

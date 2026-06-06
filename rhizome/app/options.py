@@ -40,7 +40,7 @@ class OptionScope(IntEnum):
 class OptionSpec:
     """Base option specification: name, scope, default, help text.
 
-    ``immediate=True`` opts the spec out of editor staging — ``OptionsEditorVM`` writes such
+    ``immediate=True`` opts the spec out of editor staging — ``OptionsEditorModel`` writes such
     values straight to the live ``Options`` target rather than to its scratch clone. Reserve
     for changes the user has to see take effect live (theme, display-only fields). Off by
     default; flag explicitly.

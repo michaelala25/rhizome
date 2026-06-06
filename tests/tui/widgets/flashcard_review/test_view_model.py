@@ -1,6 +1,6 @@
 """Tests for the FlashcardReview view-model (rhizome.app.flashcard_review).
 
-Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewVM`` classes (imported here under the
+Covers the ``Timer``, ``Flashcard``, and ``FlashcardReviewModel`` classes (imported here under the
 ``FlashcardReviewViewModel`` alias).
 FSRS state lives entirely in memory now — no DB stubbing is required for the
 rating path. The shared ``recording_scheduler`` fixture wraps a real
@@ -30,7 +30,7 @@ import pytest
 from fsrs import Card, Rating, Scheduler, State
 
 from rhizome.app.flashcard_review.flashcard import Flashcard
-from rhizome.app.flashcard_review.review import FlashcardReviewVM as FlashcardReviewViewModel
+from rhizome.app.flashcard_review.review import FlashcardReviewModel as FlashcardReviewViewModel
 from rhizome.app.flashcard_review.timer import Timer
 
 

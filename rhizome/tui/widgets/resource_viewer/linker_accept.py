@@ -1,6 +1,6 @@
 """``ResourceLinkerAccept`` — Accept / Cancel menu for pending staged link changes.
 
-Bound to ``ResourceLinkerVM``. Reveals (``.-visible``) whenever the staging buffer diverges from the
+Bound to ``ResourceLinkerModel``. Reveals (``.-visible``) whenever the staging buffer diverges from the
 linked baseline (``vm.is_dirty_staging``) and hides otherwise, so it only takes space while there's
 something to commit. Accept commits the staged diff against the topic; Cancel reverts to the baseline.
 
@@ -11,11 +11,11 @@ a dirty→clean transition that hides the menu out from under focus re-routes fo
 
 from __future__ import annotations
 
-from rhizome.app.resource_viewer.linker import ResourceLinkerVM
+from rhizome.app.resource_viewer.linker import ResourceLinkerModel
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
-class ResourceLinkerAccept(ChoiceList[ResourceLinkerVM]):
+class ResourceLinkerAccept(ChoiceList[ResourceLinkerModel]):
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
     LEAD = "Staged links: "
 

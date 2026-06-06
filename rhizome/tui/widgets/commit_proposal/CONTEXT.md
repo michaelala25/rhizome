@@ -1,7 +1,7 @@
 # rhizome/tui/widgets/commit_proposal/
 
-View side of the commit-proposal review surface. Bound to `CommitProposalVM` /
-`EntryDetailsVM` in `rhizome/app/commit_proposal/`.
+View side of the commit-proposal review surface. Bound to `CommitProposalModel` /
+`EntryDetailsModel` in `rhizome/app/commit_proposal/`.
 
 ## Files
 

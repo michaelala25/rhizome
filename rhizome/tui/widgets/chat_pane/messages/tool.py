@@ -1,4 +1,4 @@
-"""ToolMessageVM + view — a contiguous run of tool calls between agent text segments.
+"""ToolMessageModel + view — a contiguous run of tool calls between agent text segments.
 
 The VM holds an append-only list of ``(name, args)`` pairs. The view subscribes to ``dirty`` and
 re-renders the box-drawing tree on each event. There is no streaming concept here: tool calls land
@@ -15,13 +15,13 @@ from textual.widgets import Static
 
 
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.app.chat_pane.messages.tool import ToolMessageVM
+from rhizome.app.chat_pane.messages.tool import ToolMessageModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
-@register_feed_view(ToolMessageVM)
-class ToolMessage(ViewBase[ToolMessageVM]):
-    """Renders ``ToolMessageVM.tools`` as a Unicode box-drawing tree."""
+@register_feed_view(ToolMessageModel)
+class ToolMessage(ViewBase[ToolMessageModel]):
+    """Renders ``ToolMessageModel.tools`` as a Unicode box-drawing tree."""
 
     DEFAULT_CSS = """
     ToolMessage {
@@ -40,7 +40,7 @@ class ToolMessage(ViewBase[ToolMessageVM]):
     }
     """
 
-    def __init__(self, vm: ToolMessageVM, **kwargs) -> None:
+    def __init__(self, vm: ToolMessageModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
 
     def compose(self) -> ComposeResult:

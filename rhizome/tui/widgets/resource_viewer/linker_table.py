@@ -1,4 +1,4 @@
-"""``ResourceLinkerTable`` — staged link/unlink table over ``ResourceLinkerVM``.
+"""``ResourceLinkerTable`` — staged link/unlink table over ``ResourceLinkerModel``.
 
 A ``DataTable`` showing the topic's link picture as ``[*linked, <boundary>, *pool]``: the pinned
 linked section (frozen at fetch), a divider row, then the searchable/paginated pool of every other
@@ -24,7 +24,7 @@ from textual import on
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable
 
-from rhizome.app.resource_viewer.linker import ResourceLinkerVM
+from rhizome.app.resource_viewer.linker import ResourceLinkerModel
 from rhizome.db import Resource
 from rhizome.tui.keybindings import Keybind
 
@@ -50,7 +50,7 @@ def _fmt_tokens(n: int | None) -> str:
 
 
 class ResourceLinkerTable(DataTable):
-    """Staged link/unlink table over ``ResourceLinkerVM``. See module docstring."""
+    """Staged link/unlink table over ``ResourceLinkerModel``. See module docstring."""
 
     BINDINGS = [
         Keybind.Toggle.             as_binding("toggle_link",  show=False),
@@ -71,7 +71,7 @@ class ResourceLinkerTable(DataTable):
     }
     """
 
-    def __init__(self, view_model: ResourceLinkerVM, **kwargs: Any) -> None:
+    def __init__(self, view_model: ResourceLinkerModel, **kwargs: Any) -> None:
         super().__init__(cursor_type="row", zebra_stripes=True, **kwargs)
         self._vm = view_model
         # Row-signature edge detector driving the three-path refresh (rebuild / extend / inplace),

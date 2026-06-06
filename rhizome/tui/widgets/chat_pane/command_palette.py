@@ -13,10 +13,10 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.app.chat_pane.command_palette import CommandPaletteVM
+from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 
 
-class CommandPalette(ViewBase[CommandPaletteVM]):
+class CommandPalette(ViewBase[CommandPaletteModel]):
 
     DEFAULT_CSS = """
     CommandPalette {
@@ -37,7 +37,7 @@ class CommandPalette(ViewBase[CommandPaletteVM]):
     }
     """
 
-    def __init__(self, vm: CommandPaletteVM, **kwargs) -> None:
+    def __init__(self, vm: CommandPaletteModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
 
     def compose(self) -> ComposeResult:

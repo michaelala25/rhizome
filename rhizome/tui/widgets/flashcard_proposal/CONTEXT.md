@@ -1,7 +1,7 @@
 # rhizome/tui/widgets/flashcard_proposal/
 
-View side of the flashcard-proposal review surface. Bound to `FlashcardProposalVM` /
-`FlashcardDetailsVM` in `rhizome/app/flashcard_proposal/`.
+View side of the flashcard-proposal review surface. Bound to `FlashcardProposalModel` /
+`FlashcardDetailsModel` in `rhizome/app/flashcard_proposal/`.
 
 Direct mirror of `rhizome/tui/widgets/commit_proposal/`. The flashcard variant has one extra
 editable field (testing notes) and one read-only display field (linked knowledge entries) in the
@@ -52,4 +52,4 @@ column, edit-instructions chord — is the same.
   the keys of the focus graph in `view.py` — keep them in sync if regions are renamed.
 - The linked-entries Static (`fp-details-linked-entries`) is rendered between testing-notes and
   the details choices but is **not** a focus-graph node. If it ever becomes editable, add the id
-  to the graph and wire a sibling buffer onto `FlashcardDetailsVM`.
+  to the graph and wire a sibling buffer onto `FlashcardDetailsModel`.

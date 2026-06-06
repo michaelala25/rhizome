@@ -1,6 +1,6 @@
 """``ResourceStatus`` — compact load summary for the resource viewer's status box.
 
-A pure auxiliary view over ``ResourceLoaderVM``: it subscribes to the VM's ``dirty`` group and
+A pure auxiliary view over ``ResourceLoaderModel``: it subscribes to the VM's ``dirty`` group and
 re-renders ``load_stats`` on every load-state change. It holds no state of its own and is never the
 VM's ``ViewBase`` owner (the loader tree owns that relationship), so it wires its subscription
 manually on mount — mirroring how the tree itself subscribes.
@@ -19,7 +19,7 @@ from rich.text import Text
 
 from textual.widgets import Static
 
-from rhizome.app.resource_viewer.loader import LoadStats, ResourceLoaderVM
+from rhizome.app.resource_viewer.loader import LoadStats, ResourceLoaderModel
 
 # Mirrors the loader tree's glyph palette: green = indexed, amber = context. Counts read in a near-
 # white; labels and separators sit dim so the numbers carry the eye.
@@ -33,9 +33,9 @@ _SEP = ("  ·  ", _LABEL_STYLE)
 
 
 class ResourceStatus(Static):
-    """Load summary view over ``ResourceLoaderVM``. See module docstring."""
+    """Load summary view over ``ResourceLoaderModel``. See module docstring."""
 
-    def __init__(self, view_model: ResourceLoaderVM, **kwargs: Any) -> None:
+    def __init__(self, view_model: ResourceLoaderModel, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
 

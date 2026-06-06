@@ -8,7 +8,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from rhizome.app.options import OptionScope
-from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.options_editor.actions import OptionsEditorActions
 from rhizome.tui.widgets.options_editor.list_container import OptionsListContainer
@@ -16,7 +16,7 @@ from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrch
 from rhizome.tui.keybindings import Keybind
 
 
-class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM], FocusOrchestrationMixin):
+class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorModel], FocusOrchestrationMixin):
 
     class Dismissed(Message):
         """Public-surface dismiss request — the chat pane catches this and drops the feed
@@ -77,7 +77,7 @@ class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorVM], FocusOrchestrati
         },
     )
 
-    def __init__(self, vm: OptionsEditorVM, **kwargs: Any) -> None:
+    def __init__(self, vm: OptionsEditorModel, **kwargs: Any) -> None:
         super().__init__(vm, **kwargs)
 
     @property

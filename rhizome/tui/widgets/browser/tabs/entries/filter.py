@@ -30,7 +30,7 @@ from textual.widgets import Input, Static
 
 from rhizome.db.models import EntryType
 
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 from rhizome.tui.keybindings import Keybind
 
 if TYPE_CHECKING:
@@ -97,7 +97,7 @@ class FilterMenu(Vertical, can_focus=True):
 
     def __init__(
         self,
-        view_model: EntryTabVM,
+        view_model: EntryTabModel,
         tab: "EntryTab",
         **kwargs: Any,
     ) -> None:

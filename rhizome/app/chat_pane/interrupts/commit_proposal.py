@@ -1,7 +1,7 @@
-"""CommitProposalInterruptVM — adapter that gives ``CommitProposalVM`` the chat-pane interrupt
+"""CommitProposalInterruptModel — adapter that gives ``CommitProposalModel`` the chat-pane interrupt
 surface (future-based resolution).
 
-Subclasses both ``CommitProposalVM`` (core editing state machine) and ``InterruptVMBase`` (future
+Subclasses both ``CommitProposalModel`` (core editing state machine) and ``InterruptModelBase`` (future
 plumbing). Cooperative ``super().__init__()`` chains ensure ``ViewModelBase`` initialises exactly
 once.
 
@@ -24,12 +24,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.app.commit_proposal.commit_proposal import CommitProposalVM
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.commit_proposal.commit_proposal import CommitProposalModel
 from rhizome.app.commit_proposal.entry import Entry
 
 
-class CommitProposalInterruptVM(CommitProposalVM, InterruptVMBase):
+class CommitProposalInterruptModel(CommitProposalModel, InterruptModelBase):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -44,7 +44,7 @@ class CommitProposalInterruptVM(CommitProposalVM, InterruptVMBase):
     def _maybe_resolve(self) -> None:
         if self.resolved:
             return
-        if self.state != CommitProposalVM.State.DONE:
+        if self.state != CommitProposalModel.State.DONE:
             return
         self.resolve(self._build_result(), remain_navigable=True)
 

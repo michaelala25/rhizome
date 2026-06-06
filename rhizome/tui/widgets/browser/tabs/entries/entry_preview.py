@@ -9,7 +9,7 @@ from typing import Any
 
 from textual.widgets import TextArea
 
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 
 
 class EntryPreview(TextArea):
@@ -29,7 +29,7 @@ class EntryPreview(TextArea):
 
     def __init__(
         self,
-        view_model: EntryTabVM,
+        view_model: EntryTabModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(

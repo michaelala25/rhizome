@@ -7,7 +7,7 @@ Presents N questions, each with its own option list. The user moves between ques
 returns to ``ANSWERING`` with a sticky ``_has_confirmed_once`` flag so future "all answered"
 transitions don't re-auto-confirm.
 
-The VM owns the future (via ``InterruptVMBase``); the view is a passive projection that just
+The VM owns the future (via ``InterruptModelBase``); the view is a passive projection that just
 forwards key actions to VM mutators and re-renders on ``dirty``.
 """
 
@@ -22,17 +22,17 @@ from textual.widgets import Static
 
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesVM
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 _DIM = "rgb(100,100,100)"
 _ANSWERED = "rgb(100,200,100)"
 
 
-@register_feed_view(MultiUserChoicesVM)
-class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
-    """Three-region projection of ``MultiUserChoicesVM``: tab bar, prompt, options block, hint.
+@register_feed_view(MultiUserChoicesModel)
+class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesModel]):
+    """Three-region projection of ``MultiUserChoicesModel``: tab bar, prompt, options block, hint.
 
     After resolution the widget collapses to a single comma-separated summary line (no expand toggle —
     the legacy collapse button was intentionally dropped).
@@ -113,7 +113,7 @@ class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
         self._refresh_hint()
 
     def _refresh_tabs(self) -> None:
-        Phase = MultiUserChoicesVM.Phase
+        Phase = MultiUserChoicesModel.Phase
         text = Text()
         for i, q in enumerate(self._vm.questions):
             if i > 0:
@@ -129,7 +129,7 @@ class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
         self.query_one("#mc-tabs", Static).update(text)
 
     def _refresh_prompt(self) -> None:
-        Phase = MultiUserChoicesVM.Phase
+        Phase = MultiUserChoicesModel.Phase
         if self._vm.phase is Phase.CONFIRMING:
             self.query_one("#mc-prompt", Static).update("Submit answers?")
         else:
@@ -137,7 +137,7 @@ class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
             self.query_one("#mc-prompt", Static).update(q["prompt"])
 
     def _refresh_options(self) -> None:
-        Phase = MultiUserChoicesVM.Phase
+        Phase = MultiUserChoicesModel.Phase
 
         if self._vm.phase is Phase.CONFIRMING:
             options = ["Yes", "No"]
@@ -162,7 +162,7 @@ class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesVM]):
         self.query_one("#mc-options", Static).update(text)
 
     def _refresh_hint(self) -> None:
-        Phase = MultiUserChoicesVM.Phase
+        Phase = MultiUserChoicesModel.Phase
         if self._vm.phase is Phase.CONFIRMING:
             hint = "(enter to confirm, ctrl+c to cancel)"
         elif self._vm.all_answered:

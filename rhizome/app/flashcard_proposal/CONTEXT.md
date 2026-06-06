@@ -18,12 +18,12 @@ child details VM for buffered per-item edits). Differences from commit-proposal 
 - **flashcard.py** — `Flashcard` dataclass with `clone()` + `from_dict()`. Mirrors
   `commit_proposal.entry.Entry`; carries denormalized `topic_id` + `topic_name`.
 
-- **flashcard_proposal.py** — `FlashcardProposalVM`. Owns the flashcard list, cursor, exclusion
+- **flashcard_proposal.py** — `FlashcardProposalModel`. Owns the flashcard list, cursor, exclusion
   set, edit-instructions buffer, and `EDITING → DONE` lifecycle. Holds one child
-  `FlashcardDetailsVM` that's reseeded on every cursor move. See the file docstring for the full
+  `FlashcardDetailsModel` that's reseeded on every cursor move. See the file docstring for the full
   state contract.
 
-- **flashcard_details.py** — `FlashcardDetailsVM`. Per-flashcard buffered edit of three string
+- **flashcard_details.py** — `FlashcardDetailsModel`. Per-flashcard buffered edit of three string
   fields, mirroring the commit-proposal details VM in shape. `accept()` writes back to the
   in-memory `Flashcard` in place; there is no DB write here — the parent VM commits the whole
   proposal as a unit.
@@ -34,5 +34,5 @@ child details VM for buffered per-item edits). Differences from commit-proposal 
   the list, so the view's one-time-`add_row` pattern stays valid.
 - Cursor-move-while-dirty silently discards the unsubmitted edit, matching the browser policy.
 - `entry_ids` is treated as immutable from the widget's perspective. If/when an "edit linked
-  entries" affordance lands, it would extend `FlashcardDetailsVM` with a fourth buffer rather
+  entries" affordance lands, it would extend `FlashcardDetailsModel` with a fourth buffer rather
   than mutating the dataclass directly.

@@ -14,7 +14,7 @@ from __future__ import annotations
 from rich.text import Text
 from textual.widgets import Static
 
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.flashcard_proposal.messages import SetTopicRequested
 
@@ -33,7 +33,7 @@ class SharedTopicSetter(Static, can_focus=True):
         Keybind.MenuConfirm.as_binding("set_topic_all", show=False),
     ]
 
-    def __init__(self, vm: FlashcardProposalVM, **kwargs) -> None:
+    def __init__(self, vm: FlashcardProposalModel, **kwargs) -> None:
         super().__init__(**kwargs)
         self._vm = vm
 
@@ -57,7 +57,7 @@ class SharedTopicSetter(Static, can_focus=True):
         # EDITING, but stop the message at the source so we don't fire spurious traffic during
         # DONE (when this widget is non-focusable anyway, but a mouse click could still hit the
         # binding through some future surface).
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self.post_message(SetTopicRequested(scope="all"))
 

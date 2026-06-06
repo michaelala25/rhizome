@@ -1,6 +1,6 @@
 """BranchIndicator — sub-VM + view representing a /branch point in the chat feed.
 
-Lives in the parent node's feed (appended by ``ChatPaneVM.branch()`` at the moment of /branch).
+Lives in the parent node's feed (appended by ``ChatPaneModel.branch()`` at the moment of /branch).
 Displays the branches reachable from that point and, when the cursor has descended through it, which
 branch is currently selected. State is push-driven: the chat pane walks the visible feed on every
 cursor move and calls ``set_selected_child(...)`` directly — no event-pump subscription.
@@ -22,13 +22,13 @@ from textual.widgets import Static
 
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
-from rhizome.app.chat_pane.branch import BranchPointVM
+from rhizome.app.chat_pane.branch import BranchPointModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId
 
 if TYPE_CHECKING:
-    from .view_model import ChatPaneVM
+    from .view_model import ChatPaneModel
 
 
 class RenameTextArea(ConfirmableTextArea):
@@ -86,8 +86,8 @@ class RenameTextArea(ConfirmableTextArea):
         await super()._on_key(event)
 
 
-@register_feed_view(BranchPointVM)
-class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
+@register_feed_view(BranchPointModel)
+class BranchPoint(NavigableFeedItemViewBase[BranchPointModel]):
     """Bright-grey banner with the navigable-feed-item border (dim → hover → focus). Focusable via
     click; keystrokes only fire when focused so they never compete with the chat input's word-nav."""
 
@@ -154,7 +154,7 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointVM]):
     # doesn't blow out the indicator's width.
     _VISIBLE_SIBLINGS_PER_SIDE = 2
 
-    def __init__(self, vm: BranchPointVM, **kwargs) -> None:
+    def __init__(self, vm: BranchPointModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._branches_static: Static | None = None
         self._hint_static: Static | None = None

@@ -1,7 +1,7 @@
-"""``FlashcardProposalInterruptVM`` — adapter that gives ``FlashcardProposalVM`` the chat-pane
+"""``FlashcardProposalInterruptModel`` — adapter that gives ``FlashcardProposalModel`` the chat-pane
 interrupt surface (future-based resolution).
 
-Subclasses both ``FlashcardProposalVM`` (core editing state machine) and ``InterruptVMBase``
+Subclasses both ``FlashcardProposalModel`` (core editing state machine) and ``InterruptModelBase``
 (future plumbing). Cooperative ``super().__init__()`` chains ensure ``ViewModelBase`` initialises
 exactly once.
 
@@ -24,12 +24,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 from rhizome.app.flashcard_proposal.flashcard import Flashcard
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
 
 
-class FlashcardProposalInterruptVM(FlashcardProposalVM, InterruptVMBase):
+class FlashcardProposalInterruptModel(FlashcardProposalModel, InterruptModelBase):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -44,7 +44,7 @@ class FlashcardProposalInterruptVM(FlashcardProposalVM, InterruptVMBase):
     def _maybe_resolve(self) -> None:
         if self.resolved:
             return
-        if self.state != FlashcardProposalVM.State.DONE:
+        if self.state != FlashcardProposalModel.State.DONE:
             return
         self.resolve(self._build_result(), remain_navigable=True)
 

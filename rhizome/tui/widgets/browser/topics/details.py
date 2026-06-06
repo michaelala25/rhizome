@@ -13,14 +13,14 @@ from textual.widgets import Static, TextArea
 
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
-from rhizome.app.browser.topics.details import TopicDetailsVM
+from rhizome.app.browser.topics.details import TopicDetailsModel
 
 
 # Dim grey for labels; values render in default fg so they read as the "data".
 _LABEL_STYLE = "rgb(120,120,120)"
 
 
-class TopicDetailChoices(ChoiceList[TopicDetailsVM]):
+class TopicDetailChoices(ChoiceList[TopicDetailsModel]):
     """Horizontal Accept/Cancel for committing or discarding a details edit. Visible only while
     ``vm.is_dirty`` (parent toggles the ``.-visible`` class in its ``_refresh``). Escape always
     cancels regardless of cursor position."""
@@ -40,7 +40,7 @@ class TopicDetailChoices(ChoiceList[TopicDetailsVM]):
 
 
 class TopicDetails(Vertical):
-    """View for ``TopicDetailsVM``: name ``TextArea`` over description ``TextArea`` over
+    """View for ``TopicDetailsModel``: name ``TextArea`` over description ``TextArea`` over
     hidden-when-clean ``TopicDetailChoices``.
 
     Subscribes to ``vm.dirty`` and mirrors VM state into all three widgets each refresh, with an
@@ -103,7 +103,7 @@ class TopicDetails(Vertical):
 
     def __init__(
         self,
-        view_model: TopicDetailsVM,
+        view_model: TopicDetailsModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)

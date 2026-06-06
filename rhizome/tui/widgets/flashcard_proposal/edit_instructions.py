@@ -14,7 +14,7 @@ from textual import on
 from textual.events import Key
 from textual.widgets import TextArea
 
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalVM
+from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
 from rhizome.tui.widgets.shared.text_area import ProposalTextArea
 
 
@@ -47,7 +47,7 @@ class EditInstructionsArea(ProposalTextArea):
     }
     """
 
-    def __init__(self, vm: FlashcardProposalVM, **kwargs) -> None:
+    def __init__(self, vm: FlashcardProposalModel, **kwargs) -> None:
         super().__init__(show_line_numbers=False, soft_wrap=True, **kwargs)
         self._vm = vm
         self._last_escape_ts: float = 0.0
@@ -84,7 +84,7 @@ class EditInstructionsArea(ProposalTextArea):
         # ``_assert_editing``.
         if event.text_area is not self:
             return
-        if self._vm.state != FlashcardProposalVM.State.EDITING:
+        if self._vm.state != FlashcardProposalModel.State.EDITING:
             return
         self._vm.set_edit_instructions(event.text_area.text)
 
@@ -107,7 +107,7 @@ class EditInstructionsArea(ProposalTextArea):
             event.prevent_default()
             return
         if event.key == "escape":
-            if self._vm.state != FlashcardProposalVM.State.EDITING:
+            if self._vm.state != FlashcardProposalModel.State.EDITING:
                 event.prevent_default()
                 return
             now = time.monotonic()

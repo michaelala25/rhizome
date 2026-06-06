@@ -2,10 +2,10 @@ from typing import ClassVar
 
 from textual.message import Message
 
-from rhizome.app.resource_viewer import ResourceViewerVM
+from rhizome.app.resource_viewer import ResourceViewerModel
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
-class ResourceViewerActions(ChoiceList[ResourceViewerVM]):
+class ResourceViewerActions(ChoiceList[ResourceViewerModel]):
     ORIENTATION = "horizontal"
 
     CHOICES: ClassVar[dict[str, str]] = {

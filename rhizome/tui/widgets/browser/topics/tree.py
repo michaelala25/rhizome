@@ -1,4 +1,4 @@
-"""Multi-select topic tree view. VM (``rhizome.app.browser.topics.tree.TopicTreeVM``) owns the
+"""Multi-select topic tree view. VM (``rhizome.app.browser.topics.tree.TopicTreeModel``) owns the
 selection set + cursor topic id + DB reads; this view owns the visual tree (which ``TreeNode``s
 exist, which are expanded, cursor position) by leaning on Textual's ``Tree``.
 
@@ -19,7 +19,7 @@ from textual import on
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
-from rhizome.app.browser.topics.tree import TopicTreeVM
+from rhizome.app.browser.topics.tree import TopicTreeModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.db import Topic
 
@@ -60,7 +60,7 @@ class TopicTree(Tree[Topic]):
     }
     """
 
-    def __init__(self, view_model: TopicTreeVM, **kwargs: Any) -> None:
+    def __init__(self, view_model: TopicTreeModel, **kwargs: Any) -> None:
         super().__init__("Topics", **kwargs)
         self._vm = view_model
         self.show_root = False
@@ -86,7 +86,7 @@ class TopicTree(Tree[Topic]):
 
     async def _populate_roots(self) -> None:
         # Synthetic ``(root)`` row at the top — selecting it parks the VM cursor on ``None``, which
-        # downstream code (TopicDetailsVM, create-action dispatch) reads as "no parent / at
+        # downstream code (TopicDetailsModel, create-action dispatch) reads as "no parent / at
         # the tree root". Data is ``None`` to flag it as virtual everywhere we branch on data.
         self.root.add_leaf(_VIRTUAL_ROOT_LABEL, data=None)
         for lt in await self._vm.fetch_children(None):

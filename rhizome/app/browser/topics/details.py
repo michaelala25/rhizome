@@ -33,7 +33,7 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from rhizome.app.query_backed_vm import QueryBackedViewModel
+from rhizome.app.query_backed_model import QueryBackedViewModel
 
 _logger = get_logger("browser.topic_details")
 
@@ -49,7 +49,7 @@ class LoadedTopicDetails:
     subtree_flashcards: int
 
 
-class TopicDetailsVM(QueryBackedViewModel):
+class TopicDetailsModel(QueryBackedViewModel):
     """Buffered-edit VM for the topic details panel. Accept/Cancel are the explicit exits from dirty;
     nothing reaches the DB until the user Accepts."""
 
@@ -59,7 +59,7 @@ class TopicDetailsVM(QueryBackedViewModel):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self._make_group(TopicDetailsVM.Callbacks.SAVED)
+        self._saved = self._make_group(TopicDetailsModel.Callbacks.SAVED)
 
         self._topic_id: int | None = None
         self._topic: Topic | None = None

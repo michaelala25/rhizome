@@ -1,7 +1,7 @@
-"""FlashcardReviewInterruptVM — adapter that gives ``FlashcardReviewVM`` the chat-pane interrupt
+"""FlashcardReviewInterruptModel — adapter that gives ``FlashcardReviewModel`` the chat-pane interrupt
 surface (future-based resolution).
 
-Subclasses both ``FlashcardReviewVM`` (core review state machine) and ``InterruptVMBase`` (future
+Subclasses both ``FlashcardReviewModel`` (core review state machine) and ``InterruptModelBase`` (future
 plumbing). Cooperative ``super().__init__()`` chains ensure ``ViewModelBase`` initialises exactly
 once.
 
@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 from rhizome.app.flashcard_review.flashcard import Flashcard
-from rhizome.app.flashcard_review.review import FlashcardReviewVM
+from rhizome.app.flashcard_review.review import FlashcardReviewModel
 
 
-class FlashcardReviewInterruptVM(FlashcardReviewVM, InterruptVMBase):
+class FlashcardReviewInterruptModel(FlashcardReviewModel, InterruptModelBase):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -33,7 +33,7 @@ class FlashcardReviewInterruptVM(FlashcardReviewVM, InterruptVMBase):
     def _maybe_resolve(self) -> None:
         if self.resolved:
             return
-        if self.state != FlashcardReviewVM.State.DONE:
+        if self.state != FlashcardReviewModel.State.DONE:
             return
         self.resolve(self._build_result(), remain_navigable=True)
 

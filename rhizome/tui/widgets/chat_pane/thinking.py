@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.app.chat_pane.thinking import ThinkingIndicatorVM
+from rhizome.app.chat_pane.thinking import ThinkingIndicatorModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
@@ -19,8 +19,8 @@ _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _TICK_RATE = 0.1
 
 
-@register_feed_view(ThinkingIndicatorVM)
-class ThinkingIndicator(ViewBase[ThinkingIndicatorVM]):
+@register_feed_view(ThinkingIndicatorModel)
+class ThinkingIndicator(ViewBase[ThinkingIndicatorModel]):
     """Braille-spinner with a 'thinking...' label."""
 
     DEFAULT_CSS = """
@@ -33,7 +33,7 @@ class ThinkingIndicator(ViewBase[ThinkingIndicatorVM]):
     }
     """
 
-    def __init__(self, vm: ThinkingIndicatorVM, **kwargs) -> None:
+    def __init__(self, vm: ThinkingIndicatorModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._frame = 0
         self._static: Static | None = None

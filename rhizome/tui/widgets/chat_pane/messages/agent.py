@@ -1,4 +1,4 @@
-"""AgentMessageVM + view — a single contiguous agent text segment.
+"""AgentMessageModel + view — a single contiguous agent text segment.
 
 The VM holds an append-only ``body`` string and a ``streaming`` flag that flips on ``close()``.
 Chunks land via ``append_token``; the view's drain task pulls characters from ``body`` on a fixed
@@ -6,7 +6,7 @@ tick and writes adaptive-sized slices into a ``MarkdownStream`` so bursty arriva
 rather than blitting.
 
 Unlike the previous design, this VM represents *one* segment — not a whole agent turn. Tool calls
-live in their own ``ToolMessageVM`` entries in the feed; alternating chat segments and tool
+live in their own ``ToolMessageModel`` entries in the feed; alternating chat segments and tool
 lists are routed (in step 2) by the chat-pane VM or (in step 3) by the ``AgentStreamRouter``. The
 thinking indicator is likewise its own feed entry, not a child of this view.
 """
@@ -24,13 +24,13 @@ from textual.widgets.markdown import MarkdownStream
 from rhizome.tui.types import Mode
 
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.app.chat_pane.messages.agent import AgentMessageVM
+from rhizome.app.chat_pane.messages.agent import AgentMessageModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
-@register_feed_view(AgentMessageVM)
-class AgentMessage(ViewBase[AgentMessageVM]):
-    """Renders an ``AgentMessageVM`` with adaptive markdown streaming.
+@register_feed_view(AgentMessageModel)
+class AgentMessage(ViewBase[AgentMessageModel]):
+    """Renders an ``AgentMessageModel`` with adaptive markdown streaming.
 
     The drain task wakes on every VM event (``_wakeup``) and writes adaptive-sized slices into the
     ``MarkdownStream`` on a fixed tick. While the VM is open, slices are sized so pending content
@@ -93,7 +93,7 @@ class AgentMessage(ViewBase[AgentMessageVM]):
     _TAIL_BUDGET_MS = 200
     _MIN_SLICE_CHARS = 2
 
-    def __init__(self, vm: AgentMessageVM, **kwargs) -> None:
+    def __init__(self, vm: AgentMessageModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
@@ -197,7 +197,7 @@ class AgentMessage(ViewBase[AgentMessageVM]):
         # First write to this widget instance: dump whatever body exists in one shot. For a
         # freshly-constructed VM this is typically the first token or two, so the visual difference
         # vs. the slicing path is negligible. The case this really fixes is *remount* — cursor
-        # navigation brings a previously-displayed AgentMessageVM back into view with its
+        # navigation brings a previously-displayed AgentMessageModel back into view with its
         # full body already populated, and without this branch the catch-up logic would slow-stream
         # the existing content back in like a fake re-stream. New tokens that arrive after this
         # initial dump (i.e. the VM is still streaming) fall through to the budgeted-slice path

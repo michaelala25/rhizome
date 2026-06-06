@@ -6,6 +6,6 @@ The legacy widget still lives at ``rhizome.tui.widgets.legacy.chat_pane.ChatPane
 """
 
 from rhizome.tui.widgets.chat_pane.chat_pane import ChatPane
-from rhizome.app.chat_pane.chat_pane import ChatPaneVM
+from rhizome.app.chat_pane.chat_pane import ChatPaneModel
 
-__all__ = ["ChatPane", "ChatPaneVM"]
+__all__ = ["ChatPane", "ChatPaneModel"]

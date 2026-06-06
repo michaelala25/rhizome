@@ -1,6 +1,6 @@
 """Buffered-edit VM for the focused flashcard's question / answer / testing-notes fields.
 
-Mirrors ``rhizome.app.commit_proposal.entry_details.EntryDetailsVM`` in shape. Per-field buffer
+Mirrors ``rhizome.app.commit_proposal.entry_details.EntryDetailsModel`` in shape. Per-field buffer
 seeded from the underlying ``Flashcard`` on ``set_flashcard``; ``is_dirty`` is a plain three-way
 string compare across the editable fields.
 
@@ -14,10 +14,10 @@ calls ``set_flashcard`` on every cursor move and unconditionally reseeds the buf
 from __future__ import annotations
 
 from rhizome.app.flashcard_proposal.flashcard import Flashcard
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class FlashcardDetailsVM(ViewModelBase):
+class FlashcardDetailsModel(ViewModelBase):
     """Per-flashcard buffered edit of question / answer / testing_notes. Leaf VM — emits only
     ``dirty``."""
 
@@ -131,7 +131,7 @@ class FlashcardDetailsVM(ViewModelBase):
 
     def accept(self) -> None:
         """Write the buffers back into the underlying ``Flashcard`` dataclass in place. No DB —
-        the parent ``FlashcardProposalVM`` is responsible for ultimately committing the proposal
+        the parent ``FlashcardProposalModel`` is responsible for ultimately committing the proposal
         as a whole when the user accepts everything."""
         if self._flashcard is None or not self.is_dirty:
             return

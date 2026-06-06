@@ -19,8 +19,8 @@ from textual.widgets import DataTable, Static
 
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationVM
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
@@ -36,9 +36,9 @@ def _truncate_cell(value: Any, max_len: int = _MAX_CELL_WIDTH) -> str:
     return s
 
 
-@register_feed_view(SqlConfirmationVM)
-class SqlConfirmation(NavigableFeedItemViewBase[SqlConfirmationVM]):
-    """Renders ``SqlConfirmationVM``. Up/Down move the cursor; Enter confirms."""
+@register_feed_view(SqlConfirmationModel)
+class SqlConfirmation(NavigableFeedItemViewBase[SqlConfirmationModel]):
+    """Renders ``SqlConfirmationModel``. Up/Down move the cursor; Enter confirms."""
 
     DEFAULT_CSS = """
     SqlConfirmation {

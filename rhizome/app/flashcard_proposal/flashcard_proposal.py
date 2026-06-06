@@ -1,7 +1,7 @@
-"""``FlashcardProposalVM`` — parent VM for the flashcard-proposal review surface.
+"""``FlashcardProposalModel`` — parent VM for the flashcard-proposal review surface.
 
 Owns the flashcard list, the cursor over it, the exclusion set, the edit-instructions buffer, and
-the coarse EDITING → DONE lifecycle. Holds one child ``FlashcardDetailsVM`` that tracks the cursor
+the coarse EDITING → DONE lifecycle. Holds one child ``FlashcardDetailsModel`` that tracks the cursor
 flashcard's buffered question / answer / testing_notes; the view binds those fields to the child,
 not to the parent.
 
@@ -26,7 +26,7 @@ State summary
 
 Cursor moves push the new flashcard into ``self.details`` so the question / answer / notes
 TextAreas reseed. Cursor moves silently discard any in-flight edits — symmetric with the
-browser's policy and with ``FlashcardDetailsVM.set_flashcard``'s reseed-on-identity-change
+browser's policy and with ``FlashcardDetailsModel.set_flashcard``'s reseed-on-identity-change
 semantics.
 """
 
@@ -35,11 +35,11 @@ from __future__ import annotations
 from enum import Enum, auto
 
 from rhizome.app.flashcard_proposal.flashcard import Flashcard
-from rhizome.app.flashcard_proposal.flashcard_details import FlashcardDetailsVM
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.flashcard_proposal.flashcard_details import FlashcardDetailsModel
+from rhizome.app.model import ViewModelBase
 
 
-class FlashcardProposalVM(ViewModelBase):
+class FlashcardProposalModel(ViewModelBase):
 
     class State(Enum):
         EDITING = auto()
@@ -59,7 +59,7 @@ class FlashcardProposalVM(ViewModelBase):
         self.excluded: set[int] = set()
         self.cursor: int | None = 0 if self.flashcards else None
 
-        self.state: FlashcardProposalVM.State = FlashcardProposalVM.State.EDITING
+        self.state: FlashcardProposalModel.State = FlashcardProposalModel.State.EDITING
         self._cancelled: bool = False
 
         self.edit_instructions: str = ""
@@ -67,7 +67,7 @@ class FlashcardProposalVM(ViewModelBase):
 
         # Per-flashcard buffered edit panel. Seeded with the cursor flashcard now so the view can
         # bind to populated buffers on first render.
-        self._details = FlashcardDetailsVM()
+        self._details = FlashcardDetailsModel()
         self._sync_details()
 
     # ------------------------------------------------------------------
@@ -79,7 +79,7 @@ class FlashcardProposalVM(ViewModelBase):
         return self._cancelled
 
     @property
-    def details(self) -> FlashcardDetailsVM:
+    def details(self) -> FlashcardDetailsModel:
         return self._details
 
     @property
@@ -191,7 +191,7 @@ class FlashcardProposalVM(ViewModelBase):
         # question/answer/notes edit isn't silently discarded by the lifecycle transition. The
         # details VM no-ops if not dirty.
         self._details.accept()
-        self.state = FlashcardProposalVM.State.DONE
+        self.state = FlashcardProposalModel.State.DONE
         self.emit(self.dirty)
 
     def cancel(self) -> None:
@@ -201,7 +201,7 @@ class FlashcardProposalVM(ViewModelBase):
         # rejection. No-op if not dirty.
         self._details.cancel()
         self._cancelled = True
-        self.state = FlashcardProposalVM.State.DONE
+        self.state = FlashcardProposalModel.State.DONE
         self.emit(self.dirty)
 
     def reset(self) -> None:
@@ -235,8 +235,8 @@ class FlashcardProposalVM(ViewModelBase):
     # ------------------------------------------------------------------
 
     def _assert_editing(self) -> None:
-        assert self.state == FlashcardProposalVM.State.EDITING, (
-            f"Mutator called on a FlashcardProposalVM in state {self.state.name}; mutators are "
+        assert self.state == FlashcardProposalModel.State.EDITING, (
+            f"Mutator called on a FlashcardProposalModel in state {self.state.name}; mutators are "
             "only valid in EDITING."
         )
 

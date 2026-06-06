@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from rhizome.app.query_backed_vm import QueryBackedViewModel
+from rhizome.app.query_backed_model import QueryBackedViewModel
 
 
-class BrowserTabVM(QueryBackedViewModel):
+class BrowserTabModel(QueryBackedViewModel):
     """Abstract tab VM. Subclasses override ``TITLE``, ``_fetch``, and ``_process_fetched_data``.
 
     ``set_topic_filter`` takes the *already-expanded* union of topic ids (the orchestrator runs the

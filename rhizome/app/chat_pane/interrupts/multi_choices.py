@@ -7,7 +7,7 @@ Presents N questions, each with its own option list. The user moves between ques
 returns to ``ANSWERING`` with a sticky ``_has_confirmed_once`` flag so future "all answered"
 transitions don't re-auto-confirm.
 
-The VM owns the future (via ``InterruptVMBase``); the view is a passive projection that just
+The VM owns the future (via ``InterruptModelBase``); the view is a passive projection that just
 forwards key actions to VM mutators and re-renders on ``dirty``.
 """
 
@@ -21,13 +21,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 
 _DIM = "rgb(100,100,100)"
 _ANSWERED = "rgb(100,200,100)"
 
 
-class MultiUserChoicesVM(InterruptVMBase):
+class MultiUserChoicesModel(InterruptModelBase):
     """Multi-question single-select interrupt VM. See module docstring."""
 
     class Phase(Enum):
@@ -42,12 +42,12 @@ class MultiUserChoicesVM(InterruptVMBase):
         self._answers: dict[int, str] = {}
         self._per_question_cursor: dict[int, int] = {}
         self._active_question: int = 0
-        self._phase: MultiUserChoicesVM.Phase = MultiUserChoicesVM.Phase.ANSWERING
+        self._phase: MultiUserChoicesModel.Phase = MultiUserChoicesModel.Phase.ANSWERING
         self._confirm_cursor: int = 0
         self._has_confirmed_once: bool = False
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> MultiUserChoicesVM:
+    def from_interrupt(cls, value: dict[str, Any]) -> MultiUserChoicesModel:
         return cls(questions=value["questions"])
 
     # ------------------------------------------------------------------
@@ -79,7 +79,7 @@ class MultiUserChoicesVM(InterruptVMBase):
         """The cursor active on the current axis: per-question answer cursor while ANSWERING, or the
         Yes/No cursor while CONFIRMING.
         """
-        if self._phase is MultiUserChoicesVM.Phase.CONFIRMING:
+        if self._phase is MultiUserChoicesModel.Phase.CONFIRMING:
             return self._confirm_cursor
         return self._per_question_cursor.get(self._active_question, 0)
 
@@ -109,7 +109,7 @@ class MultiUserChoicesVM(InterruptVMBase):
         if self.resolved:
             return
 
-        if self._phase is MultiUserChoicesVM.Phase.CONFIRMING:
+        if self._phase is MultiUserChoicesModel.Phase.CONFIRMING:
             new = (self._confirm_cursor + delta) % 2
             if new == self._confirm_cursor:
                 return
@@ -130,7 +130,7 @@ class MultiUserChoicesVM(InterruptVMBase):
     def prev_question(self) -> None:
         if self.resolved:
             return
-        if self._phase is not MultiUserChoicesVM.Phase.ANSWERING:
+        if self._phase is not MultiUserChoicesModel.Phase.ANSWERING:
             return
         n = len(self._questions)
         if n <= 1:
@@ -141,7 +141,7 @@ class MultiUserChoicesVM(InterruptVMBase):
     def next_question(self) -> None:
         if self.resolved:
             return
-        if self._phase is not MultiUserChoicesVM.Phase.ANSWERING:
+        if self._phase is not MultiUserChoicesModel.Phase.ANSWERING:
             return
         n = len(self._questions)
         if n <= 1:
@@ -160,12 +160,12 @@ class MultiUserChoicesVM(InterruptVMBase):
         if self.resolved:
             return
 
-        if self._phase is MultiUserChoicesVM.Phase.CONFIRMING:
+        if self._phase is MultiUserChoicesModel.Phase.CONFIRMING:
             if self._confirm_cursor == 0:
                 self.resolve(self._build_result())
             else:
                 self._has_confirmed_once = True
-                self._phase = MultiUserChoicesVM.Phase.ANSWERING
+                self._phase = MultiUserChoicesModel.Phase.ANSWERING
                 self.emit(self.dirty)
             return
 
@@ -179,7 +179,7 @@ class MultiUserChoicesVM(InterruptVMBase):
         if next_q is not None:
             self._active_question = next_q
         elif not self._has_confirmed_once:
-            self._phase = MultiUserChoicesVM.Phase.CONFIRMING
+            self._phase = MultiUserChoicesModel.Phase.CONFIRMING
             self._confirm_cursor = 0
         # else: stay put; user must press submit() to re-resolve.
 
@@ -189,7 +189,7 @@ class MultiUserChoicesVM(InterruptVMBase):
         """Explicit ctrl+enter submit from ANSWERING. No-op in CONFIRMING (use ``confirm()`` there)."""
         if self.resolved:
             return
-        if self._phase is not MultiUserChoicesVM.Phase.ANSWERING:
+        if self._phase is not MultiUserChoicesModel.Phase.ANSWERING:
             return
         if not self.all_answered:
             return

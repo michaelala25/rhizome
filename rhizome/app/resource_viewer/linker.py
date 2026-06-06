@@ -1,6 +1,6 @@
-"""``ResourceLinkerVM`` — searchable table for linking resources to the current topic.
+"""``ResourceLinkerModel`` — searchable table for linking resources to the current topic.
 
-Shaped after ``LinkedFlashcardsPanelVM``: a pinned section of resources already linked to the
+Shaped after ``LinkedFlashcardsPanelModel``: a pinned section of resources already linked to the
 topic, a boundary row, then a paginated, searchable pool of every other resource. The cursor
 indexes the combined display ``[*linked, <boundary>, *remaining]``; ``cursor_section`` resolves
 which region it sits in.
@@ -19,8 +19,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from rhizome.app.browser.shared.searchable import SearchableVMMixin
-from rhizome.app.query_backed_vm import QueryBackedViewModel
+from rhizome.app.browser.shared.searchable import SearchableModelMixin
+from rhizome.app.query_backed_model import QueryBackedViewModel
 from rhizome.db import Resource
 from rhizome.db.operations import (
     count_resources,
@@ -34,7 +34,7 @@ from rhizome.db.operations import (
 DEFAULT_PAGE_LIMIT = 500
 
 
-class ResourceLinkerVM(QueryBackedViewModel, SearchableVMMixin):
+class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
     """Linker VM. Staged link/unlink over a searchable resource pool. See module docstring."""
 
     class Callbacks(Enum):
@@ -48,8 +48,8 @@ class ResourceLinkerVM(QueryBackedViewModel, SearchableVMMixin):
         self._session_factory = session_factory
         self._limit = limit
 
-        self._link_changed = self._make_group(ResourceLinkerVM.Callbacks.LINK_CHANGED)
-        self._cursor_changed = self._make_group(ResourceLinkerVM.Callbacks.CURSOR_CHANGED)
+        self._link_changed = self._make_group(ResourceLinkerModel.Callbacks.LINK_CHANGED)
+        self._cursor_changed = self._make_group(ResourceLinkerModel.Callbacks.CURSOR_CHANGED)
 
         # Topic the table links against. ``None`` = no active topic.
         self._topic_id: int | None = None

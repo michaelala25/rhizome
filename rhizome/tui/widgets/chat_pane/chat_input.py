@@ -1,7 +1,7 @@
 """Chat input — sub-VM + view used by the MVVM chat pane.
 
 The input owns the visible buffer, the disabled/hint reconciliation, and the per-session history ring. It
-holds a reference to the shared ``CommandPaletteVM`` (constructed by the pane) so that buffer mutations
+holds a reference to the shared ``CommandPaletteModel`` (constructed by the pane) so that buffer mutations
 can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
 typed text is a complete command — no widget-tree walks, no parent mediation.
 
@@ -18,15 +18,15 @@ from textual import on
 from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
-from rhizome.app.chat_pane.chat_input import ChatInputVM
-from rhizome.app.chat_pane.command_palette import CommandPaletteVM
+from rhizome.app.chat_pane.chat_input import ChatInputModel
+from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 
 
 _BLURRED_HINT = "ctrl+l to return to the chat area"
 
 
 class ChatInput(TextArea):
-    """View for ``ChatInputVM``.
+    """View for ``ChatInputModel``.
 
     Subclasses ``TextArea`` rather than ``ViewBase`` so we keep the TextArea editing surface intact while
     still binding to a VM. Standard ``dirty`` subscription is wired manually in ``on_mount`` / ``on_unmount``
@@ -37,7 +37,7 @@ class ChatInput(TextArea):
     calling the VM directly. The pane only learns about submissions via the ``submitted`` callback group.
     """
 
-    def __init__(self, vm: ChatInputVM, *, id: str | None = None) -> None:
+    def __init__(self, vm: ChatInputModel, *, id: str | None = None) -> None:
         super().__init__(show_line_numbers=False, tab_behavior="focus", id=id)
         self._vm = vm
         self._last_escape: float = 0.0
@@ -137,7 +137,7 @@ class ChatInput(TextArea):
 
         # In COMMIT state, up/down skip history nav entirely and behave as plain TextArea cursor
         # movement so the user can navigate multi-line instructions.
-        in_commit = self._vm.state == ChatInputVM.State.COMMIT
+        in_commit = self._vm.state == ChatInputModel.State.COMMIT
 
         if event.key == "up":
             row, col = self.cursor_location

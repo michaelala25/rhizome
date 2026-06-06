@@ -1,7 +1,7 @@
-"""CommitProposalVM — parent VM for the commit-proposal review surface.
+"""CommitProposalModel — parent VM for the commit-proposal review surface.
 
 Owns the entry list, the cursor over it, the exclusion set, the edit-instructions buffer, and the
-coarse EDITING → DONE lifecycle. Holds one child ``EntryDetailsVM`` that tracks the cursor entry's
+coarse EDITING → DONE lifecycle. Holds one child ``EntryDetailsModel`` that tracks the cursor entry's
 buffered title/content; the view binds title/content TextAreas to the child, not to the parent.
 
 State summary
@@ -25,7 +25,7 @@ State summary
 
 Cursor moves push the new entry into ``self.details`` so the title/content TextAreas reseed.
 Cursor moves silently discard any in-flight edits — symmetric with the browser's policy and with
-``EntryDetailsVM.set_entry``'s reseed-on-identity-change semantics.
+``EntryDetailsModel.set_entry``'s reseed-on-identity-change semantics.
 """
 
 from __future__ import annotations
@@ -33,11 +33,11 @@ from __future__ import annotations
 from enum import Enum, auto
 
 from rhizome.app.commit_proposal.entry import Entry, EntryType, cycle_entry_type
-from rhizome.app.commit_proposal.entry_details import EntryDetailsVM
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.commit_proposal.entry_details import EntryDetailsModel
+from rhizome.app.model import ViewModelBase
 
 
-class CommitProposalVM(ViewModelBase):
+class CommitProposalModel(ViewModelBase):
 
     class State(Enum):
         EDITING = auto()
@@ -57,7 +57,7 @@ class CommitProposalVM(ViewModelBase):
         self.excluded: set[int] = set()
         self.cursor: int | None = 0 if self.entries else None
 
-        self.state: CommitProposalVM.State = CommitProposalVM.State.EDITING
+        self.state: CommitProposalModel.State = CommitProposalModel.State.EDITING
         self._cancelled: bool = False
 
         self.edit_instructions: str = ""
@@ -65,7 +65,7 @@ class CommitProposalVM(ViewModelBase):
 
         # Per-entry buffered edit panel. Seeded with the cursor entry now so the view can bind to
         # populated buffers on first render.
-        self._details = EntryDetailsVM()
+        self._details = EntryDetailsModel()
         self._sync_details()
 
     # ------------------------------------------------------------------
@@ -77,7 +77,7 @@ class CommitProposalVM(ViewModelBase):
         return self._cancelled
 
     @property
-    def details(self) -> EntryDetailsVM:
+    def details(self) -> EntryDetailsModel:
         return self._details
 
     @property
@@ -207,7 +207,7 @@ class CommitProposalVM(ViewModelBase):
         # edit isn't silently discarded by the lifecycle transition. The details VM no-ops if
         # not dirty.
         self._details.accept()
-        self.state = CommitProposalVM.State.DONE
+        self.state = CommitProposalModel.State.DONE
         self.emit(self.dirty)
 
     def cancel(self) -> None:
@@ -217,7 +217,7 @@ class CommitProposalVM(ViewModelBase):
         # No-op if not dirty.
         self._details.cancel()
         self._cancelled = True
-        self.state = CommitProposalVM.State.DONE
+        self.state = CommitProposalModel.State.DONE
         self.emit(self.dirty)
 
     def reset(self) -> None:
@@ -251,8 +251,8 @@ class CommitProposalVM(ViewModelBase):
     # ------------------------------------------------------------------
 
     def _assert_editing(self) -> None:
-        assert self.state == CommitProposalVM.State.EDITING, (
-            f"Mutator called on a CommitProposalVM in state {self.state.name}; mutators are only "
+        assert self.state == CommitProposalModel.State.EDITING, (
+            f"Mutator called on a CommitProposalModel in state {self.state.name}; mutators are only "
             "valid in EDITING."
         )
 

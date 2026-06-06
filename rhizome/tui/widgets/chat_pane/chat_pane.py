@@ -26,8 +26,8 @@ from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
 from rhizome.tui.widgets.chat_pane.status import StatusBar
 from rhizome.tui.widgets.options_editor import OptionsEditor
 from rhizome.app.chat_pane.conversation_graph import NodeId
-from rhizome.app.chat_pane.messages.static import ChatMessageVM
-from rhizome.app.chat_pane.chat_pane import ChatPaneVM
+from rhizome.app.chat_pane.messages.static import ChatMessageModel
+from rhizome.app.chat_pane.chat_pane import ChatPaneModel
 from rhizome.tui.types import ChatMessageData
 # Feed dispatch: ``feed_views`` is imported for its side effect — it populates the registry that
 # ``view_for`` reads. Without that import every lookup would return ``None`` (see feed_registry.py).
@@ -52,7 +52,7 @@ class DepthWrapper(Vertical):
     """
 
 
-class ChatPane(ViewBase[ChatPaneVM]):
+class ChatPane(ViewBase[ChatPaneModel]):
 
     BINDINGS = [
         Keybind.ChatCycleMode.     as_binding("cycle_mode",      "Cycle mode",      show=False),
@@ -146,7 +146,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
     """
 
     def __init__(self, *, session_factory=None, show_welcome: bool = False, **kwargs) -> None:
-        super().__init__(ChatPaneVM(session_factory=session_factory, show_welcome=show_welcome), **kwargs)
+        super().__init__(ChatPaneModel(session_factory=session_factory, show_welcome=show_welcome), **kwargs)
         # Retained for view-side modal pushes (TopicSelectorScreen needs it) when constructing
         # interrupt views that have their own session-aware UX.
         self._session_factory = session_factory
@@ -180,7 +180,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
         self._vm.unsubscribe(self._vm.notify, self._on_notify)
         self._vm.unsubscribe(self._vm.tab_rename, self._on_tab_rename)
 
-    def _on_notify(self, action: ChatPaneVM.NotifyAction) -> None:
+    def _on_notify(self, action: ChatPaneModel.NotifyAction) -> None:
         handler = self._NOTIFY_HANDLERS.get(action)
         if handler is None:
             return
@@ -293,14 +293,14 @@ class ChatPane(ViewBase[ChatPaneVM]):
         return None
 
     _NOTIFY_HANDLERS = {
-        ChatPaneVM.NotifyAction.AGENT_BUSY: _notify_agent_busy,
-        ChatPaneVM.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
-        ChatPaneVM.NotifyAction.DESCEND_REQUIRED: _notify_descend_required,
-        ChatPaneVM.NotifyAction.QUIT: _notify_quit,
-        ChatPaneVM.NotifyAction.NEW_TAB: _notify_new_tab,
-        ChatPaneVM.NotifyAction.CLOSE_TAB: _notify_close_tab,
-        ChatPaneVM.NotifyAction.OPEN_LOGS: _notify_open_logs,
-        ChatPaneVM.NotifyAction.TOGGLE_RESOURCE_VIEWER: _notify_toggle_resource_viewer,
+        ChatPaneModel.NotifyAction.AGENT_BUSY: _notify_agent_busy,
+        ChatPaneModel.NotifyAction.HINT_HIGHER_VERBOSITY: _notify_hint_higher_verbosity,
+        ChatPaneModel.NotifyAction.DESCEND_REQUIRED: _notify_descend_required,
+        ChatPaneModel.NotifyAction.QUIT: _notify_quit,
+        ChatPaneModel.NotifyAction.NEW_TAB: _notify_new_tab,
+        ChatPaneModel.NotifyAction.CLOSE_TAB: _notify_close_tab,
+        ChatPaneModel.NotifyAction.OPEN_LOGS: _notify_open_logs,
+        ChatPaneModel.NotifyAction.TOGGLE_RESOURCE_VIEWER: _notify_toggle_resource_viewer,
     }
 
     def compose(self) -> ComposeResult:
@@ -465,9 +465,9 @@ class ChatPane(ViewBase[ChatPaneVM]):
 
     def append_message(self, msg: ChatMessageData) -> None:
         # MainScreen builds the legacy ``ChatMessageData`` for whichever pane is active; the MVVM
-        # feed speaks ``ChatMessageVM``, so convert at this boundary. Drops out with the shim.
+        # feed speaks ``ChatMessageModel``, so convert at this boundary. Drops out with the shim.
         self._vm.append_message(
-            ChatMessageVM(role=msg.role, content=msg.content, mode=msg.mode, rich=msg.rich)
+            ChatMessageModel(role=msg.role, content=msg.content, mode=msg.mode, rich=msg.rich)
         )
 
     # ------------------------------------------------------------------
@@ -487,7 +487,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if action.startswith("commit_"):
-            if self._vm.state != ChatPaneVM.State.COMMIT:
+            if self._vm.state != ChatPaneModel.State.COMMIT:
                 return None
             # When the chat input is focused, up/down should drive the TextArea / history nav, not
             # the commit cursor. Returning None suppresses the priority binding so the keystroke
@@ -525,7 +525,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
         if selected:
             self.app.copy_to_clipboard(selected)
             return
-        if self._vm.state == ChatPaneVM.State.COMMIT:
+        if self._vm.state == ChatPaneModel.State.COMMIT:
             self._vm.exit_commit_mode()
             return
         if self._vm.agent_busy:
@@ -536,7 +536,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
         CONVERSATION → step to the previous navigable feed entry (or jump to the bottom-most one
         when focus is on the chat input).
         """
-        if self._vm.state == ChatPaneVM.State.COMMIT:
+        if self._vm.state == ChatPaneModel.State.COMMIT:
             self._vm.request_focus()
             return
         self._vm.navigate_feed(-1, current_id=self._current_feed_id())
@@ -546,7 +546,7 @@ class ChatPane(ViewBase[ChatPaneVM]):
         CONVERSATION → step to the next navigable feed entry (or jump to the top-most one when
         focus is on the chat input).
         """
-        if self._vm.state == ChatPaneVM.State.COMMIT:
+        if self._vm.state == ChatPaneModel.State.COMMIT:
             self._vm.chat_input.request_focus()
             return
         self._vm.navigate_feed(+1, current_id=self._current_feed_id())

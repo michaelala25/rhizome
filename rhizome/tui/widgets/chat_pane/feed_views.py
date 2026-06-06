@@ -33,11 +33,11 @@ from rhizome.tui.widgets.chat_pane.interrupts.flashcard_proposal import Flashcar
 
 # Adopted foreign widgets — general-purpose widgets the pane also shows in the feed. Registered
 # imperatively here so the widgets stay decoupled from the chat pane (no decorator on their class).
-from rhizome.app.browser.browser import BrowserVM
+from rhizome.app.browser.browser import BrowserModel
 from rhizome.tui.widgets.browser.browser import Browser
-from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.tui.widgets.options_editor import OptionsEditor
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
-register_feed_view(BrowserVM)(Browser)
-register_feed_view(OptionsEditorVM)(OptionsEditor)
+register_feed_view(BrowserModel)(Browser)
+register_feed_view(OptionsEditorModel)(OptionsEditor)

@@ -7,11 +7,11 @@ across them (no ``prepare_for_show`` reset). Escape always cancels regardless of
 
 from __future__ import annotations
 
-from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
+from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelModel
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
-class RelinkMenu(ChoiceList[LinkedFlashcardsPanelVM]):
+class RelinkMenu(ChoiceList[LinkedFlashcardsPanelModel]):
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
     LEAD = "Relink: "
     HINT = "← / → move • enter confirm • esc cancels"

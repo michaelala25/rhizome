@@ -1,4 +1,4 @@
-"""``CommitProposal`` — parent view for ``CommitProposalVM``.
+"""``CommitProposal`` — parent view for ``CommitProposalModel``.
 
 Composes the five focusable regions and orchestrates inter-region focus via a static graph driven
 by ``alt+arrow`` bindings. Leaf widgets post ``BoundaryHit`` when plain arrow navigation hits an
@@ -48,7 +48,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from rhizome.app.commit_proposal.commit_proposal import CommitProposalVM
+from rhizome.app.commit_proposal.commit_proposal import CommitProposalModel
 from rhizome.tui.widgets.commit_proposal.choices import CommitProposalChoices
 from rhizome.tui.widgets.commit_proposal.edit_instructions import EditInstructionsArea
 from rhizome.tui.widgets.commit_proposal.entry_details import EntryDetails
@@ -67,7 +67,7 @@ _EDITS_YELLOW = "rgb(235,180,90)"
 _CANCEL_RED = "rgb(235,100,100)"
 
 
-class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestrationMixin):
+class CommitProposal(NavigableFeedItemViewBase[CommitProposalModel], FocusOrchestrationMixin):
     """Parent view for the commit-proposal interrupt."""
 
     DEFAULT_CSS = """
@@ -233,7 +233,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         },
     )
 
-    def __init__(self, vm: CommitProposalVM, **kwargs) -> None:
+    def __init__(self, vm: CommitProposalModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         # Carried on the VM. Used by the topic-picker modal; ``None`` disables it — useful for unit
         # tests and the ``/test-commit-proposal`` slash command which doesn't need real topic data.
@@ -311,7 +311,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         # owns no rendered surface (children handle their own paint), so ``_refresh`` is a no-op.
         # We land focus on the EntryList per the spec, but only in EDITING — a re-mount after the
         # interrupt resolves shouldn't steal focus from the chat input.
-        if self._vm.state == CommitProposalVM.State.EDITING:
+        if self._vm.state == CommitProposalModel.State.EDITING:
             self.focus_first()
         # Drives the programmatic entry-area↔details height pin. ``vm.details.dirty`` fires when
         # the focused entry changes or its content edits land — both can shift the details panel's
@@ -328,7 +328,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         # DONE-collapsed: the parent itself stays focused so ``enter`` toggles re-expand. Skipping
         # the inward delegation is enough — the mixin's ``on_focus`` calls this and respects the
         # ``None`` return.
-        if self._vm.state == CommitProposalVM.State.DONE and self._collapsed:
+        if self._vm.state == CommitProposalModel.State.DONE and self._collapsed:
             return None
         return super().focus_first()
 
@@ -343,7 +343,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         # ``size`` on either widget would let this function read its own previous output. Skipping
         # while DONE-collapsed because the entire ``cp-middle`` subtree is ``display: none``.
         def _apply() -> None:
-            if self._vm.state == CommitProposalVM.State.DONE and self._collapsed:
+            if self._vm.state == CommitProposalModel.State.DONE and self._collapsed:
                 return
             try:
                 area = self.query_one("#cp-entry-list-area", Vertical)
@@ -360,7 +360,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         # Bulk of the editing-state content is rendered by child widgets that subscribe to
         # vm.dirty independently — the parent's job here is the DONE-state surface (collapsed/
         # expanded gating, summary block, button) and the one-shot EDITING→DONE edge.
-        if self._vm.state == CommitProposalVM.State.DONE and not self._entered_done:
+        if self._vm.state == CommitProposalModel.State.DONE and not self._entered_done:
             self._handle_done_transition()
             self._entered_done = True
 
@@ -380,7 +380,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
             cp-done-instructions (dim grey readout)              →  ○  ●†  ●†     († non-empty)
             cp-done-summary-line (centered title + state)        →  ○  ○  ●
         """
-        in_done = self._vm.state == CommitProposalVM.State.DONE
+        in_done = self._vm.state == CommitProposalModel.State.DONE
         collapsed_done = in_done and self._collapsed
         expanded_done = in_done and not self._collapsed
 
@@ -518,7 +518,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
     def _is_node_available(self, node_id: str) -> bool:
         # In DONE only the entry-list stays in the graph — the user browses the proposal but can't
         # edit anything. Alt+arrow traversals from the entry list dead-end at every neighbour.
-        if self._vm.state == CommitProposalVM.State.DONE:
+        if self._vm.state == CommitProposalModel.State.DONE:
             return node_id == "cp-entry-list"
         if node_id == "cp-details-choices":
             return self._vm.details.is_dirty
@@ -531,22 +531,22 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
     # ------------------------------------------------------------------
 
     def action_accept_all(self) -> None:
-        if self._vm.state != CommitProposalVM.State.EDITING:
+        if self._vm.state != CommitProposalModel.State.EDITING:
             return
         self._vm.accept_all()
 
     def action_reset(self) -> None:
-        if self._vm.state != CommitProposalVM.State.EDITING:
+        if self._vm.state != CommitProposalModel.State.EDITING:
             return
         self._vm.reset()
 
     def action_cancel(self) -> None:
-        if self._vm.state != CommitProposalVM.State.EDITING:
+        if self._vm.state != CommitProposalModel.State.EDITING:
             return
         self._vm.cancel()
 
     def action_toggle_edit_instructions(self) -> None:
-        if self._vm.state != CommitProposalVM.State.EDITING:
+        if self._vm.state != CommitProposalModel.State.EDITING:
             return
         self._vm.toggle_edit_instructions_area()
         if self._vm.edit_instructions_visible:
@@ -556,7 +556,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
                 pass
 
     def action_set_topic_all(self) -> None:
-        if self._vm.state != CommitProposalVM.State.EDITING:
+        if self._vm.state != CommitProposalModel.State.EDITING:
             return
         self._open_topic_picker(scope="all")
 
@@ -564,7 +564,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         """DONE-only enter binding. No-ops in EDITING so it can't fight with the EDITING-state
         ``enter`` consumers (the SharedTopicSetter's set-topic-all binding, the
         ConfirmableTextArea accept hook, the CommitProposalChoices in-list activator)."""
-        if self._vm.state != CommitProposalVM.State.DONE:
+        if self._vm.state != CommitProposalModel.State.DONE:
             return
         self._toggle_collapsed()
 
@@ -573,7 +573,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
         if event.button.id != "cp-collapse":
             return
         event.stop()
-        if self._vm.state != CommitProposalVM.State.DONE:
+        if self._vm.state != CommitProposalModel.State.DONE:
             return
         self._toggle_collapsed()
 
@@ -597,7 +597,7 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalVM], FocusOrchestra
 
     @on(SetTopicRequested)
     def _on_set_topic_requested(self, event: SetTopicRequested) -> None:
-        if self._vm.state != CommitProposalVM.State.EDITING:
+        if self._vm.state != CommitProposalModel.State.EDITING:
             return
         self._open_topic_picker(scope=event.scope)
         event.stop()

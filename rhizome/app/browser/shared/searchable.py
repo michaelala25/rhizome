@@ -1,4 +1,4 @@
-"""SearchableVMMixin — declares the narrow VM contract a ``SearchBar`` needs.
+"""SearchableModelMixin — declares the narrow VM contract a ``SearchBar`` needs.
 
 The widget treats its VM purely as a black box that accepts ``set_search(query)``; this mixin
 captures that requirement at the type level so any VM that wants to drive a ``SearchBar`` can
@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class SearchableVMMixin(ViewModelBase):
+class SearchableModelMixin(ViewModelBase):
     """Marker mixin for VMs that own a search query the user can edit via a ``SearchBar``.
 
     Concrete VMs must implement ``set_search(query)`` so the widget can push the user's

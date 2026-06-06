@@ -1,6 +1,6 @@
 """Shell command — sub-VM + view used by the MVVM chat pane.
 
-Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandVM``
+Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandModel``
 is appended to the feed and its ``execute()`` coroutine is scheduled on the pane's worker. The VM owns the
 subprocess lifecycle, the streamed output, and the final exit code; the view subscribes to ``dirty`` and
 renders header / output area / exit code into stock ``Static`` widgets.
@@ -21,13 +21,13 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
 SHELL_TIMEOUT = 30
 
 
-class ShellCommandVM(ViewModelBase):
+class ShellCommandModel(ViewModelBase):
     """State for one shell-command invocation.
 
     Lifecycle:

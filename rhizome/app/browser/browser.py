@@ -13,21 +13,21 @@ from typing import Any, Iterable
 
 from rhizome.logs import get_logger
 
-from rhizome.app.vm import ViewModelBase
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
-from .tab_base import BrowserTabVM
-from rhizome.app.browser.topics.panel import TopicTreePanelVM
+from rhizome.app.model import ViewModelBase
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
+from .tab_base import BrowserTabModel
+from rhizome.app.browser.topics.panel import TopicTreePanelModel
 
 _logger = get_logger("browser")
 
 
-def _default_tabs(session_factory: Any) -> list[BrowserTabVM]:
+def _default_tabs(session_factory: Any) -> list[BrowserTabModel]:
     # Free function so tests can patch or compare against the production set without instantiating
-    # a full BrowserVM.
-    return [EntryTabVM(session_factory)]
+    # a full BrowserModel.
+    return [EntryTabModel(session_factory)]
 
 
-class BrowserVM(ViewModelBase):
+class BrowserModel(ViewModelBase):
     """Tab lineup is fixed at construction (``tabs=None`` → the production set). Call ``await
     start()`` once after mounting to seed the active tab with the panel's current filter."""
 
@@ -35,13 +35,13 @@ class BrowserVM(ViewModelBase):
         self,
         session_factory: Any,
         *,
-        tabs: Iterable[BrowserTabVM] | None = None,
+        tabs: Iterable[BrowserTabModel] | None = None,
     ) -> None:
         super().__init__()
         self.is_navigable = True
         self._session_factory = session_factory
-        self._panel = TopicTreePanelVM(session_factory)
-        self._tabs: list[BrowserTabVM] = []
+        self._panel = TopicTreePanelModel(session_factory)
+        self._tabs: list[BrowserTabModel] = []
         self._active_index: int = 0
         self._started: bool = False
 
@@ -62,11 +62,11 @@ class BrowserVM(ViewModelBase):
     # ------------------------------------------------------------------
 
     @property
-    def panel(self) -> TopicTreePanelVM:
+    def panel(self) -> TopicTreePanelModel:
         return self._panel
 
     @property
-    def tabs(self) -> list[BrowserTabVM]:
+    def tabs(self) -> list[BrowserTabModel]:
         return list(self._tabs)
 
     @property
@@ -74,7 +74,7 @@ class BrowserVM(ViewModelBase):
         return self._active_index
 
     @property
-    def active_tab(self) -> BrowserTabVM | None:
+    def active_tab(self) -> BrowserTabModel | None:
         if 0 <= self._active_index < len(self._tabs):
             return self._tabs[self._active_index]
         return None
@@ -100,7 +100,7 @@ class BrowserVM(ViewModelBase):
     # Tab management
     # ------------------------------------------------------------------
 
-    def _add_tab(self, tab: BrowserTabVM) -> None:
+    def _add_tab(self, tab: BrowserTabModel) -> None:
         self._tabs.append(tab)
         self.emit(self.dirty)
 

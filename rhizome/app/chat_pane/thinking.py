@@ -10,10 +10,10 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class ThinkingIndicatorVM(ViewModelBase):
+class ThinkingIndicatorModel(ViewModelBase):
     """Sentinel VM with no mutable state. The view subscribes to nothing — its animation is
     self-driven."""
 

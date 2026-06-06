@@ -1,6 +1,6 @@
 """``ResourceLoaderTree`` — the loader VM's resources rendered as a load/unload tree.
 
-A ``MultilineTree`` over ``ResourceLoaderVM``: each resource is a two-row root (name + a dim
+A ``MultilineTree`` over ``ResourceLoaderModel``: each resource is a two-row root (name + a dim
 token/section/chunk summary), each section a single row (title + a dim chunk count). Every node is
 prefixed by a load-state glyph painted off ``vm.node_load_state``:
 
@@ -35,7 +35,7 @@ from textual import on
 from textual.widgets import Tree
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
-from rhizome.app.resource_viewer.loader import NodeLoadState, ResourceLoaderVM, ResourceTreeNodeData
+from rhizome.app.resource_viewer.loader import NodeLoadState, ResourceLoaderModel, ResourceTreeNodeData
 from rhizome.db import Resource
 from rhizome.db.models import ResourceSection
 from rhizome.resources import ResourceLoadType
@@ -60,7 +60,7 @@ def _fmt_tokens(n: int | None) -> str:
 
 
 class ResourceLoaderTree(MultilineTree[ResourceTreeNodeData]):
-    """Load/unload tree over ``ResourceLoaderVM``. See module docstring."""
+    """Load/unload tree over ``ResourceLoaderModel``. See module docstring."""
 
     BINDINGS = [
         Keybind.Toggle.as_binding("toggle_index", show=False),
@@ -89,7 +89,7 @@ class ResourceLoaderTree(MultilineTree[ResourceTreeNodeData]):
     }
     """
 
-    def __init__(self, view_model: ResourceLoaderVM, **kwargs: Any) -> None:
+    def __init__(self, view_model: ResourceLoaderModel, **kwargs: Any) -> None:
         super().__init__("Resources", **kwargs)
         self._vm = view_model
         self.show_root = False

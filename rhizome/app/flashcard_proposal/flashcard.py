@@ -34,7 +34,7 @@ class Flashcard:
     entry_ids: list[int] = field(default_factory=list)
 
     def clone(self) -> "Flashcard":
-        """Field-by-field copy. Used by ``FlashcardProposalVM`` to snapshot the initial proposal so
+        """Field-by-field copy. Used by ``FlashcardProposalModel`` to snapshot the initial proposal so
         ``reset()`` can restore it after edits. The ``entry_ids`` list is copied so the snapshot
         and the working list don't share mutable state."""
         return replace(self, entry_ids=list(self.entry_ids))

@@ -28,7 +28,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import Any
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
 class MultiSelectableVMMixin(ViewModelBase):

@@ -1,6 +1,6 @@
 """WarningChoices interrupt — Choices-style picker with amber warning styling.
 
-Behaviourally identical to ``UserChoicesVM`` (intentionally duplicated rather than subclassed so
+Behaviourally identical to ``UserChoicesModel`` (intentionally duplicated rather than subclassed so
 ``isinstance`` dispatch order never matters). The only differences are the amber icon + summary
 motif on the view side and ``from_interrupt`` always prepending Approve/Deny to caller-supplied
 extras.
@@ -16,8 +16,8 @@ from textual.widgets import Static
 
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesVM
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 _AMBER = "rgb(220,160,50)"
@@ -25,8 +25,8 @@ _GREEN = "rgb(100,200,100)"
 _DIM = "rgb(100,100,100)"
 
 
-@register_feed_view(WarningUserChoicesVM)
-class WarningUserChoices(NavigableFeedItemViewBase[WarningUserChoicesVM]):
+@register_feed_view(WarningUserChoicesModel)
+class WarningUserChoices(NavigableFeedItemViewBase[WarningUserChoicesModel]):
     """Amber warning header + numbered options + cancel hint. On resolution collapses to a one-line
     ``⚠  <message> → <selected>`` summary. Ctrl+C cancels the pending future and is consumed in
     ``on_key`` to prevent the pane's priority cancel binding from firing. Border styling is

@@ -14,7 +14,7 @@ Lookup is by exact runtime type (no base-class fallback): every feed VM maps 1:1
 
 from __future__ import annotations
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 from rhizome.tui.widgets.view_base import ViewBase
 
 
@@ -25,7 +25,7 @@ def register_feed_view(*vm_types: type):
     """Decorator registering ``view_cls`` as the view for each of ``vm_types``.
 
     Apply on a view class for chat-pane-native widgets, or call imperatively —
-    ``register_feed_view(BrowserVM)(Browser)`` — to register a foreign widget the pane adopts
+    ``register_feed_view(BrowserModel)(Browser)`` — to register a foreign widget the pane adopts
     without coupling that widget to this module.
     """
     def deco(view_cls: type[ViewBase]) -> type[ViewBase]:

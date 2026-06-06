@@ -16,14 +16,14 @@ from textual.widgets import Static
 
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
-from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesVM
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
-@register_feed_view(UserChoicesVM)
-class UserChoices(NavigableFeedItemViewBase[UserChoicesVM]):
-    """Multi-Static projection of ``UserChoicesVM``: prompt header, numbered options with cursor
+@register_feed_view(UserChoicesModel)
+class UserChoices(NavigableFeedItemViewBase[UserChoicesModel]):
+    """Multi-Static projection of ``UserChoicesModel``: prompt header, numbered options with cursor
     marker, ctrl+c hint, and a post-resolution summary line. On resolve the prompt/options/hint hide
     and the summary takes over (``prompt → selected`` or ``prompt — cancelled``).
     """

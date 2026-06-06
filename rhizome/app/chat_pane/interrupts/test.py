@@ -1,11 +1,11 @@
-"""TestInterruptVM — minimal interrupt for routing verification."""
+"""TestInterruptModel — minimal interrupt for routing verification."""
 
 from __future__ import annotations
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 
 
-class TestInterruptVM(InterruptVMBase):
+class TestInterruptModel(InterruptModelBase):
     """Minimal interrupt: a cursor over a list of options, Enter resolves with the selected option's
     value. Built for routing verification — not linked to any tool call.
     """

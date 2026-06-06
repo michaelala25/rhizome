@@ -1,4 +1,4 @@
-"""``ResourceViewerVM`` — root orchestrator for the resource viewer.
+"""``ResourceViewerModel`` — root orchestrator for the resource viewer.
 
 Thin by design. Owns the shared :class:`ResourceManager` and the three child VMs, fans a topic
 change out to them, and mediates the one genuine cross-child coupling: the linker links/unlinks
@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 from rhizome.resources import ResourceManager
 
-from .linker import ResourceLinkerVM
-from .loader import ResourceLoaderVM
+from .linker import ResourceLinkerModel
+from .loader import ResourceLoaderModel
 
 if TYPE_CHECKING:
     from rhizome.tui.screens.new_resource import NewResourceResult
@@ -37,7 +37,7 @@ def _fmt_tokens(n: int | None) -> str:
     return str(n)
 
 
-class ResourceViewerVM(ViewModelBase):
+class ResourceViewerModel(ViewModelBase):
     """Root VM. Owns the manager + child VMs and fans out topic changes. See module docstring."""
 
     def __init__(self, session_factory: Any, manager: ResourceManager | None = None) -> None:
@@ -49,8 +49,8 @@ class ResourceViewerVM(ViewModelBase):
         # Display-only label for the active topic — children scope by id, but the view shows the name.
         self._current_topic_name: str | None = None
 
-        self._loader = ResourceLoaderVM(session_factory, self._manager)
-        self._linker = ResourceLinkerVM(session_factory)
+        self._loader = ResourceLoaderModel(session_factory, self._manager)
+        self._linker = ResourceLinkerModel(session_factory)
 
         # Cross-child coupling: a committed link change reshapes the loader's resource set.
         self._linker.subscribe(self._linker.link_changed, self._on_link_changed)
@@ -70,11 +70,11 @@ class ResourceViewerVM(ViewModelBase):
         return self._manager
 
     @property
-    def loader(self) -> ResourceLoaderVM:
+    def loader(self) -> ResourceLoaderModel:
         return self._loader
 
     @property
-    def linker(self) -> ResourceLinkerVM:
+    def linker(self) -> ResourceLinkerModel:
         return self._linker
 
     @property

@@ -1,4 +1,4 @@
-"""ChatMessage — view for ``ChatMessageVM``, a static (non-streaming) user / system / error message.
+"""ChatMessage — view for ``ChatMessageModel``, a static (non-streaming) user / system / error message.
 
 Binds to an immutable VM whose content is fixed at append time, so it holds no state and never
 refreshes. Streaming agent output is a separate VM + view (``messages/agent.py``).
@@ -17,7 +17,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Markdown, Static
 
-from rhizome.app.chat_pane.messages.static import ChatMessageVM
+from rhizome.app.chat_pane.messages.static import ChatMessageModel
 from rhizome.tui.types import Mode, Role
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.tui.widgets.view_base import ViewBase
@@ -30,8 +30,8 @@ _ROLE_PREFIXES = {
 }
 
 
-@register_feed_view(ChatMessageVM)
-class ChatMessage(ViewBase[ChatMessageVM]):
+@register_feed_view(ChatMessageModel)
+class ChatMessage(ViewBase[ChatMessageModel]):
     """Renders an immutable chat message with role prefix and styling."""
 
     DEFAULT_CSS = f"""
@@ -65,7 +65,7 @@ class ChatMessage(ViewBase[ChatMessageVM]):
     }}
     """
 
-    def __init__(self, vm: ChatMessageVM, **kwargs) -> None:
+    def __init__(self, vm: ChatMessageModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         if vm.role == Role.AGENT:
             raise ValueError(

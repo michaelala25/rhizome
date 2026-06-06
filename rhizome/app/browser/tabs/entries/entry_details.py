@@ -27,12 +27,12 @@ from rhizome.db import KnowledgeEntry
 from rhizome.db.operations import update_entry
 from rhizome.logs import get_logger
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 _logger = get_logger("browser.entry_details")
 
 
-class EntryDetailsVM(ViewModelBase):
+class EntryDetailsModel(ViewModelBase):
     """Buffered-edit VM for the entry detail panel. Accept/Cancel are the explicit exits from dirty;
     nothing reaches the DB until the user Accepts."""
 
@@ -42,7 +42,7 @@ class EntryDetailsVM(ViewModelBase):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self._make_group(EntryDetailsVM.Callbacks.SAVED)
+        self._saved = self._make_group(EntryDetailsModel.Callbacks.SAVED)
 
         self._entry: KnowledgeEntry | None = None
         # Buffers shadow the entry's stored values. Seeded on every ``set_entry`` so the dirty test

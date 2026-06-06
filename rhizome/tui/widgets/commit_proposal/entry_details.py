@@ -2,7 +2,7 @@
 
 Mirrors the structure of the browser's entry-details panel: title ``ProposalTextArea`` over
 content ``ProposalTextArea`` over an Accept/Cancel ``ChoiceList`` that is only visible while
-``EntryDetailsVM.is_dirty``.
+``EntryDetailsModel.is_dirty``.
 
 Boundary navigation: plain ``up`` from the title and plain ``down`` from the bottom-most visible
 field bubble ``BoundaryHit`` to the parent. Plain ``left`` from any field bubbles ``"left"`` so the
@@ -18,12 +18,12 @@ from textual.containers import Vertical
 from textual.events import Key
 from textual.widgets import TextArea
 
-from rhizome.app.commit_proposal.entry_details import EntryDetailsVM
+from rhizome.app.commit_proposal.entry_details import EntryDetailsModel
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 from rhizome.tui.widgets.shared.text_area import ProposalTextArea
 
 
-class _EntryDetailChoices(ChoiceList[EntryDetailsVM]):
+class _EntryDetailChoices(ChoiceList[EntryDetailsModel]):
     """Accept/Cancel for the focused entry's title/content edit."""
 
     CHOICES = {"Accept": "_accept", "Cancel": "_cancel"}
@@ -56,7 +56,7 @@ class _DetailsTextArea(ProposalTextArea):
 
 
 class EntryDetails(Vertical):
-    """View for ``EntryDetailsVM``. Subscribes to ``vm.dirty``; mirrors VM state into both
+    """View for ``EntryDetailsModel``. Subscribes to ``vm.dirty``; mirrors VM state into both
     TextAreas and toggles the choices' visibility based on ``is_dirty``."""
 
     DEFAULT_CSS = """
@@ -107,7 +107,7 @@ class EntryDetails(Vertical):
     }
     """
 
-    def __init__(self, vm: EntryDetailsVM, **kwargs) -> None:
+    def __init__(self, vm: EntryDetailsModel, **kwargs) -> None:
         super().__init__(**kwargs)
         self._vm = vm
         self._was_dirty = False

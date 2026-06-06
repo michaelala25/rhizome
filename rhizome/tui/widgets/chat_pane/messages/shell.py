@@ -1,6 +1,6 @@
 """Shell command — sub-VM + view used by the MVVM chat pane.
 
-Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandVM``
+Buffer entries starting with ``!`` are dispatched as shell commands by the pane: a ``ShellCommandModel``
 is appended to the feed and its ``execute()`` coroutine is scheduled on the pane's worker. The VM owns the
 subprocess lifecycle, the streamed output, and the final exit code; the view subscribes to ``dirty`` and
 renders header / output area / exit code into stock ``Static`` widgets.
@@ -22,16 +22,16 @@ from textual.widgets import Static
 
 
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.app.chat_pane.messages.shell import ShellCommandVM
+from rhizome.app.chat_pane.messages.shell import ShellCommandModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
 SHELL_TIMEOUT = 30
 
 
-@register_feed_view(ShellCommandVM)
-class ShellCommandMessage(ViewBase[ShellCommandVM]):
-    """Renders a ``ShellCommandVM``: header line, output area, elapsed display (while running and on
+@register_feed_view(ShellCommandModel)
+class ShellCommandMessage(ViewBase[ShellCommandModel]):
+    """Renders a ``ShellCommandModel``: header line, output area, elapsed display (while running and on
     completion if >=10s), and a trailing exit-code line on non-zero exits.
 
     Uses ``set_interval`` to repaint elapsed while the VM is running; the interval is cancelled once the VM
@@ -86,7 +86,7 @@ class ShellCommandMessage(ViewBase[ShellCommandVM]):
     }}
     """
 
-    def __init__(self, vm: ShellCommandVM, **kwargs) -> None:
+    def __init__(self, vm: ShellCommandModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
         self._tick_timer: Timer | None = None
 

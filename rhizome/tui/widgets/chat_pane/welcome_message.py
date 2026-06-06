@@ -1,4 +1,4 @@
-"""WelcomeMessage — view for ``WelcomeMessageVM``: the ASCII banner + greeting atop a fresh feed.
+"""WelcomeMessage — view for ``WelcomeMessageModel``: the ASCII banner + greeting atop a fresh feed.
 
 A dumb mirror of its (static) VM. ``ASCII_ART`` is pure presentation and lives here; the setup
 screen renders it too.
@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.widgets import Static
 
 from rhizome.tui.widgets.view_base import ViewBase
-from rhizome.app.chat_pane.welcome_message import WelcomeMessageVM
+from rhizome.app.chat_pane.welcome_message import WelcomeMessageModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
@@ -23,8 +23,8 @@ ASCII_ART = r"""
 """
 
 
-@register_feed_view(WelcomeMessageVM)
-class WelcomeMessage(ViewBase[WelcomeMessageVM]):
+@register_feed_view(WelcomeMessageModel)
+class WelcomeMessage(ViewBase[WelcomeMessageModel]):
     """ASCII art banner and welcome greeting shown at the top of the chat feed."""
 
     DEFAULT_CSS = """

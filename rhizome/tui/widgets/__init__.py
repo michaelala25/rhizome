@@ -1,6 +1,6 @@
 # Core
 from .view_base import ViewBase
-from rhizome.app.vm import CallbackGroup, Emitter, ViewModelBase
+from rhizome.app.model import CallbackGroup, Emitter, ViewModelBase
 
 # Shared widgets
 from .shared.topic_tree import TopicTree

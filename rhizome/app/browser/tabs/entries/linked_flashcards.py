@@ -43,17 +43,17 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from rhizome.app.query_backed_vm import QueryBackedViewModel
-from rhizome.app.browser.shared.searchable import SearchableVMMixin
+from rhizome.app.query_backed_model import QueryBackedViewModel
+from rhizome.app.browser.shared.searchable import SearchableModelMixin
 
 _logger = get_logger("browser.linked_flashcards")
 
-# Pool-window cap; mirrors ``EntryTabVM.DEFAULT_PAGE_LIMIT``. The linked
+# Pool-window cap; mirrors ``EntryTabModel.DEFAULT_PAGE_LIMIT``. The linked
 # section is unbounded (per-entry flashcard counts are usually small) and not paginated.
 DEFAULT_PAGE_LIMIT = 500
 
 
-class LinkedFlashcardsPanelVM(QueryBackedViewModel, SearchableVMMixin):
+class LinkedFlashcardsPanelModel(QueryBackedViewModel, SearchableModelMixin):
     """Sub-VM driving the linked-flashcards panel. See module docstring."""
 
     def __init__(

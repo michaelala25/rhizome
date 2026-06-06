@@ -21,7 +21,7 @@ from textual.containers import Vertical
 from textual.coordinate import Coordinate
 from textual.widgets import DataTable, Static
 
-from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelVM
+from rhizome.app.browser.tabs.entries.linked_flashcards import LinkedFlashcardsPanelModel
 from rhizome.tui.widgets.shared.search_bar import SearchBar
 from rhizome.tui.widgets.browser.tabs.entries.flashcard_preview import FlashcardPreview
 from rhizome.tui.widgets.browser.tabs.entries.linked_flashcards_table import LinkedFlashcardsTable
@@ -95,7 +95,7 @@ class LinkedFlashcardsPanel(Vertical):
 
     def __init__(
         self,
-        view_model: LinkedFlashcardsPanelVM,
+        view_model: LinkedFlashcardsPanelModel,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -121,7 +121,7 @@ class LinkedFlashcardsPanel(Vertical):
         table.add_column("id")
         table.add_column("question", width=self._TEXT_COLUMN_WIDTH)
         table.add_column("answer", width=self._TEXT_COLUMN_WIDTH)
-        yield SearchBar[LinkedFlashcardsPanelVM](
+        yield SearchBar[LinkedFlashcardsPanelModel](
             self._vm, id="linked-flashcards-search-input",
         )
         yield table

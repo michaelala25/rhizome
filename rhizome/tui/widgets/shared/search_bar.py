@@ -1,4 +1,4 @@
-"""SearchBar — generic search-box widget over any ``SearchableVMMixin`` VM.
+"""SearchBar — generic search-box widget over any ``SearchableModelMixin`` VM.
 
 Visually a tight 3-row box with a transparent background and a ``#3a3a3a`` border that flips
 accent when focus is anywhere inside (``:focus-within``); the keybinding hint rides the top
@@ -31,9 +31,9 @@ Input behaviour
 
 Generic on the VM
 -----------------
-``SearchBar`` is generic on the VM type, bound to ``SearchableVMMixin``. Concrete
+``SearchBar`` is generic on the VM type, bound to ``SearchableModelMixin``. Concrete
 widget instances are typically constructed with the bound spelled out (e.g.
-``SearchBar[EntryTabVM]``) so the type-checker can keep the VM-typed
+``SearchBar[EntryTabModel]``) so the type-checker can keep the VM-typed
 ``self._vm`` attribute accurate. At runtime the widget only ever calls ``vm.set_search`` —
 nothing VM-specific leaks across the boundary.
 """
@@ -49,10 +49,10 @@ from textual.containers import Horizontal
 from textual.events import Click
 from textual.widgets import Input, Static
 
-from rhizome.app.browser.shared.searchable import SearchableVMMixin
+from rhizome.app.browser.shared.searchable import SearchableModelMixin
 from rhizome.tui.keybindings import Keybind
 
-VM = TypeVar("VM", bound=SearchableVMMixin)
+VM = TypeVar("VM", bound=SearchableModelMixin)
 
 # Rapid double-escape window — the second ``esc`` must land within this many seconds of the
 # first to trigger a clear. Tight enough that a single deliberate ``esc`` (e.g. dropping focus

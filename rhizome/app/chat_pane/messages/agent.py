@@ -1,4 +1,4 @@
-"""AgentMessageVM + view — a single contiguous agent text segment.
+"""AgentMessageModel + view — a single contiguous agent text segment.
 
 The VM holds an append-only ``body`` string and a ``streaming`` flag that flips on ``close()``.
 Chunks land via ``append_token``; the view's drain task pulls characters from ``body`` on a fixed
@@ -6,7 +6,7 @@ tick and writes adaptive-sized slices into a ``MarkdownStream`` so bursty arriva
 rather than blitting.
 
 Unlike the previous design, this VM represents *one* segment — not a whole agent turn. Tool calls
-live in their own ``ToolMessageVM`` entries in the feed; alternating chat segments and tool
+live in their own ``ToolMessageModel`` entries in the feed; alternating chat segments and tool
 lists are routed (in step 2) by the chat-pane VM or (in step 3) by the ``AgentStreamRouter``. The
 thinking indicator is likewise its own feed entry, not a child of this view.
 """
@@ -23,10 +23,10 @@ from textual.widgets.markdown import MarkdownStream
 
 from rhizome.tui.types import Mode
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class AgentMessageVM(ViewModelBase):
+class AgentMessageModel(ViewModelBase):
     """A single contiguous run of agent text. Append-only ``body``; ``streaming`` flips on close."""
 
     def __init__(self, *, mode: Mode = Mode.IDLE) -> None:

@@ -15,10 +15,10 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
-from rhizome.app.chat_pane.interrupts.base import InterruptVMBase
+from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 
 
-class UserChoicesVM(InterruptVMBase):
+class UserChoicesModel(InterruptModelBase):
     """Business logic for the Choices interrupt: prompt + options + cursor + resolution.
 
     Mutators are idempotent on the resolved state — stale key handlers can't double-fire the future.
@@ -41,7 +41,7 @@ class UserChoicesVM(InterruptVMBase):
         self.cursor: int = 0
 
     @classmethod
-    def from_interrupt(cls, value: dict[str, Any]) -> UserChoicesVM:
+    def from_interrupt(cls, value: dict[str, Any]) -> UserChoicesModel:
         """Build a VM from an agent interrupt value dict (legacy contract)."""
         return cls(
             prompt=value.get("message", cls.DEFAULT_PROMPT),

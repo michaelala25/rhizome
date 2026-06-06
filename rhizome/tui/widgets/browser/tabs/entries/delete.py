@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any
 from rich.text import Text
 
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 
 if TYPE_CHECKING:
     from .view import EntryTab
 
 
-class EntriesDeleteMenu(ChoiceList[EntryTabVM]):
+class EntriesDeleteMenu(ChoiceList[EntryTabModel]):
     """Vertical Confirm/Cancel. Header surfaces the count + the no-flashcards-harmed note."""
 
     CHOICES = {"Confirm": "_confirm", "Cancel": "_cancel"}
@@ -22,7 +22,7 @@ class EntriesDeleteMenu(ChoiceList[EntryTabVM]):
 
     def __init__(
         self,
-        view_model: EntryTabVM,
+        view_model: EntryTabModel,
         tab: "EntryTab",
         **kwargs: Any,
     ) -> None:

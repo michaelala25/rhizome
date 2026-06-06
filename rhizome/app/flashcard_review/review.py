@@ -1,6 +1,6 @@
 """View-model for the FlashcardReview widget.
 
-This module owns the session-level state machine ``FlashcardReviewVM`` over a list of
+This module owns the session-level state machine ``FlashcardReviewModel`` over a list of
 ``Flashcard`` instances (per-card state machine documented in ``flashcard.py``). The view
 (``FlashcardReview``) subscribes to a single ``dirty`` observer list on the VM and re-renders
 on every emit; it never mutates VM state directly.
@@ -8,7 +8,7 @@ on every emit; it never mutates VM state directly.
 See ``flashcard.py`` for the Flashcard state machine and FSRS state ownership docs.
 
 ============================================================================================
-FlashcardReviewVM state machine
+FlashcardReviewModel state machine
 ============================================================================================
 
 States:
@@ -178,12 +178,12 @@ from rhizome.db.operations.flashcards import commit_fsrs_card
 from rhizome.logs import get_logger
 from rhizome.app.flashcard_review.timer import Timer
 from rhizome.app.flashcard_review.flashcard import Flashcard, FlashcardData
-from rhizome.app.vm import Emitter, ViewModelBase
+from rhizome.app.model import Emitter, ViewModelBase
 
 _logger = get_logger("tui.flashcard_review_vm")
 
 
-class FlashcardReviewVM(ViewModelBase):
+class FlashcardReviewModel(ViewModelBase):
 
     class State(Enum):
         START = auto()
@@ -218,7 +218,7 @@ class FlashcardReviewVM(ViewModelBase):
         self._auto_approve_auto_score = auto_approve_auto_score
 
         # Internal state
-        self.state = FlashcardReviewVM.State.START
+        self.state = FlashcardReviewModel.State.START
         self._cancelled = False
         self._collapsed = False
         self._help_visible = False
@@ -241,7 +241,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     @property
     def current_card(self) -> Flashcard | None:
-        if self.state == FlashcardReviewVM.State.START or not self._cards:
+        if self.state == FlashcardReviewModel.State.START or not self._cards:
             return None
         return self._cards[self._current_card_index]
 
@@ -324,7 +324,7 @@ class FlashcardReviewVM(ViewModelBase):
 
 
     def toggle_collapsed(self):
-        assert self.state == FlashcardReviewVM.State.DONE
+        assert self.state == FlashcardReviewModel.State.DONE
         self.collapsed = not self.collapsed
 
     def toggle_help_visible(self) -> None:
@@ -334,11 +334,11 @@ class FlashcardReviewVM(ViewModelBase):
         self.timers_visible = not self.timers_visible
 
     def toggle_auto_score_enabled(self) -> None:
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         self.auto_score_enabled = not self._auto_score_enabled
 
     def toggle_auto_approve_auto_score(self) -> None:
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         self.auto_approve_auto_score = not self._auto_approve_auto_score
 
     def toggle_flag_current_card(self) -> None:
@@ -346,7 +346,7 @@ class FlashcardReviewVM(ViewModelBase):
         
         Surfaces in the result payload so callers can revisit flagged cards after the
         session."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         if self.current_card is None:
             return
         self.current_card.toggle_flagged()
@@ -357,7 +357,7 @@ class FlashcardReviewVM(ViewModelBase):
         """Approve every card currently in SCORED_PENDING_APPROVAL with its staged
         rating. No-op if there are no such cards.
         """
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
 
         pending_approval = [
             c for c in self._cards
@@ -425,9 +425,9 @@ class FlashcardReviewVM(ViewModelBase):
 
     def begin(self):
         """Transition state from START to REVIEWING."""
-        assert self.state == FlashcardReviewVM.State.START
+        assert self.state == FlashcardReviewModel.State.START
 
-        self.state = FlashcardReviewVM.State.REVIEWING
+        self.state = FlashcardReviewModel.State.REVIEWING
         # Kick off the first card's think-time timer.
         self._unpause_current_if_front()
 
@@ -436,7 +436,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def reveal_back_current_card(self) -> None:
         """Flip a FRONT card to REVEALED_NOT_SCORED. Driven by enter on FRONT."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         if self.current_card is None or self.current_card.state != Flashcard.State.FRONT:
             return
         self.current_card.reveal_back()
@@ -445,7 +445,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def reveal_front_current_card(self) -> None:
         """Flip an AWAITING_REVEAL card back to FRONT for re-rating. Driven by enter on AWAITING_REVEAL."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         if self.current_card is None or self.current_card.state != Flashcard.State.AWAITING_REVEAL:
             return
         self.current_card.reveal_front()
@@ -455,7 +455,7 @@ class FlashcardReviewVM(ViewModelBase):
     def advance_to_next_unscored(self) -> None:
         """Move the cursor to the next card needing attention. Driven by enter on
         SCORED / REVEALED_PENDING_AUTO_SCORE."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         if self.current_card is None:
             return
         self._goto_next_unscored_card()
@@ -465,7 +465,7 @@ class FlashcardReviewVM(ViewModelBase):
     def approve_pending_score(self) -> None:
         """Approve a staged auto-score by routing the proposed rating through the
         normal scoring path. Driven by enter on SCORED_PENDING_APPROVAL."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         card = self.current_card
         if card is None or card.state != Flashcard.State.SCORED_PENDING_APPROVAL:
             return
@@ -478,7 +478,7 @@ class FlashcardReviewVM(ViewModelBase):
         """Discard a staged auto-score without applying a rating. Card returns to
         REVEALED_NOT_SCORED with ``auto_score_discarded`` latched (so the enter-
         default falls back to manual GOOD). Driven by 'd' on SCORED_PENDING_APPROVAL."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         card = self.current_card
         if card is None or card.state != Flashcard.State.SCORED_PENDING_APPROVAL:
             return
@@ -488,7 +488,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def cancel(self):
         """Transition to the cancelled DONE state."""
-        assert self.state != FlashcardReviewVM.State.DONE
+        assert self.state != FlashcardReviewModel.State.DONE
         self._cancelled = True
         self.finish()
 
@@ -500,7 +500,7 @@ class FlashcardReviewVM(ViewModelBase):
         within ``score_current_card``'s batch); when ``None`` the dirty emit fires immediately via
         ``self``.
         """
-        assert self.state != FlashcardReviewVM.State.DONE
+        assert self.state != FlashcardReviewModel.State.DONE
 
         if emitter is None:
             emitter = self
@@ -509,7 +509,7 @@ class FlashcardReviewVM(ViewModelBase):
         # ctrl+c). Must be done before state transition since Flashcard.pause() asserts state == FRONT.
         self._pause_current_if_front()
 
-        self.state = FlashcardReviewVM.State.DONE
+        self.state = FlashcardReviewModel.State.DONE
 
         # By default, start in the collapsed state
         self._collapsed = True
@@ -530,7 +530,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def next_card(self):
         """Navigate to the next card, wrapping around if necessary. Does not change card state (other than pausing/unpausing the think-time timer)."""
-        assert self.state != FlashcardReviewVM.State.START
+        assert self.state != FlashcardReviewModel.State.START
         if not self._cards:
             return
 
@@ -542,7 +542,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def prev_card(self):
         """Navigate to the previous card, wrapping around if necessary. Does not change card state (other than pausing/unpausing the think-time timer)."""
-        assert self.state != FlashcardReviewVM.State.START
+        assert self.state != FlashcardReviewModel.State.START
         if not self._cards:
             return
 
@@ -554,7 +554,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def score_current_card(self, score: Flashcard.Score):
         """Score the current card with the given score, transitioning card state accordingly."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
         
         if self.current_card is None:
             return
@@ -645,7 +645,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def reset_current_card(self):
         """Reset the current card, transitioning card and VM state accordingly."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
 
         if not self.current_card:
             return
@@ -670,7 +670,7 @@ class FlashcardReviewVM(ViewModelBase):
 
     def toggle_skip_current_card(self):
         """Skip/unskip the current card, transitioning card and VM state accordingly."""
-        assert self.state == FlashcardReviewVM.State.REVIEWING
+        assert self.state == FlashcardReviewModel.State.REVIEWING
 
         if not self.current_card:
             return

@@ -1,4 +1,4 @@
-"""InterruptVMBase — common machinery for any feed-resident interrupt VM.
+"""InterruptModelBase — common machinery for any feed-resident interrupt VM.
 
 Interrupts are feed-native sub-VMs: they live as siblings of AgentMessage in the chat pane's feed,
 not as children of it. The peek-tail rule means an interrupt appearing implicitly closes the open
@@ -18,10 +18,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 
 
-class InterruptVMBase(ViewModelBase):
+class InterruptModelBase(ViewModelBase):
     """Common machinery for any feed-resident interrupt VM. Subclasses define the interaction surface
     (cursor, options, etc.); the base owns the future plumbing + idempotency guards.
     """
@@ -31,7 +31,7 @@ class InterruptVMBase(ViewModelBase):
         self._future: asyncio.Future[Any] = asyncio.Future()
         self.resolved: bool = False
         # Backing field for the ``cancelled`` property below. Property-based so subclasses with their
-        # own ``cancelled`` property (e.g. FlashcardReviewVM) don't collide with a direct attribute
+        # own ``cancelled`` property (e.g. FlashcardReviewModel) don't collide with a direct attribute
         # assignment here when both are in the MRO.
         self._cancelled: bool = False
         self.result: Any | None = None

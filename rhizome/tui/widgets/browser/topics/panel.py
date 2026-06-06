@@ -48,13 +48,13 @@ from rhizome.tui.widgets.browser.topics.delete import TopicsDeleteMenu
 from rhizome.tui.widgets.browser.topics.details import TopicDetails
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 from rhizome.tui.keybindings import Keybind
-from rhizome.app.browser.topics.panel import TopicTreePanelVM
+from rhizome.app.browser.topics.panel import TopicTreePanelModel
 
 _logger = get_logger("browser.topic_tree_panel")
 
 
 class TopicTreePanel(Vertical, FocusOrchestrationMixin):
-    """View for ``TopicTreePanelVM``. See module docstring."""
+    """View for ``TopicTreePanelModel``. See module docstring."""
 
     # Vertical's own ``can_focus = False`` (in its ``__dict__``) wins MRO over the mixin's True,
     # so we restore it explicitly here — required for the mixin's ``on_focus`` delegation to fire
@@ -146,7 +146,7 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
         },
     )
 
-    def __init__(self, view_model: TopicTreePanelVM, **kwargs: Any) -> None:
+    def __init__(self, view_model: TopicTreePanelModel, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = view_model
         # Topic id captured at delete-dispatch time. Pins the destructive op to the cursor topic
@@ -160,7 +160,7 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
         self.add_class("-actions-expanded")
 
     @property
-    def view_model(self) -> TopicTreePanelVM:
+    def view_model(self) -> TopicTreePanelModel:
         return self._vm
 
     def compose(self):

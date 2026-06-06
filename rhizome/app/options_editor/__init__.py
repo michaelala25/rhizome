@@ -8,6 +8,6 @@ Immediate-flagged specs (``OptionSpec.immediate=True``) bypass staging and write
 the target — used for changes the user must see take effect live, e.g. theme.
 """
 
-from rhizome.app.options_editor.options_editor import OptionsEditorVM
+from rhizome.app.options_editor.options_editor import OptionsEditorModel
 
-__all__ = ["OptionsEditorVM"]
+__all__ = ["OptionsEditorModel"]

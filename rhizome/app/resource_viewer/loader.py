@@ -1,4 +1,4 @@
-"""``ResourceLoaderVM`` — load/context-stuff state for the current topic's resources.
+"""``ResourceLoaderModel`` — load/context-stuff state for the current topic's resources.
 
 Terminology
 -----------
@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Coroutine
 
-from rhizome.app.query_backed_vm import QueryBackedViewModel
+from rhizome.app.query_backed_model import QueryBackedViewModel
 from rhizome.db import Resource
 from rhizome.db.models import LoadingPreference, ResourceSection
 from rhizome.db.operations import list_resources_for_topic
@@ -183,7 +183,7 @@ class _ResourceTreeIndex:
         return self._chunk_ids_by_section_id.get(nid, set())
 
 
-class ResourceLoaderVM(QueryBackedViewModel):
+class ResourceLoaderModel(QueryBackedViewModel):
     """Loader VM. Owns the topic's resources, the load state, and the cursor mirror."""
 
     class Callbacks(Enum):
@@ -200,7 +200,7 @@ class ResourceLoaderVM(QueryBackedViewModel):
         self._session_factory = session_factory
         self._manager = manager
 
-        self._cursor_changed = self._make_group(ResourceLoaderVM.Callbacks.CURSOR_CHANGED)
+        self._cursor_changed = self._make_group(ResourceLoaderModel.Callbacks.CURSOR_CHANGED)
 
         # Topic scope. ``None`` = no active topic (empty tree).
         self._topic_id: int | None = None

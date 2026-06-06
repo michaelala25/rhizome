@@ -20,7 +20,7 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar
 from rich.text import Text
 from textual.widgets import Static
 
-from rhizome.app.vm import ViewModelBase
+from rhizome.app.model import ViewModelBase
 from rhizome.tui.keybindings import Keybind
 
 VM = TypeVar("VM", bound=ViewModelBase)

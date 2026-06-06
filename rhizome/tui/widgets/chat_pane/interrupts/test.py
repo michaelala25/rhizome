@@ -5,15 +5,15 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.widgets import Static
 
-from rhizome.app.chat_pane.interrupts.test import TestInterruptVM
+from rhizome.app.chat_pane.interrupts.test import TestInterruptModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 
 
-@register_feed_view(TestInterruptVM)
-class TestInterrupt(NavigableFeedItemViewBase[TestInterruptVM]):
-    """Single-Static projection of ``TestInterruptVM``. Up/Down move the cursor; Enter confirms. The
+@register_feed_view(TestInterruptModel)
+class TestInterrupt(NavigableFeedItemViewBase[TestInterruptModel]):
+    """Single-Static projection of ``TestInterruptModel``. Up/Down move the cursor; Enter confirms. The
     widget keeps itself rendered after resolution so the conversational record shows what was chosen.
     """
 

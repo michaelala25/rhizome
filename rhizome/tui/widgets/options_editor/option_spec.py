@@ -18,7 +18,7 @@ from rhizome.app.options import (
     OptionSpec,
     ToggleOptionSpec,
 )
-from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
 
@@ -48,13 +48,13 @@ class OptionSpecView(Widget, can_focus=True):
     }
     """
 
-    def __init__(self, vm: OptionsEditorVM, spec: OptionSpec, **kwargs: Any) -> None:
+    def __init__(self, vm: OptionsEditorModel, spec: OptionSpec, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._vm = vm
         self._spec = spec
 
     @property
-    def vm(self) -> OptionsEditorVM:
+    def vm(self) -> OptionsEditorModel:
         return self._vm
 
     @property
@@ -97,7 +97,7 @@ class OptionSpecView(Widget, can_focus=True):
     # ------------------------------------------------------------------
     # VM dirty subscription — repaints the value display on external mutations
     # (reset, agent-side flips, conditional cascades). Subscribed during the
-    # widget's mount lifetime so the cleanup matches the OptionsEditorVM's own
+    # widget's mount lifetime so the cleanup matches the OptionsEditorModel's own
     # detach() that runs on editor unmount.
     # ------------------------------------------------------------------
 
@@ -173,7 +173,7 @@ class SelectOptionSpecView(OptionSpecView):
 
     @staticmethod
     def _choices_for(
-        vm: OptionsEditorVM,
+        vm: OptionsEditorModel,
         spec: OptionSpec
     ) -> list[tuple[str, Any]]:
         if isinstance(spec, ConditionalChoicesOptionSpec):
@@ -504,7 +504,7 @@ class ToggleOptionSpecView(OptionSpecView):
 # ======================================================================================================
 
 
-def make_option_spec_view(vm: OptionsEditorVM, spec: OptionSpec) -> OptionSpecView:
+def make_option_spec_view(vm: OptionsEditorModel, spec: OptionSpec) -> OptionSpecView:
     # Order matters: ToggleOptionSpec is a ChoicesOptionSpec subclass and must be checked
     # first; bare ``OptionSpec`` is the freeform-string fallback and lands on
     # ``StringOptionSpecView`` rather than the read-only base view.

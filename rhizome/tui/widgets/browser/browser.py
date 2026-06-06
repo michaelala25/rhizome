@@ -20,22 +20,22 @@ from textual.widgets import ContentSwitcher, Static
 
 from rhizome.logs import get_logger
 
-from rhizome.app.browser.tabs.entries.tab import EntryTabVM
+from rhizome.app.browser.tabs.entries.tab import EntryTabModel
 from rhizome.tui.widgets.browser.tabs.entries.tab import EntryTab
-from rhizome.app.browser.tab_base import BrowserTabVM
+from rhizome.app.browser.tab_base import BrowserTabModel
 from rhizome.tui.widgets.browser.topics.panel import TopicTreePanel
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 from rhizome.tui.keybindings import Keybind
-from rhizome.app.browser.browser import BrowserVM
+from rhizome.app.browser.browser import BrowserModel
 
 _logger = get_logger("browser.view")
 
 
-def _view_for_tab(tab_vm: BrowserTabVM):
+def _view_for_tab(tab_vm: BrowserTabModel):
     """Construct the view widget for ``tab_vm`` by dispatching on its concrete type. Raises rather
     than rendering a blank tab if a VM type has no registered view — that's a programmer error."""
-    if isinstance(tab_vm, EntryTabVM):
+    if isinstance(tab_vm, EntryTabModel):
         return EntryTab(tab_vm)
     raise TypeError(
         f"No view registered for tab VM {type(tab_vm).__name__}. "
@@ -43,8 +43,8 @@ def _view_for_tab(tab_vm: BrowserTabVM):
     )
 
 
-class Browser(NavigableFeedItemViewBase[BrowserVM], FocusOrchestrationMixin):
-    """Takes a caller-constructed ``BrowserVM`` and drives it through its mount lifecycle.
+class Browser(NavigableFeedItemViewBase[BrowserModel], FocusOrchestrationMixin):
+    """Takes a caller-constructed ``BrowserModel`` and drives it through its mount lifecycle.
 
     ``await self._vm.start()`` runs from ``on_mount`` after Textual finishes mounting children — by
     then every child widget is subscribed to its VM's ``dirty`` and will repaint on first arrival.

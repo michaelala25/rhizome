@@ -3,12 +3,12 @@ from typing import ClassVar
 from rich.text import Text
 from textual.message import Message
 
-from rhizome.app.options_editor import OptionsEditorVM
+from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.choices_list import ChoiceList
 
 
-class OptionsEditorActions(ChoiceList[OptionsEditorVM]):
+class OptionsEditorActions(ChoiceList[OptionsEditorModel]):
     DEFAULT_CSS = """
     OptionsEditorActions {
         height: auto;

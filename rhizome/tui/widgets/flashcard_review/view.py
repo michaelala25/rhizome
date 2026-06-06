@@ -1,4 +1,4 @@
-"""FlashcardReview — thin Textual view over FlashcardReviewVM."""
+"""FlashcardReview — thin Textual view over FlashcardReviewModel."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from rhizome.tui.widgets.flashcard_review.dot_strips import _DotStrip
 from rhizome.app.flashcard_review.review import (
     Flashcard,
     FlashcardData,
-    FlashcardReviewVM,
+    FlashcardReviewModel,
 )
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 
@@ -107,7 +107,7 @@ class _AnswerInput(TextArea):
             event.prevent_default()
 
 
-class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
+class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
 
     # Key → action map. Each binding is gated by ``check_action`` against VM state, so several
     # bindings can share a key and Textual falls through to the first whose guard passes. "enter"
@@ -298,7 +298,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
 
     def __init__(
         self,
-        vm: FlashcardReviewVM,
+        vm: FlashcardReviewModel,
         **kwargs,
     ) -> None:
         # ViewBase wires dirty→_refresh and focus→self.focus, and stores ``vm`` as ``self._vm``.
@@ -385,7 +385,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
             return
         if (
             card.state == Flashcard.State.FRONT
-            and self._vm.state == FlashcardReviewVM.State.REVIEWING
+            and self._vm.state == FlashcardReviewModel.State.REVIEWING
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
@@ -425,7 +425,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         vm = self._vm
-        S = FlashcardReviewVM.State
+        S = FlashcardReviewModel.State
         CS = Flashcard.State
         card = vm.current_card
         card_state = card.state if card is not None else None
@@ -513,11 +513,11 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
 
     def _refresh(self) -> None:
         match self._vm.state:
-            case FlashcardReviewVM.State.START:
+            case FlashcardReviewModel.State.START:
                 self._refresh_start()
-            case FlashcardReviewVM.State.REVIEWING:
+            case FlashcardReviewModel.State.REVIEWING:
                 self._refresh_reviewing()
-            case FlashcardReviewVM.State.DONE:
+            case FlashcardReviewModel.State.DONE:
                 self._refresh_done()
         self._refresh_help()
         self._refresh_auto_approve_hint()
@@ -529,7 +529,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         toggle it. Visible only during REVIEWING — the toggle isn't wired in other
         states."""
         hint = self.query_one("#fr-auto-approve-hint", Static)
-        if self._vm.state != FlashcardReviewVM.State.REVIEWING:
+        if self._vm.state != FlashcardReviewModel.State.REVIEWING:
             hint.display = False
             return
         hint.display = True
@@ -795,7 +795,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         move focus if we already own it somewhere — don't steal from the chat input or
         anywhere else outside this widget.
         """
-        in_review = self._vm.state == FlashcardReviewVM.State.REVIEWING
+        in_review = self._vm.state == FlashcardReviewModel.State.REVIEWING
         show = input_visible and in_review
 
         self.query_one("#fr-answer-input-label", Static).display = show
@@ -975,7 +975,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
             card is not None
             and card.state == Flashcard.State.FRONT
             and self._vm.timers_visible
-            and self._vm.state == FlashcardReviewVM.State.REVIEWING
+            and self._vm.state == FlashcardReviewModel.State.REVIEWING
         )
         currently_running = self._timer_interval is not None
         if live_timer_visible and not currently_running:
@@ -997,7 +997,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         countdown_visible = (
             card is not None
             and card.state == Flashcard.State.AWAITING_REVEAL
-            and self._vm.state == FlashcardReviewVM.State.REVIEWING
+            and self._vm.state == FlashcardReviewModel.State.REVIEWING
         )
         currently_running = self._due_interval is not None
         if countdown_visible and not currently_running:
@@ -1017,7 +1017,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewVM]):
         think-time throbber (FRONT card without timer visible) or the
         batch-scoring indicator needs to animate."""
         card = self._vm.current_card
-        in_review = self._vm.state == FlashcardReviewVM.State.REVIEWING
+        in_review = self._vm.state == FlashcardReviewModel.State.REVIEWING
         think_throbber = (
             in_review
             and card is not None
