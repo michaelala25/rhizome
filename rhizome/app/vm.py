@@ -1,23 +1,90 @@
+from __future__ import annotations
+
+import logging
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Hashable
+from typing import Any, Callable, Generic, Hashable, ParamSpec
+
+
+logger = logging.getLogger(__name__)
+
+
+P = ParamSpec("P")
+
+
+def _make_weak_ref(cb: Callable[..., Any]) -> Callable[[], Callable[..., Any] | None]:
+    """Wrap ``cb`` as a callable that returns ``cb`` while it's alive, or ``None`` once GC'd.
+
+    Bound methods need ``weakref.WeakMethod`` — a plain ``weakref.ref`` on ``obj.method`` would hold
+    the temporary bound-method object, which dies immediately after the subscribe call returns.
+
+    Falls back to a strong reference for callables that can't be weak-referenced (e.g. some
+    ``functools.partial`` instances, builtins). Subscribers using those must unsubscribe explicitly.
+    """
+    if hasattr(cb, "__self__") and hasattr(cb, "__func__"):
+        return weakref.WeakMethod(cb)
+    try:
+        return weakref.ref(cb)
+    except TypeError:
+        return lambda: cb
 
 
 @dataclass(frozen=True)
-class CallbackGroup:
+class CallbackGroup(Generic[P]):
     """A named group of callbacks owned by a single ``ViewModelBase`` instance.
 
     ``key`` identifies the group within its owning VM (typically a value from that VM's ``Callbacks``
     enum). ``owner_id`` is ``id(vm)`` of the VM that owns this group — used by ``Emitter`` to enforce
-    single-VM batching. ``callbacks`` is the live list of listeners fired on emit.
+    single-VM batching. ``_refs`` is the list of weak references to subscribed callbacks; dead
+    entries are pruned lazily during dispatch.
 
-    Construct via ``ViewModelBase._make_group(key)`` rather than directly — the helper sets ``owner_id``
-    correctly.
+    ``P`` parameterizes the callback signature. Use ``CallbackGroup[[]]`` for nullary groups (the
+    standard ``dirty`` / ``focus`` case), ``CallbackGroup[[Card]]`` for a single ``Card`` payload,
+    ``CallbackGroup[[int, str]]`` for two positional args, and so on. The type flows through
+    ``emit`` (``*args: P.args, **kwargs: P.kwargs``) and ``subscribe`` (``Callable[P, None]``) so
+    the type checker rejects mismatched payloads at both ends.
+
+    Subscribers are held by weak reference. Once a subscriber is garbage collected, its entry is
+    pruned on the next dispatch. Explicit ``unsubscribe`` is still useful for eager teardown — so
+    a not-yet-collected, unmounted view doesn't receive one last callback — but a forgotten
+    unsubscribe no longer leaks the subscriber.
+
+    Construct via ``ViewModelBase._make_group(key)`` rather than directly — the helper sets
+    ``owner_id`` correctly.
     """
     key: Hashable
     owner_id: int
-    callbacks: list[Callable[..., None]] = field(default_factory=list, compare=False, hash=False)
+    _refs: list[Callable[[], Callable[P, None] | None]] = field(
+        default_factory=list, compare=False, hash=False
+    )
+
+
+def _dispatch(group: CallbackGroup[P], args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    """Fire all live callbacks on ``group``, isolate exceptions, and prune dead entries.
+
+    Dereferences each stored weakref; ``None`` results (GC'd subscribers) are queued for removal at
+    the end. Surviving callbacks run inside a try/except so one bad subscriber can't break the
+    fan-out for the rest — exceptions are logged with full traceback via ``logger.exception``.
+
+    Called by ``ViewModelBase.emit`` (immediate fire), ``Emitter.emit`` (immediate fall-through for
+    non-batched groups), and ``Emitter._flush`` (deferred fire at end of ``emit_once`` block).
+    """
+    dead: list[int] = []
+    for i, ref in enumerate(group._refs):
+        cb = ref()
+        if cb is None:
+            dead.append(i)
+            continue
+        try:
+            cb(*args, **kwargs)
+        except Exception:
+            logger.exception(
+                "callback for group %r raised; continuing with remaining subscribers", group.key
+            )
+    for i in reversed(dead):
+        del group._refs[i]
 
 
 class Emitter:
@@ -46,7 +113,7 @@ class Emitter:
     def __init__(
         self,
         owner_id: int,
-        groups: tuple[CallbackGroup, ...] | None = None,
+        groups: tuple[CallbackGroup[Any], ...] | None = None,
         merge_strategy: MergeStrategy = MergeStrategy.STRICT,
     ) -> None:
         self._owner_id = owner_id
@@ -57,17 +124,19 @@ class Emitter:
         self._merge_strategy = merge_strategy
         # Keyed by CallbackGroup.key. Stores (group, args, kwargs) of the captured call; behavior on
         # repeat depends on merge_strategy.
-        self._pending: dict[Hashable, tuple[CallbackGroup, tuple[Any, ...], dict[str, Any]]] = {}
+        self._pending: dict[
+            Hashable, tuple[CallbackGroup[Any], tuple[Any, ...], dict[str, Any]]
+        ] = {}
         self._closed = False
 
-    def _is_batched(self, group: CallbackGroup) -> bool:
+    def _is_batched(self, group: CallbackGroup[Any]) -> bool:
         return self._batched_keys is None or group.key in self._batched_keys
 
     def emit(
         self,
-        group: CallbackGroup,
-        *args: Any,
-        **kwargs: Any,
+        group: CallbackGroup[P],
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> None:
         if self._closed:
             raise RuntimeError(
@@ -83,8 +152,7 @@ class Emitter:
 
         # Non-batched group: fall through immediately.
         if not self._is_batched(group):
-            for cb in group.callbacks:
-                cb(*args, **kwargs)
+            _dispatch(group, args, kwargs)
             return
 
         existing = self._pending.get(group.key)
@@ -115,8 +183,7 @@ class Emitter:
         """Fire one emit per captured group, then mark closed."""
         try:
             for group, args, kwargs in self._pending.values():
-                for cb in group.callbacks:
-                    cb(*args, **kwargs)
+                _dispatch(group, args, kwargs)
         finally:
             self._closed = True
             self._pending.clear()
@@ -150,7 +217,27 @@ class ViewModelBase:
 
     Subclasses define their own ``Callbacks`` enum for VM-specific groups (e.g. request observables
     that carry arguments via ``emit(group, *args, **kwargs)``), and construct them with
-    ``self._make_group(key)`` so ``owner_id`` is set correctly.
+    ``self._make_group(key)`` so ``owner_id`` is set correctly. Parameterize the payload type via the
+    attribute annotation:
+
+        self._link_changed: CallbackGroup[[Resource]] = self._make_group(Callbacks.LINK_CHANGED)
+
+    Subscription lifetime
+    ---------------------
+    Subscribers are held by weak reference, so a forgotten unsubscribe no longer leaks the
+    subscriber. ``ViewBase.on_unmount`` still unsubscribes explicitly — that's for eager teardown
+    (preventing a callback fire between unmount and GC), not for leak prevention.
+
+    Subscriber requirement: the callable must be weak-referenceable, and something other than the
+    subscription itself must hold it alive. Bound methods of long-lived objects (the common case)
+    satisfy both trivially. A bare lambda passed to ``subscribe`` will die immediately because
+    nothing else holds it; if a closure is the right shape, store it on ``self`` first.
+
+    Exception isolation
+    -------------------
+    Callbacks dispatch inside try/except. A raising subscriber is logged via ``logger.exception``
+    and skipped; the remaining subscribers for that group still fire. This applies to all three
+    dispatch paths: ``self.emit``, ``Emitter.emit`` fall-through, and ``Emitter._flush``.
 
     Emitters are single-VM
     ----------------------
@@ -191,30 +278,33 @@ class ViewModelBase:
 
 
     def __init__(self):
-        self._dirty = self._make_group(ViewModelBase.Callbacks.DIRTY)
-        self._focus = self._make_group(ViewModelBase.Callbacks.FOCUS)
+        self._dirty: CallbackGroup[[]] = self._make_group(ViewModelBase.Callbacks.DIRTY)
+        self._focus: CallbackGroup[[]] = self._make_group(ViewModelBase.Callbacks.FOCUS)
 
-    def _make_group(self, key: Hashable) -> CallbackGroup:
+    def _make_group(self, key: Hashable) -> CallbackGroup[Any]:
         """Construct a CallbackGroup owned by this VM. Subclasses use this to build their own
         CallbackGroups so that ``owner_id`` is set correctly and the single-VM emitter check fires on
         cross-VM misuse.
+
+        Returns ``CallbackGroup[Any]``; annotate the attribute at the call site to refine the
+        payload type, e.g. ``self._foo: CallbackGroup[[int, str]] = self._make_group(...)``.
         """
         return CallbackGroup(key=key, owner_id=id(self))
 
     @property
-    def dirty(self):
+    def dirty(self) -> CallbackGroup[[]]:
         return self._dirty
 
     @property
-    def focus(self):
+    def focus(self) -> CallbackGroup[[]]:
         return self._focus
 
 
     def emit(
         self,
-        group: CallbackGroup,
-        *args: Any,
-        **kwargs: Any,
+        group: CallbackGroup[P],
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> None:
         """Fire an emit immediately. Bypasses any active ``emit_once`` blocks — those only capture
         emits routed through their emitter object.
@@ -223,28 +313,32 @@ class ViewModelBase:
         with no key-coalescing semantics that cross-VM groups could corrupt. The single-VM enforcement
         applies to emitters yielded by ``emit_once`` only.
         """
-        for cb in group.callbacks:
-            cb(*args, **kwargs)
+        _dispatch(group, args, kwargs)
 
 
-    def subscribe(self, group: CallbackGroup, callback: Callable[..., None]) -> None:
-        """Subscribe ``callback`` to ``group``. Views should use this rather than reaching into
-        ``group.callbacks`` directly."""
-        group.callbacks.append(callback)
+    def subscribe(self, group: CallbackGroup[P], callback: Callable[P, None]) -> None:
+        """Subscribe ``callback`` to ``group``. The callback is held by weak reference; the caller
+        must keep its own strong reference (typically by passing a bound method of a long-lived
+        object). A bare lambda will die immediately.
+        """
+        group._refs.append(_make_weak_ref(callback))
 
 
-    def unsubscribe(self, group: CallbackGroup, callback: Callable[..., None]) -> None:
-        """Remove ``callback`` from ``group``. No-op if not subscribed."""
-        try:
-            group.callbacks.remove(callback)
-        except ValueError:
-            pass
+    def unsubscribe(self, group: CallbackGroup[P], callback: Callable[P, None]) -> None:
+        """Remove ``callback`` from ``group``. No-op if not subscribed. Bound-method equality is
+        structural (same ``__self__`` and ``__func__``), so passing the same bound method again
+        unsubscribes the original subscription.
+        """
+        for i, ref in enumerate(group._refs):
+            if ref() == callback:
+                del group._refs[i]
+                return
 
 
     @contextmanager
     def emit_once(
         self,
-        *groups: CallbackGroup,
+        *groups: CallbackGroup[Any],
         merge_strategy: Emitter.MergeStrategy = Emitter.MergeStrategy.STRICT,
     ):
         """Yield an emitter that batches ``emitter.emit(group, ...)`` calls for the given groups,
