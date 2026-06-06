@@ -200,7 +200,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
         self._session_factory = session_factory
         self._manager = manager
 
-        self._cursor_changed = self._make_group(ResourceLoaderModel.Callbacks.CURSOR_CHANGED)
+        self._cursor_changed = self.make_callback_group(ResourceLoaderModel.Callbacks.CURSOR_CHANGED)
 
         # Topic scope. ``None`` = no active topic (empty tree).
         self._topic_id: int | None = None

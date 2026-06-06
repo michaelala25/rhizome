@@ -46,7 +46,7 @@ class ChatInputModel(ViewModelBase):
     def __init__(self, palette: CommandPaletteModel, *, default_hint: str = "") -> None:
         super().__init__()
 
-        self._submitted = self._make_group(ChatInputModel.Callbacks.SUBMITTED)
+        self._submitted = self.make_callback_group(ChatInputModel.Callbacks.SUBMITTED)
 
         self._palette = palette
 

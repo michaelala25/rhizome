@@ -55,9 +55,9 @@ class TopicTreeModel(ViewModelBase):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._selection_changed = self._make_group(TopicTreeModel.Callbacks.SELECTION_CHANGED)
-        self._cursor_changed = self._make_group(TopicTreeModel.Callbacks.CURSOR_CHANGED)
-        self._topic_deleted = self._make_group(TopicTreeModel.Callbacks.TOPIC_DELETED)
+        self._selection_changed = self.make_callback_group(TopicTreeModel.Callbacks.SELECTION_CHANGED)
+        self._cursor_changed = self.make_callback_group(TopicTreeModel.Callbacks.CURSOR_CHANGED)
+        self._topic_deleted = self.make_callback_group(TopicTreeModel.Callbacks.TOPIC_DELETED)
         self._selected_ids: set[int] = set()
         # Authoritative external reference; mirrors the widget's own cursor whenever the view pushes
         # a ``set_cursor``. Other code reads it without poking the widget.

@@ -48,8 +48,8 @@ class ResourceLinkerModel(QueryBackedViewModel, SearchableModelMixin):
         self._session_factory = session_factory
         self._limit = limit
 
-        self._link_changed = self._make_group(ResourceLinkerModel.Callbacks.LINK_CHANGED)
-        self._cursor_changed = self._make_group(ResourceLinkerModel.Callbacks.CURSOR_CHANGED)
+        self._link_changed = self.make_callback_group(ResourceLinkerModel.Callbacks.LINK_CHANGED)
+        self._cursor_changed = self.make_callback_group(ResourceLinkerModel.Callbacks.CURSOR_CHANGED)
 
         # Topic the table links against. ``None`` = no active topic.
         self._topic_id: int | None = None

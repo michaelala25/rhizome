@@ -5,7 +5,7 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Generic, Hashable, ParamSpec
+from typing import Any, Callable, Generic, Hashable, ParamSpec, overload
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class CallbackGroup(Generic[P]):
     a not-yet-collected, unmounted view doesn't receive one last callback — but a forgotten
     unsubscribe no longer leaks the subscriber.
 
-    Construct via ``ViewModelBase._make_group(key)`` rather than directly — the helper sets
+    Construct via ``ViewModelBase.make_callback_group(key)`` rather than directly — the helper sets
     ``owner_id`` correctly.
     """
     key: Hashable
@@ -87,14 +87,36 @@ def _dispatch(group: CallbackGroup[P], args: tuple[Any, ...], kwargs: dict[str, 
         del group._refs[i]
 
 
+def _resolve_group(
+    model: ViewModelBase, group_or_key: CallbackGroup[P] | Hashable
+) -> CallbackGroup[P]:
+    """Coerce a ``CallbackGroup`` or a ``Hashable`` key into the underlying ``CallbackGroup``.
+
+    Passing a ``CallbackGroup`` returns it unchanged (the caller already has the object). Passing a
+    bare key looks it up in ``model._callbacks`` — the registry populated by
+    ``ViewModelBase.make_callback_group``. Missing keys raise ``KeyError`` with the available keys
+    listed for easier debugging.
+    """
+    if isinstance(group_or_key, CallbackGroup):
+        return group_or_key
+    try:
+        return model._callbacks[group_or_key]
+    except KeyError:
+        raise KeyError(
+            f"No CallbackGroup registered under key {group_or_key!r}. "
+            f"Available keys: {list(model._callbacks.keys())}"
+        ) from None
+
+
 class Emitter:
     """Single-VM emitter handed out by ``ViewModelBase.emit_once``. Captures emits for matching groups
     within its scope and replays them once on exit. Emits for non-matching groups fall through
     immediately. Inert after exit.
 
-    Emitters are tied to the VM that created them (via ``owner_id``). Passing a CallbackGroup owned by
-    a different VM to ``emitter.emit(...)`` raises ``ValueError`` — by design. Under the project's
-    communication model (see ``ViewModelBase``):
+    Emitters are tied to the VM that created them (held as ``self._model``, with ``self._owner_id``
+    cached for the cross-VM check). Passing a CallbackGroup owned by a different VM to
+    ``emitter.emit(...)`` raises ``ValueError`` — by design. Under the project's communication model
+    (see ``ViewModelBase``):
 
     - Each VM owns its own events and emits them through its own methods.
     - Cross-VM coordination uses direct method calls, never shared emitters.
@@ -103,6 +125,10 @@ class Emitter:
 
     So an emitter never legitimately fires another VM's events — and we fail loudly if you try, rather
     than silently coalescing distinct VMs' groups under the same ``Callbacks`` enum value.
+
+    Both ``emit`` and the batched-groups list accept either a ``CallbackGroup`` directly or a bare
+    ``Hashable`` key. Keys are resolved against the owning VM's ``_callbacks`` registry — handy for
+    plumbing through ``Callbacks`` enum values without first reaching for the attribute.
     """
 
     class MergeStrategy(Enum):
@@ -112,14 +138,18 @@ class Emitter:
 
     def __init__(
         self,
-        owner_id: int,
-        groups: tuple[CallbackGroup[Any], ...] | None = None,
+        model: ViewModelBase,
+        groups: tuple[CallbackGroup[Any] | Hashable, ...] | None = None,
         merge_strategy: MergeStrategy = MergeStrategy.STRICT,
     ) -> None:
-        self._owner_id = owner_id
-        # None means "batch every group". Otherwise, only batch keys in this set.
+        self._model = model
+        self._owner_id = id(model)
+        # None means "batch every group". Otherwise, restrict batching to these keys. A
+        # ``CallbackGroup`` contributes its ``.key``; a bare ``Hashable`` is used as-is.
         self._batched_keys: frozenset[Hashable] | None = (
-            None if groups is None else frozenset(g.key for g in groups)
+            None
+            if groups is None
+            else frozenset(g.key if isinstance(g, CallbackGroup) else g for g in groups)
         )
         self._merge_strategy = merge_strategy
         # Keyed by CallbackGroup.key. Stores (group, args, kwargs) of the captured call; behavior on
@@ -132,16 +162,17 @@ class Emitter:
     def _is_batched(self, group: CallbackGroup[Any]) -> bool:
         return self._batched_keys is None or group.key in self._batched_keys
 
-    def emit(
-        self,
-        group: CallbackGroup[P],
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> None:
+    @overload
+    def emit(self, group: CallbackGroup[P], *args: P.args, **kwargs: P.kwargs) -> None: ...
+    @overload
+    def emit(self, key: Hashable, *args: Any, **kwargs: Any) -> None: ...
+    def emit(self, group_or_key, *args, **kwargs) -> None:
         if self._closed:
             raise RuntimeError(
                 "Cannot emit through an Emitter after its emit_once block has exited."
             )
+
+        group = _resolve_group(self._model, group_or_key)
 
         if group.owner_id != self._owner_id:
             raise ValueError(
@@ -217,10 +248,10 @@ class ViewModelBase:
 
     Subclasses define their own ``Callbacks`` enum for VM-specific groups (e.g. request observables
     that carry arguments via ``emit(group, *args, **kwargs)``), and construct them with
-    ``self._make_group(key)`` so ``owner_id`` is set correctly. Parameterize the payload type via the
+    ``self.make_callback_group(key)`` so ``owner_id`` is set correctly. Parameterize the payload type via the
     attribute annotation:
 
-        self._link_changed: CallbackGroup[[Resource]] = self._make_group(Callbacks.LINK_CHANGED)
+        self._link_changed: CallbackGroup[[Resource]] = self.make_callback_group(Callbacks.LINK_CHANGED)
 
     Subscription lifetime
     ---------------------
@@ -278,18 +309,59 @@ class ViewModelBase:
 
 
     def __init__(self):
-        self._dirty: CallbackGroup[[]] = self._make_group(ViewModelBase.Callbacks.DIRTY)
-        self._focus: CallbackGroup[[]] = self._make_group(ViewModelBase.Callbacks.FOCUS)
+        # Registry of every group created via ``make_callback_group``, keyed by the original
+        # Hashable. Lets callers look groups up by key without threading the attribute around.
+        # Must be initialized before the standard ``dirty`` / ``focus`` groups are built below.
+        self._callbacks: dict[Hashable, CallbackGroup[Any]] = {}
 
-    def _make_group(self, key: Hashable) -> CallbackGroup[Any]:
-        """Construct a CallbackGroup owned by this VM. Subclasses use this to build their own
-        CallbackGroups so that ``owner_id`` is set correctly and the single-VM emitter check fires on
-        cross-VM misuse.
+        self._dirty: CallbackGroup[[]] = self.make_callback_group(ViewModelBase.Callbacks.DIRTY)
+        self._focus: CallbackGroup[[]] = self.make_callback_group(ViewModelBase.Callbacks.FOCUS)
 
-        Returns ``CallbackGroup[Any]``; annotate the attribute at the call site to refine the
-        payload type, e.g. ``self._foo: CallbackGroup[[int, str]] = self._make_group(...)``.
+    def make_callback_group[**P](self, key: Hashable) -> CallbackGroup[P]:
+        """Construct a CallbackGroup owned by this VM and register it in ``self._callbacks`` under
+        ``key``. Subclasses use this to build their own groups so that ``owner_id`` is set correctly,
+        the single-VM emitter check fires on cross-VM misuse, and the group is reachable by key.
+
+        Generic over the callback signature ``P``: annotate the attribute at the call site and the
+        type checker narrows ``P`` from the assignment target — e.g.
+
+            self._foo: CallbackGroup[[int, str]] = self.make_callback_group(Callbacks.FOO)
+
+        gives ``self._foo`` the expected ``CallbackGroup[[int, str]]`` type. Omitting the annotation
+        leaves ``P`` unsolved; for nullary groups this is harmless, for groups with payloads it
+        loses the end-to-end signature check that the rest of the machinery is designed to give you.
+
+        Raises ``ValueError`` on duplicate registration — every ``CallbackGroup`` owned by a VM
+        must have a unique key.
         """
-        return CallbackGroup(key=key, owner_id=id(self))
+        if key in self._callbacks:
+            raise ValueError(
+                f"CallbackGroup with key {key!r} is already registered on this VM. Each key may "
+                "be used at most once per VM instance."
+            )
+        group: CallbackGroup[P] = CallbackGroup(key=key, owner_id=id(self))
+        self._callbacks[key] = group
+        return group
+
+    def make_callback_groups(self, specs: dict[Hashable, Any]) -> None:
+        """Bulk-register a set of CallbackGroups by key. The values in ``specs`` are payload-shape
+        documentation only — Python's type system can't propagate a dict literal's values into
+        per-key ``ParamSpec``s, so the type checker won't enforce them. Convention:
+
+        - ``None`` — nullary group (no emit args)
+        - a type ``T`` — single-arg group; ``emit(key, t)``
+        - a tuple ``(T1, T2, ...)`` — multi-arg group
+
+        Intended access pattern is by key — ``self.emit(Callbacks.FOO, payload)``,
+        ``view.subscribe(Callbacks.FOO, view._refresh)``. Subclasses that want typed attribute
+        access can layer ``@property`` helpers over ``self._callbacks[key]`` to recover the
+        ``CallbackGroup[P]`` annotation.
+
+        Returns nothing — groups land in ``self._callbacks`` via ``make_callback_group``; duplicate
+        keys raise ``ValueError`` per that helper.
+        """
+        for key in specs:
+            self.make_callback_group(key)
 
     @property
     def dirty(self) -> CallbackGroup[[]]:
@@ -300,35 +372,49 @@ class ViewModelBase:
         return self._focus
 
 
-    def emit(
-        self,
-        group: CallbackGroup[P],
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> None:
+    @overload
+    def emit(self, group: CallbackGroup[P], *args: P.args, **kwargs: P.kwargs) -> None: ...
+    @overload
+    def emit(self, key: Hashable, *args: Any, **kwargs: Any) -> None: ...
+    def emit(self, group_or_key, *args, **kwargs) -> None:
         """Fire an emit immediately. Bypasses any active ``emit_once`` blocks — those only capture
         emits routed through their emitter object.
 
-        No owner_id check is performed here: ``self.emit`` is just an immediate fan-out to subscribers,
-        with no key-coalescing semantics that cross-VM groups could corrupt. The single-VM enforcement
-        applies to emitters yielded by ``emit_once`` only.
+        Accepts either a ``CallbackGroup`` or a bare ``Hashable`` key (looked up in
+        ``self._callbacks``). The key form is the same one passed to ``make_callback_group``, so a
+        ``Callbacks`` enum value works directly without reaching for the attribute.
+
+        No owner_id check is performed here: ``self.emit`` is just an immediate fan-out to
+        subscribers, with no key-coalescing semantics that cross-VM groups could corrupt. The
+        single-VM enforcement applies to emitters yielded by ``emit_once`` only.
         """
+        group = _resolve_group(self, group_or_key)
         _dispatch(group, args, kwargs)
 
 
-    def subscribe(self, group: CallbackGroup[P], callback: Callable[P, None]) -> None:
-        """Subscribe ``callback`` to ``group``. The callback is held by weak reference; the caller
-        must keep its own strong reference (typically by passing a bound method of a long-lived
-        object). A bare lambda will die immediately.
+    @overload
+    def subscribe(self, group: CallbackGroup[P], callback: Callable[P, None]) -> None: ...
+    @overload
+    def subscribe(self, key: Hashable, callback: Callable[..., None]) -> None: ...
+    def subscribe(self, group_or_key, callback) -> None:
+        """Subscribe ``callback`` to a group (or to the group identified by ``key``). The callback is
+        held by weak reference; the caller must keep its own strong reference (typically by passing a
+        bound method of a long-lived object). A bare lambda will die immediately.
         """
+        group = _resolve_group(self, group_or_key)
         group._refs.append(_make_weak_ref(callback))
 
 
-    def unsubscribe(self, group: CallbackGroup[P], callback: Callable[P, None]) -> None:
-        """Remove ``callback`` from ``group``. No-op if not subscribed. Bound-method equality is
-        structural (same ``__self__`` and ``__func__``), so passing the same bound method again
-        unsubscribes the original subscription.
+    @overload
+    def unsubscribe(self, group: CallbackGroup[P], callback: Callable[P, None]) -> None: ...
+    @overload
+    def unsubscribe(self, key: Hashable, callback: Callable[..., None]) -> None: ...
+    def unsubscribe(self, group_or_key, callback) -> None:
+        """Remove ``callback`` from a group (or from the group identified by ``key``). No-op if not
+        subscribed. Bound-method equality is structural (same ``__self__`` and ``__func__``), so
+        passing the same bound method again unsubscribes the original subscription.
         """
+        group = _resolve_group(self, group_or_key)
         for i, ref in enumerate(group._refs):
             if ref() == callback:
                 del group._refs[i]
@@ -338,15 +424,16 @@ class ViewModelBase:
     @contextmanager
     def emit_once(
         self,
-        *groups: CallbackGroup[Any],
+        *groups_or_keys: CallbackGroup[Any] | Hashable,
         merge_strategy: Emitter.MergeStrategy = Emitter.MergeStrategy.STRICT,
     ):
         """Yield an emitter that batches ``emitter.emit(group, ...)`` calls for the given groups,
         firing each at most once on exit.
 
-        If no groups are passed, every emit through the emitter is batched. Emits through the emitter
-        for groups not in the list fall through immediately. Emits made via ``self.emit(...)``
-        directly, or through a different emitter, are unaffected.
+        Each batched-group argument may be a ``CallbackGroup`` or a bare ``Hashable`` key. If no
+        groups are passed, every emit through the emitter is batched. Emits through the emitter for
+        groups not in the list fall through immediately. Emits made via ``self.emit(...)`` directly,
+        or through a different emitter, are unaffected.
 
         The yielded emitter is tied to *this* VM only — passing a CallbackGroup owned by another VM
         raises ``ValueError``. See the class docstring for the rationale.
@@ -359,8 +446,8 @@ class ViewModelBase:
         Identical repeats coalesce silently under all strategies.
         """
         emitter = Emitter(
-            owner_id=id(self),
-            groups=groups if groups else None,
+            model=self,
+            groups=groups_or_keys if groups_or_keys else None,
             merge_strategy=merge_strategy,
         )
         try:

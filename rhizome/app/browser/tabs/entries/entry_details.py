@@ -42,7 +42,7 @@ class EntryDetailsModel(ViewModelBase):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self._make_group(EntryDetailsModel.Callbacks.SAVED)
+        self._saved = self.make_callback_group(EntryDetailsModel.Callbacks.SAVED)
 
         self._entry: KnowledgeEntry | None = None
         # Buffers shadow the entry's stored values. Seeded on every ``set_entry`` so the dirty test

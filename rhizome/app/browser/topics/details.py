@@ -59,7 +59,7 @@ class TopicDetailsModel(QueryBackedViewModel):
     def __init__(self, session_factory: Any) -> None:
         super().__init__()
         self._session_factory = session_factory
-        self._saved = self._make_group(TopicDetailsModel.Callbacks.SAVED)
+        self._saved = self.make_callback_group(TopicDetailsModel.Callbacks.SAVED)
 
         self._topic_id: int | None = None
         self._topic: Topic | None = None

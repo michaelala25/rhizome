@@ -166,12 +166,12 @@ class ChatPaneModel(ViewModelBase):
         # view re-mount (tab churn) doesn't append a second banner.
         self._show_welcome = show_welcome
 
-        self._feed_append = self._make_group(ChatPaneModel.Callbacks.FEED_APPEND)
-        self._feed_remove = self._make_group(ChatPaneModel.Callbacks.FEED_REMOVE)
-        self._feed_clear = self._make_group(ChatPaneModel.Callbacks.FEED_CLEAR)
-        self._feed_replaced = self._make_group(ChatPaneModel.Callbacks.FEED_REPLACED)
-        self._tab_rename = self._make_group(ChatPaneModel.Callbacks.TAB_RENAME)
-        self._notify = self._make_group(ChatPaneModel.Callbacks.NOTIFY)
+        self._feed_append = self.make_callback_group(ChatPaneModel.Callbacks.FEED_APPEND)
+        self._feed_remove = self.make_callback_group(ChatPaneModel.Callbacks.FEED_REMOVE)
+        self._feed_clear = self.make_callback_group(ChatPaneModel.Callbacks.FEED_CLEAR)
+        self._feed_replaced = self.make_callback_group(ChatPaneModel.Callbacks.FEED_REPLACED)
+        self._tab_rename = self.make_callback_group(ChatPaneModel.Callbacks.TAB_RENAME)
+        self._notify = self.make_callback_group(ChatPaneModel.Callbacks.NOTIFY)
 
         # Conversation feed lives in a ConversationGraph parameterized over ``ChatPaneConversationNode``
         # so every node carries chat-pane-specific per-branch state (``agent_session`` for now;
