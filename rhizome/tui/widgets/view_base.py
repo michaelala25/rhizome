@@ -27,6 +27,10 @@ class ViewBase[T: ViewModelBase](Widget):
         self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._vm.subscribe(self._vm.Callbacks.RequestFocus, self.focus)
 
+    @property
+    def model(self):
+        return self._vm
+
     def on_unmount(self) -> None:
         self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._vm.unsubscribe(self._vm.Callbacks.RequestFocus, self.focus)
