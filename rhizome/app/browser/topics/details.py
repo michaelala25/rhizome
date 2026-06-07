@@ -7,7 +7,7 @@ Cancel restores from the topic.
 
 Cursor-move-while-dirty: silent discard. The panel VM calls ``set_topic_id`` on every cursor move
 and buffers are unconditionally reseeded once the new topic resolves. While the fetch is in flight
-buffers stay on the prior topic — short-lived because ``QueryBackedViewModel`` collapses bursts.
+buffers stay on the prior topic — short-lived because ``Query`` collapses bursts in its debounce.
 
 Callback groups:
   * ``Callbacks.OnDirty`` — standard repaint signal.
@@ -32,14 +32,15 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-from rhizome.app.query_backed_model import QueryBackedViewModel
+from rhizome.app.model import ViewModelBase
+from rhizome.app.query import Query, QueryState
 
 _logger = get_logger("browser.topic_details")
 
 
 @dataclass(frozen=True)
 class LoadedTopicDetails:
-    """Output of one ``_fetch``: the topic plus the direct/subtree counts that render below the
+    """Output of one fetch: the topic plus the direct/subtree counts that render below the
     description. Bundled so a single fetch carries everything the view needs."""
     topic: Topic | None
     direct_entries: int
@@ -48,11 +49,14 @@ class LoadedTopicDetails:
     subtree_flashcards: int
 
 
-class TopicDetailsModel(QueryBackedViewModel):
+_EMPTY_DETAILS = LoadedTopicDetails(None, 0, 0, 0, 0)
+
+
+class TopicDetailsModel(ViewModelBase):
     """Buffered-edit VM for the topic details panel. Accept/Cancel are the explicit exits from dirty;
     nothing reaches the DB until the user Accepts."""
 
-    class Callbacks(QueryBackedViewModel.Callbacks):
+    class Callbacks(ViewModelBase.Callbacks):
         OnSaved = "OnSaved"
 
     def __init__(self, session_factory: Any) -> None:
@@ -72,6 +76,14 @@ class TopicDetailsModel(QueryBackedViewModel):
         self._subtree_entries: int = 0
         self._direct_flashcards: int = 0
         self._subtree_flashcards: int = 0
+
+        # Single-query driver. Cached by topic_id so re-navigating to a previously-viewed topic
+        # restores the details synchronously; ``None`` is a legal cache key (the empty case).
+        self._query: Query[int | None, LoadedTopicDetails] = Query(
+            fetch=self._fetch,
+            cache_key=lambda p: p,
+            on_change=self._on_query_change,
+        )
 
     # ------------------------------------------------------------------
     # Read-only accessors
@@ -131,35 +143,25 @@ class TopicDetailsModel(QueryBackedViewModel):
     # ------------------------------------------------------------------
 
     def set_topic_id(self, topic_id: int | None) -> None:
-        """Switch the panel to ``topic_id``. Idempotent on the same id. ``None`` clears
-        synchronously (no DB work); otherwise triggers a debounced fetch."""
+        """Switch the panel to ``topic_id``. Idempotent on the same id. ``None`` submits the same
+        query path — ``_fetch`` short-circuits to an empty result, which clears the panel after the
+        debounce tick."""
         if topic_id == self._topic_id:
             return
         self._topic_id = topic_id
-        if topic_id is None:
-            self._topic = None
-            self._name_buffer = ""
-            self._description_buffer = ""
-            self._direct_entries = 0
-            self._subtree_entries = 0
-            self._direct_flashcards = 0
-            self._subtree_flashcards = 0
-            self.emit(self.Callbacks.OnDirty)
-            return
-        self._request_fetch()
+        self._query.submit(topic_id)
 
     # ------------------------------------------------------------------
-    # Fetch
+    # Query driver
     # ------------------------------------------------------------------
 
-    async def _fetch(self) -> LoadedTopicDetails:
-        topic_id = self._topic_id
+    async def _fetch(self, topic_id: int | None) -> LoadedTopicDetails:
         if topic_id is None:
-            return LoadedTopicDetails(None, 0, 0, 0, 0)
+            return _EMPTY_DETAILS
         async with self._session_factory() as session:
             topic = await get_topic(session, topic_id)
             if topic is None:
-                return LoadedTopicDetails(None, 0, 0, 0, 0)
+                return _EMPTY_DETAILS
             subtree_ids = await expand_subtrees(session, [topic_id])
             direct_entries = await count_entries(session, topic_id)
             subtree_entries = await count_entries_filtered(session, topic_ids=subtree_ids)
@@ -173,7 +175,14 @@ class TopicDetailsModel(QueryBackedViewModel):
             subtree_flashcards=subtree_flashcards,
         )
 
-    def _process_fetched_data(self, result: LoadedTopicDetails) -> None:
+    def _on_query_change(self) -> None:
+        # State transitions to READY are the only ones that carry new data; LOADING / SLOW / ERROR
+        # still emit a repaint so loading affordances (if any) can refresh.
+        if self._query.state is QueryState.READY and self._query.result is not None:
+            self._apply_fetched_data(self._query.result)
+        self.emit(self.Callbacks.OnDirty)
+
+    def _apply_fetched_data(self, result: LoadedTopicDetails) -> None:
         # Discards any in-flight buffer edits on the previous topic — explicit "cursor moved" UX,
         # matching the entry-table's discard-on-nav behaviour.
         topic = result.topic
@@ -211,9 +220,12 @@ class TopicDetailsModel(QueryBackedViewModel):
     # ------------------------------------------------------------------
 
     async def accept(self) -> None:
-        """Persist the buffers and mutate the in-memory topic in place. Emits ``saved`` so the
+        """Persist the buffers and mutate the in-memory topic in place. Emits ``OnSaved`` so the
         panel view can repaint the tree node label. No-ops on empty name (the DB column is
-        non-null and an empty rename is almost always an accident)."""
+        non-null and an empty rename is almost always an accident).
+
+        Invalidates the topic's cache entry so a subsequent ``set_topic_id`` re-fetch sees the
+        updated values rather than a stale cached snapshot."""
         if self._topic is None or not self.is_dirty:
             return
         new_name = self._name_buffer.strip()
@@ -233,6 +245,7 @@ class TopicDetailsModel(QueryBackedViewModel):
         # Reseed the name buffer with the trimmed value so the field reflects what was actually
         # persisted (the user may have typed trailing whitespace).
         self._name_buffer = new_name
+        self._query.invalidate(predicate=lambda k: k == topic_id)
         self.emit(self.Callbacks.OnDirty)
         self.emit(self.Callbacks.OnSaved)
 
