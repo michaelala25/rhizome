@@ -8,9 +8,8 @@
     ``rhizome.app.browser.tabs.entries.linked_flashcards.LinkedFlashcardsPanelModel`` for the
     canonical single-query and multi-driver shapes.
 
-    Surviving consumers: ``ResourceLoaderModel``, ``ResourceLinkerModel``, ``BrowserTabModel``
-    (via ``EntryTabModel``). These will be ported before this file is deleted — the first two are
-    pending an unrelated rewrite, the last lands with the ``EntryTabModel`` migration.
+    Surviving consumers: ``ResourceLoaderModel`` and ``ResourceLinkerModel``. Both are pending an
+    unrelated rewrite; this file is deleted once they're ported.
 
 The contract: the VM owns "inputs" (filters, search, cursors, ...) that map to a database query;
 a snapshot of those inputs feeds an async ``_fetch``; the result is applied back to local state

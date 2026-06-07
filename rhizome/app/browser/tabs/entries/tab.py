@@ -3,8 +3,18 @@
 Owns data facts only — the loaded window, search / sort / filter / cursor / selection state, and the
 child detail + linked-flashcards sub-VMs. Dialog UI state (cursor, which dialog is open) lives view-
 side. Search / sort / filter mutators discard the window and refetch from offset 0; ``load_more``
-appends in place without touching the cursor. The fixed-window-with-load-more pagination is the MVP
-shape; the seam for keyset pagination is ``_query_window``.
+appends in place without touching the cursor.
+
+Single ``PagedQuery`` keyed on the param tuple ``(topic_ids, search, entry_types, has_flashcards,
+flashcard_ids, sort_by, sort_dir)``. Caching is off (``cache_key=None``): every distinct param set
+re-fetches. Cache could be added later, but it would need invalidation on every DB mutation that
+touches entries (delete, change_topic, change_type), so the simpler default is "no cache."
+
+Selection-on-refetch contract: ``_on_query_change`` always runs
+``_intersect_selection_with_visible_ids`` on a READY transition. Every filter-axis mutator clears
+the selection first, so the intersect is a no-op for those; the bulk-action refetch path
+(``_post_change_refetch``) deliberately preserves the selection and lets the intersect prune ids
+that fell out of the new window.
 """
 
 from __future__ import annotations
@@ -27,6 +37,7 @@ from rhizome.app.browser.shared.searchable import SearchableModelMixin
 from rhizome.app.browser.shared.multiselectable import MultiSelectableVMMixin
 from rhizome.app.browser.shared.sortable import SortableVMMixin
 from rhizome.app.browser.tab_base import BrowserTabModel
+from rhizome.app.query import PagedQuery, QueryState
 from .entry_details import EntryDetailsModel
 from .linked_flashcards import LinkedFlashcardsPanelModel
 
@@ -35,6 +46,18 @@ _logger = get_logger("browser.knowledge_entry_tab")
 # Hard cap on rows fetched per page. Bounded memory/render at 100K+ entries; "showing 500 of N+,
 # load more" is the simplest UX that scales. See ``braindump.md`` for the long-form rationale.
 DEFAULT_PAGE_LIMIT = 500
+
+# Param tuple for the entries query. All axes are hashable so the tuple itself is hashable —
+# important if caching gets turned on later.
+EntryParams = tuple[
+    frozenset[int] | None,           # topic_ids (filter)
+    str,                             # search   (empty string = no filter)
+    tuple[EntryType, ...] | None,    # entry_types
+    bool | None,                     # has_flashcards
+    tuple[int, ...] | None,          # flashcard_ids
+    EntrySortKey,                    # sort_by
+    Literal["asc", "desc"],          # sort_dir
+]
 
 
 class EntryTabModel(
@@ -60,20 +83,21 @@ class EntryTabModel(
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> None:
-        super().__init__(session_factory)
+        super().__init__()
+        self._session_factory = session_factory
         self._limit = limit
 
         self._state: State = self.State.ENTRIES
 
-        # Result window. ``_total`` is None until the first COUNT lands; ``_has_more`` is reconciled
-        # against the authoritative count.
-        self._entries: list[KnowledgeEntry] = []
-        self._total: int | None = None
-        self._has_more: bool = False
+        # Topic filter (pushed in by the orchestrator). ``_filter_applied`` distinguishes "filter
+        # is None by default" from "filter has never been set" — the first call must fetch even
+        # when the requested filter happens to equal the default.
+        self._filter_ids: frozenset[int] | None = None
+        self._filter_applied: bool = False
 
         # Search / sort / filter state. ``None`` = no filter; an empty tuple is a legal "no rows
-        # match" terminal state (mirrors ``BrowserTabModel.set_topic_filter`` semantics).
-        # ``_has_flashcards`` and ``_flashcard_ids`` are a tagged union — see ``set_flashcard_filter``.
+        # match" terminal state. ``_has_flashcards`` and ``_flashcard_ids`` are a tagged union —
+        # see ``set_flashcard_filter``.
         self._search: str = ""
         self._sort_by: EntrySortKey = "id"
         self._sort_dir: Literal["asc", "desc"] = "asc"
@@ -85,8 +109,7 @@ class EntryTabModel(
         self._cursor: int = 0
 
         # Multi-select state (flag, id-keyed selection set, mutators, ``selected_target_ids`` etc.)
-        # lives on the mixin. We provide the abstract surface below and override
-        # ``toggle_multi_select`` to drop relink mode on entry.
+        # lives on the mixin. We override ``toggle_multi_select`` to drop relink mode on entry.
 
         # Detail panel sub-VM. Subscribe to its SAVED group so we can repaint the DataTable row
         # after an Accept (the in-memory ``KnowledgeEntry`` was mutated in place).
@@ -97,9 +120,19 @@ class EntryTabModel(
         # doesn't fire fetches outside ``LINKED_FLASHCARDS``.
         self._linked_flashcards = LinkedFlashcardsPanelModel(session_factory)
 
+        # The entries window. Cache off (see module docstring).
+        self._query: PagedQuery[EntryParams, KnowledgeEntry] = PagedQuery(
+            fetch_page=self._fetch_page,
+            count=self._fetch_count,
+            page_size=limit,
+            on_change=self._on_query_change,
+        )
+
     # ------------------------------------------------------------------
     # Read-only view-side accessors
     # ------------------------------------------------------------------
+    #
+    # ``title`` comes from ``BrowserTabModel``.
 
     @property
     def state(self) -> State:
@@ -107,15 +140,23 @@ class EntryTabModel(
 
     @property
     def entries(self) -> list[KnowledgeEntry]:
-        return self._entries
+        return self._query.current.rows if self._query.current is not None else []
 
     @property
     def total(self) -> int | None:
-        return self._total
+        return self._query.current.total if self._query.current is not None else None
 
     @property
     def has_more(self) -> bool:
-        return self._has_more
+        return self._query.current is not None and self._query.current.has_more
+
+    @property
+    def is_loading(self) -> bool:
+        return self._query.state in {QueryState.LOADING, QueryState.SLOW}
+
+    @property
+    def filter_ids(self) -> frozenset[int] | None:
+        return self._filter_ids
 
     @property
     def search(self) -> str:
@@ -163,7 +204,7 @@ class EntryTabModel(
     @property
     def session_factory(self) -> Any:
         # Exposed so the view can hand the same factory to modal screens (e.g. ``TopicSelectorScreen``)
-        # without reaching into the inherited private attr.
+        # without reaching into the private attr.
         return self._session_factory
 
     # ------------------------------------------------------------------
@@ -171,7 +212,7 @@ class EntryTabModel(
     # ------------------------------------------------------------------
 
     def _selectable_items(self) -> list[KnowledgeEntry]:
-        return self._entries
+        return self.entries
 
     def _item_id(self, item: KnowledgeEntry) -> int:
         return item.id
@@ -183,6 +224,70 @@ class EntryTabModel(
             len(self._selected_ids),
         )
         self._sync_linked_flashcards()
+
+    # ------------------------------------------------------------------
+    # Param snapshot + fetch impls
+    # ------------------------------------------------------------------
+
+    def _params(self) -> EntryParams:
+        return (
+            self._filter_ids,
+            self._search,
+            self._entry_types,
+            self._has_flashcards,
+            self._flashcard_ids,
+            self._sort_by,
+            self._sort_dir,
+        )
+
+    async def _fetch_page(
+        self, params: EntryParams, offset: int, limit: int,
+    ) -> list[KnowledgeEntry]:
+        topic_ids, search, entry_types, has_flashcards, flashcard_ids, sort_by, sort_dir = params
+        async with self._session_factory() as session:
+            return await list_entries_paginated(
+                session,
+                limit=limit,
+                offset=offset,
+                topic_ids=topic_ids,
+                search=search or None,
+                entry_types=list(entry_types) if entry_types is not None else None,
+                has_flashcards=has_flashcards,
+                flashcard_ids=list(flashcard_ids) if flashcard_ids is not None else None,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+            )
+
+    async def _fetch_count(self, params: EntryParams) -> int:
+        topic_ids, search, entry_types, has_flashcards, flashcard_ids, _sort_by, _sort_dir = params
+        async with self._session_factory() as session:
+            return await count_entries_filtered(
+                session,
+                topic_ids=topic_ids,
+                search=search or None,
+                entry_types=list(entry_types) if entry_types is not None else None,
+                has_flashcards=has_flashcards,
+                flashcard_ids=list(flashcard_ids) if flashcard_ids is not None else None,
+            )
+
+    def _on_query_change(self) -> None:
+        # Every READY transition (whether from a filter mutator or a bulk-action refetch) runs the
+        # selection intersect. Filter mutators ``_clear_selection()`` first so the intersect is a
+        # no-op for those; bulk-action paths deliberately keep the selection so the intersect
+        # prunes ids that fell out of the new window.
+        if self._query.state is QueryState.READY and self._query.current is not None:
+            self._clamp_cursor()
+            self._sync_details()
+            self._sync_linked_flashcards()
+            self._intersect_selection_with_visible_ids({e.id for e in self.entries})
+        self.emit(self.Callbacks.OnDirty)
+
+    def _clamp_cursor(self) -> None:
+        rows = self.entries
+        if not rows:
+            self._cursor = 0
+        elif self._cursor >= len(rows):
+            self._cursor = len(rows) - 1
 
     # ------------------------------------------------------------------
     # Mutators
@@ -213,11 +318,25 @@ class EntryTabModel(
         self.emit(self.Callbacks.OnDirty)
 
     def set_topic_filter(self, topic_ids: Iterable[int] | None) -> None:
+        """Set the active topic filter and (re)fetch if it actually changed. Idempotent on equal
+        filters — needed so the orchestrator's lazy tab catch-up doesn't paint a loading flash when
+        switching to a tab that already matches the current filter."""
         # Push to the panel first so the sub-VM sees the new filter at the same logical moment we
-        # do, before our own ``super()`` call could trigger a refetch. Order doesn't matter for
-        # correctness (both ends fetch-id-reconcile), just avoids a brief stale-filter pool query.
+        # do, before our own refetch could land. Order doesn't matter for correctness (both ends
+        # fetch-id-reconcile), just avoids a brief stale-filter pool query.
         self._linked_flashcards.set_topic_filter(topic_ids)
-        super().set_topic_filter(topic_ids)
+
+        new_filter: frozenset[int] | None = None if topic_ids is None else frozenset(topic_ids)
+        if self._filter_applied and new_filter == self._filter_ids:
+            return
+        self._filter_ids = new_filter
+        self._filter_applied = True
+        self._query.set_params(self._params())
+
+    def refetch(self) -> None:
+        """Re-run the current query without changing inputs. Used by the orchestrator after
+        out-of-band data changes (e.g. a topic rename) that may have invalidated cached rows."""
+        self._query.set_params(self._params())
 
     def set_search(self, query: str) -> None:
         new = query or ""
@@ -225,7 +344,8 @@ class EntryTabModel(
             return
         self._search = new
         self._cursor = 0
-        self._request_fetch()
+        self._clear_selection()
+        self._query.set_params(self._params())
 
     def set_sort(
         self,
@@ -238,7 +358,7 @@ class EntryTabModel(
         self._sort_dir = sort_dir
         self._cursor = 0
         self._clear_selection()
-        self._request_fetch()
+        self._query.set_params(self._params())
 
     def set_type_filter(self, entry_types: tuple[EntryType, ...] | None) -> None:
         new = None if entry_types is None else tuple(entry_types)
@@ -247,7 +367,7 @@ class EntryTabModel(
         self._entry_types = new
         self._cursor = 0
         self._clear_selection()
-        self._request_fetch()
+        self._query.set_params(self._params())
 
     def set_flashcard_filter(self, has_flashcards: bool | None) -> None:
         """Set the boolean axis of the flashcard filter. Wipes ``_flashcard_ids`` — the dialog
@@ -258,7 +378,7 @@ class EntryTabModel(
         self._flashcard_ids = None
         self._cursor = 0
         self._clear_selection()
-        self._request_fetch()
+        self._query.set_params(self._params())
 
     def set_flashcard_ids_filter(self, flashcard_ids: tuple[int, ...] | None) -> None:
         """Set the "one of these flashcards" axis. Wipes ``_has_flashcards`` (see
@@ -270,7 +390,7 @@ class EntryTabModel(
         self._has_flashcards = None
         self._cursor = 0
         self._clear_selection()
-        self._request_fetch()
+        self._query.set_params(self._params())
 
     def set_cursor(self, index: int) -> None:
         """Move the row cursor. Clamped to the loaded window.
@@ -279,10 +399,11 @@ class EntryTabModel(
         which fires ``RowHighlighted`` and round-trips back here. The equality guard kills the
         bounce in one trip rather than letting it loop. Cursor moves remain visible via the table's
         own render and the detail panel's separate ``dirty``."""
-        if not self._entries:
+        rows = self.entries
+        if not rows:
             new = 0
         else:
-            new = max(0, min(index, len(self._entries) - 1))
+            new = max(0, min(index, len(rows) - 1))
         if new == self._cursor:
             return
         self._cursor = new
@@ -327,8 +448,8 @@ class EntryTabModel(
 
     async def delete_selected_entries(self) -> None:
         """Delete target entries in a single session + commit; FK cascade cleans link rows in
-        ``flashcard_entry``. Prunes ``_entries`` / decrements ``_total`` / clamps the cursor in
-        place — no refetch. Multi-select stays on so the visual context is preserved."""
+        ``flashcard_entry``. Prunes the loaded window / decrements ``total`` / clamps the cursor
+        in place — no refetch. Multi-select stays on so the visual context is preserved."""
         targets = self.selected_target_ids()
         if not targets:
             return
@@ -339,15 +460,18 @@ class EntryTabModel(
             await session.commit()
         _logger.info("Deleted %d entries", len(targets))
 
-        self._entries = [e for e in self._entries if e.id not in targets]
-        if self._total is not None:
-            self._total = max(0, self._total - len(targets))
+        # Mutate the loaded window in place. The PagedList is the live transport — no separate
+        # ``_entries`` copy to keep in sync.
+        if self._query.current is not None:
+            self._query.current.rows = [
+                e for e in self._query.current.rows if e.id not in targets
+            ]
+            if self._query.current.total is not None:
+                self._query.current.total = max(0, self._query.current.total - len(targets))
+
         if self._multi_select_active:
             self._selected_ids.clear()
-        if self._cursor >= len(self._entries):
-            self._cursor = max(0, len(self._entries) - 1)
-        if self._total is not None:
-            self._has_more = len(self._entries) < self._total
+        self._clamp_cursor()
 
         self._sync_details()
         self._sync_linked_flashcards()
@@ -357,7 +481,7 @@ class EntryTabModel(
     async def change_topic_on_selected_entries(self, new_topic_id: int) -> None:
         """Reassign target entries' topic + refetch (rather than in-place mutate) so any active
         topic filter re-evaluates. Selection is preserved across the refetch only for entries
-        still in the new window — see ``_post_change_refetch``."""
+        still in the new window — see the module docstring."""
         targets = self.selected_target_ids()
         if not targets:
             return
@@ -389,21 +513,19 @@ class EntryTabModel(
     # come from ``MultiSelectableVMMixin``.
 
     def _post_change_refetch(self) -> None:
-        # Fire through the normal debounced fetch path; the 50ms debounce is imperceptible after
-        # a modal action. ``on_complete`` fires after ``_process_fetched_data`` so the
-        # selection-intersect sees the fresh window.
-        self._request_fetch(on_complete=self._intersect_selection_after_refetch)
-
-    def _intersect_selection_after_refetch(self) -> None:
-        self._intersect_selection_with_visible_ids({e.id for e in self._entries})
+        # Bulk-action refetch path: deliberately does NOT call ``_clear_selection()``. The selection
+        # survives the refetch and is then pruned to entries still in the new window by the
+        # intersect inside ``_on_query_change``. See the module docstring.
+        self._query.set_params(self._params())
 
     def _sync_details(self) -> None:
         """Push the cursor entry (or ``None``) into the detail sub-VM. Called from ``set_cursor``
-        and ``_process_fetched_data``."""
-        if not self._entries or self._cursor >= len(self._entries):
+        and ``_on_query_change``."""
+        rows = self.entries
+        if not rows or self._cursor >= len(rows):
             self._details.set_entry(None)
             return
-        self._details.set_entry(self._entries[self._cursor])
+        self._details.set_entry(rows[self._cursor])
 
     def _sync_linked_flashcards(self) -> None:
         """Push the current entry-id target set into the linked-flashcards sub-VM. State-gated:
@@ -417,11 +539,12 @@ class EntryTabModel(
         """Multi-select: the live selection set (may be empty, which is a legal display state).
         Single-select: the cursor entry id (or empty if the window is empty). Distinct from
         ``selected_target_ids`` because that one always falls back to the cursor entry."""
+        rows = self.entries
         if self._multi_select_active:
             return frozenset(self._selected_ids)
-        if not self._entries or self._cursor >= len(self._entries):
+        if not rows or self._cursor >= len(rows):
             return frozenset()
-        return frozenset({self._entries[self._cursor].id})
+        return frozenset({rows[self._cursor].id})
 
     def _on_details_saved(self) -> None:
         # Details panel mutated the in-memory ``KnowledgeEntry`` in place; just kick a repaint so
@@ -429,75 +552,7 @@ class EntryTabModel(
         self.emit(self.Callbacks.OnDirty)
 
     async def load_more(self) -> None:
-        """Append the next page in place. No cursor move. No-op if a fetch is in flight or nothing
-        more is available. Bypasses ``_request_fetch`` (which resets to offset 0); captures the
-        current ``_fetch_id`` and gates the append on ``_still_current`` so a reset landing mid-
-        flight doesn't get stale tail rows."""
-        if self._is_loading or not self._has_more:
-            return
-        my_id = self._fetch_id
-        kwargs = self._query_kwargs()
-        more = await self._query_window(kwargs, offset=len(self._entries))
-        if not self._still_current(my_id):
-            return
-        self._entries.extend(more)
-        if len(more) < self._limit:
-            self._has_more = False
-        self.emit(self.Callbacks.OnDirty)
-
-    # ------------------------------------------------------------------
-    # BrowserTabModel contract
-    # ------------------------------------------------------------------
-
-    def _query_kwargs(self) -> dict[str, Any]:
-        """Snapshot DB-query inputs at the call site (no await inside) so all queries derived from
-        one snapshot see consistent state even if mutators run between snapshot and query. Shared
-        by ``_fetch`` and ``load_more``."""
-        return {
-            "topic_ids": self._filter_ids,
-            "search": self._search or None,
-            "entry_types": list(self._entry_types) if self._entry_types is not None else None,
-            "has_flashcards": self._has_flashcards,
-            "flashcard_ids": list(self._flashcard_ids) if self._flashcard_ids is not None else None,
-            "sort_by": self._sort_by,
-            "sort_dir": self._sort_dir,
-        }
-
-    async def _query_window(
-        self, kwargs: dict[str, Any], offset: int,
-    ) -> list[KnowledgeEntry]:
-        async with self._session_factory() as session:
-            return await list_entries_paginated(
-                session,
-                limit=self._limit,
-                offset=offset,
-                **kwargs,
-            )
-
-    async def _fetch(self) -> tuple[list[KnowledgeEntry], int]:
-        # Windowed SELECT then a separate COUNT. The view paints once at the end — tiny UX hit
-        # relative to the simpler single-result contract.
-        kwargs = self._query_kwargs()
-        rows = await self._query_window(kwargs, offset=0)
-        async with self._session_factory() as session:
-            total = await count_entries_filtered(
-                session,
-                topic_ids=kwargs["topic_ids"],
-                search=kwargs["search"],
-                entry_types=kwargs["entry_types"],
-                has_flashcards=kwargs["has_flashcards"],
-                flashcard_ids=kwargs["flashcard_ids"],
-            )
-        return rows, total
-
-    def _process_fetched_data(
-        self, result: tuple[list[KnowledgeEntry], int],
-    ) -> None:
-        rows, total = result
-        self._entries = rows
-        self._total = total
-        self._has_more = len(self._entries) < self._total
-        if self._cursor >= len(self._entries):
-            self._cursor = max(0, len(self._entries) - 1)
-        self._sync_details()
-        self._sync_linked_flashcards()
+        """Append the next page in place. No cursor move. ``PagedQuery.load_more`` handles the
+        re-entry guard and gates the append on its own staleness check so a concurrent supersede
+        doesn't extend the new window with stale tail rows."""
+        await self._query.load_more()
