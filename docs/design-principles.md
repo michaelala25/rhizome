@@ -1,82 +1,121 @@
-
-
 # MVVM
 
-- High-level design principle:
-    - View-model: houses **business logic**, view-agnostic state and behaviour - sometimes accompanied with a data-model as well (lightweight struct of the core data represented by a widget)
-    - View: houses the **UI logic** - how is the information in the view-model displayed to the user, how does the user interact with the API, etc.
+## What lives where
 
-- In certain cases, the view is practically a _dumb mirror_ of the view-model, which holds no state and merely reflects the view model.
+- **View-model (VM):** business logic, view-agnostic state, lifecycle. The single source of truth for "what the user has committed to so far."
+- **View:** how the VM is presented (compose, styling, key routing) plus _transient UI-only state_ — buffers, cursors, focus, animations, dialog choice positions, etc.
 
-- Common View concerns:
-    - The exact arrangement/presentation of widgets that interface with the view model
-        - For example, the VM may expose a "set_attribute" API - it is of NO CONCERN to the VM then how the View decides to expose this in the UI. It could be a multiple choice widget, a text input widget, etc., the View is responsible for the exact arrangement, and then coordinating user input to the VM.
-    - Focus
-        - As we will mention below, focus is typically NOT a VM concern
-        - That being said, our ViewModelBase class does have a `request_focus()` callback built into it, which will notify it's corresponding view
-        - VMs requesting focus should be used _sparingly_
-    - Navigation between widgets
-    - Cursors for subwidgets
+The split is sharper than "logic vs rendering." It's about _what survives a re-mount_: if you destroyed the view and rebuilt it from the VM, what would you lose? Anything irrecoverable belongs on the VM. Anything that's just "where the caret is right now" belongs on the view.
 
-- Not all Views need VMs:
-    - For instance, it is common for a VM to have a main "orchestrator view" and several other "auxiliary views" that reference that same VM
-    - These other views can subscribe to the VM's "dirty" callback, to refresh in real-time to updates to the VM.
-    - **IMPORANT:** If multiple views subscribe to the same VM, ensure that only ONE view actually calls `ViewBase.__init__` with the given VM instance. Otherwise the `request_focus()` may dispatch to the wrong parent view.
+## Direction of communication
 
-- Typically the direction of communication is FROM view TO view-model
-    - Keystrokes and other forms of user input are caught by the view, and used to update the view model
-- Communication FROM view-model TO view is kept to a minimum, and handled through callbacks:
-    - Core callback: self.dirty
-        - All VMs have this callback
-        - All views subscribe their "_refresh" method to this automatically upon construction
-        - VMs use this callback to indicate that "something in the display state may need to be refreshed"
-    - Callbacks should be kept to an _absolute minimum_, to prevent too much view/view-model coupling.
+- View → VM: direct method calls. The view catches input, decides what it means, and calls a VM method.
+- VM → View: named callback groups (see below). The view subscribes; the VM emits.
+- VM → VM: direct method calls. If a parent VM needs siblings to update, it calls _their_ public methods; they each emit their own groups. Emitters don't cross VMs.
 
-- Handling parent/child relationships with view/view-model separation
-    - View-model creates child view-models - refreshes the view
-    - View inspects the child view models that may have been created since last refresh - spawns views linked to the corresponding view models
-    - No need for a fully generalized process - parent view knows exactly which child views it needs to manage
+`notify_focused()` and `notify_blurred()` on the VM are the _inbound_ counterparts to the focus events — `ViewBase.on_focus` / `on_blur` call them automatically. They're the only place a raw Textual event legitimately translates into a VM method call from outside an action handler.
 
-- Textual specifics of the View:
-    - Still utilizes a compose to do the initial widget mounting
-    - Mostly modifies reactive attributes instead of mounting widgets - allows textual to determine when a region needs to be redrawn
+## Callback groups
 
-- Focus, and what that means for priority keybindings
-    - For the most part, VMs do NOT need to know that they are the "focused" one, that's a view-side concern
-    - Focus determines the _routing of keystrokes and other input_, and the hierarchy of widgets responsible for handling events
-        - The presently focused widget is the first responder to input, then it's parent, and so on, letting the message bubble up naturally
+Callbacks are the only VM → View channel. The current pattern is: declare one group per _purpose_, named after the event, carrying whatever payload makes the subscriber's job cheap.
 
-    - Focus is a view-side concern - the arrangement
-    - VMs that manage multiple child VMs can, and should, post a sort of weak "_focus(widget: str)" message when requesting to the view to refocus, in order to keep view and view-model in sync.
+```python
+class CommitProposalModel(ViewModelBase):
+    class Callbacks(ViewModelBase.Callbacks):
+        OnEntriesChanged  = "OnEntriesChanged"
+        OnRevisingChanged = "OnRevisingChanged"
+        OnDone            = "OnDone"
 
+    def __init__(self, ...) -> None:
+        super().__init__()
+        self.make_callback_groups({
+            self.Callbacks.OnEntriesChanged:  list[int],
+            self.Callbacks.OnRevisingChanged: bool,
+            self.Callbacks.OnDone:            Outcome,
+        })
+```
 
-- Code smells:
-    - Too many small callback groups
-        - if you need specific callback groups for specific parts of the UI, especially if this is needed to avoid infinite loops between view/VM, then something is wrong.
+- **Naming.** `On<Event>` for after-the-fact observations (`OnEntriesChanged`). `Request<Action>` for VM → View directives (`RequestFocus`). Method names follow `notify_<event>` (inbound) / `request_<action>` (outbound).
+- **Payload shape.** Carry what the view needs to respond _granularly_. `OnEntriesChanged: list[int]` lets the view repaint only the touched rows instead of redrawing the whole table. Reach for nullary `None` only when there's genuinely nothing useful to carry.
+- **`OnDirty` is the fallback, not the channel.** Every VM still has it (and `ViewBase` auto-subscribes `_refresh` to it), but use it only when nothing more specific applies. If you find yourself emitting `OnDirty` with payload-shaped intent ("this index changed", "this flag flipped"), define a real group for it.
 
-    - Using callbacks to communicate VM -> View, but then modifying the VM from within the View's handler.
-        - Callbacks are how the VM notifies the View of certain events
-        - Whatever the View does to handle this, it typically should NOT be _mutating the VM state_ within the handler
-        - This is because VM state mutations, by default, emit their own
+**Earlier guidance reversed.** A previous version of this doc said callbacks should be "kept to an absolute minimum." That was wrong in practice — narrow channels made VMs hard to consume granularly and pushed too much work back through `OnDirty`. The current rule is: as many groups as you need to make subscribers' lives obvious; don't pad, don't ration.
 
-    - VM state mutators that don't emit(self.dirty)
-        - This is typically a big error in judgment: the VM is the ground truth for "what the view should look like", so anything that modifies the VM state should invariably emit a self.dirty call.
-        - Without a self.dirty call, the View and VM become out of sync until the next thing that emits self.dirty
+## Where state lives
 
-        - In some circumstances, there _is_ room for an infinite loop, for instance:
-            - View responds to an event type T by calling VM's API
-            - VM emits self.dirty
-            - View._refresh repaints an inner widget
-            - The repaint emits the same event type T through textual
-            - Infinite loop
+The recent proposal refactors collapsed a lot of "VM state" back onto the view. The heuristics that fell out:
 
-        - To guard against this, a good practice is to ensure that VMs only emit self.dirty when the state has _actually changed_
-            - The above example comes from a case of a VM holding the state of a DataTable view, and responding to DataTable.RowHighlighted events in order to set the VM cursor, but setting the VM cursor would repaint the table, which would cause textual to emit a new RowHighlighted event, etc.
-            - To fix this, we guard against emit(self.dirty) in VM.set_cursor(new_cursor) by returning early when self.cursor == new_cursor - no data changed internally, so we don't need to repaint.
-            - The second round trip of the event isn't really avoidable thanks to how DataTable repainting works in textual, and we probably could've avoided this by using something other than DataTable.move_cursor in View._refresh, but the guard in the VM also works.
+| Kind of state                                            | Lives on |
+|----------------------------------------------------------|----------|
+| Committed data (entries, flashcards, ids)                | VM       |
+| Lifecycle state (`REVIEWING`, `DONE`, …)                 | VM       |
+| Anything another VM or external consumer needs to read   | VM       |
+| TextArea / draft / buffer text                           | View     |
+| Cursors (DataTable row, ListMenu item, dialog choice)    | View     |
+| Collapsed / expanded flags, hover, scroll offset, focus  | View     |
+| Dialog UI state (which option is highlighted in a modal) | View     |
 
-        - **Caveat:** the identity guard is necessary but not sufficient when the View ALSO pushes back to the framework during _refresh (the DataTable.move_cursor workaround above). Under fast event rates (e.g. holding down on a big table) the framework's event queue desynchronizes: by the time we process T(N+1), the framework has already advanced to N+2 with T(N+2) queued behind us. _refresh's "sync" call then both snaps the framework backwards AND posts a fresh T(N+1) behind T(N+2), and the two interleave indefinitely — every step is a genuinely new cursor value, so the identity guard never fires.
-            - Rule of thumb: when the View is forwarding an event from the framework, the framework is the source of truth for that event — don't push back through the same channel while the handler is on the stack. Scope the framework-sync in _refresh (the move_cursor call, etc.) to VM-initiated cursor changes only. A _handling_X flag set across the event handler is the simplest gate.
+Buffers reach the VM only at _confirm points_ — Accept gestures, Submit buttons. Per-keystroke round-trips create coupling that buys nothing; the VM doesn't care about half-typed text. Cursor moves silently discard in-flight buffer edits, view-side.
+
+On the proposal widgets concretely: `CommitProposalModel.entries` is the committed list; the live title/content text is in `ContentEditor` (view); the focused row index is `DataTable.cursor_row` (view); edits reach the VM only when the user accepts the per-entry editor.
+
+## Focus
+
+Focus is a view concern. The VM mostly shouldn't track who's focused, but it does have a thin channel for directing focus:
+
+- `request_focus()` on the VM emits `Callbacks.RequestFocus`; `ViewBase` subscribes `Widget.focus()` to it. Use sparingly — typical case is "the user just transitioned into this state; the natural widget for that state should grab focus" (e.g. revision-instructions on `request_revision`).
+- `notify_focused()` / `notify_blurred()` are _inbound_, called from the view's `on_focus` / `on_blur`. Default impl emits `OnDirty` since most VMs need a paint when focus changes (hint text, cursor styling, etc.). Override to skip the emit if your VM truly has no focus-dependent rendering.
+
+Don't put a `focused: bool` on the VM unless a sibling VM or external consumer genuinely needs to read it. Focus routing (priority bindings, the focus chain) is the framework's concern, not the VM's.
+
+## Parent/child views
+
+A VM composing child VMs is fine — but only when the child has _genuine business logic_. Pre-refactor, the proposal widgets had a per-item details VM whose sole job was "hold the current TextArea buffers." That's transient UI state, not business logic, and it now lives in `ContentEditor` view-side.
+
+When child VMs do exist:
+- Parent VM creates them; parent View mounts the corresponding child Views.
+- No fully-generalised registry — the parent View knows the exact shape of children it expects.
+- Multiple Views can subscribe to one VM, but **only one View calls `ViewBase.__init__(vm)`** — otherwise `request_focus()` fires `.focus()` on every subscriber and races.
+
+## State machines for terminal lifecycles
+
+Proposal-style widgets (commit-proposal, flashcard-proposal) share a shape worth naming:
+
+- N _resting_ states the user can mutate from (`REVIEWING`, `REQUESTING_REVISION`).
+- One _terminal_ state (`DONE`) no mutator can leave.
+- A separate `Outcome` enum describing _how_ it ended (`ACCEPTED`, `REVISED`, `CANCELLED`).
+- Mutators assert non-DONE; terminal transitions fire a single `OnDone(outcome)`. Interrupt models subscribe to that to resolve their future.
+
+DONE + Outcome beats overloading the state enum with `DONE_ACCEPTED` / `DONE_CANCELLED` variants — those would carve states along an axis that isn't really a state (see "Cartesian explosion" below). This is _one_ common shape, not the only valid one; use it when terminality matters.
+
+## Textual specifics
+
+- Initial widget mounting goes through `compose`. After mount, prefer mutating reactive attributes / inline styles over mount/unmount cycles — Textual can scope redraws to the affected region.
+- Lazy mount/unmount _is_ still the right move for mode-driven subtrees (mutex of dialogs, alternative panes) — see the Performance section.
+
+## Code smells
+
+- **Putting view-only state on the VM.** Cursors, buffers, dialog cursors, collapsed flags. Default to view-side; promote only if business logic genuinely needs it.
+- **Mutating the VM from inside a VM → View callback handler.** The handler is meant to _react_ to a VM change; if it then mutates the same VM, you're using callbacks as control flow. The VM should have emitted whatever new event you actually need.
+- **VM mutators that don't emit anything.** If state changed, _something_ needs to fire so subscribers stay in sync. Usually a specific group with a useful payload; fall back to `OnDirty` only as a last resort.
+- **`OnDirty` with no payload, everywhere.** Often signals "I haven't thought about what changed." Replace with a named group.
+- **Identity guards as the primary defence against feedback loops.** The guard itself is fine (don't emit when nothing changed), but if you're reaching for it because the view round-trips its own framework events through the VM, the underlying design has the state living in two places. See below.
+
+## The DataTable cursor-sync trap
+
+There is a feedback-loop pattern worth knowing about:
+
+> A VM holds a `cursor` field mirroring `DataTable.cursor_row`. The view subscribes to `DataTable.RowHighlighted` and writes the new index to the VM. The VM emits, the view's `_refresh` calls `DataTable.move_cursor(...)` to keep the framework in sync — which fires another `RowHighlighted`. Infinite loop.
+
+Accepted workaround:
+- **Identity guard in the VM mutator:** don't emit when the value didn't actually change.
+- **`_handling_<event>` flag in the view,** set across the event handler and checked in `_refresh`, so we don't push back into the framework while it's the source of truth for that event.
+
+**The identity guard is necessary but not sufficient** under fast event rates. The framework's queue desynchronises: by the time we process `T(N+1)`, the framework has already advanced to `N+2` with `T(N+2)` queued behind us. `_refresh`'s sync call both snaps the framework backwards _and_ posts a fresh `T(N+1)`; the two interleave indefinitely and every step is a genuinely new cursor value, so the guard never fires.
+
+Rule of thumb: when the View is forwarding a framework event, the _framework_ is the source of truth for that event. Don't push back through the same channel while the handler is on the stack. Scope the framework-sync in `_refresh` to VM-initiated changes only; a `_handling_X` flag is the simplest gate.
+
+**The deeper smell, though, is the duplication.** This whole class of bug only exists because the cursor was living in two places — VM _and_ framework — and we were trying to keep them in sync. The recent proposal refactors removed the cursor from the VM entirely; the DataTable owns it, the view reads `cursor_row` when it needs the current index, and the round-trip vanishes. The workaround above is still load-bearing in older code, but if you're reaching for it on _new_ code, the better question is whether the data needs to be duplicated at all. View ↔ framework round-trips for view-only state shouldn't be flowing through the VM in the first place.
 
 
 
