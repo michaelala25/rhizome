@@ -68,7 +68,7 @@ from .resource.viewer import ResourceViewer
 from ..commit_proposal.commit_proposal import CommitProposal
 # FlashcardProposal lives in the new chat pane only; the legacy pane's `/test-flashcard-proposal`
 # stub below raises rather than importing the new VM-shaped widget.
-from ..flashcard_review.view import FlashcardReview
+from ..flashcard_review.flashcard_review import FlashcardReview
 from .choices import Choices
 from .multiple_choices import MultipleChoices
 from .navigable import WidgetDeactivated

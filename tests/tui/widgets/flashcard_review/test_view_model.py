@@ -30,7 +30,7 @@ import pytest
 from fsrs import Card, Rating, Scheduler, State
 
 from rhizome.app.flashcard_review.flashcard import Flashcard
-from rhizome.app.flashcard_review.review import FlashcardReviewModel as FlashcardReviewViewModel
+from rhizome.app.flashcard_review.flashcard_review import FlashcardReviewModel as FlashcardReviewViewModel
 from rhizome.app.flashcard_review.timer import Timer
 
 

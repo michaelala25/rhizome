@@ -1,4 +1,11 @@
-"""FlashcardReview — thin Textual view over FlashcardReviewModel."""
+"""FlashcardReview — thin Textual view over FlashcardReviewModel.
+
+The VM emits per-purpose callbacks (``OnLifecycle``, ``OnCursorChanged``, ``OnCardsChanged``,
+``OnAutoscoreBegin`` / ``OnAutoscoreComplete``, ``OnAutoScoreConfigChanged``, plus the inherited
+``OnHint``); each handler here repaints only the surface the event speaks to. The view also owns three
+reactive display flags (``help_visible``, ``collapsed``, ``timers_visible``) that have no
+business meaning to the VM.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +16,13 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
+from textual.reactive import reactive
 from textual.widgets import Button, Rule, Static, TextArea
 
 from fsrs import Rating
 
 from rhizome.tui.widgets.flashcard_review.dot_strips import _DotStrip
-from rhizome.app.flashcard_review.review import (
+from rhizome.app.flashcard_review.flashcard_review import (
     Flashcard,
     FlashcardData,
     FlashcardReviewModel,
@@ -51,8 +59,8 @@ _CANCEL_RED = "rgb(235,100,100)"
 # the dot for any SCORED_PENDING_APPROVAL card, and the [enter] approve hint.
 _APPROVAL_YELLOW = "rgb(235,180,90)"
 
-# How long messages remain visible before being wiped
-_MESSAGE_DISPLAY_SECONDS = 3.0
+# How long hints remain visible before being wiped
+_HINT_DISPLAY_SECONDS = 3.0
 
 
 def _format_due(seconds: float) -> str:
@@ -271,7 +279,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     FlashcardReview #fr-auto-approve-hint {
         text-align: left;
     }
-    FlashcardReview #fr-message {
+    FlashcardReview #fr-hint {
         text-align: right;
         color: rgb(80,80,80);
     }
@@ -296,28 +304,41 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     }
     """
 
+    # ------------------------------------------------------------------
+    # View-side display flags
+    # ------------------------------------------------------------------
+
+    # ``init=False`` so the default value (False) doesn't fire the watcher during ``__init__`` —
+    # children aren't composed yet at that point, so the watcher's ``query_one`` calls would
+    # raise. The initial paint goes through ``on_mount``'s explicit refresh helpers; subsequent
+    # changes fire the watcher normally (children are mounted by then).
+    help_visible:   reactive[bool] = reactive(False, init=False)
+    timers_visible: reactive[bool] = reactive(False, init=False)
+    collapsed:      reactive[bool] = reactive(False, init=False)
+
     def __init__(
         self,
         vm: FlashcardReviewModel,
         **kwargs,
     ) -> None:
-        # ViewBase wires dirty→_refresh and focus→self.Callbacks.RequestFocus, and stores ``vm`` as ``self._vm``.
+        # ViewBase wires dirty→_refresh and focus→self.Callbacks.RequestFocus, and stores ``vm`` as ``self.model``.
         super().__init__(vm, **kwargs)
 
-        # Set while ``_refresh`` programmatically rewrites the TextArea's
+        # Set while ``_refresh_card_body`` programmatically rewrites the TextArea's
         # contents; the Changed handler checks this to avoid echoing the
         # value right back into the card as a user edit.
         self._suppress_text_change = False
 
-        # Interval handles, reconciled against VM state in _refresh_*.
-        self._timer_interval = None    # think-time timer (FRONT + timer_visible)
+        # Interval handles, reconciled against VM state in the per-event handlers.
+        self._timer_interval = None    # think-time timer (FRONT + timers_visible)
         self._due_interval = None      # due countdown (AWAITING_REVEAL)
         self._throbber_interval = None # pulsing dot (FRONT w/o timer, or batch)
 
         # Shared throbber frame counter — advanced by _tick_throbber.
         self._throbber_frame = 0
 
-        self._message_timer = None
+        # Set by _on_hint; cleared after _HINT_DISPLAY_SECONDS.
+        self._hint_timer = None
 
     def compose(self) -> ComposeResult:
         yield Button("▼", id="fr-collapse")
@@ -332,7 +353,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             )
 
         with Vertical(id="fr-card"):
-            
+
             with Horizontal(id="fr-header"):
                 yield Static("", classes="fr-label", id="fr-question-label")
                 yield Static("", id="fr-counter")
@@ -352,7 +373,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
                 yield Static("", id="fr-bottom-spacer")
             with Horizontal(id="fr-bottom-row"):
                 yield Static("", id="fr-auto-approve-hint")
-                yield Static("", id="fr-message")
+                yield Static("", id="fr-hint")
 
         with Vertical(id="fr-done"):
             yield Static("", id="fr-done-status")
@@ -366,26 +387,63 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         card_container.border_title = "alt+←/→ to navigate"
         card_container.styles.border_title_align = "right"
 
-        # Initial paint — also mount-deferred because _refresh queries children.
-        self._refresh()
+        # If we're mounting into an already-finished session (e.g. re-rendered in the chat feed
+        # after the interrupt resolved), start collapsed so the summary line renders correctly.
+        if self.model.state == FlashcardReviewModel.State.DONE:
+            self.collapsed = True
+
+        # Subscribe to the granular VM callbacks. ViewBase's auto-subscribe of OnDirty is a no-op
+        # because this VM doesn't emit it (per-purpose channels above carry all repaint signals).
+        vm = self.model
+        self.model.subscribe(self.model.Callbacks.OnLifecycle,              self._on_lifecycle)
+        self.model.subscribe(self.model.Callbacks.OnCursorChanged,          self._on_cursor_changed)
+        self.model.subscribe(self.model.Callbacks.OnCardsChanged,           self._on_cards_changed)
+        self.model.subscribe(self.model.Callbacks.OnAutoscoreBegin,         self._on_autoscore_begin)
+        self.model.subscribe(self.model.Callbacks.OnAutoscoreComplete,      self._on_autoscore_complete)
+        self.model.subscribe(self.model.Callbacks.OnAutoScoreConfigChanged, self._on_auto_score_config_changed)
+        self.model.subscribe(self.model.Callbacks.OnHint,                   self._on_hint)
+
+        # Initial paint — sections + content for whichever section is active.
+        self._refresh_section()
+        self._refresh_card_body()
+        self._refresh_dot_strip()
+        self._refresh_done_surface()
+        self._refresh_help()
+        self._refresh_auto_approve_hint()
+        self._reconcile_intervals()
+
+        # Take focus on appearance so keys route here without needing a click — matches the other
+        # interrupt widgets (warning, choices, commit/flashcard proposal). ``on_focus`` will route
+        # inward to the answer-input on a REVIEWING+FRONT card. Skip when re-mounted in DONE — the
+        # user has already moved past this widget.
+        if self.model.state != FlashcardReviewModel.State.DONE:
+            self.focus()
 
     def on_unmount(self) -> None:
-        super().on_unmount()  # ViewBase tears down the dirty→_refresh / focus→self.focus subs
+        super().on_unmount()  # ViewBase tears down its dirty→_refresh / focus→self.focus subs.
+
+        self.model.unsubscribe(self.model.Callbacks.OnLifecycle,              self._on_lifecycle)
+        self.model.unsubscribe(self.model.Callbacks.OnCursorChanged,          self._on_cursor_changed)
+        self.model.unsubscribe(self.model.Callbacks.OnCardsChanged,           self._on_cards_changed)
+        self.model.unsubscribe(self.model.Callbacks.OnAutoscoreBegin,         self._on_autoscore_begin)
+        self.model.unsubscribe(self.model.Callbacks.OnAutoscoreComplete,      self._on_autoscore_complete)
+        self.model.unsubscribe(self.model.Callbacks.OnAutoScoreConfigChanged, self._on_auto_score_config_changed)
+        self.model.unsubscribe(self.model.Callbacks.OnHint,                   self._on_hint)
 
     def on_focus(self, event: events.Focus) -> None:
         """When the widget gains focus from outside (e.g. navigation via
         ctrl+up/down), route focus into the answer input if the current
         card is in FRONT. Without this, the focus-shift logic inside
-        ``_refresh_current_card`` never runs for externally-triggered
-        focus changes (no VM dirty emit is fired)."""
-        super().on_focus(event)  # ViewBase → vm.notify_focused() → dirty → _refresh
+        ``_refresh_card_body`` never runs for externally-triggered
+        focus changes (no VM emit is fired)."""
+        super().on_focus(event)  # ViewBase → vm.notify_focused()
 
-        card = self._vm.current_card
+        card = self.model.current_card
         if card is None:
             return
         if (
             card.state == Flashcard.State.FRONT
-            and self._vm.state == FlashcardReviewModel.State.REVIEWING
+            and self.model.state == FlashcardReviewModel.State.REVIEWING
         ):
             self.query_one("#fr-answer-input", _AnswerInput).focus()
 
@@ -395,7 +453,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     ) -> None:
         # The answer input is only ever shown on a FRONT card, and the TextArea swallows enter
         # before the "enter" bindings can see it — so bridge that submit to the reveal directly.
-        self._vm.reveal_back_current_card()
+        self.model.reveal_back_current_card()
 
     @on(TextArea.Changed)
     def _on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -403,7 +461,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             return
         if self._suppress_text_change:
             return
-        card = self._vm.current_card
+        card = self.model.current_card
         if card is None or card.state != Flashcard.State.FRONT:
             return
         card.set_user_answer(event.text_area.text.strip())
@@ -412,7 +470,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     def _on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "fr-collapse":
             event.stop()
-            self._vm.toggle_collapsed()
+            self.collapsed = not self.collapsed
             self.focus()
 
     # ------------------------------------------------------------------
@@ -424,7 +482,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     # ------------------------------------------------------------------
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        vm = self._vm
+        vm = self.model
         S = FlashcardReviewModel.State
         CS = Flashcard.State
         card = vm.current_card
@@ -474,30 +532,30 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
 
         return True
 
-    def action_toggle_help(self) -> None: self._vm.toggle_help_visible()
-    def action_begin(self) -> None: self._vm.begin()
-    def action_cancel(self) -> None: self._vm.cancel()
-    def action_prev_card(self) -> None: self._vm.prev_card()
-    def action_next_card(self) -> None: self._vm.next_card()
-    def action_reveal_back(self) -> None: self._vm.reveal_back_current_card()
-    def action_reveal_front(self) -> None: self._vm.reveal_front_current_card()
-    def action_score_default(self) -> None: self._vm.score_current_card(Flashcard.Score.AUTO)
-    def action_score_default_good(self) -> None: self._vm.score_current_card(Flashcard.Score.GOOD)
-    def action_approve_auto_score(self) -> None: self._vm.approve_pending_score()
-    def action_advance_next(self) -> None: self._vm.advance_to_next_unscored()
-    def action_score_again(self) -> None: self._vm.score_current_card(Flashcard.Score.AGAIN)
-    def action_score_hard(self) -> None: self._vm.score_current_card(Flashcard.Score.HARD)
-    def action_score_good(self) -> None: self._vm.score_current_card(Flashcard.Score.GOOD)
-    def action_score_easy(self) -> None: self._vm.score_current_card(Flashcard.Score.EASY)
-    def action_reject_auto_score(self) -> None: self._vm.reject_pending_score()
-    def action_toggle_timer(self) -> None: self._vm.toggle_timers_visible()
-    def action_toggle_flag(self) -> None: self._vm.toggle_flag_current_card()
-    def action_reset_card(self) -> None: self._vm.reset_current_card()
-    def action_toggle_skip(self) -> None: self._vm.toggle_skip_current_card()
-    def action_toggle_auto_approve(self) -> None: self._vm.toggle_auto_approve_auto_score()
-    def action_toggle_auto_score(self) -> None: self._vm.toggle_auto_score_enabled()
-    def action_accept_all_auto_scores(self) -> None: self._vm.accept_all_auto_scores()
-    def action_toggle_collapsed(self) -> None: self._vm.toggle_collapsed()
+    def action_toggle_help(self) -> None: self.help_visible = not self.help_visible
+    def action_begin(self) -> None: self.model.begin()
+    def action_cancel(self) -> None: self.model.cancel()
+    def action_prev_card(self) -> None: self.model.prev_card()
+    def action_next_card(self) -> None: self.model.next_card()
+    def action_reveal_back(self) -> None: self.model.reveal_back_current_card()
+    def action_reveal_front(self) -> None: self.model.reveal_front_current_card()
+    def action_score_default(self) -> None: self.model.score_current_card(Flashcard.Score.AUTO)
+    def action_score_default_good(self) -> None: self.model.score_current_card(Flashcard.Score.GOOD)
+    def action_approve_auto_score(self) -> None: self.model.approve_pending_score()
+    def action_advance_next(self) -> None: self.model.advance_to_next_unscored()
+    def action_score_again(self) -> None: self.model.score_current_card(Flashcard.Score.AGAIN)
+    def action_score_hard(self) -> None: self.model.score_current_card(Flashcard.Score.HARD)
+    def action_score_good(self) -> None: self.model.score_current_card(Flashcard.Score.GOOD)
+    def action_score_easy(self) -> None: self.model.score_current_card(Flashcard.Score.EASY)
+    def action_reject_auto_score(self) -> None: self.model.reject_pending_score()
+    def action_toggle_timer(self) -> None: self.timers_visible = not self.timers_visible
+    def action_toggle_flag(self) -> None: self.model.toggle_flag_current_card()
+    def action_reset_card(self) -> None: self.model.reset_current_card()
+    def action_toggle_skip(self) -> None: self.model.toggle_skip_current_card()
+    def action_toggle_auto_approve(self) -> None: self.model.toggle_auto_approve_auto_score()
+    def action_toggle_auto_score(self) -> None: self.model.toggle_auto_score_enabled()
+    def action_accept_all_auto_scores(self) -> None: self.model.accept_all_auto_scores()
+    def action_toggle_collapsed(self) -> None: self.collapsed = not self.collapsed
 
     def _key_for(self, action: str) -> str:
         """Display key for an action, read from ``BINDINGS`` — the single source of truth so the
@@ -508,20 +566,177 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         return "?"
 
     # ------------------------------------------------------------------
-    # Rendering
+    # Reactive watchers — view-side display flags
     # ------------------------------------------------------------------
 
-    def _refresh(self) -> None:
-        match self._vm.state:
-            case FlashcardReviewModel.State.START:
-                self._refresh_start()
-            case FlashcardReviewModel.State.REVIEWING:
-                self._refresh_reviewing()
-            case FlashcardReviewModel.State.DONE:
-                self._refresh_done()
+    def watch_help_visible(self, _value: bool) -> None:
         self._refresh_help()
+
+    def watch_timers_visible(self, _value: bool) -> None:
+        # The counter swaps between live elapsed and the throbber; the live-timer interval starts
+        # or stops accordingly.
+        self._refresh_card_body()
+        self._reconcile_intervals()
+
+    def watch_collapsed(self, _value: bool) -> None:
+        # Visual swap between DONE-expanded (card visible + status text) and DONE-collapsed
+        # (summary-only). The button label also flips. No-op while not in DONE.
+        if self.model.state != FlashcardReviewModel.State.DONE:
+            return
+        self._refresh_done_surface()
+
+    # ------------------------------------------------------------------
+    # VM callback handlers
+    # ------------------------------------------------------------------
+
+    def _on_lifecycle(self, state: FlashcardReviewModel.State) -> None:
+        # Section visibility flips on every transition. DONE additionally auto-collapses (which
+        # cascades into the surface refresh via watch_collapsed) and may freeze the card view.
+        if state == FlashcardReviewModel.State.DONE:
+            self.collapsed = True
+        self._refresh_section()
+        self._refresh_done_surface()
+        self._refresh_card_body()
+        self._refresh_dot_strip()
         self._refresh_auto_approve_hint()
-        self._refresh_message()
+        self._refresh_help()  # the rating-default label depends on REVIEWING state
+        self._reconcile_intervals()
+
+    def _on_cursor_changed(self) -> None:
+        # The current card object changed under the cursor — full card-body repaint + dot strip
+        # cursor + interval reconcile (different card may need a different interval set).
+        self._refresh_card_body()
+        self._refresh_dot_strip()
+        self._reconcile_intervals()
+
+    def _on_cards_changed(self, ids: list[int]) -> None:
+        # Repaint the card body iff the cursor's card is in the affected set; the dot strip and
+        # intervals always repaint since any card change may affect dot colors or timer state.
+        card = self.model.current_card
+        if card is not None and card.id in ids:
+            self._refresh_card_body()
+        self._refresh_dot_strip()
+        self._reconcile_intervals()
+
+    def _on_autoscore_begin(self) -> None:
+        self._refresh_batch_indicator()
+        self._reconcile_throbber_interval()
+
+    def _on_autoscore_complete(self) -> None:
+        # Idempotent: the handler queries ``autoscore_in_progress`` so a follow-up batch
+        # dispatched immediately after (firing OnAutoscoreBegin) flips the indicator right back on
+        # without a visible flash.
+        self._refresh_batch_indicator()
+        self._reconcile_throbber_interval()
+
+    def _on_auto_score_config_changed(self, enabled: bool, auto_approve: bool) -> None:
+        # The rating-row "enter = auto/good" default flips, the auto-approve hint changes
+        # color/text, and the help panel's auto-score label changes.
+        self._refresh_card_body()
+        self._refresh_auto_approve_hint()
+        self._refresh_help()
+
+    def _on_hint(self, msg: str) -> None:
+        # Display the hint in the bottom-right slot; auto-clear after _HINT_DISPLAY_SECONDS.
+        if self._hint_timer is not None:
+            self._hint_timer.stop()
+
+        try:
+            self.query_one("#fr-hint", Static).update(msg)
+        except:
+            pass
+
+        self._hint_timer = self.set_timer(
+            _HINT_DISPLAY_SECONDS, self._clear_hint,
+        )
+
+    def _clear_hint(self) -> None:
+        try:
+            self.query_one("#fr-hint", Static).update("")
+        except:
+            pass
+        self._hint_timer = None
+
+    # ------------------------------------------------------------------
+    # Top-level surface refreshers
+    # ------------------------------------------------------------------
+
+    def _refresh_section(self) -> None:
+        """Flip section visibility (start / card / done) and paint the start-side counter.
+
+        The card section is also visible during DONE-expanded — see ``_card_section_visible``.
+        """
+        state = self.model.state
+        S = FlashcardReviewModel.State
+
+        self.query_one("#fr-start", Vertical).display = (state == S.START)
+        self.query_one("#fr-card", Vertical).display = self._card_section_visible()
+        self.query_one("#fr-done", Vertical).display = (state == S.DONE)
+
+        # Batch indicator + collapse button visibility are state-dependent too.
+        self._refresh_batch_indicator()
+        btn = self.query_one("#fr-collapse", Button)
+        btn.display = (state == S.DONE)
+
+        if state == S.START:
+            n = len(self.model._cards)
+            self.query_one("#fr-start-summary", Static).update(
+                f"{n} card{'s' if n != 1 else ''} to review"
+            )
+
+    def _card_section_visible(self) -> bool:
+        """The card body is shown during REVIEWING, and during DONE-expanded so the user can
+        browse their scored cards. Hidden during START and DONE-collapsed."""
+        state = self.model.state
+        if state == FlashcardReviewModel.State.REVIEWING:
+            return True
+        if state == FlashcardReviewModel.State.DONE:
+            return not self.collapsed
+        return False
+
+    def _refresh_batch_indicator(self) -> None:
+        indicator = self.query_one("#fr-batch-indicator", Static)
+        visible = (
+            self.model.state == FlashcardReviewModel.State.REVIEWING
+            and self.model.autoscore_in_progress
+        )
+        indicator.display = visible
+        if visible:
+            indicator.update(self._batch_indicator_text())
+
+    def _refresh_done_surface(self) -> None:
+        """Sync the DONE-specific surface — collapse button glyph, status text, and the card-
+        body visibility flip that comes with collapsed/expanded. No-op outside DONE."""
+        state = self.model.state
+        if state != FlashcardReviewModel.State.DONE:
+            return
+
+        btn = self.query_one("#fr-collapse", Button)
+        btn.label = "▶" if self.collapsed else "▼"
+
+        # Re-derive card visibility because ``collapsed`` may have flipped.
+        card_visible = self._card_section_visible()
+        self.query_one("#fr-card", Vertical).display = card_visible
+
+        status = self.query_one("#fr-done-status", Static)
+        if self.model.cancelled:
+            status.update(f"[{_CANCEL_RED}]Session cancelled[/]")
+        else:
+            text = "Session complete"
+            if self.collapsed:
+                reviewed = sum(
+                    1 for c in self.model._cards
+                    if c.scored and c.score != Flashcard.Score.SKIPPED
+                )
+                text = (
+                    f"Session complete — {reviewed} "
+                    f"card{'s' if reviewed != 1 else ''} reviewed"
+                )
+            status.update(f"[{_DONE_GREEN}]{text}[/]")
+
+        # If the card just became visible (DONE-expanded), repaint it.
+        if card_visible:
+            self._refresh_card_body()
 
     def _refresh_auto_approve_hint(self) -> None:
         """Status indicator under the bottom row: shows whether auto-scored ratings will
@@ -529,11 +744,11 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         toggle it. Visible only during REVIEWING — the toggle isn't wired in other
         states."""
         hint = self.query_one("#fr-auto-approve-hint", Static)
-        if self._vm.state != FlashcardReviewModel.State.REVIEWING:
+        if self.model.state != FlashcardReviewModel.State.REVIEWING:
             hint.display = False
             return
         hint.display = True
-        if self._vm.auto_approve_auto_score:
+        if self.model.auto_approve_auto_score:
             status = f"[bold {_APPROVAL_YELLOW}]auto-approve enabled[/]"
         else:
             status = f"[{_HINT_DIM}]auto-approve disabled[/]"
@@ -541,26 +756,6 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         hint.update(
             f"{status}  [{_HINT_DIM}]({binding} to toggle)[/]"
         )
-
-    def _refresh_message(self) -> None:
-        """Flash the VM's latest user-action message in the bottom-right slot.
-
-        Pops the VM message so unrelated dirty emits don't re-display it after
-        the timer has cleared the widget. A new pop restarts the 3s timer.
-        """
-        new_msg = self._vm.pop_latest_message()
-        if new_msg is None:
-            return
-        if self._message_timer is not None:
-            self._message_timer.stop()
-        self.query_one("#fr-message", Static).update(new_msg)
-        self._message_timer = self.set_timer(
-            _MESSAGE_DISPLAY_SECONDS, self._clear_message,
-        )
-
-    def _clear_message(self) -> None:
-        self.query_one("#fr-message", Static).update("")
-        self._message_timer = None
 
     def _refresh_help(self) -> None:
         # Two slots:
@@ -572,20 +767,20 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         # Always-displayed (just blanked when expanded) so its 1fr column
         # stays in the layout — otherwise the dot strip would shift left.
         hint = self.query_one("#fr-help-hint", Static)
-        if self._vm.help_visible:
+        if self.help_visible:
             hint.update("")
         else:
             hint.update(f"[bold]{self._key_for('toggle_help')}[/]  show help")
 
         full = self.query_one("#fr-help", Static)
-        full.display = self._vm.help_visible
-        if self._vm.help_visible:
+        full.display = self.help_visible
+        if self.help_visible:
             full.update(self._help_text())
 
     def _help_text(self) -> str:
         # Only the non-obvious bindings — the on-screen rating row, dot
         # strip, and per-card prompts already cover begin/reveal/score/nav.
-        current_default = "auto" if self._vm.auto_score_enabled else "good"
+        current_default = "auto" if self.model.auto_score_enabled else "good"
         auto_label = f"enter default = {current_default}"
         rows = [
             ("toggle_help", "hide help"),
@@ -601,84 +796,12 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             for action, label in rows
         )
 
-    def _refresh_start(self) -> None:
-        self.query_one("#fr-start", Vertical).display = True
-        self.query_one("#fr-card", Vertical).display = False
-        self.query_one("#fr-done", Vertical).display = False
-        self.query_one("#fr-batch-indicator", Static).display = False
-        self.query_one("#fr-collapse", Button).display = False
-
-        n = len(self._vm._cards)
-        self.query_one("#fr-start-summary", Static).update(
-            f"{n} card{'s' if n != 1 else ''} to review"
-        )
-
-        self._reconcile_timer_interval()
-        self._reconcile_due_interval()
-        self._reconcile_throbber_interval()
-
-    def _refresh_reviewing(self) -> None:
-        self.query_one("#fr-start", Vertical).display = False
-        self.query_one("#fr-card", Vertical).display = True
-        self.query_one("#fr-done", Vertical).display = False
-        self.query_one("#fr-collapse", Button).display = False
-
-        indicator = self.query_one("#fr-batch-indicator", Static)
-        indicator.display = self._vm.autoscore_in_progress
-        if self._vm.autoscore_in_progress:
-            indicator.update(self._batch_indicator_text())
-
-        self._refresh_current_card()
-
-    def _refresh_done(self) -> None:
-        self.query_one("#fr-start", Vertical).display = False
-        self.query_one("#fr-done", Vertical).display = True
-        self.query_one("#fr-batch-indicator", Static).display = False
-
-        btn = self.query_one("#fr-collapse", Button)
-        btn.display = True
-        btn.label = "▶" if self._vm.collapsed else "▼"
-
-        status = self.query_one("#fr-done-status", Static)
-        if self._vm.cancelled:
-            status.update(f"[{_CANCEL_RED}]Session cancelled[/]")
-        else:
-            text = "Session complete"
-            # Show count only in the collapsed summary view.
-            if self._vm.collapsed:
-                reviewed = sum(
-                    1 for c in self._vm._cards
-                    if c.scored and c.score != Flashcard.Score.SKIPPED
-                )
-                text = (
-                    f"Session complete — {reviewed} "
-                    f"card{'s' if reviewed != 1 else ''} reviewed"
-                )
-            status.update(f"[{_DONE_GREEN}]{text}[/]")
-
-        # When expanded, keep the card visible so the user can browse
-        # through their scored cards with alt+←/→.
-        card_visible = not self._vm.collapsed
-        self.query_one("#fr-card", Vertical).display = card_visible
-        if card_visible:
-            self._refresh_current_card()
-        else:
-            # Card hidden — nothing to tick.
-            self._reconcile_timer_interval()
-            self._reconcile_due_interval()
-            self._reconcile_throbber_interval()
-
-    def _refresh_current_card(self) -> None:
-        """Dispatcher: shared header + dots + intervals around a per-state body renderer.
-
-        Each ``_refresh_current_card_<state>`` method owns the visibility and content of the
-        card body (question / answer-input / user-answer / answer / rule / below-text) for
-        its state — the helpers below (``_show_question`` / ``_hide_question`` /
-        ``_sync_answer_input_visibility`` / ``_show_revealed_panel`` /
-        ``_hide_revealed_panel``) hide the per-widget plumbing so each state method reads as
-        a flat declaration of "what's visible right now".
-        """
-        card = self._vm.current_card
+    def _refresh_card_body(self) -> None:
+        """Header + per-state body. No-op if the card section isn't visible (START, DONE-
+        collapsed), saving a chunk of work on those transitions."""
+        if not self._card_section_visible():
+            return
+        card = self.model.current_card
         if card is None:
             return
 
@@ -703,10 +826,17 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             case Flashcard.State.AWAITING_REVEAL:
                 self._refresh_current_card_awaiting_reveal(card)
 
+    def _refresh_dot_strip(self) -> None:
+        """Update the per-card dot row. The widget lives inside the card section so it's only
+        visible when the section is."""
+        if not self._card_section_visible():
+            return
         self.query_one("#fr-dots", _DotStrip).update_state(
-            self._vm._cards, self._vm._current_card_index
+            self.model._cards, self.model._current_card_index
         )
 
+    def _reconcile_intervals(self) -> None:
+        """Bundle the three interval reconcilers so callers don't have to remember the list."""
         self._reconcile_timer_interval()
         self._reconcile_due_interval()
         self._reconcile_throbber_interval()
@@ -734,11 +864,11 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         self._sync_answer_input_visibility(input_visible=False, card=card)
         self._show_revealed_panel(card, show_answer=True)
 
-        if self._vm.autoscore_in_progress:
+        if self.model.autoscore_in_progress:
             hint_text = "pending score..."
         else:
             hint_text = "press 1-4 to override"
-            
+
         self.query_one("#fr-below", Static).update(
             f"[{_RATING_LABEL_DIM}]Queued for auto-scoring  —  "
             f"{hint_text}[/]"
@@ -795,7 +925,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         move focus if we already own it somewhere — don't steal from the chat input or
         anywhere else outside this widget.
         """
-        in_review = self._vm.state == FlashcardReviewModel.State.REVIEWING
+        in_review = self.model.state == FlashcardReviewModel.State.REVIEWING
         show = input_visible and in_review
 
         self.query_one("#fr-answer-input-label", Static).display = show
@@ -814,7 +944,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         we_own_focus = app_focused is self or app_focused is answer_input
         if not we_own_focus:
             return
-        if show and app_focused is not answer_input and not self._vm.cancelled:
+        if show and app_focused is not answer_input and not self.model.cancelled:
             answer_input.focus()
         elif not show and app_focused is answer_input:
             self.focus()
@@ -854,9 +984,9 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     # ------------------------------------------------------------------
 
     def _counter_text(self, card: Flashcard) -> str:
-        position = f"{self._vm._current_card_index + 1}/{len(self._vm._cards)}"
+        position = f"{self.model._current_card_index + 1}/{len(self.model._cards)}"
         suffix = self._remaining_suffix()
-        if self._vm.timers_visible:
+        if self.timers_visible:
             # Elapsed time is frozen on non-FRONT cards (think-time timer is
             # paused on transitions out of FRONT); on FRONT it ticks live via
             # _reconcile_timer_interval.
@@ -868,10 +998,10 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         return f"[{color}]{char}[/]  ·  {position}{suffix}"
 
     def _remaining_suffix(self) -> str:
-        total = self._vm.num_remaining
+        total = self.model.num_remaining
         if total == 0:
             return ""
-        position = self._vm.remaining_position
+        position = self.model.remaining_position
         inner = f"{position}/{total}" if position is not None else f"-/{total}"
         return f"  [dim]({inner} remaining)[/dim]"
 
@@ -891,7 +1021,6 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             prefix = f"[{_APPROVAL_YELLOW}]Auto-score rejected — rate manually:[/]  "
         else:
             prefix = ""
-        enter_label = "auto" if self._vm.auto_score_active_for_current_card else "good"
         previews = card.rating_previews()
         pairs = [
             (1, "again", Rating.Again),
@@ -906,7 +1035,11 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             for num, label, rating in pairs
         ]
         row = "    ".join(segments)
-        return f"{prefix}{row}    [{_HINT_DIM}]\\[enter = {enter_label}][/]"
+        if self.model.auto_score_active_for_current_card:
+            enter_hint = f"\\[enter = [bold {_APPROVAL_YELLOW}]auto[/] (alt+a to toggle)]"
+        else:
+            enter_hint = "\\[enter = good (alt+a to toggle)]"
+        return f"{prefix}{row}    [{_HINT_DIM}]{enter_hint}[/]"
 
     def _pending_approval_text(self, card: Flashcard) -> str:
         """Two-line below text for SCORED_PENDING_APPROVAL: the same four-rating row as
@@ -970,12 +1103,12 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     def _reconcile_timer_interval(self) -> None:
         """Start or stop the live-timer ticker so it runs exactly when
         there's a live elapsed value to display."""
-        card = self._vm.current_card
+        card = self.model.current_card
         live_timer_visible = (
             card is not None
             and card.state == Flashcard.State.FRONT
-            and self._vm.timers_visible
-            and self._vm.state == FlashcardReviewModel.State.REVIEWING
+            and self.timers_visible
+            and self.model.state == FlashcardReviewModel.State.REVIEWING
         )
         currently_running = self._timer_interval is not None
         if live_timer_visible and not currently_running:
@@ -985,7 +1118,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             self._timer_interval = None
 
     def _tick_timer(self) -> None:
-        card = self._vm.current_card
+        card = self.model.current_card
         if card is None:
             return
         self.query_one("#fr-counter", Static).update(self._counter_text(card))
@@ -993,11 +1126,11 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
     def _reconcile_due_interval(self) -> None:
         """Start or stop the due-countdown ticker so it runs exactly when
         the current card is AWAITING_REVEAL."""
-        card = self._vm.current_card
+        card = self.model.current_card
         countdown_visible = (
             card is not None
             and card.state == Flashcard.State.AWAITING_REVEAL
-            and self._vm.state == FlashcardReviewModel.State.REVIEWING
+            and self.model.state == FlashcardReviewModel.State.REVIEWING
         )
         currently_running = self._due_interval is not None
         if countdown_visible and not currently_running:
@@ -1007,7 +1140,7 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
             self._due_interval = None
 
     def _tick_due(self) -> None:
-        card = self._vm.current_card
+        card = self.model.current_card
         if card is None or card.state != Flashcard.State.AWAITING_REVEAL:
             return
         self.query_one("#fr-below", Static).update(self._awaiting_reveal_text(card))
@@ -1016,15 +1149,15 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
         """Start or stop the shared throbber ticker. Runs when either the
         think-time throbber (FRONT card without timer visible) or the
         batch-scoring indicator needs to animate."""
-        card = self._vm.current_card
-        in_review = self._vm.state == FlashcardReviewModel.State.REVIEWING
+        card = self.model.current_card
+        in_review = self.model.state == FlashcardReviewModel.State.REVIEWING
         think_throbber = (
             in_review
             and card is not None
             and card.state == Flashcard.State.FRONT
-            and not self._vm.timers_visible
+            and not self.timers_visible
         )
-        batch_throbber = in_review and self._vm.autoscore_in_progress
+        batch_throbber = in_review and self.model.autoscore_in_progress
         throbber_visible = think_throbber or batch_throbber
         currently_running = self._throbber_interval is not None
         if throbber_visible and not currently_running:
@@ -1035,16 +1168,16 @@ class FlashcardReview(NavigableFeedItemViewBase[FlashcardReviewModel]):
 
     def _tick_throbber(self) -> None:
         self._throbber_frame = (self._throbber_frame + 1) % len(_THROBBER_FRAMES)
-        card = self._vm.current_card
+        card = self.model.current_card
         # Counter-position throbber.
         if (
             card is not None
             and card.state == Flashcard.State.FRONT
-            and not self._vm.timers_visible
+            and not self.timers_visible
         ):
             self.query_one("#fr-counter", Static).update(self._counter_text(card))
         # Batch-indicator throbber.
-        if self._vm.autoscore_in_progress:
+        if self.model.autoscore_in_progress:
             self.query_one("#fr-batch-indicator", Static).update(
                 self._batch_indicator_text()
             )

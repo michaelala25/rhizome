@@ -18,7 +18,7 @@ from rhizome.tui.types import Mode, Role
 from ..commit_proposal.commit_proposal import CommitProposal
 # FlashcardProposal is VM-backed now; the legacy harness branch below raises rather than
 # constructing one with a from_interrupt dict shape that no longer exists.
-from ..flashcard_review.view import FlashcardReview
+from ..flashcard_review.flashcard_review import FlashcardReview
 from .interrupt import InterruptWidgetBase
 from .choices import Choices
 from .multiple_choices import MultipleChoices

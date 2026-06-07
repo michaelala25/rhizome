@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
-from rhizome.tui.widgets.flashcard_review.view import FlashcardReview
+from rhizome.tui.widgets.flashcard_review.flashcard_review import FlashcardReview
 
 
 @register_feed_view(FlashcardReviewInterruptModel)
