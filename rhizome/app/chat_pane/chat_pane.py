@@ -45,7 +45,7 @@ from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesModel
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptModel
 from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptModel
 from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptModel
-from rhizome.app.commit_proposal import Entry, EntryType
+from rhizome.app.commit_proposal.commit_proposal import Entry, EntryType
 from rhizome.app.flashcard_proposal import Flashcard
 from rhizome.app.chat_pane.messages.shell import ShellCommandModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
@@ -1943,22 +1943,22 @@ class ChatPaneModel(ViewModelBase):
         @reg.command(name="test-commit-proposal", help="Spawn a CommitProposal interrupt with sample data.")
         @click.option("--big", is_flag=True, help="Spawn 10× the sample entries to exercise sizing/scroll.")
         async def _test_commit_proposal(big: bool) -> None:
+            algorithms_topic = Topic(id=1, name="Algorithms")
+            distributed_topic = Topic(id=2, name="Distributed systems")
             sample_entries = [
                 Entry(
                     title="Binary search complexity",
                     content="Binary search has O(log n) time complexity — each comparison halves the "
                     "remaining search space.",
                     entry_type=EntryType.FACT,
-                    topic_id=1,
-                    topic_name="Algorithms",
+                    topic=algorithms_topic,
                 ),
                 Entry(
                     title="Stack vs queue",
                     content="A stack is LIFO: the most recently added element is removed first.\n"
                     "A queue is FIFO: the earliest added element is removed first.",
                     entry_type=EntryType.EXPOSITION,
-                    topic_id=1,
-                    topic_name="Algorithms",
+                    topic=algorithms_topic,
                 ),
                 Entry(
                     title="Hash collisions",
@@ -1966,16 +1966,14 @@ class ChatPaneModel(ViewModelBase):
                     "resolutions: chaining (buckets hold linked lists) or open addressing (probe for "
                     "the next free slot).",
                     entry_type=EntryType.FACT,
-                    topic_id=None,
-                    topic_name=None,
+                    topic=None,
                 ),
                 Entry(
                     title="CAP theorem",
                     content="A distributed system can provide at most two of: Consistency, "
                     "Availability, Partition tolerance.",
                     entry_type=EntryType.OVERVIEW,
-                    topic_id=2,
-                    topic_name="Distributed systems",
+                    topic=distributed_topic,
                 ),
             ]
 

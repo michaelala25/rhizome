@@ -5,18 +5,18 @@ Subclasses both ``CommitProposalModel`` (core editing state machine) and ``Inter
 plumbing). Cooperative ``super().__init__()`` chains ensure ``ViewModelBase`` initialises exactly
 once.
 
-Resolution model: the VM auto-resolves its future when the lifecycle reaches ``DONE``, whether via
-``accept_all()`` (resolves with the accepted entries + edit-instructions payload) or ``cancel()``
-(resolves with ``accepted=None``, signalling the user rejected the proposal). Cancel does *not*
-cancel the underlying ``asyncio.Future`` — like the flashcard interrupt, we resolve with a typed
-payload so the caller can distinguish accept from cancel by inspecting the result rather than
-catching ``CancelledError``.
+Resolution model: the VM auto-resolves its future when the lifecycle reaches ``DONE``. ``accept()``
+resolves with the accepted entries (no feedback), ``submit_revision(text)`` resolves with the
+accepted entries plus the user's feedback, ``cancel()`` resolves with ``accepted=None``. Cancel does
+*not* cancel the underlying ``asyncio.Future`` — we resolve with a typed payload so the caller
+distinguishes accept / revise / cancel by inspecting the result rather than catching
+``CancelledError``.
 
 Result shape::
 
     {
         "accepted": list[Entry] | None,   # None iff cancelled
-        "edit_instructions": str,         # always present; empty if unused
+        "edit_instructions": str,         # the revision feedback iff outcome is REVISED, else ""
     }
 """
 
@@ -25,8 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
-from rhizome.app.commit_proposal.commit_proposal import CommitProposalModel
-from rhizome.app.commit_proposal.entry import Entry
+from rhizome.app.commit_proposal.commit_proposal import CommitProposalModel, Entry
 
 
 class CommitProposalInterruptModel(CommitProposalModel, InterruptModelBase):
@@ -36,15 +35,12 @@ class CommitProposalInterruptModel(CommitProposalModel, InterruptModelBase):
         # Interrupts are interactive feed entries — opt into the chat pane's ctrl+up/ctrl+down
         # navigation rotation.
         self.is_navigable = True
-        # Watch our own state — when lifecycle lands in DONE, resolve the interrupt future. Both
-        # accept_all and cancel emit dirty after transitioning state, so a single dirty subscriber
-        # catches both.
-        self.subscribe(self.Callbacks.OnDirty, self._maybe_resolve)
+        # ``OnDone`` is fire-once on the EDITING → DONE transition, with the outcome as payload.
+        # No state check needed.
+        self.subscribe(self.Callbacks.OnDone, self._on_done)
 
-    def _maybe_resolve(self) -> None:
+    def _on_done(self, outcome: CommitProposalModel.Outcome) -> None:
         if self.resolved:
-            return
-        if self.state != CommitProposalModel.State.DONE:
             return
         self.resolve(self._build_result(), remain_navigable=True)
 
@@ -53,8 +49,8 @@ class CommitProposalInterruptModel(CommitProposalModel, InterruptModelBase):
         if self.cancelled:
             accepted = None
         else:
-            accepted = self.accepted_entries()
+            accepted = self.accepted_entries
         return {
             "accepted": accepted,
-            "edit_instructions": self.edit_instructions,
+            "edit_instructions": self.revision_feedback or "",
         }

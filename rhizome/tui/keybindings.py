@@ -136,6 +136,7 @@ class Keybind(Enum):
     ProposalReset                  = ("proposal.reset",                    "ctrl+r")
     ProposalCancel                 = ("proposal.cancel",                   "ctrl+c")
     ProposalToggleEditInstructions = ("proposal.toggle_edit_instructions", "ctrl+e")
+    ProposalSubmitRevision         = ("proposal.submit_revision",          "ctrl+s")
     ProposalSetTopicAll            = ("proposal.set_topic_all",            "shift+t")
     ProposalToggleCollapsed        = ("proposal.toggle_collapsed",         "enter")
     ProposalEdit                   = ("proposal.edit",                     "e")

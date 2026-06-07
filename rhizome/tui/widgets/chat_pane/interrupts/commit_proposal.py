@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
-from rhizome.tui.widgets.commit_proposal.view import CommitProposal
+from rhizome.tui.widgets.commit_proposal.commit_proposal import CommitProposal
 
 
 @register_feed_view(CommitProposalInterruptModel)

@@ -1,265 +1,286 @@
-"""CommitProposalModel — parent VM for the commit-proposal review surface.
+"""``CommitProposalModel`` — VM for the commit-proposal review surface.
 
-Owns the entry list, the cursor over it, the exclusion set, the edit-instructions buffer, and the
-coarse EDITING → DONE lifecycle. Holds one child ``EntryDetailsModel`` that tracks the cursor entry's
-buffered title/content; the view binds title/content TextAreas to the child, not to the parent.
-
-State summary
+State machine
 -------------
-- ``entries`` — the working list. ``reset()`` restores from the snapshot taken on construction.
-- ``cursor`` — index into ``entries``; ``None`` iff ``entries`` is empty.
-- ``excluded`` — set of indices the user has marked excluded. Stable across edits (an excluded
-  entry stays excluded even if other entries are modified).
-- ``edit_instructions`` / ``edit_instructions_visible`` — the natural-language edit-loop input.
-  The buffer survives toggling the area's visibility; only ``discard_edit_instructions()`` clears
-  the text.
-- ``state`` — ``EDITING`` until ``accept_all()`` or ``cancel()`` flips it to ``DONE``. In ``DONE``
-  the working state freezes: confirmed edits and the excluded set remain, but every mutator is
-  off-limits (each one assertion-guards on ``EDITING``). ``accept_all()`` flushes the in-flight
-  details buffer first so an unsaved title/content edit isn't silently dropped; ``cancel()`` does
-  the opposite — discards the buffer via ``self._details.cancel()`` — so a half-typed edit on the
-  focused entry doesn't survive a rejection.
-- ``_cancelled`` — distinguishes the two DONE flavors. The interrupt subclass uses this to pick
-  the future's resolution shape. Collapsed/expanded display state for the DONE surface lives on
-  the view, not here.
+``REVIEWING`` is the resting state: the user is tweaking entries (inline title/content edits,
+exclusions, type cycle, topic reassignment) and may either ``accept()`` or transition to
+``REQUESTING_REVISION`` via ``request_revision()`` to ask the agent to redo the proposal with
+natural-language feedback.
 
-Cursor moves push the new entry into ``self.details`` so the title/content TextAreas reseed.
-Cursor moves silently discard any in-flight edits — symmetric with the browser's policy and with
-``EntryDetailsModel.set_entry``'s reseed-on-identity-change semantics.
+``REQUESTING_REVISION`` is the same as ``REVIEWING`` for per-entry mutators (inline edits remain
+valid — the agent's revision tool consumes both the user's edits and the feedback together) but
+gates the terminal action to ``submit_revision(feedback)``. ``cancel_revision()`` returns to
+``REVIEWING`` without ending the proposal.
+
+``DONE`` is terminal. ``outcome`` reports what was decided (``ACCEPTED`` / ``REVISED`` /
+``CANCELLED``); ``revision_feedback`` carries the feedback text iff ``outcome is REVISED``.
+
+Buffer ownership
+----------------
+The view holds the editable buffers for entry title/content and for revision feedback. The VM
+receives finalised values at confirm points (``set_entry_title`` after the entry-details Accept
+gesture, ``submit_revision(text)`` when the revision menu's Submit fires). The VM never round-
+trips per-keystroke text changes.
 """
 
-from __future__ import annotations
-
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from enum import Enum, auto
+from typing import Any
 
-from rhizome.app.commit_proposal.entry import Entry, EntryType, cycle_entry_type
-from rhizome.app.commit_proposal.entry_details import EntryDetailsModel
 from rhizome.app.model import ViewModelBase
+from rhizome.db import Topic
+
+
+class EntryType(str, Enum):
+    FACT = "fact"
+    EXPOSITION = "exposition"
+    OVERVIEW = "overview"
+
+
+@dataclass
+class Entry:
+    """A single pending knowledge-entry write in a commit proposal."""
+
+    title: str
+    content: str
+    entry_type: EntryType
+    topic: Topic | None
+
+    def clone(self) -> "Entry":
+        """Field-by-field copy. Used by ``CommitProposalModel`` to snapshot the initial proposal
+        for ``reset``. Shallow on ``topic`` — Topic instances are treated as immutable references."""
+        return replace(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any], topic: Topic | None = None) -> "Entry":
+        return cls(
+            title=d.get("title", ""),
+            content=d.get("content", ""),
+            entry_type=EntryType(d.get("entry_type", "fact")),
+            topic=topic,
+        )
+
+
+_NEXT_TYPE = {
+    EntryType.FACT:       EntryType.EXPOSITION,
+    EntryType.EXPOSITION: EntryType.OVERVIEW,
+    EntryType.OVERVIEW:   EntryType.FACT,
+}
 
 
 class CommitProposalModel(ViewModelBase):
 
     class State(Enum):
-        EDITING = auto()
-        DONE = auto()
+        REVIEWING           = auto()
+        REQUESTING_REVISION = auto()
+        DONE                = auto()
 
-    def __init__(self, entries: list[Entry], *, session_factory=None) -> None:
+    class Outcome(Enum):
+        ACCEPTED  = auto()
+        REVISED   = auto()
+        CANCELLED = auto()
+
+    class Callbacks(ViewModelBase.Callbacks):
+        OnEntriesChanged  = "OnEntriesChanged"
+        OnRevisingChanged = "OnRevisingChanged"
+        OnDone            = "OnDone"
+
+    def __init__(self, entries: list[Entry], *, session_factory: Any = None) -> None:
         super().__init__()
 
-        # Carried for the view's topic-picker modal (the VM doesn't use it itself). ``None`` disables
-        # the modal — useful for unit tests and the ``/test-commit-proposal`` slash command.
         self.session_factory = session_factory
 
-        # Snapshot for ``reset()``. We clone on both the snapshot and the working list so neither
-        # aliases the caller's input — mutations on entries are entirely VM-internal.
-        self._initial: list[Entry] = [e.clone() for e in entries]
-        self.entries: list[Entry] = [e.clone() for e in entries]
-        self.excluded: set[int] = set()
-        self.cursor: int | None = 0 if self.entries else None
+        self._initial: list[Entry] = [deepcopy(e) for e in entries]
+        self.entries:  list[Entry] = [deepcopy(e) for e in entries]
+        self.excluded: set[int]    = set()
 
-        self.state: CommitProposalModel.State = CommitProposalModel.State.EDITING
-        self._cancelled: bool = False
+        self._state:             CommitProposalModel.State            = CommitProposalModel.State.REVIEWING
+        self._outcome:           CommitProposalModel.Outcome | None   = None
+        self._revision_feedback: str | None                           = None
 
-        self.edit_instructions: str = ""
-        self.edit_instructions_visible: bool = False
-
-        # Per-entry buffered edit panel. Seeded with the cursor entry now so the view can bind to
-        # populated buffers on first render.
-        self._details = EntryDetailsModel()
-        self._sync_details()
+        self.make_callback_groups({
+            self.Callbacks.OnEntriesChanged:  list[int],
+            self.Callbacks.OnRevisingChanged: bool,
+            self.Callbacks.OnDone:            CommitProposalModel.Outcome,
+        })
 
     # ------------------------------------------------------------------
-    # Read-only accessors
+    # Accessors
     # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> "CommitProposalModel.State":
+        return self._state
+
+    @property
+    def outcome(self) -> "CommitProposalModel.Outcome | None":
+        return self._outcome
+
+    @property
+    def revision_feedback(self) -> str | None:
+        return self._revision_feedback
+
+    @property
+    def is_done(self) -> bool:
+        return self._state == CommitProposalModel.State.DONE
+
+    @property
+    def is_revising(self) -> bool:
+        return self._state == CommitProposalModel.State.REQUESTING_REVISION
 
     @property
     def cancelled(self) -> bool:
-        return self._cancelled
+        return self._outcome is CommitProposalModel.Outcome.CANCELLED
 
     @property
-    def details(self) -> EntryDetailsModel:
-        return self._details
-
-    @property
-    def current_entry(self) -> Entry | None:
-        if self.cursor is None:
-            return None
-        return self.entries[self.cursor]
+    def accepted_entries(self) -> list[Entry]:
+        return [deepcopy(e) for i, e in enumerate(self.entries) if i not in self.excluded]
 
     def is_excluded(self, idx: int) -> bool:
         return idx in self.excluded
 
     # ------------------------------------------------------------------
-    # Cursor
+    # Per-entry mutators — valid in REVIEWING and REQUESTING_REVISION
     # ------------------------------------------------------------------
 
-    def set_cursor(self, idx: int | None) -> None:
-        # Equality guard absorbs the round-trip from the view's DataTable cursor → RowHighlighted →
-        # set_cursor bounce (otherwise we'd loop indefinitely). All cursor movement is view-driven:
-        # arrow keys advance the DataTable cursor, the resulting RowHighlighted lands here.
-        if not self.entries:
-            new_cursor: int | None = None
-        elif idx is None:
-            new_cursor = None
+    def set_excluded(self, idx: int, excluded: bool) -> None:
+        self._assert_open()
+
+        if excluded == (idx in self.excluded):
+            return
+
+        if excluded:
+            self.excluded.add(idx)
         else:
-            new_cursor = max(0, min(idx, len(self.entries) - 1))
-        if new_cursor == self.cursor:
-            return
-        self.cursor = new_cursor
-        self._sync_details()
-        self.emit(self.Callbacks.OnDirty)
+            self.excluded.discard(idx)
 
-    # ------------------------------------------------------------------
-    # Per-entry mutators — all operate on the current cursor entry.
-    # ------------------------------------------------------------------
+        self.emit(self.Callbacks.OnEntriesChanged, [idx])
 
-    def toggle_exclude_current_entry(self) -> None:
-        self._assert_editing()
-        if self.cursor is None:
-            return
-        if self.cursor in self.excluded:
-            self.excluded.remove(self.cursor)
-        else:
-            self.excluded.add(self.cursor)
-        self.emit(self.Callbacks.OnDirty)
+    def toggle_excluded(self, idx: int) -> bool:
+        new = not self.is_excluded(idx)
+        self.set_excluded(idx, new)
+        return new
 
-    def cycle_current_entry_type(self, *, forward: bool = True) -> None:
-        self._assert_editing()
-        if self.cursor is None:
-            return
-        entry = self.entries[self.cursor]
-        entry.entry_type = cycle_entry_type(entry.entry_type, forward=forward)
-        self.emit(self.Callbacks.OnDirty)
+    def set_entry_type(self, idx: int, entry_type: EntryType) -> None:
+        self._assert_open()
+        entry = self.entries[idx]
 
-    def set_current_entry_type(self, entry_type: EntryType) -> None:
-        self._assert_editing()
-        if self.cursor is None:
-            return
-        entry = self.entries[self.cursor]
         if entry.entry_type == entry_type:
             return
+
         entry.entry_type = entry_type
-        self.emit(self.Callbacks.OnDirty)
+        self.emit(self.Callbacks.OnEntriesChanged, [idx])
 
-    def set_current_entry_topic(self, topic_id: int, topic_name: str) -> None:
-        """Set the cursor entry's topic. ``topic_id`` + ``topic_name`` are the denormalized pair
-        the view obtains from ``TopicSelectorScreen``."""
-        self._assert_editing()
-        if self.cursor is None:
+    def cycle_entry_type(self, idx: int) -> EntryType:
+        self.set_entry_type(idx, _NEXT_TYPE[self.entries[idx].entry_type])
+        return self.entries[idx].entry_type
+
+    def set_entry_topic(self, idx: int, topic: Topic) -> None:
+        self._assert_open()
+        entry = self.entries[idx]
+
+        if entry.topic is not None and entry.topic.id == topic.id:
             return
-        entry = self.entries[self.cursor]
-        if entry.topic_id == topic_id and entry.topic_name == topic_name:
+
+        entry.topic = topic
+        self.emit(self.Callbacks.OnEntriesChanged, [idx])
+
+    def set_topic_all(self, topic: Topic) -> None:
+        self._assert_open()
+
+        dirty: list[int] = []
+        for i, e in enumerate(self.entries):
+            if e.topic is None or e.topic.id != topic.id:
+                e.topic = topic
+                dirty.append(i)
+
+        if dirty:
+            self.emit(self.Callbacks.OnEntriesChanged, dirty)
+
+    def set_entry_title(self, idx: int, text: str) -> None:
+        self._assert_open()
+        entry = self.entries[idx]
+
+        if entry.title == text:
             return
-        entry.topic_id = topic_id
-        entry.topic_name = topic_name
-        self.emit(self.Callbacks.OnDirty)
 
-    # ------------------------------------------------------------------
-    # Bulk mutators
-    # ------------------------------------------------------------------
+        entry.title = text
+        self.emit(self.Callbacks.OnEntriesChanged, [idx])
 
-    def set_topic_all(self, topic_id: int, topic_name: str) -> None:
-        """Reassign every entry to ``topic_id`` / ``topic_name``. No-op if already uniform."""
-        self._assert_editing()
-        if all(e.topic_id == topic_id and e.topic_name == topic_name for e in self.entries):
+    def set_entry_content(self, idx: int, text: str) -> None:
+        self._assert_open()
+        entry = self.entries[idx]
+
+        if entry.content == text:
             return
-        for e in self.entries:
-            e.topic_id = topic_id
-            e.topic_name = topic_name
-        self.emit(self.Callbacks.OnDirty)
+
+        entry.content = text
+        self.emit(self.Callbacks.OnEntriesChanged, [idx])
 
     # ------------------------------------------------------------------
-    # Edit-instructions area
+    # Revision lifecycle
     # ------------------------------------------------------------------
 
-    def toggle_edit_instructions_area(self) -> None:
-        """Show/hide the edit-instructions area. The buffer survives — only
-        ``discard_edit_instructions`` clears it."""
-        self._assert_editing()
-        self.edit_instructions_visible = not self.edit_instructions_visible
-        self.emit(self.Callbacks.OnDirty)
+    def request_revision(self) -> None:
+        assert self._state == CommitProposalModel.State.REVIEWING
 
-    def set_edit_instructions(self, text: str) -> None:
-        self._assert_editing()
-        if self.edit_instructions == text:
-            return
-        self.edit_instructions = text
-        self.emit(self.Callbacks.OnDirty)
+        self._state = CommitProposalModel.State.REQUESTING_REVISION
+        self.emit(self.Callbacks.OnRevisingChanged, True)
 
-    def discard_edit_instructions(self) -> None:
-        """Clear the buffer. Visibility is left untouched — the area stays open so the user can
-        type again immediately if they want."""
-        self._assert_editing()
-        if not self.edit_instructions:
-            return
-        self.edit_instructions = ""
-        self.emit(self.Callbacks.OnDirty)
+    def cancel_revision(self) -> None:
+        assert self._state == CommitProposalModel.State.REQUESTING_REVISION
+
+        self._state = CommitProposalModel.State.REVIEWING
+        self.emit(self.Callbacks.OnRevisingChanged, False)
+
+    def submit_revision(self, feedback: str) -> None:
+        assert self._state == CommitProposalModel.State.REQUESTING_REVISION
+
+        self._revision_feedback = feedback
+        self._state = CommitProposalModel.State.DONE
+        self._outcome = CommitProposalModel.Outcome.REVISED
+        self.emit(self.Callbacks.OnDone, self._outcome)
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # Terminal lifecycle
     # ------------------------------------------------------------------
 
-    def accept_all(self) -> None:
-        """Lock the proposal in. Subclasses (the interrupt VM) observe the state transition and
-        resolve their future."""
-        self._assert_editing()
-        # Drain any in-flight buffer edit on the focused entry first, so an unsaved title/content
-        # edit isn't silently discarded by the lifecycle transition. The details VM no-ops if
-        # not dirty.
-        self._details.accept()
-        self.state = CommitProposalModel.State.DONE
-        self.emit(self.Callbacks.OnDirty)
+    def accept(self) -> None:
+        assert self._state == CommitProposalModel.State.REVIEWING
+
+        self._state = CommitProposalModel.State.DONE
+        self._outcome = CommitProposalModel.Outcome.ACCEPTED
+        self.emit(self.Callbacks.OnDone, self._outcome)
 
     def cancel(self) -> None:
-        self._assert_editing()
-        # Symmetric counterpart to accept_all's flush: drop the in-flight details buffer rather
-        # than commit it, so a half-typed edit on the focused entry doesn't survive a rejection.
-        # No-op if not dirty.
-        self._details.cancel()
-        self._cancelled = True
-        self.state = CommitProposalModel.State.DONE
-        self.emit(self.Callbacks.OnDirty)
+        self._assert_open()
+
+        self._state = CommitProposalModel.State.DONE
+        self._outcome = CommitProposalModel.Outcome.CANCELLED
+        self.emit(self.Callbacks.OnDone, self._outcome)
 
     def reset(self) -> None:
-        """Restore the working list from the initial snapshot. Clears excluded set + edit-
-        instructions buffer + hides the instructions area. Cursor is clamped to the restored
-        range. No-op semantics are not enforced — this is a user-initiated reset and we want the
-        ``dirty`` emit even if nothing visibly changed."""
-        self._assert_editing()
-        self.entries = [e.clone() for e in self._initial]
+        self._assert_open()
+
+        dirty = {i for i, e in enumerate(self.entries) if self._initial[i] != e}
+        dirty |= self.excluded
+
+        self.entries = [deepcopy(e) for e in self._initial]
         self.excluded.clear()
-        if not self.entries:
-            self.cursor = None
-        elif self.cursor is not None:
-            self.cursor = min(self.cursor, len(self.entries) - 1)
-        self.edit_instructions = ""
-        self.edit_instructions_visible = False
-        self._sync_details()
-        self.emit(self.Callbacks.OnDirty)
 
-    # ------------------------------------------------------------------
-    # Selection helpers — for downstream consumers of an accepted proposal.
-    # ------------------------------------------------------------------
+        if dirty:
+            self.emit(self.Callbacks.OnEntriesChanged, sorted(dirty))
 
-    def accepted_entries(self) -> list[Entry]:
-        """The entries the user has *not* excluded, in their original order. Returns clones so
-        callers can mutate freely without affecting the VM's state."""
-        return [e.clone() for i, e in enumerate(self.entries) if i not in self.excluded]
+        if self._state == CommitProposalModel.State.REQUESTING_REVISION:
+            self._state = CommitProposalModel.State.REVIEWING
+            self.emit(self.Callbacks.OnRevisingChanged, False)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
-    def _assert_editing(self) -> None:
-        assert self.state == CommitProposalModel.State.EDITING, (
-            f"Mutator called on a CommitProposalModel in state {self.state.name}; mutators are only "
-            "valid in EDITING."
+    def _assert_open(self) -> None:
+        assert self._state != CommitProposalModel.State.DONE, (
+            "Cannot mutate a CommitProposalModel after it reaches DONE."
         )
-
-    def _sync_details(self) -> None:
-        """Push the cursor entry (or ``None``) into the details sub-VM. Called from any cursor-
-        moving mutator and from ``reset()``."""
-        if self.cursor is None:
-            self._details.set_entry(None)
-            return
-        self._details.set_entry(self.entries[self.cursor])
