@@ -15,7 +15,7 @@ from rhizome.agent.tools import TOOL_VISIBILITY, ToolVisibility
 from rhizome.logs import get_logger
 from rhizome.tui.types import Mode, Role
 
-from ..commit_proposal import CommitProposal
+from ..commit_proposal.commit_proposal import CommitProposal
 # FlashcardProposal is VM-backed now; the legacy harness branch below raises rather than
 # constructing one with a from_interrupt dict shape that no longer exists.
 from ..flashcard_review.view import FlashcardReview

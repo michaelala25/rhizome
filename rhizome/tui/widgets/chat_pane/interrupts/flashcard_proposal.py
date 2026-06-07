@@ -1,4 +1,4 @@
-"""``FlashcardProposalInterrupt`` — view for ``FlashcardProposalInterruptModel``.
+"""FlashcardProposalInterrupt — view for ``FlashcardProposalInterruptModel``.
 
 Trivial subclass of ``FlashcardProposal`` — the interrupt semantics live entirely on the VM,
 which auto-resolves its future when the lifecycle reaches DONE. This view exists so the type
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
-from rhizome.tui.widgets.flashcard_proposal.view import FlashcardProposal
+from rhizome.tui.widgets.flashcard_proposal.flashcard_proposal import FlashcardProposal
 
 
 @register_feed_view(FlashcardProposalInterruptModel)

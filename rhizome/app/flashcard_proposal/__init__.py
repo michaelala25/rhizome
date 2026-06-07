@@ -1,13 +1,9 @@
-"""Flashcard-proposal VMs. Exposes ``Flashcard``, ``FlashcardProposalModel``, and
-``FlashcardDetailsModel`` — the view tree under ``rhizome.tui.widgets.flashcard_proposal`` binds to
-these."""
+"""Flashcard-proposal VM. Exposes ``Flashcard`` and ``FlashcardProposalModel`` — the view tree
+under ``rhizome.tui.widgets.flashcard_proposal`` binds to the model."""
 
-from rhizome.app.flashcard_proposal.flashcard import Flashcard
-from rhizome.app.flashcard_proposal.flashcard_details import FlashcardDetailsModel
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
+from rhizome.app.flashcard_proposal.flashcard_proposal import Flashcard, FlashcardProposalModel
 
 __all__ = [
     "Flashcard",
-    "FlashcardDetailsModel",
     "FlashcardProposalModel",
 ]

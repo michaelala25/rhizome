@@ -1,22 +1,22 @@
-"""``FlashcardProposalInterruptModel`` — adapter that gives ``FlashcardProposalModel`` the chat-pane
-interrupt surface (future-based resolution).
+"""``FlashcardProposalInterruptModel`` — adapter that gives ``FlashcardProposalModel`` the
+chat-pane interrupt surface (future-based resolution).
 
-Subclasses both ``FlashcardProposalModel`` (core editing state machine) and ``InterruptModelBase``
-(future plumbing). Cooperative ``super().__init__()`` chains ensure ``ViewModelBase`` initialises
-exactly once.
+Subclasses both ``FlashcardProposalModel`` (core editing state machine) and
+``InterruptModelBase`` (future plumbing). Cooperative ``super().__init__()`` chains ensure
+``ViewModelBase`` initialises exactly once.
 
-Resolution model: the VM auto-resolves its future when the lifecycle reaches ``DONE``, whether
-via ``accept_all()`` (resolves with the accepted flashcards + edit-instructions payload) or
-``cancel()`` (resolves with ``accepted=None``, signalling the user rejected the proposal). Cancel
-does *not* cancel the underlying ``asyncio.Future`` — we resolve with a typed payload so the
-caller can distinguish accept from cancel by inspecting the result rather than catching
-``CancelledError``.
+Resolution model: the VM auto-resolves its future when the lifecycle reaches ``DONE``.
+``accept()`` resolves with the accepted flashcards (no feedback), ``submit_revision(text)``
+resolves with the accepted flashcards plus the user's feedback, ``cancel()`` resolves with
+``accepted=None``. Cancel does *not* cancel the underlying ``asyncio.Future`` — we resolve with a
+typed payload so the caller distinguishes accept / revise / cancel by inspecting the result
+rather than catching ``CancelledError``.
 
 Result shape::
 
     {
         "accepted": list[Flashcard] | None,   # None iff cancelled
-        "edit_instructions": str,             # always present; empty if unused
+        "edit_instructions": str,             # the revision feedback iff outcome is REVISED, else ""
     }
 """
 
@@ -25,8 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
-from rhizome.app.flashcard_proposal.flashcard import Flashcard
-from rhizome.app.flashcard_proposal.flashcard_proposal import FlashcardProposalModel
+from rhizome.app.flashcard_proposal.flashcard_proposal import Flashcard, FlashcardProposalModel
 
 
 class FlashcardProposalInterruptModel(FlashcardProposalModel, InterruptModelBase):
@@ -36,15 +35,12 @@ class FlashcardProposalInterruptModel(FlashcardProposalModel, InterruptModelBase
         # Interrupts are interactive feed entries — opt into the chat pane's ctrl+up/ctrl+down
         # navigation rotation.
         self.is_navigable = True
-        # Watch our own state — when lifecycle lands in DONE, resolve the interrupt future. Both
-        # accept_all and cancel emit dirty after transitioning state, so a single dirty subscriber
-        # catches both.
-        self.subscribe(self.Callbacks.OnDirty, self._maybe_resolve)
+        # ``OnDone`` is fire-once on the REVIEWING → DONE transition, with the outcome as payload.
+        # No state check needed.
+        self.subscribe(self.Callbacks.OnDone, self._on_done)
 
-    def _maybe_resolve(self) -> None:
+    def _on_done(self, outcome: FlashcardProposalModel.Outcome) -> None:
         if self.resolved:
-            return
-        if self.state != FlashcardProposalModel.State.DONE:
             return
         self.resolve(self._build_result(), remain_navigable=True)
 
@@ -53,8 +49,8 @@ class FlashcardProposalInterruptModel(FlashcardProposalModel, InterruptModelBase
         if self.cancelled:
             accepted = None
         else:
-            accepted = self.accepted_flashcards()
+            accepted = self.accepted_flashcards
         return {
             "accepted": accepted,
-            "edit_instructions": self.edit_instructions,
+            "edit_instructions": self.revision_feedback or "",
         }

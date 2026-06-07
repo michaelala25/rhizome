@@ -65,7 +65,7 @@ from .explorer_viewer import ExplorerViewer
 from .messages import ActiveTopicChanged
 from .resource.view_model import ResourceViewerViewModel
 from .resource.viewer import ResourceViewer
-from ..commit_proposal.view import CommitProposal
+from ..commit_proposal.commit_proposal import CommitProposal
 # FlashcardProposal lives in the new chat pane only; the legacy pane's `/test-flashcard-proposal`
 # stub below raises rather than importing the new VM-shaped widget.
 from ..flashcard_review.view import FlashcardReview

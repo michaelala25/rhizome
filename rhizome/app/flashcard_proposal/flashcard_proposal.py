@@ -1,249 +1,277 @@
-"""``FlashcardProposalModel`` — parent VM for the flashcard-proposal review surface.
+"""``FlashcardProposalModel`` — VM for the flashcard-proposal review surface.
 
-Owns the flashcard list, the cursor over it, the exclusion set, the edit-instructions buffer, and
-the coarse EDITING → DONE lifecycle. Holds one child ``FlashcardDetailsModel`` that tracks the cursor
-flashcard's buffered question / answer / testing_notes; the view binds those fields to the child,
-not to the parent.
-
-State summary
+State machine
 -------------
-- ``flashcards`` — the working list. ``reset()`` restores from the snapshot taken on construction.
-- ``cursor`` — index into ``flashcards``; ``None`` iff ``flashcards`` is empty.
-- ``excluded`` — set of indices the user has marked excluded. Stable across edits (an excluded
-  card stays excluded even if other cards are modified).
-- ``edit_instructions`` / ``edit_instructions_visible`` — the natural-language edit-loop input.
-  The buffer survives toggling the area's visibility; only ``discard_edit_instructions()`` clears
-  the text.
-- ``state`` — ``EDITING`` until ``accept_all()`` or ``cancel()`` flips it to ``DONE``. In ``DONE``
-  the working state freezes: confirmed edits and the excluded set remain, but every mutator is
-  off-limits (each one assertion-guards on ``EDITING``). ``accept_all()`` flushes the in-flight
-  details buffer first so an unsaved question/answer/notes edit isn't silently dropped;
-  ``cancel()`` does the opposite — discards the buffer via ``self._details.cancel()`` — so a
-  half-typed edit on the focused card doesn't survive a rejection.
-- ``_cancelled`` — distinguishes the two DONE flavors. The interrupt subclass uses this to pick
-  the future's resolution shape. Collapsed/expanded display state for the DONE surface lives on
-  the view, not here.
+``REVIEWING`` is the resting state: the user is tweaking flashcards (inline question / answer /
+testing-notes edits, exclusions, topic reassignment) and may either ``accept()`` or transition to
+``REQUESTING_REVISION`` via ``request_revision()`` to ask the agent to redo the proposal with
+natural-language feedback.
 
-Cursor moves push the new flashcard into ``self.details`` so the question / answer / notes
-TextAreas reseed. Cursor moves silently discard any in-flight edits — symmetric with the
-browser's policy and with ``FlashcardDetailsModel.set_flashcard``'s reseed-on-identity-change
-semantics.
+``REQUESTING_REVISION`` is the same as ``REVIEWING`` for per-flashcard mutators (inline edits
+remain valid — the agent's revision tool consumes both the user's edits and the feedback
+together) but gates the terminal action to ``submit_revision(feedback)``. ``cancel_revision()``
+returns to ``REVIEWING`` without ending the proposal.
+
+``DONE`` is terminal. ``outcome`` reports what was decided (``ACCEPTED`` / ``REVISED`` /
+``CANCELLED``); ``revision_feedback`` carries the feedback text iff ``outcome is REVISED``.
+
+Buffer ownership
+----------------
+The view holds the editable buffers for question / answer / testing notes and for revision
+feedback. The VM receives finalised values at confirm points (``set_flashcard_question`` etc.
+after the details-panel Accept gesture, ``submit_revision(text)`` when the revision menu's
+Submit fires). The VM never round-trips per-keystroke text changes.
+
+The ``entry_ids`` field on each ``Flashcard`` is read-only from the widget's perspective — the
+view displays the list but never mutates it. Relinking is a future task.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from typing import Any
 
-from rhizome.app.flashcard_proposal.flashcard import Flashcard
-from rhizome.app.flashcard_proposal.flashcard_details import FlashcardDetailsModel
 from rhizome.app.model import ViewModelBase
+from rhizome.db import Topic
+
+
+@dataclass
+class Flashcard:
+    """A single pending flashcard write in a flashcard proposal."""
+
+    question: str
+    answer: str
+    testing_notes: str
+    topic: Topic | None
+    entry_ids: list[int] = field(default_factory=list)
+
+    def clone(self) -> "Flashcard":
+        """Field-by-field copy. Used by ``FlashcardProposalModel`` to snapshot the initial proposal
+        for ``reset``. Shallow on ``topic`` — Topic instances are treated as immutable references.
+        ``entry_ids`` is copied so snapshot and working list don't share mutable state."""
+        return replace(self, entry_ids=list(self.entry_ids))
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any], topic: Topic | None = None) -> "Flashcard":
+        return cls(
+            question=d.get("question", ""),
+            answer=d.get("answer", ""),
+            testing_notes=d.get("testing_notes") or "",
+            topic=topic,
+            entry_ids=list(d.get("entry_ids") or []),
+        )
 
 
 class FlashcardProposalModel(ViewModelBase):
 
     class State(Enum):
-        EDITING = auto()
-        DONE = auto()
+        REVIEWING           = auto()
+        REQUESTING_REVISION = auto()
+        DONE                = auto()
 
-    def __init__(self, flashcards: list[Flashcard], *, session_factory=None) -> None:
+    class Outcome(Enum):
+        ACCEPTED  = auto()
+        REVISED   = auto()
+        CANCELLED = auto()
+
+    class Callbacks(ViewModelBase.Callbacks):
+        OnFlashcardsChanged = "OnFlashcardsChanged"
+        OnRevisingChanged   = "OnRevisingChanged"
+        OnDone              = "OnDone"
+
+    def __init__(self, flashcards: list[Flashcard], *, session_factory: Any = None) -> None:
         super().__init__()
 
-        # Carried for the view's topic-picker modal (the VM doesn't use it itself). ``None`` disables
-        # the modal — useful for unit tests and the ``/test-flashcard-proposal`` slash command.
         self.session_factory = session_factory
 
-        # Snapshot for ``reset()``. Clone on both the snapshot and the working list so neither
-        # aliases the caller's input — mutations on flashcards are entirely VM-internal.
-        self._initial: list[Flashcard] = [f.clone() for f in flashcards]
+        self._initial:   list[Flashcard] = [f.clone() for f in flashcards]
         self.flashcards: list[Flashcard] = [f.clone() for f in flashcards]
-        self.excluded: set[int] = set()
-        self.cursor: int | None = 0 if self.flashcards else None
+        self.excluded:   set[int]        = set()
 
-        self.state: FlashcardProposalModel.State = FlashcardProposalModel.State.EDITING
-        self._cancelled: bool = False
+        self._state:             FlashcardProposalModel.State            = FlashcardProposalModel.State.REVIEWING
+        self._outcome:           FlashcardProposalModel.Outcome | None   = None
+        self._revision_feedback: str | None                              = None
 
-        self.edit_instructions: str = ""
-        self.edit_instructions_visible: bool = False
-
-        # Per-flashcard buffered edit panel. Seeded with the cursor flashcard now so the view can
-        # bind to populated buffers on first render.
-        self._details = FlashcardDetailsModel()
-        self._sync_details()
+        self.make_callback_groups({
+            self.Callbacks.OnFlashcardsChanged: list[int],
+            self.Callbacks.OnRevisingChanged:   bool,
+            self.Callbacks.OnDone:              FlashcardProposalModel.Outcome,
+        })
 
     # ------------------------------------------------------------------
-    # Read-only accessors
+    # Accessors
     # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> "FlashcardProposalModel.State":
+        return self._state
+
+    @property
+    def outcome(self) -> "FlashcardProposalModel.Outcome | None":
+        return self._outcome
+
+    @property
+    def revision_feedback(self) -> str | None:
+        return self._revision_feedback
+
+    @property
+    def is_done(self) -> bool:
+        return self._state == FlashcardProposalModel.State.DONE
+
+    @property
+    def is_revising(self) -> bool:
+        return self._state == FlashcardProposalModel.State.REQUESTING_REVISION
 
     @property
     def cancelled(self) -> bool:
-        return self._cancelled
+        return self._outcome is FlashcardProposalModel.Outcome.CANCELLED
 
     @property
-    def details(self) -> FlashcardDetailsModel:
-        return self._details
-
-    @property
-    def current_flashcard(self) -> Flashcard | None:
-        if self.cursor is None:
-            return None
-        return self.flashcards[self.cursor]
+    def accepted_flashcards(self) -> list[Flashcard]:
+        return [deepcopy(f) for i, f in enumerate(self.flashcards) if i not in self.excluded]
 
     def is_excluded(self, idx: int) -> bool:
         return idx in self.excluded
 
     # ------------------------------------------------------------------
-    # Cursor
+    # Per-flashcard mutators — valid in REVIEWING and REQUESTING_REVISION
     # ------------------------------------------------------------------
 
-    def set_cursor(self, idx: int | None) -> None:
-        # Equality guard absorbs the round-trip from the view's DataTable cursor → RowHighlighted →
-        # set_cursor bounce (otherwise we'd loop indefinitely). All cursor movement is view-driven:
-        # arrow keys advance the DataTable cursor, the resulting RowHighlighted lands here.
-        if not self.flashcards:
-            new_cursor: int | None = None
-        elif idx is None:
-            new_cursor = None
+    def set_excluded(self, idx: int, excluded: bool) -> None:
+        self._assert_open()
+
+        if excluded == (idx in self.excluded):
+            return
+
+        if excluded:
+            self.excluded.add(idx)
         else:
-            new_cursor = max(0, min(idx, len(self.flashcards) - 1))
-        if new_cursor == self.cursor:
+            self.excluded.discard(idx)
+
+        self.emit(self.Callbacks.OnFlashcardsChanged, [idx])
+
+    def toggle_excluded(self, idx: int) -> bool:
+        new = not self.is_excluded(idx)
+        self.set_excluded(idx, new)
+        return new
+
+    def set_flashcard_topic(self, idx: int, topic: Topic) -> None:
+        self._assert_open()
+        flashcard = self.flashcards[idx]
+
+        if flashcard.topic is not None and flashcard.topic.id == topic.id:
             return
-        self.cursor = new_cursor
-        self._sync_details()
-        self.emit(self.Callbacks.OnDirty)
 
-    # ------------------------------------------------------------------
-    # Per-flashcard mutators — all operate on the current cursor flashcard.
-    # ------------------------------------------------------------------
+        flashcard.topic = topic
+        self.emit(self.Callbacks.OnFlashcardsChanged, [idx])
 
-    def toggle_exclude_current_flashcard(self) -> None:
-        self._assert_editing()
-        if self.cursor is None:
+    def set_topic_all(self, topic: Topic) -> None:
+        self._assert_open()
+
+        dirty: list[int] = []
+        for i, f in enumerate(self.flashcards):
+            if f.topic is None or f.topic.id != topic.id:
+                f.topic = topic
+                dirty.append(i)
+
+        if dirty:
+            self.emit(self.Callbacks.OnFlashcardsChanged, dirty)
+
+    def set_flashcard_question(self, idx: int, text: str) -> None:
+        self._assert_open()
+        flashcard = self.flashcards[idx]
+
+        if flashcard.question == text:
             return
-        if self.cursor in self.excluded:
-            self.excluded.remove(self.cursor)
-        else:
-            self.excluded.add(self.cursor)
-        self.emit(self.Callbacks.OnDirty)
 
-    def set_current_flashcard_topic(self, topic_id: int, topic_name: str) -> None:
-        """Set the cursor flashcard's topic. ``topic_id`` + ``topic_name`` are the denormalized
-        pair the view obtains from ``TopicSelectorScreen``."""
-        self._assert_editing()
-        if self.cursor is None:
+        flashcard.question = text
+        self.emit(self.Callbacks.OnFlashcardsChanged, [idx])
+
+    def set_flashcard_answer(self, idx: int, text: str) -> None:
+        self._assert_open()
+        flashcard = self.flashcards[idx]
+
+        if flashcard.answer == text:
             return
-        flashcard = self.flashcards[self.cursor]
-        if flashcard.topic_id == topic_id and flashcard.topic_name == topic_name:
+
+        flashcard.answer = text
+        self.emit(self.Callbacks.OnFlashcardsChanged, [idx])
+
+    def set_flashcard_testing_notes(self, idx: int, text: str) -> None:
+        self._assert_open()
+        flashcard = self.flashcards[idx]
+
+        if flashcard.testing_notes == text:
             return
-        flashcard.topic_id = topic_id
-        flashcard.topic_name = topic_name
-        self.emit(self.Callbacks.OnDirty)
+
+        flashcard.testing_notes = text
+        self.emit(self.Callbacks.OnFlashcardsChanged, [idx])
 
     # ------------------------------------------------------------------
-    # Bulk mutators
+    # Revision lifecycle
     # ------------------------------------------------------------------
 
-    def set_topic_all(self, topic_id: int, topic_name: str) -> None:
-        """Reassign every flashcard to ``topic_id`` / ``topic_name``. No-op if already uniform."""
-        self._assert_editing()
-        if all(f.topic_id == topic_id and f.topic_name == topic_name for f in self.flashcards):
-            return
-        for f in self.flashcards:
-            f.topic_id = topic_id
-            f.topic_name = topic_name
-        self.emit(self.Callbacks.OnDirty)
+    def request_revision(self) -> None:
+        assert self._state == FlashcardProposalModel.State.REVIEWING
+
+        self._state = FlashcardProposalModel.State.REQUESTING_REVISION
+        self.emit(self.Callbacks.OnRevisingChanged, True)
+
+    def cancel_revision(self) -> None:
+        assert self._state == FlashcardProposalModel.State.REQUESTING_REVISION
+
+        self._state = FlashcardProposalModel.State.REVIEWING
+        self.emit(self.Callbacks.OnRevisingChanged, False)
+
+    def submit_revision(self, feedback: str) -> None:
+        assert self._state == FlashcardProposalModel.State.REQUESTING_REVISION
+
+        self._revision_feedback = feedback
+        self._state = FlashcardProposalModel.State.DONE
+        self._outcome = FlashcardProposalModel.Outcome.REVISED
+        self.emit(self.Callbacks.OnDone, self._outcome)
 
     # ------------------------------------------------------------------
-    # Edit-instructions area
+    # Terminal lifecycle
     # ------------------------------------------------------------------
 
-    def toggle_edit_instructions_area(self) -> None:
-        """Show/hide the edit-instructions area. The buffer survives — only
-        ``discard_edit_instructions`` clears it."""
-        self._assert_editing()
-        self.edit_instructions_visible = not self.edit_instructions_visible
-        self.emit(self.Callbacks.OnDirty)
+    def accept(self) -> None:
+        assert self._state == FlashcardProposalModel.State.REVIEWING
 
-    def set_edit_instructions(self, text: str) -> None:
-        self._assert_editing()
-        if self.edit_instructions == text:
-            return
-        self.edit_instructions = text
-        self.emit(self.Callbacks.OnDirty)
-
-    def discard_edit_instructions(self) -> None:
-        """Clear the buffer. Visibility is left untouched — the area stays open so the user can
-        type again immediately if they want."""
-        self._assert_editing()
-        if not self.edit_instructions:
-            return
-        self.edit_instructions = ""
-        self.emit(self.Callbacks.OnDirty)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def accept_all(self) -> None:
-        """Lock the proposal in. Subclasses (the interrupt VM) observe the state transition and
-        resolve their future."""
-        self._assert_editing()
-        # Drain any in-flight buffer edit on the focused flashcard first, so an unsaved
-        # question/answer/notes edit isn't silently discarded by the lifecycle transition. The
-        # details VM no-ops if not dirty.
-        self._details.accept()
-        self.state = FlashcardProposalModel.State.DONE
-        self.emit(self.Callbacks.OnDirty)
+        self._state = FlashcardProposalModel.State.DONE
+        self._outcome = FlashcardProposalModel.Outcome.ACCEPTED
+        self.emit(self.Callbacks.OnDone, self._outcome)
 
     def cancel(self) -> None:
-        self._assert_editing()
-        # Symmetric counterpart to accept_all's flush: drop the in-flight details buffer rather
-        # than commit it, so a half-typed edit on the focused flashcard doesn't survive a
-        # rejection. No-op if not dirty.
-        self._details.cancel()
-        self._cancelled = True
-        self.state = FlashcardProposalModel.State.DONE
-        self.emit(self.Callbacks.OnDirty)
+        self._assert_open()
+
+        self._state = FlashcardProposalModel.State.DONE
+        self._outcome = FlashcardProposalModel.Outcome.CANCELLED
+        self.emit(self.Callbacks.OnDone, self._outcome)
 
     def reset(self) -> None:
-        """Restore the working list from the initial snapshot. Clears excluded set + edit-
-        instructions buffer + hides the instructions area. Cursor is clamped to the restored
-        range. No-op semantics are not enforced — this is a user-initiated reset and we want the
-        ``dirty`` emit even if nothing visibly changed."""
-        self._assert_editing()
+        self._assert_open()
+
+        dirty = {i for i, f in enumerate(self.flashcards) if self._initial[i] != f}
+        dirty |= self.excluded
+
         self.flashcards = [f.clone() for f in self._initial]
         self.excluded.clear()
-        if not self.flashcards:
-            self.cursor = None
-        elif self.cursor is not None:
-            self.cursor = min(self.cursor, len(self.flashcards) - 1)
-        self.edit_instructions = ""
-        self.edit_instructions_visible = False
-        self._sync_details()
-        self.emit(self.Callbacks.OnDirty)
 
-    # ------------------------------------------------------------------
-    # Selection helpers — for downstream consumers of an accepted proposal.
-    # ------------------------------------------------------------------
+        if dirty:
+            self.emit(self.Callbacks.OnFlashcardsChanged, sorted(dirty))
 
-    def accepted_flashcards(self) -> list[Flashcard]:
-        """The flashcards the user has *not* excluded, in their original order. Returns clones so
-        callers can mutate freely without affecting the VM's state."""
-        return [f.clone() for i, f in enumerate(self.flashcards) if i not in self.excluded]
+        if self._state == FlashcardProposalModel.State.REQUESTING_REVISION:
+            self._state = FlashcardProposalModel.State.REVIEWING
+            self.emit(self.Callbacks.OnRevisingChanged, False)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
-    def _assert_editing(self) -> None:
-        assert self.state == FlashcardProposalModel.State.EDITING, (
-            f"Mutator called on a FlashcardProposalModel in state {self.state.name}; mutators are "
-            "only valid in EDITING."
+    def _assert_open(self) -> None:
+        assert self._state != FlashcardProposalModel.State.DONE, (
+            "Cannot mutate a FlashcardProposalModel after it reaches DONE."
         )
-
-    def _sync_details(self) -> None:
-        """Push the cursor flashcard (or ``None``) into the details sub-VM. Called from any
-        cursor-moving mutator and from ``reset()``."""
-        if self.cursor is None:
-            self._details.set_flashcard(None)
-            return
-        self._details.set_flashcard(self.flashcards[self.cursor])
