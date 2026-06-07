@@ -117,6 +117,19 @@ class ChatPane(ViewBase[ChatPaneModel]):
         scrollbar-color: rgb(60, 60, 60);
         scrollbar-color-hover: rgb(80, 80, 80);
         scrollbar-color-active: rgb(100, 100, 100);
+        /* Allow the inner content to be wider than the viewport — when the pane shrinks below the
+         * feed's ``min-width``, ``#message-area-inner`` keeps its 100-cell floor and this scroll
+         * container surfaces a horizontal scrollbar at its bottom edge (just above the input). */
+        overflow-x: auto;
+    }
+    /* Wrapper that holds the feed. Lives between ``#message-area`` (the scroll container) and the
+     * feed widgets / ``DepthWrapper`` chain so we have a single element to pin a width floor on.
+     * Without it, the depth-0 children would inherit the viewport width and the horizontal scrollbar
+     * would never trigger. */
+    ChatPane #message-area-inner {
+        width: 100%;
+        height: auto;
+        min-width: 100;
     }
     ChatPane #chat-input {
         height: auto;
@@ -160,7 +173,7 @@ class ChatPane(ViewBase[ChatPaneModel]):
         # Per-node depth wrappers keyed by NodeId. Each wrapper holds the feed widgets for one node
         # on the cursor path; nesting matches the cursor's root-to-leaf order so the left-side
         # rules naturally span the y-range of their subtree. The root's "wrapper" is the
-        # #message-area VerticalScroll itself (not a DepthWrapper) — we don't want a rule on the
+        # #message-area-inner container itself (not a DepthWrapper) — we don't want a rule on the
         # outermost level. Populated lazily on first feed_append/feed_replaced.
         self._depth_wrappers: dict[NodeId, Widget] = {}
 
@@ -304,7 +317,10 @@ class ChatPane(ViewBase[ChatPaneModel]):
     }
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="message-area")
+        # ``#message-area`` is the scroll viewport; ``#message-area-inner`` carries the feed widgets
+        # and the ``min-width: 100`` floor that drives horizontal scrolling on narrow panes.
+        with VerticalScroll(id="message-area"):
+            yield Vertical(id="message-area-inner")
         yield ChatInput(self._vm.chat_input, id="chat-input")
         yield CommandPalette(self._vm.command_palette, id="command-palette")
         yield StatusBar(self._vm.status_bar, id="status-bar")
@@ -332,13 +348,13 @@ class ChatPane(ViewBase[ChatPaneModel]):
     def _container_for_node(self, node_id: NodeId) -> Widget:
         """Return the widget that owns feed entries for ``node_id``.
 
-        Depth-0 (the root) lives directly in ``#message-area`` so the outermost level has no rule.
-        Deeper nodes live in their own ``DepthWrapper`` (created on demand by
-        ``_ensure_wrapper_chain``).
+        Depth-0 (the root) lives directly in ``#message-area-inner`` (the width-floored wrapper
+        inside the scroll viewport) so the outermost level has no rule. Deeper nodes live in their
+        own ``DepthWrapper`` (created on demand by ``_ensure_wrapper_chain``).
         """
         cursor_path = self._vm._cursor.path
         if node_id == cursor_path[0]:
-            return self.query_one("#message-area", VerticalScroll)
+            return self.query_one("#message-area-inner", Vertical)
         return self._depth_wrappers[node_id]
 
     def _ensure_wrapper_chain(self, path: tuple[NodeId, ...]) -> None:
