@@ -45,10 +45,16 @@ class TextAreaParams:
     ``title`` overrides the displayed ``border_title`` (defaults to the area name itself).
     ``kwargs`` is merged on top of ``ContentEditor.DEFAULT_AREA_KWARGS`` and passed through to
     the ``TextArea`` constructor.
+
+    ``editable`` defaults to True. Set False to make the area a read-only display: the underlying
+    ``TextArea`` is forced ``read_only=True`` + ``can_focus=False``, the area is excluded from
+    the alt+arrow focus graph, and its buffer is ignored by dirty detection (the parent reseeds
+    it via ``set_text`` for display only).
     """
 
     title: str | None = None
     kwargs: dict[str, Any] = field(default_factory=dict)
+    editable: bool = True
 
 
 def _sanitize(name: str) -> str:
@@ -131,9 +137,15 @@ class ContentEditor(Vertical, FocusOrchestrationMixin):
         for area, params in self.AREAS.items():
             kwargs: dict[str, Any] = {**self.DEFAULT_AREA_KWARGS, **params.kwargs}
             kwargs.setdefault("id", self._area_id(area))
+            if not params.editable:
+                # Force the framework-level read-only flag so caret/edit gestures are no-ops
+                # regardless of what the caller passed in kwargs.
+                kwargs["read_only"] = True
 
             text_area = TextArea(**kwargs)
             text_area.border_title = params.title if params.title is not None else area
+            if not params.editable:
+                text_area.can_focus = False
 
             self._text_areas[area] = text_area
             yield text_area
@@ -153,7 +165,7 @@ class ContentEditor(Vertical, FocusOrchestrationMixin):
         return {
             area: ta
             for area, ta in self._text_areas.items()
-            if ta.text != self._initial_buffers[area]
+            if self.AREAS[area].editable and ta.text != self._initial_buffers[area]
         }
 
     def set_text(self, area: str, text: str) -> None:
@@ -220,8 +232,9 @@ class ContentEditor(Vertical, FocusOrchestrationMixin):
     def _get_focus_graph(self) -> FocusGraph:
         # Use the *actual* widget ids — when ``AREAS[name].kwargs`` overrides ``id``, the mounted
         # TextArea's id differs from ``_area_id(name)`` and the focus graph must match what's in
-        # the DOM, not the auto-generated default.
-        area_ids = [self._text_areas[a].id for a in self.AREAS]
+        # the DOM, not the auto-generated default. Non-editable areas drop out of the graph
+        # entirely (they remain mounted as display widgets but aren't reachable via alt+arrow).
+        area_ids = [self._text_areas[a].id for a in self.AREAS if self.AREAS[a].editable]
         menu_id = self._menu_id()
         edges: dict[str, dict[str, Any]] = {}
         for i, node in enumerate(area_ids):
