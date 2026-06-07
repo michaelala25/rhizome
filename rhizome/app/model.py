@@ -47,9 +47,9 @@ class CallbackGroup(Generic[P]):
     the type checker rejects mismatched payloads at both ends.
 
     Subscribers are held by weak reference. Once a subscriber is garbage collected, its entry is
-    pruned on the next dispatch. Explicit ``unsubscribe`` is still useful for eager teardown — so
-    a not-yet-collected, unmounted view doesn't receive one last callback — but a forgotten
-    unsubscribe no longer leaks the subscriber.
+    pruned on the next dispatch, so a forgotten unsubscribe doesn't leak the subscriber. Explicit
+    ``unsubscribe`` remains useful for eager teardown — preventing a not-yet-collected, unmounted
+    view from receiving one last callback.
 
     Construct via ``ViewModelBase.make_callback_group(key)`` rather than directly — the helper sets
     ``owner_id`` correctly.
@@ -246,6 +246,8 @@ class ViewModelBase:
       subscribers are typically view-side ``_refresh`` methods.
     - ``Callbacks.RequestFocus`` — "please give this VM (its widget) focus." Fired by
       ``request_focus()``; the canonical subscriber is the view's ``Widget.focus()``.
+    - ``Callbacks.OnHint`` — "here's a short advisory message; display it if you like." Fired by
+      ``hint(msg)``. No subscriber is required; views are free to ignore hints entirely.
 
     Naming convention
     -----------------
@@ -275,9 +277,9 @@ class ViewModelBase:
 
     Subscription lifetime
     ---------------------
-    Subscribers are held by weak reference, so a forgotten unsubscribe no longer leaks the
-    subscriber. ``ViewBase.on_unmount`` still unsubscribes explicitly — that's for eager teardown
-    (preventing a callback fire between unmount and GC), not for leak prevention.
+    Subscribers are held by weak reference, so a forgotten unsubscribe doesn't leak the subscriber.
+    ``ViewBase.on_unmount`` unsubscribes explicitly for eager teardown — preventing a callback fire
+    between unmount and GC — not for leak prevention.
 
     Subscriber requirement: the callable must be weak-referenceable, and something other than the
     subscription itself must hold it alive. Bound methods of long-lived objects (the common case)
@@ -330,6 +332,7 @@ class ViewModelBase:
         """
         OnDirty = "OnDirty"
         RequestFocus = "RequestFocus"
+        OnHint = "OnHint"
 
     # Whether this VM is part of the chat pane's ctrl+up/ctrl+down navigation rotation. Default False;
     # feed VMs that present an interactive surface (interrupts, branch indicators) flip this to True
@@ -348,6 +351,7 @@ class ViewModelBase:
         self.make_callback_groups({
             ViewModelBase.Callbacks.OnDirty:      None,
             ViewModelBase.Callbacks.RequestFocus: None,
+            ViewModelBase.Callbacks.OnHint:       str,
         })
 
     def make_callback_group[**P](self, key: Hashable) -> CallbackGroup[P]:
@@ -496,6 +500,18 @@ class ViewModelBase:
         if emitter is None:
             emitter = self
         emitter.emit(self.Callbacks.RequestFocus)
+
+
+    def hint(self, msg: str, emitter: Emitter | None = None) -> None:
+        """Surface a short advisory message for the view to optionally display via ``OnHint``.
+
+        No subscriber is required — views are free to ignore hints entirely (or display them in a
+        transient status slot, badge, etc.). Accepts an optional ``emitter`` so the emit can
+        participate in a caller's ``emit_once`` batch on this same VM.
+        """
+        if emitter is None:
+            emitter = self
+        emitter.emit(self.Callbacks.OnHint, msg)
 
 
     def notify_focused(self) -> None:
