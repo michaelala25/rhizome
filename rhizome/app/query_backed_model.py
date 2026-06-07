@@ -1,5 +1,17 @@
 """QueryBackedViewModel — base for view-models whose state mirrors a re-runnable async query.
 
+.. deprecated::
+    DEPRECATED — slated for removal. The substrate in ``rhizome.app.query`` (``Query`` /
+    ``PagedQuery`` / ``PagedList``) supersedes this base class. New VMs MUST NOT inherit from
+    ``QueryBackedViewModel``; instead, inherit from ``ViewModelBase`` and compose the relevant
+    driver(s) as fields. See ``rhizome.app.browser.topics.details.TopicDetailsModel`` and
+    ``rhizome.app.browser.tabs.entries.linked_flashcards.LinkedFlashcardsPanelModel`` for the
+    canonical single-query and multi-driver shapes.
+
+    Surviving consumers: ``ResourceLoaderModel``, ``ResourceLinkerModel``, ``BrowserTabModel``
+    (via ``EntryTabModel``). These will be ported before this file is deleted — the first two are
+    pending an unrelated rewrite, the last lands with the ``EntryTabModel`` migration.
+
 The contract: the VM owns "inputs" (filters, search, cursors, ...) that map to a database query;
 a snapshot of those inputs feeds an async ``_fetch``; the result is applied back to local state
 by ``_process_fetched_data``. Any mutator that should re-evaluate the query calls
