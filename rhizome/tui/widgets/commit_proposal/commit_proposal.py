@@ -35,6 +35,7 @@ from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.focus_orchestration import FocusGraph, FocusOrchestrationMixin
 from rhizome.tui.widgets.shared.navigable_feed_item import NavigableFeedItemViewBase
 
+from rhizome.tui.widgets.shared.collapse_button import CollapseButton
 from rhizome.tui.widgets.shared.content_editor import ContentEditor, TextAreaParams
 from rhizome.tui.widgets.shared.list_menu import ListMenu, MenuItem
 
@@ -45,29 +46,6 @@ from .messages import SetTopicRequested
 # ========================================================================================================================
 # Sub-widgets
 # ========================================================================================================================
-
-
-class CollapseButton(Static, can_focus=False):
-    """Tiny ▶/▼ toggle. Posts ``Pressed`` on click; parent flips ``CommitProposal.collapsed``."""
-
-    DEFAULT_CSS = """
-    CollapseButton {
-        width: 3;
-        height: 1;
-        content-align: center middle;
-        color: rgb(120,120,120);
-        background: transparent;
-    }
-    CollapseButton:hover {
-        color: white;
-    }
-    """
-
-    class Pressed(Message):
-        """User clicked the collapse button."""
-
-    def on_click(self, event) -> None:
-        self.post_message(CollapseButton.Pressed())
 
 
 class SharedTopicSetter(ListMenu):
