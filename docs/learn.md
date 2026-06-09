@@ -1,6 +1,6 @@
 # Learn Mode
 
-Learn mode is the primary workflow. The user sets a topic as context, chats with the agent to explore it, and commits extracted knowledge entries to the database.
+Learn mode is the primary workflow. The user chats with the agent to explore a subject, and commits extracted knowledge entries to the database.
 
 ## Entering Learn Mode
 
@@ -10,18 +10,13 @@ Learn mode is the primary workflow. The user sets a topic as context, chats with
 
 On entry, the system prompt switches to `LEARN_MODE_SECTION` and the tool set is filtered to learn-relevant tools via `AgentModeMiddleware`.
 
-## Topic Selection
+## Topics
 
-The active topic determines where committed entries are stored. It's shown in the status bar (e.g. `[Git > Branching Strategies]`).
-
-**Setting a topic:**
-- `/topics` opens an interactive `TopicTreeViewer` — navigate with arrow keys, select with `Ctrl+J`
-- The agent can call `update_app_state(topic_id=...)` to set it programmatically
-- The agent receives the active topic name in its context on every invocation
+The agent grounds itself in the existing topic tree (`list_topics`) before answering, and each committed knowledge entry is assigned a topic as part of the commit proposal (see below). If no suitable topic exists, the agent asks the user before creating one.
 
 ## Chatting
 
-With a topic set, the user chats freely. The agent is instructed to:
+The user chats freely. The agent is instructed to:
 - Ground answers in the knowledge database (browsing existing entries via `list_knowledge_entries` / `read_knowledge_entries`)
 - Build on what's already stored rather than repeating it
 - Use web search when needed

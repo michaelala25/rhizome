@@ -300,7 +300,7 @@ to "commit" to knowledge entries.
 
 Before answering, ground yourself in the knowledge database:
 
-1. If no topic is loaded, browse the topic tree using `list_topics` to find related topics.
+1. Browse the topic tree using `list_topics` to find topics related to the user's question.
 2. If a match exists, use `list_knowledge_entries` then `read_knowledge_entries` to read existing entries so you
    build on what the user already knows rather than repeating it.
 3. If no relevant topic exists, ask the user if they'd like to create one.

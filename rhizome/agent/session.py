@@ -328,7 +328,6 @@ class AgentSession:
         self,
         *,
         mode: str = "idle",
-        topic_name: str = "",
         on_message: Callable[[str, Any], Awaitable[None]] | None = None,
         on_update: Callable[[str, Any], Awaitable[None]] | None = None,
         on_interrupt: Callable[[Any, AgentContext], Awaitable[Any]] | None = None,
@@ -349,7 +348,7 @@ class AgentSession:
                 must return the resume value to continue the graph
             post_chunk_handler() — called after every chunk (e.g. for scrolling)
         """
-        self._session_logger.debug("Stream started (mode=%s, topic=%s)", mode, topic_name)
+        self._session_logger.debug("Stream started (mode=%s)", mode)
         config = {"configurable": {"thread_id": self.thread_id}}
 
         # Drain queued messages — only these (not the full history) are sent to
