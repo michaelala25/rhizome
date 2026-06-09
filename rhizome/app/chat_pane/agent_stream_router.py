@@ -61,12 +61,12 @@ _INTERRUPT_VM_FACTORIES: dict[str, Callable[[dict[str, Any]], InterruptModelBase
 
 if TYPE_CHECKING:
     from .conversation_graph import ConversationGraphCursor
-    from .view_model import ChatPaneModel
+    from .conversation_area import ConversationAreaModel
 
 
 class AgentStreamRouter:
 
-    def __init__(self, pane: "ChatPaneModel") -> None:
+    def __init__(self, pane: "ConversationAreaModel") -> None:
         self._pane = pane
 
         # Cursor snapshot at turn start. All feed mutations made by this router (append agent
@@ -119,7 +119,7 @@ class AgentStreamRouter:
         ``cancelled=False`` (the default — natural end of stream): if no visible output was
         produced, append a "(no response)" stub so empty turns leave a trace.
 
-        ``cancelled=True`` (user-initiated cancel, via ``ChatPaneModel.cancel_agent_turn``):
+        ``cancelled=True`` (user-initiated cancel, via ``ConversationAreaModel.cancel_agent_turn``):
         mark the currently-open agent message cancelled *before* sealing it, so the view's drain
         loop bails on its next iteration instead of slowly catching up to the buffered body. Then
         skip the stub — the worker's ``CancelledError`` handler posts a "(user cancelled)"

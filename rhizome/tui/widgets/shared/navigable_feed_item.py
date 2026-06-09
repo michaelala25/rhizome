@@ -4,7 +4,7 @@ treatment.
 * ``NavigableViewBase`` — focusable ``ViewBase`` with the hover + focus-within border behaviour.
 * ``NavigableFeedItemViewBase`` — additionally pins a persistent "ctrl+↑/↓" hint in the border's
   bottom-right; designed for chat-pane feed widgets that participate in
-  ``ChatPaneModel.navigate_feed()``.
+  ``ConversationAreaModel.navigate_feed()``.
 
 Both contribute:
   * a solid dim-grey border by default, brighter on mouse hover, a gentle blue border whenever
@@ -17,7 +17,7 @@ Both contribute:
 
 The bases are *appearance + focusability only* — they don't touch the VM beyond what ``ViewBase``
 already does. Whether a chat-pane feed entry participates in navigation is still governed by
-``is_navigable = True`` on the VM (read by ``ChatPaneModel.navigate_feed()``);
+``is_navigable = True`` on the VM (read by ``ConversationAreaModel.navigate_feed()``);
 ``NavigableFeedItemViewBase``'s job is to make the participating widget look the part.
 
 Usage::

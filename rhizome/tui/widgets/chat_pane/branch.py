@@ -1,6 +1,6 @@
 """BranchIndicator — sub-VM + view representing a /branch point in the chat feed.
 
-Lives in the parent node's feed (appended by ``ChatPaneModel.branch()`` at the moment of /branch).
+Lives in the parent node's feed (appended by ``ConversationAreaModel.branch()`` at the moment of /branch).
 Displays the branches reachable from that point and, when the cursor has descended through it, which
 branch is currently selected. State is push-driven: the chat pane walks the visible feed on every
 cursor move and calls ``set_selected_child(...)`` directly — no event-pump subscription.
@@ -10,8 +10,6 @@ the chat pane VM to mutate the cursor (``descend_into`` / ``ascend`` / ``swap_si
 """
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 from textual import events, on
 from textual.app import ComposeResult
@@ -25,10 +23,6 @@ from rhizome.tui.widgets.shared.text_area import ConfirmableTextArea
 from rhizome.app.chat_pane.branch import BranchPointModel
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
-from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId
-
-if TYPE_CHECKING:
-    from .view_model import ChatPaneModel
 
 
 class RenameTextArea(ConfirmableTextArea):

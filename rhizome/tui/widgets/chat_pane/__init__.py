@@ -1,11 +1,14 @@
 """chat_pane package — MVVM chat pane.
 
-The legacy widget still lives at ``rhizome.tui.widgets.legacy.chat_pane.ChatPane``
-(also re-exported from ``rhizome.tui.widgets``); the new MVVM ``ChatPane`` in
-``.view`` takes the unqualified name in this package.
+``ChatPane`` (in ``.chat_pane``) is the orchestrator: it composes the conversation
+(``ConversationArea``, in ``.conversation_area``) and docks side panels like the resource viewer.
+The legacy widget still lives at ``rhizome.tui.widgets.legacy.chat_pane.ChatPane`` (also re-exported
+from ``rhizome.tui.widgets``); the new MVVM ``ChatPane`` takes the unqualified name in this package.
 """
 
 from rhizome.tui.widgets.chat_pane.chat_pane import ChatPane
+from rhizome.tui.widgets.chat_pane.conversation_area import ConversationArea
 from rhizome.app.chat_pane.chat_pane import ChatPaneModel
+from rhizome.app.chat_pane.conversation_area import ConversationAreaModel
 
-__all__ = ["ChatPane", "ChatPaneModel"]
+__all__ = ["ChatPane", "ChatPaneModel", "ConversationArea", "ConversationAreaModel"]

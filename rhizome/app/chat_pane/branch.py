@@ -1,6 +1,6 @@
 """BranchIndicator — sub-VM + view representing a /branch point in the chat feed.
 
-Lives in the parent node's feed (appended by ``ChatPaneModel.branch()`` at the moment of /branch).
+Lives in the parent node's feed (appended by ``ConversationAreaModel.branch()`` at the moment of /branch).
 Displays the branches reachable from that point and, when the cursor has descended through it, which
 branch is currently selected. State is push-driven: the chat pane walks the visible feed on every
 cursor move and calls ``set_selected_child(...)`` directly — no event-pump subscription.
@@ -13,16 +13,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal
-from textual.widgets import Static
-
 from rhizome.app.model import ViewModelBase
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, NodeId
 
 if TYPE_CHECKING:
-    from .view_model import ChatPaneModel
+    from .conversation_area import ConversationAreaModel
 
 
 class BranchPointModel(ViewModelBase):
@@ -41,7 +36,7 @@ class BranchPointModel(ViewModelBase):
         self,
         graph: ConversationGraph,
         parent_node_id: NodeId,
-        chat_pane: "ChatPaneModel",
+        chat_pane: "ConversationAreaModel",
     ) -> None:
         super().__init__()
         self._graph = graph
@@ -88,7 +83,7 @@ class BranchPointModel(ViewModelBase):
         return self._graph.node(self._selected_child).name or ""
 
     # ------------------------------------------------------------------
-    # State updates (called by ChatPaneModel on cursor moves)
+    # State updates (called by ConversationAreaModel on cursor moves)
     # ------------------------------------------------------------------
 
     def set_selected_child(self, child_id: NodeId | None) -> None:
@@ -134,7 +129,7 @@ class BranchPointModel(ViewModelBase):
 
         Passes ``parent_node_id`` so an ancestor indicator (higher in the path) ascends out of its
         own branch point rather than just popping one level from the leaf — see
-        ``ChatPaneModel.ascend``.
+        ``ConversationAreaModel.ascend``.
         """
         if self._selected_child is None:
             return
@@ -155,7 +150,7 @@ class BranchPointModel(ViewModelBase):
         """alt+left (-1) / alt+right (+1): swap horizontal sibling at *this* branch point.
 
         Passes ``parent_node_id`` so the swap happens at this indicator's level even if the cursor
-        currently sits several levels deeper. See ``ChatPaneModel.swap_sibling`` for the
+        currently sits several levels deeper. See ``ConversationAreaModel.swap_sibling`` for the
         truncation semantics.
         """
         if self._selected_child is None:
