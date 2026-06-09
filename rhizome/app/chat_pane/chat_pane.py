@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from rhizome.agent.session import AgentSession, get_agent_kwargs
 from rhizome.db import Topic
-from rhizome.db.operations import get_topic
 from rhizome.resources.manager import ResourceManager
 from rhizome.app.resource_viewer import ResourceViewerModel
 from rhizome.app.command_registry import CommandRegistry
@@ -201,11 +200,6 @@ class ChatPaneModel(ViewModelBase):
 
         self.session_mode: Mode = Mode.IDLE
 
-        # Active topic + path from the topic tree root. Mutated via set_topic / clear_topic; surfaced
-        # by the view in the status bar.
-        self.active_topic: Topic | None = None
-        self.topic_path: list[str] = []
-
         self.command_palette = CommandPaletteModel()
         self._command_registry = CommandRegistry()
         self._register_commands()
@@ -217,7 +211,7 @@ class ChatPaneModel(ViewModelBase):
         self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
-        # Status-bar sub-VM. Projection of mode / topic_path (from this VM), token_usage + model_name
+        # Status-bar sub-VM. Projection of mode (from this VM), token_usage + model_name
         # (from the agent session), and verbosity (from app.options). Pane mutates it through setters;
         # the view subscribes to its own dirty so token updates don't repaint the rest of the pane.
         self.status_bar = StatusBarModel()
@@ -887,43 +881,8 @@ class ChatPaneModel(ViewModelBase):
         self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
-    # Topic / tab / verbosity (agent-tool-facing API)
+    # Tab / verbosity (agent-tool-facing API)
     # ------------------------------------------------------------------
-
-    def clear_topic(self) -> None:
-        """Drop the active topic. View re-renders the status bar via dirty."""
-        if self.active_topic is None and not self.topic_path:
-            return
-        self.active_topic = None
-        self.topic_path = []
-        self.status_bar.set_topic_path([])
-        self.emit(self.Callbacks.OnDirty)
-
-    async def set_topic(self, topic_id: int) -> bool:
-        """Resolve ``topic_id`` and set it as the active topic. Walks parents to build ``topic_path``.
-        Returns False if the topic does not exist (state is left unchanged).
-        """
-        if self._session_factory is None:
-            return False
-
-        async with self._session_factory() as session:
-            topic = await get_topic(session, topic_id)
-            if topic is None:
-                return False
-            path: list[str] = [topic.name]
-            current = topic
-            while current.parent_id is not None:
-                current = await get_topic(session, current.parent_id)
-                if current is None:
-                    break
-                path.append(current.name)
-            path.reverse()
-
-        self.active_topic = topic
-        self.topic_path = path
-        self.status_bar.set_topic_path(path)
-        self.emit(self.Callbacks.OnDirty)
-        return True
 
     async def set_tab_name(self, name: str) -> None:
         """Rename the active tab. The VM doesn't own tab state — emits through the ``tab_rename``

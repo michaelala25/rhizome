@@ -1,8 +1,8 @@
 """Status bar — sub-VM + view used by the MVVM chat pane.
 
-The status bar is a projection of facts that live elsewhere: mode and topic_path on the pane VM,
-token_usage + model_name on the AgentSession, verbosity on app.options. Rather than have the view
-reach into all three, ``StatusBarModel`` owns the projected slice. Each source's update path
+The status bar is a projection of facts that live elsewhere: mode on the pane VM, token_usage +
+model_name on the AgentSession, verbosity on app.options. Rather than have the view reach into all
+three, ``StatusBarModel`` owns the projected slice. Each source's update path
 writes through to a setter here; the setter no-ops on no change and emits ``dirty`` otherwise —
 giving the bar repaint isolation from the rest of the pane's dirty churn (token usage in particular
 updates on every model chunk).
@@ -24,7 +24,6 @@ class StatusBarModel(ViewModelBase):
     def __init__(self) -> None:
         super().__init__()
         self.mode: str = "idle"
-        self.topic_path: list[str] = []
         self.model_name: str = ""
         self.verbosity: str = "auto"
         self.token_usage: TokenUsageData = TokenUsageData()
@@ -33,12 +32,6 @@ class StatusBarModel(ViewModelBase):
         if self.mode == mode:
             return
         self.mode = mode
-        self.emit(self.Callbacks.OnDirty)
-
-    def set_topic_path(self, path: list[str]) -> None:
-        if self.topic_path == path:
-            return
-        self.topic_path = list(path)
         self.emit(self.Callbacks.OnDirty)
 
     def set_model_name(self, name: str) -> None:

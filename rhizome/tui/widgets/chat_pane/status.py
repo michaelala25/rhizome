@@ -1,8 +1,8 @@
 """Status bar — sub-VM + view used by the MVVM chat pane.
 
-The status bar is a projection of facts that live elsewhere: mode and topic_path on the pane VM,
-token_usage + model_name on the AgentSession, verbosity on app.options. Rather than have the view
-reach into all three, ``StatusBarModel`` owns the projected slice. Each source's update path
+The status bar is a projection of facts that live elsewhere: mode on the pane VM, token_usage +
+model_name on the AgentSession, verbosity on app.options. Rather than have the view reach into all
+three, ``StatusBarModel`` owns the projected slice. Each source's update path
 writes through to a setter here; the setter no-ops on no change and emits ``dirty`` otherwise —
 giving the bar repaint isolation from the rest of the pane's dirty churn (token usage in particular
 updates on every model chunk).
@@ -39,13 +39,9 @@ _VERBOSITY_COLORS: dict[str, str] = {
     "auto": "rgb(255,80,255)",
 }
 
-# Max characters for the rendered topic path (excluding the "topic: " prefix).
-TOPIC_PATH_MAX = 60
-
-
 class StatusBar(ViewBase[StatusBarModel]):
     """Renders the status bar from VM state. Three lines:
-    line 1: topic path (left), model name (right)
+    line 1: model name (right)
     line 2: mode (left), token usage (right)
     line 3: verbosity (left), cache usage (right)
     """
@@ -90,26 +86,12 @@ class StatusBar(ViewBase[StatusBarModel]):
         vm = self._vm
         _label = "rgb(140,140,140)"
 
-        # -- line 1: topic path (left), model name (right) --
-        topic_line = Text()
-        topic_line.append("topic: ", style=_label)
-        if vm.topic_path:
-            sep = " > "
-            full = sep.join(vm.topic_path)
-            if len(full) <= TOPIC_PATH_MAX:
-                topic_line.append(full)
-            else:
-                parts = list(vm.topic_path)
-                while len(parts) > 1 and len(sep.join(parts)) + len("... > ") > TOPIC_PATH_MAX:
-                    parts.pop(0)
-                topic_line.append("... > " + sep.join(parts))
-        else:
-            topic_line.append("none", style="rgb(100,100,100)")
-
+        # -- line 1: model name (right) --
+        model_line = Text()
         model_text = Text()
         if vm.model_name:
             model_text.append(vm.model_name, style="rgb(90,90,90)")
-        self._right_align(topic_line, model_text)
+        self._right_align(model_line, model_text)
 
         # -- line 2: mode (left), token usage (right) --
         mode_line = Text()
@@ -167,4 +149,4 @@ class StatusBar(ViewBase[StatusBarModel]):
             cache_text.append(f"cache read: {cache_read:,}  create: {cache_create:,}", style="rgb(90,90,90)")
             self._right_align(cache_line, cache_text)
 
-        return Text.assemble(topic_line, "\n", mode_line, "\n", cache_line)
+        return Text.assemble(model_line, "\n", mode_line, "\n", cache_line)

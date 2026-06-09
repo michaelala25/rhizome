@@ -24,8 +24,6 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
     @tool("update_app_state", description=(
         "Update one or more pieces of app state in a single call. All parameters "
         "are optional — only provided values are applied.\n\n"
-        "- topic_id: Set the active topic for this chat session.\n"
-        "- clear_topic: Clear the active topic (takes precedence over topic_id).\n"
         "- tab_name: Rename the active chat session tab. Keep it short — around "
         "20 characters, 2-3 words.\n"
         "- current_branch_name: Rename the current conversation branch (i.e. the "
@@ -37,8 +35,6 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
     @tool_visibility(ToolVisibility.LOW)
     async def update_app_state_tool(
         runtime: ToolRuntime,
-        topic_id: int | None = None,
-        clear_topic: bool = False,
         tab_name: str | None = None,
         current_branch_name: str | None = None,
         hint_higher_verbosity: bool = False,
@@ -47,16 +43,6 @@ def build_app_tools(session_factory, chat_pane=None) -> dict:
             return "Chat pane not available."
 
         results: list[str] = []
-
-        if clear_topic:
-            chat_pane.clear_topic()
-            results.append("Active topic cleared.")
-        elif topic_id is not None:
-            ok = await chat_pane.set_topic(topic_id)
-            if ok:
-                results.append(f"Active topic set to: {chat_pane.active_topic.name}")
-            else:
-                results.append(f"Topic {topic_id} not found.")
 
         if tab_name is not None:
             await chat_pane.set_tab_name(tab_name)
