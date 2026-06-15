@@ -11,6 +11,12 @@ whole region, so one job per (bitmap, placement) covers every paint and every ``
 alike — the cache can't thrash between them. A partially-scrolled sixel is imperfect (the blob can't
 cell-scroll); that's an accepted protocol limitation, not handled here.
 
+Emission is cut-proof but not overlap-proof: ``blob_strip`` builds the one strip shape whose escapes
+survive the compositor's strip division (triggered the moment any widget — a scrollbar, say — puts an
+interior cut through the image's rows). A widget painted *in front* of the image is still wrong by
+protocol — sixel pixels have no z-order — so owners suppress the blob instead while anything overlaps
+(see ``widget.first_occluder``).
+
 Requires the ``img2sixel`` binary (Debian/Ubuntu: ``apt install libsixel-bin``) and a sixel terminal.
 """
 
@@ -29,10 +35,11 @@ from rich.style import Style
 from textual.geometry import Region
 from textual.strip import Strip
 
-from rhizome.tui.graphics.backend import GraphicsBackend
-from rhizome.tui.graphics.geometry import Placement
+from rhizome.tui.graphics_prototype.backend import GraphicsBackend
+from rhizome.tui.graphics_prototype.geometry import Placement
 
 _NULL = Style()                     # control-only segments carry no style
+_CTRL = ((ControlType.CURSOR_FORWARD, 0),)   # zero-width marker — rich must not measure escape text as cells
 OUTLINE_RGB = (220, 30, 30)         # hover outline color
 OUTLINE_WIDTH = 3                   # canvas px — drawn in the scaled (on-screen) space
 
@@ -110,16 +117,41 @@ def _encode_sixel(image: PILImage.Image, options: SixelOptions, background: tupl
     return subprocess.run(cmd, input=ppm.getvalue(), stdout=subprocess.PIPE, check=True).stdout.decode("latin-1")
 
 
-def _placement_segments(sixel: str, x: int, y: int, region: Region) -> list[Segment]:
-    """Position a sixel blob at absolute cell ``(x, y)``, then park the cursor at the region's corner.
+def _blob_segments(blobs: list[tuple[str, int, int]]) -> list[Segment]:
+    """Save cursor, jump-and-paint each ``(sixel, x, y)`` in order, restore — all zero-width controls.
 
-    The trailing ``CURSOR_FORWARD, 0`` keeps Textual from advancing the cursor over the blob itself.
+    Every escape MUST be marked as a control segment: a plain segment's escape text measures as
+    printable cells, which pushes anything after it past a compositor cut, where ``Strip.divide``
+    silently drops it. The save/restore pair means whatever renders after these segments still lands
+    at its correct position.
     """
-    return [
-        Segment(Control.move_to(x, y).segment.text, style=_NULL),
-        Segment(sixel, style=_NULL, control=((ControlType.CURSOR_FORWARD, 0),)),
-        Segment(Control.move_to(region.right, region.bottom).segment.text, style=_NULL),
-    ]
+    segments = [Segment("\x1b7", _NULL, control=_CTRL)]
+    for sixel, x, y in blobs:
+        segments.append(Control.move_to(x, y).segment)
+        segments.append(Segment(sixel, _NULL, control=_CTRL))
+    segments.append(Segment("\x1b8", _NULL, control=_CTRL))
+    return segments
+
+
+def blob_strip(blobs: list[tuple[str, int, int]], width: int, fill: Style,
+               pad: Style | None = None) -> Strip:
+    """The one strip shape whose sixels survive the compositor: ``width`` cells, escapes one from the end.
+
+    The compositor divides a widget's strips the moment another widget (e.g. a scrollbar) puts an
+    interior cut through them, and ``Strip.divide`` drops a strip that doesn't reach the cut, hands
+    zero-width segments sitting *at* an interior cut to the neighbouring chunk (which the widget in
+    front wins), and keeps trailing controls only at the final cut. So: span exactly ``width`` (the
+    content width — never include scrollbar columns), escapes strictly inside the kept chunk, one real
+    cell after them. That trailing pad cell is written after the sixel (the cursor restore puts it in
+    the right place) and so overwrites the blob's bottom-right corner cell — pass ``pad`` (e.g. the
+    image's color under that cell) to disguise it.
+
+    Scope caveat: this makes blobs survive *cuts* — i.e. images coexisting with scrollbars and other
+    chrome in scrollable layouts. It guarantees nothing for widgets painted in front of the image,
+    which sixel cannot compose under; suppress the blob instead (``widget.first_occluder``).
+    """
+    return Strip([Segment(" " * (width - 1), fill), *_blob_segments(blobs), Segment(" ", pad or fill)],
+                 cell_length=width)
 
 
 class SixelBackend(GraphicsBackend):
@@ -163,12 +195,11 @@ class SixelBackend(GraphicsBackend):
 
     def compose(self, frame: SixelFrame, highlight: SixelHighlight | None, crop: Region, *,
                 region: Region) -> list[Strip]:
-        r, g, b = frame.job.background[:3]
-        clear = Segment(" " * crop.width, style=Style(bgcolor=Color.from_rgb(r, g, b)))
-        last = [clear, *_placement_segments(frame.sixel, region.x, region.y, region)]
+        fill = Style(bgcolor=Color.from_rgb(*frame.job.background[:3]))
+        clear = Segment(" " * crop.width, style=fill)
+        blobs = [(frame.sixel, region.x, region.y)]
         if highlight is not None:                               # overlay after the page -> drawn on top
-            last += _placement_segments(highlight.sixel, region.x + highlight.cell_x,
-                                        region.y + highlight.cell_y, region)
+            blobs.append((highlight.sixel, region.x + highlight.cell_x, region.y + highlight.cell_y))
         lines = [Strip([clear], cell_length=crop.width) for _ in range(crop.height - 1)]
-        lines.append(Strip(last, cell_length=crop.width))
+        lines.append(blob_strip(blobs, crop.width, fill))
         return lines

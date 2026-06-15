@@ -7,7 +7,7 @@ diverge from the sixel backend. Left unimplemented until it can be validated on 
 become ``textual_image.renderable.tgp.query_terminal_support()``.
 """
 
-from rhizome.tui.graphics.backend import GraphicsBackend
+from rhizome.tui.graphics_prototype.backend import GraphicsBackend
 
 _UNIMPLEMENTED = "the kitty/TGP backend is not implemented yet"
 

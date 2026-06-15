@@ -29,6 +29,12 @@ Pass ``select_backend()``'s result in; with ``backend=None`` the widget shows an
 
 Caveat for owners: a sixel touching the screen's last row makes the terminal scroll on re-emit —
 reserve a bottom row so this widget never reaches it.
+
+Overlap policy: graphics pixels have no z-order, so the widget *suppresses* its blob (paints plain
+background) whenever it isn't front-most — under another screen (``is_active``) or under a same-screen
+float like a toast or tooltip (``first_occluder``). The image hides while the overlay is up and snaps
+back from the frame cache when it leaves; the alternative is a frame-timing race between the overlay's
+cells and the image's pixels.
 """
 
 from collections import OrderedDict
@@ -46,13 +52,40 @@ from textual.widget import Widget
 from textual.worker import Worker, WorkerState
 from textual_image._terminal import get_cell_size
 
-from rhizome.tui.graphics.backend import GraphicsBackend
-from rhizome.tui.graphics.geometry import first_hit, footprint, placement
+from rhizome.tui.graphics_prototype.backend import GraphicsBackend
+from rhizome.tui.graphics_prototype.geometry import first_hit, footprint, placement
 
 _FRAMES_MAX = 8                         # encoded frames kept (current + neighbours); overlays follow them
 _FRAME_GROUP = "graphics-frame"
 _OVERLAY_GROUP = "graphics-overlays"
 _HOVER_REPAINT_INTERVAL = 0.06          # min seconds between hover repaints; mid-cooldown hovers are dropped
+
+
+def first_occluder(widget: Widget) -> Widget | None:
+    """The first same-screen widget painted in front of ``widget`` that overlaps it, or None.
+
+    Sixel pixels have no z-order: a widget floating over the image either gets buried under the blob
+    or knocks the blob's escapes out of the compositor's cuts — which one is a race on geometry.
+    Owners use this to suppress the blob while anything overlaps (toasts, tooltips, dropdowns), so
+    floats degrade exactly like modal screens: image hides, repaints from cache when the float leaves.
+
+    Walks the screen compositor's map: in front = higher paint order; the widget's own descendants
+    (its scrollbars) are exempt. Leans on private compositor state — fails open (None) if that
+    structure moves under a Textual upgrade.
+    """
+    try:
+        compositor = widget.screen._compositor
+        cmap = compositor._visible_map if compositor._visible_map is not None else compositor._full_map
+        mine = cmap[widget]
+    except (NoScreen, KeyError, AttributeError):
+        return None
+    area = mine.visible_region
+    for other, geometry in cmap.items():
+        if geometry.order <= mine.order or widget in other.ancestors_with_self:
+            continue
+        if area.overlaps(geometry.visible_region):
+            return other
+    return None
 
 
 class GraphicsImage(Widget):
@@ -91,6 +124,7 @@ class GraphicsImage(Widget):
         self._overlays: dict[tuple, object] = {}              # (job, rect) -> Highlight | None
         self._repaint_timer: Timer | None = None              # throttles hover repaints (None = idle)
         self._repaint_dirty = False                           # hover changed during the cooldown window
+        self._occluded = False                                # a same-screen float overlaps us right now
 
     # -- public API ------------------------------------------------------------------------------
 
@@ -120,6 +154,13 @@ class GraphicsImage(Widget):
             if self._bitmap is None or not self.screen.is_active:
                 return self._notice(crop)
         except NoScreen:
+            return self._notice(crop)
+
+        occluded = first_occluder(self) is not None
+        if occluded != self._occluded:                        # a float arrived or left: repaint the whole
+            self._occluded = occluded                         # image area, not just this paint's crop
+            self.refresh()
+        if occluded:
             return self._notice(crop)
 
         job = self._job_for(self._bitmap)

@@ -5,10 +5,10 @@ bitmap plus box rectangles (image px) and the backend renders them through one t
 protocol. See ``CONTEXT.md`` for the source -> geometry -> backend layering.
 """
 
-from rhizome.tui.graphics.backend import GraphicsBackend, select_backend
-from rhizome.tui.graphics.geometry import Placement, first_hit, footprint, placement
-from rhizome.tui.graphics.sixel import SixelBackend, SixelOptions
-from rhizome.tui.graphics.widget import GraphicsImage
+from rhizome.tui.graphics_prototype.backend import GraphicsBackend, select_backend
+from rhizome.tui.graphics_prototype.geometry import Placement, first_hit, footprint, placement
+from rhizome.tui.graphics_prototype.sixel import SixelBackend, SixelOptions
+from rhizome.tui.graphics_prototype.widget import GraphicsImage
 
 __all__ = [
     "GraphicsImage",
