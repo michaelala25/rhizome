@@ -19,7 +19,7 @@ backend was selected *and* ``pdflatex`` is on PATH) and a plain ``Markdown`` oth
 without a sixel terminal or LaTeX simply shows ``$$…$$`` as text rather than failing.
 
 The LaTeX rasterization (``render_math_ink`` / ``recolor``) is the *content source* the graphics layer
-stays ignorant of; sizing follows ``MATH_RENDERING_NOTES.md`` (math tracks the terminal text height).
+stays ignorant of; sizing tracks the terminal text height (see the ``MATH_*`` constants below).
 """
 
 from __future__ import annotations
@@ -45,10 +45,11 @@ from textual.worker import Worker, WorkerState
 
 import rhizome.tui.graphics as graphics
 
-# Rendered-math sizing + sharpness (see MATH_RENDERING_NOTES.md). The on-screen text target is
-# MATH_TEXT_RATIO × the live cell height; we rasterize at MATH_SUPERSAMPLE × that and downsample, so the
-# encoded image is always supersampled relative to its on-screen size. Deriving the size from the live cell
-# height is what makes a block re-rasterize sharp — and larger — when the terminal font zooms.
+# Rendered-math sizing + sharpness. On-screen math height ÷ terminal text height = MATH_TEXT_RATIO: we
+# rasterize at MATH_SUPERSAMPLE × the target px/pt and downsample by 1/MATH_SUPERSAMPLE, so on-screen *size*
+# is set purely by the cell height while MATH_SUPERSAMPLE is a pure sharpness knob (render high, scale back).
+# Because the target is derived from the *live* cell height, a block re-rasterizes sharp — and larger — when
+# the terminal font zooms, instead of being stretched.
 MATH_PT = 12             # LaTeX nominal font pt baked into the standalone doc class
 MATH_TEXT_RATIO = 1.20   # rendered math height ÷ terminal text height (1.0 = parity; <1 tighter; >1 bigger)
 MATH_SUPERSAMPLE = 2     # rasterize this many × display res, then LANCZOS-downsample -> crisp anti-aliased edges

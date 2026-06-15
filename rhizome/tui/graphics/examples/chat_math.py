@@ -15,7 +15,7 @@ plain ``Markdown``. It leans on three things the library is meant to make cheap:
 - **Font-relative sizing via ``fit="native"``.** ``MathSource`` sizes each equation to a multiple of the
   *live* cell height, so the math tracks the terminal text size and re-rasterizes larger on a font-zoom
   (``note_resize`` feeds the new cell size). ``fit="native"`` then draws it at that intrinsic size instead
-  of stretching it to fill the message column. See ``MATH_RENDERING_NOTES.md`` for the sizing chain.
+  of stretching it to fill the message column.
 
 The markdown-splitting half (finding closed ``$$ … $$`` spans in an append-only stream) is content logic
 the graphics layer knows nothing about — it lives here unchanged from any other ``$$`` renderer.
