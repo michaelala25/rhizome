@@ -4,8 +4,11 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from textual import events
 from textual.app import App
 from textual.binding import Binding
+
+import rhizome.tui.graphics as graphics
 
 from rhizome.config import get_default_db_path
 from rhizome.credentials import has_api_key
@@ -93,6 +96,12 @@ class RhizomeApp(App):
             self.push_screen(SetupScreen(), callback=self._on_setup_complete)
         else:
             self.push_screen(MainScreen())
+
+    def on_resize(self, event: events.Resize) -> None:
+        # Keep the graphics cell size live (off the whole-window grid) so terminal-rendered images — the
+        # math blocks in agent messages — re-rasterize at the right scale on a font-zoom. No-op without a
+        # backend or when the terminal doesn't report pixel size.
+        graphics.note_resize(self.size.width, self.size.height, event.pixel_size)
 
     def _on_setup_complete(self, completed: bool) -> None:
         self.push_screen(MainScreen())

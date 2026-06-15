@@ -49,15 +49,17 @@ import rhizome.tui.graphics as graphics
 # to its on-screen size (crisp edges). Deriving the size from the *live* cell height (carried on the source's
 # RenderContext) is what makes a block re-rasterize sharp — and bigger — when the terminal font zooms.
 MATH_PT = 12             # LaTeX nominal font pt baked into the standalone doc class
-MATH_TEXT_RATIO = 1.15   # rendered math height ÷ terminal text height (1.0 = parity; <1 tighter; >1 bigger)
-MATH_SUPERSAMPLE = 2     # rasterize this many × the display resolution, then downsample -> anti-aliased edges
+MATH_TEXT_RATIO = 1.20   # rendered math height ÷ terminal text height (1.0 = parity; <1 tighter; >1 bigger)
+MATH_SUPERSAMPLE = 2     # rasterize this many × display res, then LANCZOS-downsample -> crisp anti-aliased edges
 
 
 # ========================================================================================================
 # RASTERIZE HALF — LaTeX body -> tight, theme-colored bitmap (the "content source", library-agnostic)
 # ========================================================================================================
 
-STANDALONE = r"""\documentclass[border=2pt,12pt]{standalone}
+# border={<horizontal> <vertical>}: generous left/right + a little top/bottom so glyphs never reach the
+# bitmap's edge cells (the last cell can get clipped when the blob is blitted tight to its box).
+STANDALONE = r"""\documentclass[border={12pt 6pt},12pt]{standalone}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \begin{document}
@@ -144,7 +146,8 @@ class MathSource:
             return _error_bitmap(str(err), self._fg, self._bg, round(MATH_TEXT_RATIO * cell_h))
         img = recolor(ink, self._fg, self._bg)
         scale = min(1.0 / MATH_SUPERSAMPLE, max_w_px / img.width)    # downsample, never wider than the column
-        return img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))))
+        return img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+                          PILImage.Resampling.LANCZOS)               # crisp downscale of anti-aliased glyphs
 
 
 class MathBlock(graphics.Image):
