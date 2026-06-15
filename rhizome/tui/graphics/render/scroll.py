@@ -3,7 +3,13 @@
 The fit-whole ``Image`` re-fits its box on every resize, so the picture never overflows. ``ScrollImage``
 does the opposite: the fit computed at first layout is the zoom-1.0 baseline, and ``set_zoom`` scales that
 footprint, growing ``virtual_size`` past the viewport so ScrollView's machinery (scrollbars, wheel, arrow
-keys) pans around the image. Terminal font-zoom then becomes image zoom for free.
+keys) pans around the image.
+
+A terminal font-zoom (the cell px change, distinct from a pure window resize that only re-grids) is handled
+per ``zoom_tracks_font``: by default the image's *physical size* is held (the canvas px stay put, only the
+cell footprint re-flows), so zoom stays entirely under ``set_zoom``/the ``+``-``-`` keys; with it ``True`` a
+font-zoom instead drives the image zoom — the footprint is held in cells, so growing cells grow the canvas,
+and ``set_zoom`` composes on top.
 
 The structural consequence of scrolling: a sixel blob can't be partially drawn (no clip rectangle, no
 negative cursor rows), so **every scroll offset needs its own encode of the viewport-sized window** cropped
@@ -62,14 +68,16 @@ class ScrollImage(ScrollView):
 
     DEFAULT_CSS = "ScrollImage { width: 1fr; height: 1fr; }"
 
-    def __init__(self, options: SixelOptions = SixelOptions(), *,
+    def __init__(self, options: SixelOptions = SixelOptions(), *, zoom_tracks_font: bool = False,
                  name: str | None = None, id: str | None = None, classes: str | None = None) -> None:
         super().__init__(name=name, id=id, classes=classes)
         self._options = options
+        self._zoom_tracks_font = zoom_tracks_font   # a font-zoom drives image zoom (True) or is absorbed (False)
         self._bitmap = None
         self._zoom = 1.0
         self._fit = None                            # zoom-1.0 scale (image px -> screen px), pinned once
         self._canvas = None                         # the image resized for the current zoom
+        self._built_cell = None                     # cell size the canvas was last built at — font-zoom detector
         self._epoch = 0                             # bumped per canvas rebuild; stamps every window key
         self._windows: "OrderedDict[tuple, str]" = OrderedDict()   # (epoch, window) -> sixel
         self._stale = None                          # (window_size, sixel) of the last blob actually shown
@@ -109,9 +117,31 @@ class ScrollImage(ScrollView):
     # -- zoom / canvas -----------------------------------------------------------------------------
 
     def on_resize(self, event: events.Resize) -> None:
-        """First real layout pins the zoom-1.0 fit; later resizes keep the footprint (that's the point)."""
+        """First layout pins the zoom-1.0 fit. Afterwards a *pure window resize* keeps the footprint (the
+        point of the widget); a *font-zoom* (the cell px changed) either holds the image's physical size or
+        drives the zoom, per ``zoom_tracks_font``."""
         if self._fit is None:
             self._pin_and_build()
+            return
+        cell = cell_metrics().current
+        if self._built_cell is None or cell == self._built_cell:
+            return                                  # window resize only: footprint stays pinned, window re-crops
+        if self._zoom_tracks_font:
+            self._fit *= cell.height / self._built_cell.height   # bigger cells -> bigger canvas -> tracks font
+            self._rebuild_canvas()
+        else:
+            self._reflow_to_cell(cell)              # hold canvas px (physical size); just re-cell the footprint
+        self.refresh()
+
+    def _reflow_to_cell(self, cell) -> None:
+        """Font-zoom, exogenous-zoom mode: keep the canvas px so the image holds its physical size, and just
+        re-derive ``virtual_size`` for the new cell. The cell px changed, so cached windows are retired."""
+        self._epoch += 1
+        self._windows.clear()
+        self._wanted = None
+        self.virtual_size = Size(math.ceil(self._canvas.width / cell.width),
+                                 math.ceil(self._canvas.height / cell.height))
+        self._built_cell = cell
 
     def _pin_and_build(self) -> None:
         if self._bitmap is None or self.scrollable_size.width <= 0 or self.scrollable_size.height <= 0:
@@ -127,6 +157,7 @@ class ScrollImage(ScrollView):
         scale = self._fit * self._zoom
         w, h = max(1, round(self._bitmap.width * scale)), max(1, round(self._bitmap.height * scale))
         self._canvas = self._bitmap.resize((w, h))
+        self._built_cell = cell
         self._epoch += 1
         self._windows.clear()
         self._wanted = None

@@ -28,14 +28,19 @@ class Placement(NamedTuple):
     off_y: int
 
 
-def placement(img_w: int, img_h: int, box_w: int, box_h: int, halign: str = "center") -> Placement:
+def placement(img_w: int, img_h: int, box_w: int, box_h: int, halign: str = "center",
+              max_scale: float = float("inf")) -> Placement:
     """Fit an ``img_w`` x ``img_h`` bitmap into a ``box_w`` x ``box_h`` box keeping aspect ratio.
 
     ``halign`` ("left" | "center" | "right") sets the horizontal placement; the page is always
     vertically centered. The box is clamped to at least 1x1 so degenerate sizes don't divide by zero.
+
+    ``max_scale`` caps the image-px -> box-px ratio. The default (no cap) is "contain": fill the box,
+    up- or down-scaling as needed. ``max_scale=1.0`` is "native": never enlarge past the bitmap's own
+    pixels — draw it at intrinsic size, centered, shrinking only when it would overflow the box.
     """
     box_w, box_h = max(1, box_w), max(1, box_h)
-    scale = min(box_w / img_w, box_h / img_h)
+    scale = min(box_w / img_w, box_h / img_h, max_scale)
     scaled_w, scaled_h = max(1, round(img_w * scale)), max(1, round(img_h * scale))
     off_x = {"left": 0, "right": box_w - scaled_w}.get(halign, (box_w - scaled_w) // 2)
     off_y = (box_h - scaled_h) // 2

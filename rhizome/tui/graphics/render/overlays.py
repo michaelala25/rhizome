@@ -146,6 +146,7 @@ class ImageWithOverlays(Throttle, Image):
         box_w, box_h = self.content_size.width * cell.width, self.content_size.height * cell.height
         if box_w <= 0 or box_h <= 0:
             return None
-        place = placement(self._bitmap.width, self._bitmap.height, box_w, box_h, self._halign)
+        place = placement(self._bitmap.width, self._bitmap.height, box_w, box_h, self._halign,
+                          self._max_scale())
         fp = footprint(place, cell_x, cell_y, cell.width, cell.height)
         return first_hit(fp, [rect for rect, _payload in self._regions])

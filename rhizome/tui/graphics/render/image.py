@@ -111,17 +111,38 @@ class Throttle:
 
 
 class Image(Widget):
-    """Draw a bitmap (or a source's bitmap) in the terminal, encoded on a worker thread."""
+    """Draw a bitmap (or a source's bitmap) in the terminal, encoded on a worker thread.
+
+    ``fit`` decides how the bitmap is scaled into the widget's cell box. ``"contain"`` (default) fills the
+    box, up- or down-scaling to fit; ``"native"`` draws the bitmap at its own pixels, centered, shrinking
+    only to avoid overflow. They differ *only* when the box is larger than the bitmap (when ``"contain"``
+    would upscale). For a ``1fr`` widget the box just tracks the pane, so a font-zoom leaves the image's
+    physical size unchanged either way (the pane is fixed; cells get bigger but fewer fit). The two diverge
+    on a *fixed* cell footprint (e.g. ``width: 60; height: 30``), where the box is ``cells × cell-px`` and a
+    font-zoom flips which side is larger::
+
+        font-zoom IN  (cells grow, box outgrows the bitmap):
+            "contain" → keeps filling 60×30 cells: image grows with the font (soft past 1:1)
+            "native"  → stays 1:1: image holds its physical size, occupies fewer cells, slack grows
+        font-zoom OUT (cells shrink, box smaller than the bitmap):
+            "contain" == "native": both shrink to fit the box
+
+    So a fixed-footprint ``"contain"`` image grows with the font; ``"native"`` holds its size and never
+    upscale-blurs. Math-style content pairs ``"native"`` with a ``ctx.cell``-sized source: the source
+    re-renders larger as cells grow, so the image tracks the text size and stays crisp.
+    """
 
     DEFAULT_CSS = """
     Image { width: 1fr; height: 1fr; }
     """
 
     def __init__(self, backend: GraphicsBackend | None = None, *, halign: str = "center",
+                 fit: str = "contain",
                  name: str | None = None, id: str | None = None, classes: str | None = None) -> None:
         super().__init__(name=name, id=id, classes=classes)
         self._backend_override = backend                      # None -> read the global environment
         self._halign = halign
+        self._fit = fit                                       # "contain" fills the box | "native" never enlarges
         self._source = None                                   # the ImageSource (set by show)
         self._bitmap = None                                   # last resolved bitmap (for hit-testing); None until painted
         self._bitmaps: "OrderedDict[object, Worker]" = OrderedDict()      # cache_key -> rasterize worker
@@ -253,10 +274,14 @@ class Image(Widget):
             return None
         return RenderContext(cell, cw, ch, self._background_rgba())
 
+    def _max_scale(self) -> float:
+        """The image-px -> box-px scale cap for this widget's ``fit`` — shared by draw and hit-test."""
+        return 1.0 if self._fit == "native" else float("inf")
+
     def _job_for(self, bitmap, ctx: RenderContext):
         """An ``EncodeJob`` for ``bitmap`` at the layout described by ``ctx``."""
         box_w, box_h = ctx.content_width * ctx.cell.width, ctx.content_height * ctx.cell.height
-        place = placement(bitmap.width, bitmap.height, box_w, box_h, self._halign)
+        place = placement(bitmap.width, bitmap.height, box_w, box_h, self._halign, self._max_scale())
         return self.backend.prepare(bitmap, place, ctx.cell, background=ctx.background)
 
     def _visible_region(self) -> Region | None:

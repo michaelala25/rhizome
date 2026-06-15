@@ -57,9 +57,11 @@ from the app's `on_resize` to keep the cell size live.
 - **`image.py`** — `Image`, the base widget. Reads the environment for backend + cell size; runs the
   **two-stage off-thread pipeline** (rasterize → encode), each cached; suppresses its blob when not a
   clean full-rect paint — under another screen (`is_active`), under a same-screen float (`first_occluder`),
-  or partially clipped by an ancestor scroll (`visible_region != region`). No interaction; subclasses add
-  overlays via the `_overlays_for` hook. Also home to the `Throttle` mixin (coalesce expensive repaints,
-  latest-wins) shared by the hover and selection widgets.
+  or partially clipped by an ancestor scroll (`visible_region != region`). A `fit` policy sets scaling —
+  `"contain"` (default) fills the cell box; `"native"` draws at intrinsic px, never enlarging (pair it with
+  a `ctx.cell`-sized source and the image tracks the font). No interaction; subclasses add overlays via the
+  `_overlays_for` hook. Also home to the `Throttle` mixin (coalesce expensive repaints, latest-wins) shared
+  by the hover and selection widgets.
 - **`overlays.py`** — `ImageWithOverlays(Throttle, Image)`, adds `(rect, payload)` regions, mouse
   hit-testing, the `(job, rect, style)` overlay-tile cache (+ a hover-only pre-encode), hover-outlining,
   and `RegionHovered`/`RegionSelected`.
