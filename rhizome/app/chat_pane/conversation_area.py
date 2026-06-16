@@ -28,7 +28,7 @@ from rhizome.utils.services import ServiceAccessor
 from rhizome.utils.workers import WorkerSchedulerService
 from rhizome.resources.manager import ResourceManager
 from rhizome.app.command_registry import CommandRegistry
-from rhizome.app.options import Options
+from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.tui.types import Mode, Role
 
 from rhizome.app.browser.browser import BrowserModel
@@ -221,7 +221,6 @@ class ConversationAreaModel(ViewModelBase):
         # (from the agent session), and verbosity (from app.options). Pane mutates it through setters;
         # the view subscribes to its own dirty so token updates don't repaint the rest of the pane.
         self.status_bar = StatusBarModel()
-        self._options: Options | None = None
 
         # Agent plumbing. The ``ResourceManager`` is owned by the orchestrator (``ChatPaneModel``)
         # and injected here so the agent's loaded resources stay in sync with the side-panel
@@ -236,6 +235,20 @@ class ConversationAreaModel(ViewModelBase):
         self._services = services.child()
         self._services.register(WorkerSchedulerService, WorkerSchedulerService())
         self._session_factory = self._services.get(SessionFactoryService)
+
+        # Session-scoped options: a Session-level override layer parented to the app's Root options, so
+        # ``/options`` edits stay local to this conversation while inherited Root changes still forward
+        # in. Shadow the OptionService at our scope so descendants (AgentSession, leaf VMs) resolve this
+        # session node by default and can still reach Root via ``get(OptionScope.Root)``. Absent in
+        # headless / test scopes that register no OptionService -- ``_options`` stays None and the pane
+        # runs option-less, exactly as before this layer existed. Severed from the chain on teardown by
+        # ``detach_options`` (the view's ``on_unmount``).
+        option_service = services.try_get(OptionService)
+        self._options: Options | None = None
+        if option_service is not None:
+            self._options = Options(OptionScope.Session, parent=option_service.get(OptionScope.Root))
+            self._services.register(OptionService, OptionService(self._options))
+
         self.resource_manager: ResourceManager | None = resource_manager
 
         # AgentSession now lives on the ChatPaneConversationNode itself — one per open leaf,
@@ -389,19 +402,17 @@ class ConversationAreaModel(ViewModelBase):
         """
         return self._services.get(WorkerSchedulerService).get_scheduler()(work)
 
-    def bootstrap_agent_session(self, app_options: Options, *, debug: bool = False) -> None:
-        """Construct ``self.agent_session`` from app options. Idempotent: a second call is a no-op.
-        Caller is the view's ``on_mount`` because the provider/model values live on Textual's
-        ``app.options``.
+    def bootstrap_agent_session(self, *, debug: bool = False) -> None:
+        """Construct ``self.agent_session`` from this conversation's options. Idempotent: a second call
+        is a no-op. Reads ``self._options`` (the Session node wired in ``__init__``); a no-op when that
+        is absent (option-less / headless scope), since there is nothing to build a session from.
         """
-        if self.agent_session is not None:
+        if self.agent_session is not None or self._options is None:
             return
 
-        self._options = app_options
-
-        provider = app_options.get(Options.Agent.Provider)
-        model_name = app_options.get(Options.Agent.Model)
-        agent_kwargs = get_agent_kwargs(app_options)
+        provider = self._options.get(Options.Agent.Provider)
+        model_name = self._options.get(Options.Agent.Model)
+        agent_kwargs = get_agent_kwargs(self._options)
 
         self._node(self._cursor.head).agent_session = AgentSession(
             self._services,
@@ -416,23 +427,33 @@ class ConversationAreaModel(ViewModelBase):
 
         # Seed status-bar fields that come from the agent session / options.
         self.status_bar.set_model_name(self.agent_session._model_name or "")
-        self.status_bar.set_verbosity(app_options.get(Options.Agent.AnswerVerbosity))
-        app_options.subscribe_on_changed(Options.Agent.AnswerVerbosity, self._on_verbosity_changed)
-        # Options changes (provider/model/agent_kwargs) are shared across all branches: fan out
-        # each batch update to every per-leaf AgentSession so each one rebuilds in lockstep.
+        self.status_bar.set_verbosity(self._options.get(Options.Agent.AnswerVerbosity))
+        self._options.subscribe_on_changed(Options.Agent.AnswerVerbosity, self._on_verbosity_changed)
+        # Options changes (provider/model/agent_kwargs) fan out to every per-leaf AgentSession so each
+        # rebuilds in lockstep. Subscribing on the Session node catches both local edits and inherited
+        # Root changes (the Root forwards OnBatchUpdated into each child with the child's own snapshot).
         # Bootstrap is idempotent (early-returns above) so these subscriptions are wired exactly once.
-        app_options.subscribe(Options.Callbacks.OnBatchUpdated, self._on_options_batch_updated)
+        self._options.subscribe(Options.Callbacks.OnBatchUpdated, self._on_options_batch_updated)
 
-    def bootstrap_welcome(self, app_options: Options) -> None:
+    def bootstrap_welcome(self) -> None:
         """Seed a fresh feed with the welcome banner when the pane was constructed with
-        ``show_welcome``. Called from the view's ``on_mount`` (the user name lives on app options).
-        Independent of the agent session, so it works even in session-less / headless setups. Fires
-        at most once — the flag is cleared on first append.
+        ``show_welcome``. Independent of the agent session, so it works even in session-less / headless
+        setups (where ``_options`` is absent and the user name falls back to empty). Fires at most once
+        — the flag is cleared on first append.
         """
         if not self._show_welcome:
             return
         self._show_welcome = False
-        self._append_feed(WelcomeMessageModel(user_name=app_options.get(Options.UserName)))
+        user_name = self._options.get(Options.UserName) if self._options is not None else ""
+        self._append_feed(WelcomeMessageModel(user_name=user_name))
+
+    def detach_options(self) -> None:
+        """Sever this conversation's Session options from the Root chain on permanent teardown (the
+        view's ``on_unmount``), dropping the parent's forwarding subscription and child link so a
+        closed tab's options don't linger on the Root node. No-op in option-less / headless scopes.
+        """
+        if self._options is not None:
+            self._options.detach()
 
     def _on_token_usage_changed(self, session: AgentSession) -> None:
         """Route a session's token-usage update to the status bar only if that session is the
@@ -1659,20 +1680,27 @@ class ConversationAreaModel(ViewModelBase):
             self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.TOGGLE_RESOURCE_VIEWER)
 
         @reg.command(name="options", help="Open the options editor inline in the feed.")
-        def _options() -> None:
-            # Bootstrap binds ``self._options`` to the app-level (root) Options instance. Until
-            # that runs we don't have a target to edit; surface a system message instead of
-            # mounting a non-functional widget.
+        @click.option(
+            "--global", "global_", is_flag=True,
+            help="Edit global (Root) options instead of this conversation's session options.",
+        )
+        def _options(global_: bool) -> None:
+            # No OptionService in scope (headless / test) -> no target to edit; surface a system
+            # message instead of mounting a non-functional widget.
             if self._options is None:
                 self.append_message(
                     ChatMessageModel(
                         role=Role.SYSTEM,
-                        content="/options is unavailable until the agent session is bootstrapped.",
+                        content="/options is unavailable: no options service in this scope.",
                     ),
                     include_in_agent_context=False,
                 )
                 return
-            self._append_feed(OptionsEditorModel(self._options))
+            # ``--global`` reaches the Root node through the shadowing handle; the default ``get()``
+            # returns this conversation's Session node (the lowest scope the handle wraps).
+            service = self._services.get(OptionService)
+            target = service.get(OptionScope.Root) if global_ else service.get()
+            self._append_feed(OptionsEditorModel(target))
 
         @reg.command(name="echo", help="Echo arguments back as a system message.")
         @click.argument("words", nargs=-1)

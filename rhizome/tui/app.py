@@ -14,7 +14,7 @@ from rhizome.config import get_default_db_path
 from rhizome.credentials import has_api_key
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
-from rhizome.app.options import Options, OptionScope
+from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.db import SessionFactoryService, get_engine, get_session_factory
 from rhizome.app.sql_session import NotifyingSessionFactory
 from rhizome.utils.services import ServiceAccessor
@@ -81,6 +81,9 @@ class RhizomeApp(App):
         # scoped scheduler) fails loudly instead of clobbering a single global binding.
         self.services.register(WorkerSchedulerService, WorkerSchedulerService(bindable=False))
         self.options: Options = Options.load()
+        # Root options service. Child scopes (per conversation) shadow this with a handle that also
+        # reaches a Session node; this root one dispenses only Root.
+        self.services.register(OptionService, OptionService(self.options))
         self.options.subscribe_on_changed(Options.Theme, self._on_theme_changed)
         self.options.subscribe_on_changed(Options.TabMaxLength, self._on_tab_max_length_changed)
         self.theme = self.options.get(Options.Theme)

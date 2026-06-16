@@ -678,6 +678,20 @@ class Options(CallbackHost, metaclass=OptionsMeta):
             return self._parent.get(spec)
         return spec.default
 
+    def at_scope(self, scope: OptionScope) -> Options:
+        """Return the instance in this node's parent chain whose scope is exactly *scope*.
+
+        The chain runs most-specific → Root, so a Session node reaches Session or Root and a Root node
+        reaches only Root. Raises ``ValueError`` for a scope not present above this node — e.g. asking
+        a Root node for Session. Powers ``OptionService.get(scope)``.
+        """
+        node: Options | None = self
+        while node is not None:
+            if node._scope == scope:
+                return node
+            node = node._parent
+        raise ValueError(f"No options at {scope.name} scope reachable from {self._scope.name} scope")
+
     # -- Write --
 
     def set(self, spec: OptionSpec, value: Any, *, flush: bool = True) -> None:
@@ -978,6 +992,37 @@ class Options(CallbackHost, metaclass=OptionsMeta):
                 pass  # keep default
         instance._logger.info("Options loaded from %s", path)
         return instance
+
+
+# ---------------------------------------------------------------------------
+# OptionService (DI handle)
+# ---------------------------------------------------------------------------
+
+
+class OptionService:
+    """Scope-keyed handle over an ``Options`` chain — the value registered for the ``OptionService``
+    key in a ``ServiceAccessor``.
+
+    Wraps the most-specific ``Options`` node available at its service scope and dispenses nodes by
+    ``OptionScope``. ``get(scope)`` walks the parent chain (see ``Options.at_scope``), so the scopes it
+    can reach are its node's scope plus every ancestor: a handle over a Session node yields Session or
+    Root; one over the Root node yields only Root. ``get()`` with no scope returns the wrapped node —
+    the lowest (most-specific) scope available here, which is what most consumers want.
+
+    Shadowing is how the reachable set widens: the app root registers ``OptionService(root_options)``;
+    a conversation registers ``OptionService(session_options)`` in its child scope, so its descendants
+    resolve a handle reaching both Session and Root while the root scope still reaches only Root.
+    """
+
+    __slots__ = ("_options",)
+
+    def __init__(self, options: Options) -> None:
+        self._options = options
+
+    def get(self, scope: OptionScope | None = None) -> Options:
+        if scope is None:
+            return self._options
+        return self._options.at_scope(scope)
 
 
 # ---------------------------------------------------------------------------

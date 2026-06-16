@@ -188,6 +188,9 @@ class ConversationArea(ViewBase[ConversationAreaModel]):
         # Compare-and-clear: only release the binding if it's still ours, so a remount that bound a
         # new run_worker before this unmount fires isn't clobbered.
         self._vm.services.get(WorkerSchedulerService).unbind(self.run_worker)
+        # Permanent teardown (a TabPane is removed, not just hidden on tab-switch): sever this
+        # conversation's Session options from the Root chain so they don't linger on the Root node.
+        self._vm.detach_options()
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedAppended, self._on_feed_append)
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedRemoved, self._on_feed_remove)
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
@@ -242,11 +245,8 @@ class ConversationArea(ViewBase[ConversationAreaModel]):
 
     def on_mount(self) -> None:
         self._vm.services.get(WorkerSchedulerService).bind(self.run_worker)
-        self._vm.bootstrap_agent_session(
-            self.app.options,  # type: ignore[attr-defined]
-            debug=getattr(self.app, "debug_logging", False),
-        )
-        self._vm.bootstrap_welcome(self.app.options)  # type: ignore[attr-defined]
+        self._vm.bootstrap_agent_session(debug=getattr(self.app, "debug_logging", False))
+        self._vm.bootstrap_welcome()
         self.query_one("#chat-input", ChatInput).focus()
 
     # ------------------------------------------------------------------
