@@ -18,12 +18,15 @@ import math
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal
+from textual.widget import Widget
 from textual.widgets import Markdown, Static
 from textual.widgets.markdown import MarkdownStream
 
 from rhizome.tui.types import Mode
 
 from rhizome.tui.widgets.view_base import ViewBase
+from rhizome.tui.widgets.shared.markdown_math import (
+    MarkdownMathStream, MarkdownWithMath, agent_body_widget, open_stream)
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
@@ -95,8 +98,8 @@ class AgentMessage(ViewBase[AgentMessageModel]):
 
     def __init__(self, vm: AgentMessageModel, **kwargs) -> None:
         super().__init__(vm, **kwargs)
-        self._markdown: Markdown | None = None
-        self._stream: MarkdownStream | None = None
+        self._markdown: Markdown | MarkdownWithMath | None = None
+        self._stream: MarkdownStream | MarkdownMathStream | None = None
         self._rendered: int = 0
         self._drain_task: asyncio.Task[None] | None = None
         self._wakeup: asyncio.Event = asyncio.Event()
@@ -111,10 +114,11 @@ class AgentMessage(ViewBase[AgentMessageModel]):
         with Horizontal(classes="msg-header"):
             yield Static("□", classes="commit-checkbox")
             yield Static(prefix, classes="msg-prefix")
-        yield Markdown("", classes="agent-body")
+        # MarkdownWithMath when a graphics backend + LaTeX are present, else a plain Markdown (same surface).
+        yield agent_body_widget("", classes="agent-body")
 
     def on_mount(self) -> None:
-        self._markdown = self.query_one(".agent-body", Markdown)
+        self._markdown = self.query_one(".agent-body", Widget)
         if self._vm.streaming:
             # Live segment at mount: open the MarkdownStream after Textual finishes mounting
             # the inner Markdown, then wire up the drain task. Tokens arriving via
@@ -149,7 +153,7 @@ class AgentMessage(ViewBase[AgentMessageModel]):
         if self._markdown is None:
             return
         try:
-            self._stream = Markdown.get_stream(self._markdown)
+            self._stream = open_stream(self._markdown)
         except Exception:
             return
         # Any body that arrived before the stream was ready gets picked up on the next drain tick.

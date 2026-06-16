@@ -5,6 +5,7 @@ from pathlib import Path
 
 import rich_click as click
 
+import rhizome.tui.graphics as graphics
 from rhizome.config import get_default_db_path
 from rhizome.db import init_db
 from rhizome.tui.app import PROFILE_DIR, RhizomeApp
@@ -28,6 +29,11 @@ def main(db: str | None, debug: bool, profile: bool) -> None:
     """Launch the rhizome TUI."""
     db_path = db or str(get_default_db_path())
     init_db(db_path)
+
+    # Probe the terminal + select a graphics backend BEFORE Textual starts (it needs raw stdin while it
+    # is still ours). No backend selected -> the chat falls back to plain Markdown; no error either way.
+    graphics.initialize()
+
     app = RhizomeApp(db_path=db_path, debug=debug)
 
     if not profile:
