@@ -1,28 +1,27 @@
-"""Option definitions, persistence, validation, and pub/sub for the TUI.
+"""Option definitions, persistence, validation, and change events for the TUI.
 
 Provides a hierarchical options system with scoped inheritance (Root → Session),
-validation, JSONC persistence, and async subscriber notifications.
+validation, JSONC persistence, and synchronous change events via ``CallbackHost``.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, overload
+from typing import Any
 
 from rhizome.config import get_options_path
 from rhizome.logs import get_logger
+from rhizome.utils.callbacks import CallbackHost
 
 
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
-
-EventHandler = Callable[[Any, Any], Awaitable[None]]
 
 
 class OptionScope(IntEnum):
@@ -408,15 +407,30 @@ class OptionsMeta(type):
 # ---------------------------------------------------------------------------
 
 
-class Options(metaclass=OptionsMeta):
-    """Hierarchical, scoped option store with pub/sub and JSONC persistence.
+class Options(CallbackHost, metaclass=OptionsMeta):
+    """Hierarchical, scoped option store with change events and JSONC persistence.
 
     **Class-level**: ``OptionSpec`` and ``OptionNamespace`` members define the
     schema (wired by ``OptionsMeta``).
 
-    **Instance-level**: holds ``_values``, manages subscriptions and
-    parent/child links.
+    **Instance-level**: holds ``_values`` and parent/child links, and emits two
+    ``CallbackHost`` events:
+
+    - ``OnChanged(scope, key, prev, new)`` — fired per individual change. ``scope`` is the
+      ``OptionScope`` at which the change *originated*; ``key`` is the ``OptionSpec``. A change at a
+      parent scope is forwarded into each child scope that doesn't locally override ``key`` (with
+      ``scope`` left unchanged), so a child's observers and conditional cascades react to inherited
+      changes exactly as they would to local ones.
+    - ``OnBatchUpdated(prev, new)`` — fired by ``post_update`` once a batch of changes settles, with
+      ``prev``/``new`` full ``{resolved_name: value}`` snapshots of effective values.
+
+    ``subscribe_on_changed(spec, handler)`` is a convenience over ``OnChanged`` for watching one
+    spec: ``handler(prev, new)`` fires only for that spec (inherited changes included).
     """
+
+    class Callbacks:
+        OnChanged = "OnChanged"            # (scope: OptionScope, key: OptionSpec, prev, new)
+        OnBatchUpdated = "OnBatchUpdated"  # (prev: dict[str, Any], new: dict[str, Any])
 
     # ---- Schema (class-level) ----
 
@@ -618,17 +632,23 @@ class Options(metaclass=OptionsMeta):
     # ---- Instance ----
 
     def __init__(self, scope: OptionScope, parent: Options | None = None) -> None:
+        super().__init__()
         self._scope = scope
         self._parent = parent
         self._logger = get_logger("tui.options")
         self._children: list[Options] = []
         self._values: dict[str, Any] = {}
-        self._subscribers: dict[OptionSpec, list[EventHandler]] = {}
-        self._post_update_subscribers: list[Callable[[Options], Awaitable[None]]] = []
 
-        # Link into parent/child hierarchy
+        self.make_callback_groups({
+            self.Callbacks.OnChanged: (OptionScope, OptionSpec, object, object),
+            self.Callbacks.OnBatchUpdated: (dict, dict),
+        })
+
+        # Link into the parent/child hierarchy. ``_children`` is also the strong reference that
+        # keeps the parent's weakly-held forwarding subscription (below) alive for our lifetime.
         if parent is not None:
             parent._children.append(self)
+            parent.subscribe(parent.Callbacks.OnChanged, self._forward_changed)
 
         # At the root scope, all options are initialized to their defaults.
         # At child scopes, values are inherited from the parent unless explicitly overridden.
@@ -636,32 +656,12 @@ class Options(metaclass=OptionsMeta):
             for s in self.spec():
                 self._values[s.resolved_name] = s.default
 
-        # Auto-subscribe: when a condition option changes, reset dependents
-        for s in self.spec():
-            if isinstance(s, ConditionalChoicesOptionSpec):
+        # When a condition option changes, reset its conditional dependents. One bound-method
+        # subscriber covers every dependent (it survives weak-ref dispatch because ``self`` does).
+        self.subscribe(self.Callbacks.OnChanged, self._cascade_conditionals)
 
-                async def _on_condition_changed(
-                    old: Any, new: Any, dep: ConditionalChoicesOptionSpec = s
-                ) -> None:
-                    current = self.get(dep)
-                    valid = dep.choices_for(new)
-                    if current not in valid:
-                        await self.set(dep, dep.defaults[new], flush=True)
-
-                self.subscribe(s.condition, _on_condition_changed)
-
-            elif isinstance(s, ConditionalIntRangeOptionSpec):
-
-                async def _on_range_condition_changed(
-                    old: Any, new: Any, dep: ConditionalIntRangeOptionSpec = s
-                ) -> None:
-                    # Always reset to the branch default. Unlike discrete choices
-                    # where values from one branch are typically invalid in another,
-                    # integer ranges often overlap (e.g. 10 is valid in both 0-20
-                    # and 0-10000) — so checking out-of-range isn't sufficient.
-                    await self.set(dep, dep.defaults[new], flush=True)
-
-                self.subscribe(s.condition, _on_range_condition_changed)
+        # Relay each change into its per-spec group, powering ``subscribe_on_changed``.
+        self.subscribe(self.Callbacks.OnChanged, self._fanout_to_spec_groups)
 
     # -- Read --
 
@@ -680,8 +680,8 @@ class Options(metaclass=OptionsMeta):
 
     # -- Write --
 
-    async def set(self, spec: OptionSpec, value: Any, *, flush: bool = True) -> None:
-        """Validate and set *value*, notifying subscribers."""
+    def set(self, spec: OptionSpec, value: Any, *, flush: bool = True) -> None:
+        """Validate and set *value*, emitting ``OnChanged`` if it actually moved."""
         if spec.scope < self._scope:
             raise ValueError(
                 f"Cannot set {spec.resolved_name} at {self._scope.name} scope "
@@ -696,38 +696,49 @@ class Options(metaclass=OptionsMeta):
         self._values[spec.resolved_name] = value
         if old != value:
             self._logger.info("Option %s changed: %r → %r", spec.resolved_name, old, value)
-            for listener in self._subscribers.get(spec, []):
-                await listener(old, value)
-            await self._propagate_to_children(spec, old, value)
+            self.emit(self.Callbacks.OnChanged, self._scope, spec, old, value)
         if flush:
             self.flush()
 
-    async def reset(self, spec: OptionSpec, *, flush: bool = True) -> None:
+    def reset(self, spec: OptionSpec, *, flush: bool = True) -> None:
         """Remove a local override (session) or reset to default (root)."""
         if self._scope == OptionScope.Root:
-            await self.set(spec, spec.default, flush=flush)
+            self.set(spec, spec.default, flush=flush)
         else:
             old = self.get(spec)
             self._values.pop(spec.resolved_name, None)
             new = self.get(spec)
             if old != new:
-                for listener in self._subscribers.get(spec, []):
-                    await listener(old, new)
-                await self._propagate_to_children(spec, old, new)
+                self.emit(self.Callbacks.OnChanged, self._scope, spec, old, new)
             if flush:
                 self.flush()
 
-    async def _propagate_to_children(
-        self, spec: OptionSpec, old: Any, new: Any
-    ) -> None:
-        for child in self._children:
-            # Only propagate if the child doesn't have a local override. Child options take
-            # precedence over parent values, so if the child has an override we assume it's intentional and
-            # don't propagate changes from the parent.
-            if spec.resolved_name not in child._values:
-                for listener in child._subscribers.get(spec, []):
-                    await listener(old, new)
-                await child._propagate_to_children(spec, old, new)
+    def _forward_changed(self, scope: OptionScope, spec: OptionSpec, old: Any, new: Any) -> None:
+        """Re-emit a parent-scope change into this scope so our observers and cascades see it.
+
+        Skipped when we locally override ``spec`` — a child override takes precedence over the
+        parent value, so an inherited change to it is intentionally invisible here. ``scope`` is
+        forwarded unchanged: it names where the change originated, not where it's being relayed.
+        """
+        if spec.resolved_name in self._values:
+            return
+        self.emit(self.Callbacks.OnChanged, scope, spec, old, new)
+
+    def _cascade_conditionals(self, scope: OptionScope, spec: OptionSpec, old: Any, new: Any) -> None:
+        """When a condition option changes, reset its conditional dependents to the branch default.
+
+        Runs on every ``OnChanged`` (the cost is a spec scan) and fires per scope: because parent
+        changes are forwarded into child scopes, each inheriting scope resets its own dependents.
+        """
+        for dep in self.spec():
+            if isinstance(dep, ConditionalChoicesOptionSpec) and dep.condition is spec:
+                if self.get(dep) not in dep.choices_for(new):
+                    self.set(dep, dep.defaults[new], flush=True)
+            elif isinstance(dep, ConditionalIntRangeOptionSpec) and dep.condition is spec:
+                # Always reset to the branch default. Unlike discrete choices where values from one
+                # branch are typically invalid in another, integer ranges often overlap (e.g. 10 is
+                # valid in both 0-20 and 0-10000) — so an out-of-range check isn't sufficient.
+                self.set(dep, dep.defaults[new], flush=True)
 
     # -- Transactional staging --
 
@@ -750,25 +761,22 @@ class Options(metaclass=OptionsMeta):
             snap._values[spec.resolved_name] = self.get(spec)
         return snap
 
-    async def merge_from(self, other: Options) -> dict[str, tuple[Any, Any]]:
+    def merge_from(self, other: Options) -> dict[str, tuple[Any, Any]]:
         """Pull ``other``'s values into self via ``self.set()`` for every spec where they differ.
 
         Conditions land before their dependents (see ``_ordered_for_merge``) so the dependent's
         scope-aware validation sees the new branch when it runs. A single ``flush()`` plus
         ``post_update()`` runs at the end, only if anything actually changed — callers don't
-        pay the per-set JSONC flush cost and downstream post-update subscribers see one
-        coalesced tick. Returns ``{resolved_name: (old, new)}`` for what actually moved, with
-        ``old`` snapshotted pre-merge so cascade-driven transitions are reported against the
-        user's starting state rather than against an intermediate one.
+        pay the per-set JSONC flush cost and ``OnBatchUpdated`` subscribers see one coalesced
+        tick. Returns ``{resolved_name: (old, new)}`` for what actually moved, with ``old``
+        snapshotted pre-merge so cascade-driven transitions are reported against the user's
+        starting state rather than against an intermediate one.
         """
         # Snapshot pre-merge state. Without this, a spec whose value flipped via a cascade
         # triggered by an earlier set() in this same merge would report its ``old`` as the
-        # intermediate (post-cascade) value, which is misleading.
-        initial: dict[str, Any] = {
-            spec.resolved_name: self.get(spec)
-            for spec in self.spec()
-            if spec.scope >= self._scope
-        }
+        # intermediate (post-cascade) value, which is misleading. The full snapshot also serves
+        # as the ``OnBatchUpdated`` ``prev`` payload.
+        initial = self._snapshot()
 
         for spec in self._ordered_for_merge():
             # Defensive: skip specs ``other`` carries that self can't actually set (e.g. a Root
@@ -780,7 +788,7 @@ class Options(metaclass=OptionsMeta):
             new = other.get(spec)
             if self.get(spec) == new:
                 continue
-            await self.set(spec, new, flush=False)
+            self.set(spec, new, flush=False)
 
         changes: dict[str, tuple[Any, Any]] = {}
         for spec in self.spec():
@@ -793,7 +801,7 @@ class Options(metaclass=OptionsMeta):
 
         if changes:
             self.flush()
-            await self.post_update()
+            self.post_update(prev=initial)
 
         return changes
 
@@ -824,48 +832,54 @@ class Options(metaclass=OptionsMeta):
             visit(spec)
         return out
 
-    # -- Subscriptions --
+    # -- Events / batch updates --
 
-    @overload
-    def subscribe(self, key: OptionSpec, listener: EventHandler) -> None: ...
-    @overload
-    def subscribe(self, key: OptionSpec, listener: list[EventHandler]) -> None: ...
-    @overload
-    def subscribe(self, key: dict[OptionSpec, EventHandler | list[EventHandler]]) -> None: ...  # type: ignore[override]
+    def subscribe_on_changed(self, spec: OptionSpec, handler: Callable[[Any, Any], None]) -> None:
+        """Watch a single spec: ``handler(prev, new)`` fires only for *its* ``OnChanged``.
 
-    def subscribe(self, key, listener=None):  # type: ignore[override]
-        if isinstance(key, dict):
-            for spec, handlers in key.items():
-                if isinstance(handlers, list):
-                    self._subscribers.setdefault(spec, []).extend(handlers)
-                else:
-                    self._subscribers.setdefault(spec, []).append(handlers)
-        elif isinstance(listener, list):
-            self._subscribers.setdefault(key, []).extend(listener)
-        else:
-            self._subscribers.setdefault(key, []).append(listener)
+        A convenience over subscribing to ``OnChanged`` and filtering on ``key`` yourself. Each
+        spec gets its own ``CallbackGroup``; an internal relay forwards every change into it, so
+        inherited (parent-scope) changes reach the handler too. The handler is held by weak
+        reference exactly like any ``CallbackHost`` subscriber — pass a bound method of a long-lived
+        object, not a throwaway closure, or it will be collected immediately. (Need the originating
+        ``scope``? Subscribe to ``Callbacks.OnChanged`` directly for the full ``(scope, key, prev,
+        new)`` payload.)
+        """
+        if spec not in self._callbacks:
+            self.make_callback_group(spec)
+        self.subscribe(spec, handler)
 
-    def unsubscribe(self, spec: OptionSpec, listener: EventHandler) -> None:
-        listeners = self._subscribers.get(spec, [])
-        try:
-            listeners.remove(listener)
-        except ValueError:
-            pass
+    def unsubscribe_on_changed(self, spec: OptionSpec, handler: Callable[[Any, Any], None]) -> None:
+        """Remove a ``subscribe_on_changed`` handler. No-op if the spec was never subscribed."""
+        if spec in self._callbacks:
+            self.unsubscribe(spec, handler)
 
-    def subscribe_post_update(self, listener: Callable[[Options], Awaitable[None]]) -> None:
-        """Register a callback invoked after a batch of option changes completes."""
-        self._post_update_subscribers.append(listener)
+    def _fanout_to_spec_groups(self, scope: OptionScope, spec: OptionSpec, prev: Any, new: Any) -> None:
+        """Relay an ``OnChanged`` into the spec's own group, if any ``subscribe_on_changed`` exists."""
+        group = self._callbacks.get(spec)
+        if group is not None:
+            self.emit(group, prev, new)
 
-    async def post_update(self) -> None:
-        """Notify post-update subscribers, then propagate to children."""
-        for listener in self._post_update_subscribers:
-            await listener(self)
+    def _snapshot(self) -> dict[str, Any]:
+        """Effective values for every spec, keyed by resolved name — the ``OnBatchUpdated`` payload."""
+        return {s.resolved_name: self.get(s) for s in self.spec()}
+
+    def post_update(self, prev: dict[str, Any] | None = None) -> None:
+        """Emit ``OnBatchUpdated`` with before/after snapshots, then recurse to children.
+
+        ``prev`` is the pre-batch snapshot (``merge_from`` passes its own); when omitted, callers
+        signalling a single settled change get ``prev == new`` (current state, no diff). Each child
+        re-emits with *its own* effective snapshot so child-scope observers see correct values.
+        """
+        new = self._snapshot()
+        self.emit(self.Callbacks.OnBatchUpdated, prev if prev is not None else new, new)
         for child in self._children:
-            await child.post_update()
+            child.post_update()
 
     def detach(self) -> None:
-        """Remove this instance from parent's children list."""
+        """Unsubscribe from the parent's events and drop the parent/child link."""
         if self._parent is not None:
+            self._parent.unsubscribe(self._parent.Callbacks.OnChanged, self._forward_changed)
             try:
                 self._parent._children.remove(self)
             except ValueError:

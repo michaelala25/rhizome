@@ -68,8 +68,8 @@ class RhizomeApp(App):
             on_commit=lambda tables: self._notify_database_committed(tables),
         )
         self.options: Options = Options.load()
-        self.options.subscribe(Options.Theme, self._on_theme_changed)
-        self.options.subscribe(Options.TabMaxLength, self._on_tab_max_length_changed)
+        self.options.subscribe_on_changed(Options.Theme, self._on_theme_changed)
+        self.options.subscribe_on_changed(Options.TabMaxLength, self._on_tab_max_length_changed)
         self.theme = self.options.get(Options.Theme)
 
         # Set up in-app log handler for the rhizome logger
@@ -81,11 +81,11 @@ class RhizomeApp(App):
         self._log = get_logger("tui.app")
         self._log.info("App initialized (db=%s)", db_path or get_default_db_path())
 
-    async def _on_theme_changed(self, old: str, new: str) -> None:
+    def _on_theme_changed(self, old: str, new: str) -> None:
         self._log.info("Theme changed: %s → %s", old, new)
         self.theme = new
 
-    async def _on_tab_max_length_changed(self, old: int, new: int) -> None:
+    def _on_tab_max_length_changed(self, old: int, new: int) -> None:
         for pane in self.screen.query(ChatTabPane):
             pane.update_tab_max_length(new)
         for pane in self.screen.query(LogTabPane):

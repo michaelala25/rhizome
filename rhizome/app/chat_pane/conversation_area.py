@@ -408,11 +408,11 @@ class ConversationAreaModel(ViewModelBase):
         # Seed status-bar fields that come from the agent session / options.
         self.status_bar.set_model_name(self.agent_session._model_name or "")
         self.status_bar.set_verbosity(app_options.get(Options.Agent.AnswerVerbosity))
-        app_options.subscribe(Options.Agent.AnswerVerbosity, self._on_verbosity_changed)
+        app_options.subscribe_on_changed(Options.Agent.AnswerVerbosity, self._on_verbosity_changed)
         # Options changes (provider/model/agent_kwargs) are shared across all branches: fan out
-        # post-update to every per-leaf AgentSession so each one rebuilds in lockstep. Bootstrap is
-        # idempotent (early-returns above) so this subscription is wired exactly once.
-        app_options.subscribe_post_update(self._on_options_post_update)
+        # each batch update to every per-leaf AgentSession so each one rebuilds in lockstep.
+        # Bootstrap is idempotent (early-returns above) so these subscriptions are wired exactly once.
+        app_options.subscribe(Options.Callbacks.OnBatchUpdated, self._on_options_batch_updated)
 
     def bootstrap_welcome(self, app_options: Options) -> None:
         """Seed a fresh feed with the welcome banner when the pane was constructed with
@@ -434,17 +434,20 @@ class ConversationAreaModel(ViewModelBase):
         if session is self.agent_session:
             self.status_bar.set_token_usage(session.token_usage)
 
-    async def _on_verbosity_changed(self, _old, new) -> None:
+    def _on_verbosity_changed(self, _old, new) -> None:
         self.status_bar.set_verbosity(new)
 
-    async def _on_options_post_update(self, options: Options) -> None:
-        """Fan options changes out to every per-leaf AgentSession.
+    def _on_options_batch_updated(self, _prev: dict, _new: dict) -> None:
+        """Fan a settled options batch out to every per-leaf AgentSession.
 
         Each session decides for itself whether the change warrants a rebuild (provider/model/kwargs
-        diff). Sessions that don't need to rebuild are no-ops, so an empty broadcast is harmless.
+        diff), reading live from the shared options. Sessions that don't need to rebuild are no-ops,
+        so an empty broadcast is harmless.
         """
+        if self._options is None:
+            return
         for session in self._all_sessions():
-            await session.on_options_post_update(options)
+            session.on_options_post_update(self._options)
 
     # ------------------------------------------------------------------
     # Feed
@@ -805,8 +808,8 @@ class ConversationAreaModel(ViewModelBase):
         current = self._options.get(Options.Agent.AnswerVerbosity)
         idx = choices.index(current) if current in choices else 0
         new_value = choices[(idx + 1) % len(choices)]
-        await self._options.set(Options.Agent.AnswerVerbosity, new_value)
-        await self._options.post_update()
+        self._options.set(Options.Agent.AnswerVerbosity, new_value)
+        self._options.post_update()
 
     def _set_session_mode(self, mode: Mode) -> None:
         """Assign session_mode and forward to the status-bar VM in one place."""

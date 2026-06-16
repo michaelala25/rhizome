@@ -270,8 +270,8 @@ class AgentSession:
             new_session._message_queue = seed + new_session._message_queue
         return new_session
 
-    async def on_options_post_update(self, options: Options) -> None:
-        """Called by Options.post_update(); rebuilds agent if provider/model/kwargs changed."""
+    def on_options_post_update(self, options: Options) -> None:
+        """Called on an options ``OnBatchUpdated``; rebuilds agent if provider/model/kwargs changed."""
         provider = options.get(Options.Agent.Provider)
         model_name = options.get(Options.Agent.Model)
         new_kwargs = get_agent_kwargs(options)
