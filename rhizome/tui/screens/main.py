@@ -51,7 +51,7 @@ class ChatTabPane(TabPane):
     the displayed label when ``tab_name_len`` changes.
     """
 
-    def __init__(self, title: str, *, services=None, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
+    def __init__(self, title: str, *, services, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
         self.full_name: str = title
         self._services = services
         self._tab_max_length: int = tab_max_length

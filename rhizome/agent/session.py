@@ -128,7 +128,7 @@ class AgentSession:
         # that shadows options), but resolved to a raw factory here so every downstream leaf -- tool
         # builders, subagents, AgentContext -- keeps taking a plain ``session_factory``, unaware of DI.
         self._services = services
-        self._session_factory = services.try_get(SessionFactoryService)
+        self._session_factory = services.get(SessionFactoryService)
         self._chat_pane = chat_pane
         self._resource_manager = resource_manager
         self._provider = provider

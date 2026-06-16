@@ -45,7 +45,7 @@ class ResourceViewerModel(ViewModelBase):
     def __init__(self, services: ServiceAccessor, manager: ResourceManager | None = None) -> None:
         super().__init__()
         self._services = services
-        self._session_factory = services.try_get(SessionFactoryService)
+        self._session_factory = services.get(SessionFactoryService)
         self._manager = manager or ResourceManager(session_factory=self._session_factory)
 
         self._current_topic_id: int | None = None

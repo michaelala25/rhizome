@@ -160,7 +160,7 @@ class ConversationAreaModel(ViewModelBase):
 
     def __init__(
         self,
-        services: ServiceAccessor | None = None,
+        services: ServiceAccessor,
         *,
         resource_manager: ResourceManager | None = None,
         show_welcome: bool = False,
@@ -229,14 +229,13 @@ class ConversationAreaModel(ViewModelBase):
         # This VM is a scheduler scope owner: it opens its own child scope and registers a
         # WorkerSchedulerService there, so its presenting view binds ``run_worker`` into a holder
         # unique to this conversation (concurrent tabs don't clobber each other's binding). The child
-        # falls through to root for everything else -- the session factory below, options later.
-        # The accessor is also handed to each AgentSession (a scope boundary), which resolves the
-        # factory and can open a further session-scoped child; ``_session_factory`` is resolved once
-        # here for the session-less guards and the leaf VMs (browser / interrupt feeds) that take it raw.
-        parent = services if services is not None else ServiceAccessor()
-        self._services = parent.child()
+        # falls through to root for everything else -- the session factory below, options later. The
+        # accessor is also handed to each AgentSession (a scope boundary), which resolves the factory
+        # and can open a further session-scoped child. ``_session_factory`` is resolved once here and
+        # handed raw to the leaf VMs (browser / interrupt feeds).
+        self._services = services.child()
         self._services.register(WorkerSchedulerService, WorkerSchedulerService())
-        self._session_factory = self._services.try_get(SessionFactoryService)
+        self._session_factory = self._services.get(SessionFactoryService)
         self.resource_manager: ResourceManager | None = resource_manager
 
         # AgentSession now lives on the ChatPaneConversationNode itself — one per open leaf,
@@ -396,8 +395,6 @@ class ConversationAreaModel(ViewModelBase):
         ``app.options``.
         """
         if self.agent_session is not None:
-            return
-        if self._session_factory is None:
             return
 
         self._options = app_options
@@ -1653,35 +1650,12 @@ class ConversationAreaModel(ViewModelBase):
 
         @reg.command(name="browse", help="Open the data browser inline in the feed.")
         def _browse() -> None:
-            # The browser is DB-backed end-to-end. Without a session factory
-            # (test harnesses, headless invocations) we surface a system
-            # message instead of mounting a non-functional widget.
-            if self._session_factory is None:
-                self.append_message(
-                    ChatMessageModel(
-                        role=Role.SYSTEM,
-                        content="/browse requires a session factory; none is configured.",
-                    ),
-                    include_in_agent_context=False,
-                )
-                return
             self._append_feed(BrowserModel(self._session_factory))
 
         @reg.command(name="resources", help="Toggle the resource viewer side panel.")
         def _resources() -> None:
-            # The panel is DB-backed (and shares the agent's ResourceManager). Without a session
-            # factory there's nothing to drive it, so surface a system message instead of toggling
-            # an inert panel. The orchestrator owns the actual mount/unmount — we just request the
-            # toggle, which the view forwards up.
-            if self._session_factory is None:
-                self.append_message(
-                    ChatMessageModel(
-                        role=Role.SYSTEM,
-                        content="/resources requires a session factory; none is configured.",
-                    ),
-                    include_in_agent_context=False,
-                )
-                return
+            # The orchestrator owns the actual mount/unmount — we just request the toggle, which the
+            # view forwards up.
             self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.TOGGLE_RESOURCE_VIEWER)
 
         @reg.command(name="options", help="Open the options editor inline in the feed.")

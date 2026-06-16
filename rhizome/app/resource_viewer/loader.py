@@ -203,7 +203,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
         # root for the session factory.
         self._services = services.child()
         self._services.register(WorkerSchedulerService, WorkerSchedulerService())
-        self._session_factory = self._services.try_get(SessionFactoryService)
+        self._session_factory = self._services.get(SessionFactoryService)
         self._manager = manager
 
         self.make_callback_groups({self.Callbacks.OnCursorChanged: None})
