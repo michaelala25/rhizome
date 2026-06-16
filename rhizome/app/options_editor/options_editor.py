@@ -39,11 +39,10 @@ class OptionsEditorModel(ViewModelBase):
         # Reflect external mutations to ``target`` during editor lifetime — e.g. an agent flips
         # a session option mid-edit, or our own ``set_value`` for an immediate-flagged spec
         # bounces back through this same channel. Without this, un-staged rows would render
-        # stale.
-        for spec in self.visible_specs:
-            target.subscribe(spec, self._on_external_change)
+        # stale. Any change is a cheap full re-render, so we don't bother filtering by key.
+        target.subscribe(Options.Callbacks.OnChanged, self._on_external_change)
 
-    async def _on_external_change(self, old: Any, new: Any) -> None:
+    def _on_external_change(self, scope: OptionScope, key: OptionSpec, prev: Any, new: Any) -> None:
         self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
@@ -112,10 +111,10 @@ class OptionsEditorModel(ViewModelBase):
         auto-cascade subscriptions handle conditional dependents in lockstep.
         """
         if spec.immediate:
-            await self._target.set(spec, value)
-            await self._target.post_update()
+            self._target.set(spec, value)
+            self._target.post_update()
         else:
-            await self._clone.set(spec, value)
+            self._clone.set(spec, value)
         self.emit(self.Callbacks.OnDirty)
 
     async def apply(self) -> dict[str, tuple[Any, Any]]:
@@ -123,7 +122,7 @@ class OptionsEditorModel(ViewModelBase):
         (old, new)}`` suitable for an "Options changed" system message. Clone is left as-is —
         subsequent edits continue from the same buffer, and rows naturally de-flag as
         ``clone.get == target.get`` again."""
-        return await self._target.merge_from(self._clone)
+        return self._target.merge_from(self._clone)
 
     def reset(self) -> None:
         """Drop staged changes by rebuilding the clone from current target state."""
@@ -137,6 +136,5 @@ class OptionsEditorModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def detach(self) -> None:
-        """Tear down target subscriptions. View calls this from ``on_unmount``."""
-        for spec in self.visible_specs:
-            self._target.unsubscribe(spec, self._on_external_change)
+        """Tear down the target subscription. View calls this from ``on_unmount``."""
+        self._target.unsubscribe(Options.Callbacks.OnChanged, self._on_external_change)

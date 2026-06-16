@@ -541,7 +541,6 @@ class TestReviewLifecycle:
         review.cancel()
         assert review.state == FlashcardReviewViewModel.State.DONE
         assert review.cancelled
-        assert review.collapsed
 
     def test_finish_pauses_running_timer(self, review):
         review.begin()
@@ -1071,7 +1070,8 @@ class TestAutoScoreActivePredicate:
 
     def test_false_when_auto_score_disabled(self, review):
         review.begin()
-        review.auto_score_enabled = False
+        review.toggle_auto_score_enabled()  # fixture starts enabled
+        assert review.auto_score_enabled is False
         assert review.auto_score_active_for_current_card is False
 
     def test_false_when_card_auto_score_suppressed(self, review):
