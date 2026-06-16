@@ -264,6 +264,25 @@ class ServiceAccessor:
         """Resolve a service, starting a fresh resolution chain."""
         return self._get(key, ())
 
+    def try_get(self, key: Hashable, default: Any = None) -> Any:
+        """Resolve a service, or return ``default`` when no scope in the chain registers ``key``.
+
+        Only an absent *top-level* registration falls back to ``default``. A registered service whose
+        own dependency is missing (or whose graph is cyclic) still raises -- this is "maybe absent",
+        not "swallow every resolution error". The headless / no-DB path relies on this: a scope with
+        no ``SessionFactoryService`` resolves to ``None`` instead of blowing up.
+        """
+        return self._get(key, ()) if key in self else default
+
+    def __contains__(self, key: Hashable) -> bool:
+        """True when ``key`` is registered in this scope or any ancestor (instance or descriptor)."""
+        node: Optional[ServiceAccessor] = self
+        while node is not None:
+            if key in node._instances or key in node._descriptors:
+                return True
+            node = node._parent
+        return False
+
     def _get(self, key: Hashable, _resolving: tuple) -> Any:
         if key in self._instances:
             return self._instances[key]

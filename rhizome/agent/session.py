@@ -37,6 +37,8 @@ from rhizome.agent.subagents.flashcard_validator import (
 from rhizome.logs import get_logger
 from rhizome.resources import ResourceManager
 from rhizome.app.options import Options
+from rhizome.db import SessionFactoryService
+from rhizome.utils.services import ServiceAccessor
 
 
 def _merge_resource_messages_into_queue(
@@ -110,7 +112,7 @@ class AgentSession:
 
     def __init__(
             self,
-            session_factory,
+            services,
             *,
             chat_pane=None,
             resource_manager: ResourceManager | None = None,
@@ -122,7 +124,11 @@ class AgentSession:
             thread_id: str | None = None,
             debug: bool = False,
         ):
-        self._session_factory = session_factory
+        # DI boundary: the accessor is carried (stored for ``fork`` and a future session-scoped child
+        # that shadows options), but resolved to a raw factory here so every downstream leaf -- tool
+        # builders, subagents, AgentContext -- keeps taking a plain ``session_factory``, unaware of DI.
+        self._services = services
+        self._session_factory = services.try_get(SessionFactoryService)
         self._chat_pane = chat_pane
         self._resource_manager = resource_manager
         self._provider = provider
@@ -255,7 +261,7 @@ class AgentSession:
         The fork sees the same context the parent would see on *its* next stream.
         """
         new_session = AgentSession(
-            self._session_factory,
+            self._services,
             chat_pane=self._chat_pane,
             resource_manager=self._resource_manager,
             provider=self._provider,

@@ -51,9 +51,9 @@ class ChatTabPane(TabPane):
     the displayed label when ``tab_name_len`` changes.
     """
 
-    def __init__(self, title: str, *, session_factory=None, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
+    def __init__(self, title: str, *, services=None, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
         self.full_name: str = title
-        self._session_factory = session_factory
+        self._services = services
         self._tab_max_length: int = tab_max_length
         self._show_welcome = show_welcome
         super().__init__(self._truncated_label(), **kwargs)
@@ -91,7 +91,7 @@ class ChatTabPane(TabPane):
         self.chat_pane.append_message(ChatMessageData(role=Role.SYSTEM, content=event.text))
 
     def compose(self) -> ComposeResult:
-        yield ChatPane(session_factory=self._session_factory, show_welcome=self._show_welcome)
+        yield ChatPane(services=self._services, show_welcome=self._show_welcome)
 
 
 class MainScreen(Screen):
@@ -137,7 +137,7 @@ class MainScreen(Screen):
         with TabbedContent(id="tabs"):
             yield ChatTabPane(
                 "Session 1",
-                session_factory=self.app.session_factory,
+                services=self.app.services,  # type: ignore[attr-defined]
                 tab_max_length=max_len,
                 show_welcome=True,
                 id="session-1",
@@ -166,7 +166,7 @@ class MainScreen(Screen):
         max_len = self.app.options.get(Options.TabMaxLength)  # type: ignore[attr-defined]
         pane = ChatTabPane(
             tab_label,
-            session_factory=self.app.session_factory,
+            services=self.app.services,  # type: ignore[attr-defined]
             tab_max_length=max_len,
             id=tab_id,
         )

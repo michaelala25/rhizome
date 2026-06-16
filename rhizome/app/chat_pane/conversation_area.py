@@ -16,15 +16,16 @@ import asyncio
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Literal, cast
+from typing import Any, Literal, cast
 
 import rich_click as click
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from rhizome.agent.session import AgentSession, get_agent_kwargs
-from rhizome.db import Topic
+from rhizome.db import SessionFactoryService, Topic
+from rhizome.utils.services import ServiceAccessor
+from rhizome.utils.workers import WorkerSchedulerService
 from rhizome.resources.manager import ResourceManager
 from rhizome.app.command_registry import CommandRegistry
 from rhizome.app.options import Options
@@ -159,7 +160,7 @@ class ConversationAreaModel(ViewModelBase):
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        services: ServiceAccessor | None = None,
         *,
         resource_manager: ResourceManager | None = None,
         show_welcome: bool = False,
@@ -225,7 +226,17 @@ class ConversationAreaModel(ViewModelBase):
         # Agent plumbing. The ``ResourceManager`` is owned by the orchestrator (``ChatPaneModel``)
         # and injected here so the agent's loaded resources stay in sync with the side-panel
         # resource viewer the orchestrator hosts. ``None`` without a session (test / headless).
-        self._session_factory = session_factory
+        # This VM is a scheduler scope owner: it opens its own child scope and registers a
+        # WorkerSchedulerService there, so its presenting view binds ``run_worker`` into a holder
+        # unique to this conversation (concurrent tabs don't clobber each other's binding). The child
+        # falls through to root for everything else -- the session factory below, options later.
+        # The accessor is also handed to each AgentSession (a scope boundary), which resolves the
+        # factory and can open a further session-scoped child; ``_session_factory`` is resolved once
+        # here for the session-less guards and the leaf VMs (browser / interrupt feeds) that take it raw.
+        parent = services if services is not None else ServiceAccessor()
+        self._services = parent.child()
+        self._services.register(WorkerSchedulerService, WorkerSchedulerService())
+        self._session_factory = self._services.try_get(SessionFactoryService)
         self.resource_manager: ResourceManager | None = resource_manager
 
         # AgentSession now lives on the ChatPaneConversationNode itself — one per open leaf,
@@ -238,11 +249,6 @@ class ConversationAreaModel(ViewModelBase):
         # live on each ``ChatPaneConversationNode``. ``agent_busy`` reads the current cursor's
         # node, so multiple branches can stream concurrently without blocking each other.
 
-        # Scheduler hook: the View overrides this on mount to use Textual's ``run_worker`` (lifecycle
-        # binds to the widget, errors surface via the app, DevTools sees the worker). Default plain
-        # ``create_task`` keeps headless/test usage working.
-        self._schedule_worker: Callable[[Coroutine[Any, Any, Any]], object] = asyncio.create_task
-
     # ------------------------------------------------------------------
     # Accessors
     # ------------------------------------------------------------------
@@ -253,6 +259,12 @@ class ConversationAreaModel(ViewModelBase):
     # Because any two cursor paths share a prefix corresponding to their longest common ancestor
     # chain, the delta is always a tail change — new mounts append at the end, no positional
     # insertion needed.
+
+    @property
+    def services(self) -> ServiceAccessor:
+        """This conversation's service scope (a child of the app root). The presenting view resolves
+        the ``WorkerSchedulerService`` from here to bind its ``run_worker``."""
+        return self._services
 
     @property
     def command_registry(self) -> CommandRegistry:
@@ -371,12 +383,12 @@ class ConversationAreaModel(ViewModelBase):
     # Bootstrap
     # ------------------------------------------------------------------
 
-    def set_worker_scheduler(self, scheduler: Callable[[Coroutine[Any, Any, Any]], object]) -> None:
-        """Inject a scheduler for spawning long-running coroutines (agent turn, async command
-        handlers). Called by the View on mount with Textual's ``run_worker``; tests / headless callers
-        can leave the default ``asyncio.create_task``.
+    def _schedule_worker(self, work: Coroutine[Any, Any, Any]) -> object:
+        """Spawn a background worker (agent turn, async command handlers) via this scope's
+        ``WorkerSchedulerService``. The presenting view binds Textual's ``run_worker`` on mount so the
+        worker's lifetime tracks the widget; headless / between-mounts falls back to ``create_task``.
         """
-        self._schedule_worker = scheduler
+        return self._services.get(WorkerSchedulerService).get_scheduler()(work)
 
     def bootstrap_agent_session(self, app_options: Options, *, debug: bool = False) -> None:
         """Construct ``self.agent_session`` from app options. Idempotent: a second call is a no-op.
@@ -395,7 +407,7 @@ class ConversationAreaModel(ViewModelBase):
         agent_kwargs = get_agent_kwargs(app_options)
 
         self._node(self._cursor.head).agent_session = AgentSession(
-            self._session_factory,
+            self._services,
             chat_pane=self,
             resource_manager=self.resource_manager,
             provider=provider,

@@ -39,6 +39,7 @@ from rhizome.app.resource_viewer.loader import NodeLoadState, ResourceLoaderMode
 from rhizome.db import Resource
 from rhizome.db.models import ResourceSection
 from rhizome.resources import ResourceLoadType
+from rhizome.utils.workers import WorkerSchedulerService
 from rhizome.tui.widgets.shared.multiline_tree import MultilineTree
 from rhizome.tui.keybindings import Keybind
 
@@ -105,11 +106,13 @@ class ResourceLoaderTree(MultilineTree[ResourceTreeNodeData]):
 
     def on_mount(self) -> None:
         # Bind embedding workers to this widget (the VM owns the coroutine; we supply the scheduler).
-        self._vm.set_worker_scheduler(self.run_worker)
+        self._vm.services.get(WorkerSchedulerService).bind(self.run_worker)
         self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._refresh()
 
     def on_unmount(self) -> None:
+        # Compare-and-clear so a remount that rebound first isn't clobbered by this late unmount.
+        self._vm.services.get(WorkerSchedulerService).unbind(self.run_worker)
         self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
 
     # ------------------------------------------------------------------

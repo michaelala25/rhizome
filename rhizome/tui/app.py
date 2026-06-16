@@ -15,8 +15,10 @@ from rhizome.credentials import has_api_key
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
 from rhizome.app.options import Options, OptionScope
-from rhizome.db import get_engine, get_session_factory
+from rhizome.db import SessionFactoryService, get_engine, get_session_factory
 from rhizome.app.sql_session import NotifyingSessionFactory
+from rhizome.utils.services import ServiceAccessor
+from rhizome.utils.workers import WorkerSchedulerService
 from rhizome.tui.screens.main import MainScreen, ChatTabPane, LogTabPane
 from rhizome.tui.screens.setup import SetupScreen
 from rhizome.tui.types import DatabaseCommitted
@@ -63,10 +65,21 @@ class RhizomeApp(App):
         self.debug_logging = debug
         self._profiler = None  # type: ignore[assignment]
         engine = get_engine(db_path or get_default_db_path())
-        self.session_factory = NotifyingSessionFactory(
-            get_session_factory(engine),
-            on_commit=lambda tables: self._notify_database_committed(tables),
+        # Root service container. App-scoped dependencies are registered here and threaded down the
+        # VM spine as a single accessor; child scopes (per session / per widget) shadow individual
+        # services without touching this root.
+        self.services = ServiceAccessor()
+        self.services.register(
+            SessionFactoryService,
+            NotifyingSessionFactory(
+                get_session_factory(engine),
+                on_commit=lambda tables: self._notify_database_committed(tables),
+            ),
         )
+        # Scope-less fallback worker scheduler. Scope-owner VMs shadow this in their own child scope;
+        # this root holder is non-bindable, so a view that binds here (because its VM never opened a
+        # scoped scheduler) fails loudly instead of clobbering a single global binding.
+        self.services.register(WorkerSchedulerService, WorkerSchedulerService(bindable=False))
         self.options: Options = Options.load()
         self.options.subscribe_on_changed(Options.Theme, self._on_theme_changed)
         self.options.subscribe_on_changed(Options.TabMaxLength, self._on_tab_max_length_changed)

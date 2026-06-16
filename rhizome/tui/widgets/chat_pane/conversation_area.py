@@ -28,6 +28,7 @@ from rhizome.tui.widgets.chat_pane.status import StatusBar
 from rhizome.tui.widgets.options_editor import OptionsEditor
 from rhizome.app.chat_pane.conversation_graph import NodeId
 from rhizome.app.chat_pane.conversation_area import ConversationAreaModel
+from rhizome.utils.workers import WorkerSchedulerService
 # Feed dispatch: ``feed_views`` is imported for its side effect — it populates the registry that
 # ``view_for`` reads. Without that import every lookup would return ``None`` (see feed_registry.py).
 from rhizome.tui.widgets.chat_pane import feed_views  # noqa: F401
@@ -184,6 +185,9 @@ class ConversationArea(ViewBase[ConversationAreaModel]):
 
     def on_unmount(self) -> None:
         super().on_unmount()
+        # Compare-and-clear: only release the binding if it's still ours, so a remount that bound a
+        # new run_worker before this unmount fires isn't clobbered.
+        self._vm.services.get(WorkerSchedulerService).unbind(self.run_worker)
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedAppended, self._on_feed_append)
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedRemoved, self._on_feed_remove)
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
@@ -237,7 +241,7 @@ class ConversationArea(ViewBase[ConversationAreaModel]):
         yield StatusBar(self._vm.status_bar, id="status-bar")
 
     def on_mount(self) -> None:
-        self._vm.set_worker_scheduler(self.run_worker)
+        self._vm.services.get(WorkerSchedulerService).bind(self.run_worker)
         self._vm.bootstrap_agent_session(
             self.app.options,  # type: ignore[attr-defined]
             debug=getattr(self.app, "debug_logging", False),
