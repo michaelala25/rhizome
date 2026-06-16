@@ -1,9 +1,10 @@
 from pathlib import Path
+from typing import Protocol
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from rhizome.logs import get_logger
 
@@ -34,6 +35,18 @@ def get_engine(db_path: str | Path = "rhizome.db") -> AsyncEngine:
 def get_session_factory(engine: AsyncEngine) -> async_sessionmaker:
     """Return a session factory bound to *engine*."""
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+class SessionFactoryService(Protocol):
+    """SSOT async DB session factory -- ``async with sessions() as session:``.
+
+    The production value is the ``async_sessionmaker`` returned by ``get_session_factory``, which
+    doubles as this service's DI descriptor (its ``engine`` parameter is injected by type). Any
+    callable yielding an ``AsyncSession`` context manager satisfies the protocol, so consumers depend
+    on this name rather than on SQLAlchemy's ``async_sessionmaker`` directly.
+    """
+
+    def __call__(self) -> AsyncSession: ...
 
 
 def run_migrations(db_path: str | Path = "rhizome.db") -> None:

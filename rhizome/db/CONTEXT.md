@@ -21,6 +21,7 @@ Database layer. Defines the ORM schema and provides async engine/session managem
 - **engine.py** — Engine, session, and initialization:
   - `get_engine(db_path)` — creates an `AsyncEngine` using `sqlite+aiosqlite`. Registers a `connect` event listener that enables SQLite foreign key enforcement (`PRAGMA foreign_keys = ON`) on every new DBAPI connection.
   - `get_session_factory(engine)` — returns an `async_sessionmaker` with `expire_on_commit=False`.
+  - `SessionFactoryService` — `Protocol` for the app's session factory (`async with sessions() as session:`). `get_session_factory` doubles as its DI descriptor (the `engine` argument is injected by type); consumers depend on this name rather than on `async_sessionmaker` directly.
   - `run_migrations(db_path)` — runs all pending Alembic migrations against the given DB. No-op if already at the latest revision.
   - `init_db(db_path)` — synchronous entry point for app startup. Calls `run_migrations()` then returns an engine with FK enforcement ON.
 
@@ -40,4 +41,4 @@ This matches the ORM-level cascade settings on relationships, but also applies t
 
 ## `__init__.py` exports
 
-All 13 model classes (`Base`, `Topic`, `KnowledgeEntry`, `Tag`, `KnowledgeEntryTag`, `RelatedKnowledgeEntries`, `Flashcard`, `FlashcardEntry`, `ReviewSession`, `ReviewSessionTopic`, `ReviewSessionEntry`, `ReviewInteraction`, `ReviewInteractionEntry`), plus `EntryType`, `get_engine`, `get_session_factory`, and `init_db`. Import from `rhizome.db` directly.
+All 13 model classes (`Base`, `Topic`, `KnowledgeEntry`, `Tag`, `KnowledgeEntryTag`, `RelatedKnowledgeEntries`, `Flashcard`, `FlashcardEntry`, `ReviewSession`, `ReviewSessionTopic`, `ReviewSessionEntry`, `ReviewInteraction`, `ReviewInteractionEntry`), plus `EntryType`, `get_engine`, `get_session_factory`, `init_db`, and `SessionFactoryService`. Import from `rhizome.db` directly.
