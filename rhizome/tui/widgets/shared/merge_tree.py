@@ -38,6 +38,9 @@ from dataclasses import dataclass
 from typing import Hashable, Sequence
 
 from rich.text import Text
+from textual.binding import Binding
+from textual.message import Message
+from textual.reactive import reactive
 from textual.widgets import Static
 
 # Layout knobs.
@@ -81,6 +84,12 @@ _GLYPH = {
 # line drawn second riding on top: ╪ = horizontal over vertical, ╫ = vertical over horizontal. Two high
 # bits record that a through-run has already passed a cell, so the second arrival knows it is a crossing.
 PASS_V, PASS_H = 16, 32
+HL = 64                       # this cell lies on the highlighted cursor path
+
+# Cursor colours: the whole root→current path lights up in PATH_STYLE, its tip (the current node) in the
+# stronger CURSOR_STYLE; everything else stays dim / in the node's own style.
+PATH_STYLE = "cyan"
+CURSOR_STYLE = "bold black on cyan"
 
 
 class Grid:
@@ -98,24 +107,24 @@ class Grid:
         if 0 <= r < self.h and 0 <= c < self.w:
             self.over[r][c] = (ch, style)
 
-    def stroke(self, r: int, c: int, bits: int) -> None:
+    def stroke(self, r: int, c: int, bits: int, hl: bool = False) -> None:
         """Accumulate edge-line direction bits in a cell (used for turns / single-direction arms)."""
         if 0 <= r < self.h and 0 <= c < self.w:
-            self.bits[r][c] |= bits
+            self.bits[r][c] |= bits | (HL if hl else 0)
 
-    def cross_v(self, r: int, c: int) -> None:
+    def cross_v(self, r: int, c: int, hl: bool = False) -> None:
         """A vertical through-run. If a horizontal run already passed here, this one bridges over it (╫)."""
         if 0 <= r < self.h and 0 <= c < self.w:
             if self.bits[r][c] & PASS_H and not self.bits[r][c] & PASS_V:
                 self.bridge[r][c] = "V"
-            self.bits[r][c] |= U | D | PASS_V
+            self.bits[r][c] |= U | D | PASS_V | (HL if hl else 0)
 
-    def cross_h(self, r: int, c: int) -> None:
+    def cross_h(self, r: int, c: int, hl: bool = False) -> None:
         """A horizontal through-run. If a vertical run already passed here, this one bridges over it (╪)."""
         if 0 <= r < self.h and 0 <= c < self.w:
             if self.bits[r][c] & PASS_V and not self.bits[r][c] & PASS_H:
                 self.bridge[r][c] = "H"
-            self.bits[r][c] |= L | R | PASS_H
+            self.bits[r][c] |= L | R | PASS_H | (HL if hl else 0)
 
     def label(self, r: int, c: int, text: str, style: str | None = None) -> None:
         """Best-effort text: write into truly blank cells only, stop at the first occupied one."""
@@ -130,10 +139,12 @@ class Grid:
     def _cell(self, r: int, c: int) -> tuple[str, str | None]:
         if self.over[r][c] is not None:
             return self.over[r][c]
+        b = self.bits[r][c]
+        style = PATH_STYLE if b & HL else "dim"        # a stroke on the cursor path lights up
         if self.bridge[r][c]:
-            return ("╪" if self.bridge[r][c] == "H" else "╫", "dim")
-        b = self.bits[r][c] & 0b1111           # mask off the PASS_* tracking bits before the glyph lookup
-        return (_GLYPH[b], "dim") if b else (" ", None)
+            return ("╪" if self.bridge[r][c] == "H" else "╫", style)
+        glyph = b & 0b1111                             # mask off PASS_* / HL tracking bits for the lookup
+        return (_GLYPH[glyph], style) if glyph else (" ", None)
 
     def to_plain(self) -> str:
         return "\n".join(
@@ -514,41 +525,66 @@ def build_layout(nodes: Sequence[GraphNode]) -> Layout:
 # RENDER  ·  Layout -> Grid
 # ======================================================================================================
 
-def _route(grid: Grid, ca: int, ra: int, cb: int, rb: int, corner: int) -> None:
+def _route(grid: Grid, ca: int, ra: int, cb: int, rb: int, corner: int, hl: bool = False) -> None:
     """Draw one adjacent-rank edge: drop from the parent, jog sideways on its assigned track row
     (`corner`), drop into the child. Only direction bits are written, so where this edge meets or crosses
-    another, the bitmask composes the right junction (┬/┴) or crossing (┼/bridge) for free at flatten."""
+    another, the bitmask composes the right junction (┬/┴) or crossing (┼/bridge) for free at flatten.
+    `hl` marks every cell as part of the cursor path so it renders highlighted."""
     for r in range(ra + 1, corner):                         # upper vertical, in the parent's column
-        grid.cross_v(r, ca)
-    grid.stroke(corner, ca, U)                              # arrive at the track row from above…
+        grid.cross_v(r, ca, hl)
+    grid.stroke(corner, ca, U, hl)                          # arrive at the track row from above…
     if ca != cb:
         lo, hi = sorted((ca, cb))
         for c in range(lo + 1, hi):                         # the horizontal run between the two columns
-            grid.cross_h(corner, c)
-        grid.stroke(corner, ca, R if cb > ca else L)        # …turn toward the child → └ or ┘
-        grid.stroke(corner, cb, L if cb > ca else R)        # child column: the arm coming from the parent
-    grid.stroke(corner, cb, D)                              # …then leave downward → ┌/┐ (or │ if ca == cb)
+            grid.cross_h(corner, c, hl)
+        grid.stroke(corner, ca, R if cb > ca else L, hl)    # …turn toward the child → └ or ┘
+        grid.stroke(corner, cb, L if cb > ca else R, hl)    # child column: the arm coming from the parent
+    grid.stroke(corner, cb, D, hl)                          # …then leave downward → ┌/┐ (or │ if ca == cb)
     for r in range(corner + 1, rb):                         # lower vertical, in the child's column
-        grid.cross_v(r, cb)
+        grid.cross_v(r, cb, hl)
 
 
-def render(layout: Layout, nodes: Sequence[GraphNode], show_labels: bool = True) -> Grid:
+def _real_edge(a: Hashable, b: Hashable) -> tuple:
+    """The real (parent, child) edge a proper edge belongs to — its virtual chain's source→dest, or itself."""
+    if isinstance(a, _Virtual):
+        return a.edge
+    if isinstance(b, _Virtual):
+        return b.edge
+    return (a, b)
+
+
+def render(layout: Layout, nodes: Sequence[GraphNode], cursor: tuple = (), show_labels: bool = True) -> Grid:
     """Paint a built `Layout` into a `Grid`. Edges first, then nodes on top — a node cell overrides any
-    stroke that routed into it (see `Grid._cell`), so the ● / ◆ always wins its own square."""
+    stroke that routed into it (see `Grid._cell`), so the ● / ◆ always wins its own square.
+
+    `cursor` is the root→current id-path. Only that realization lights up: its nodes and the edges *between
+    consecutive path nodes* (not every edge into a merged node), with the tip in `CURSOR_STYLE`.
+    """
     grid = Grid(layout.width, layout.height)
+    tip = cursor[-1] if cursor else None
+    path_nodes = set(cursor)
+    path_edges = set(zip(cursor, cursor[1:]))               # consecutive (parent, child) pairs on the path
 
     for edge in layout.edges:
         a, b = edge
-        _route(grid, layout.col[a], layout.row(a), layout.col[b], layout.row(b), layout.edge_jog[edge])
+        hl = _real_edge(a, b) in path_edges
+        _route(grid, layout.col[a], layout.row(a), layout.col[b], layout.row(b), layout.edge_jog[edge], hl)
 
     for v in layout.virtuals:                               # a waypoint's own cell bridges its two segments
-        grid.cross_v(layout.row(v), layout.col[v])
+        grid.cross_v(layout.row(v), layout.col[v], v.edge in path_edges)
 
     for node in nodes:
         r, c = layout.row(node.id), layout.col[node.id]
         merge = node.id in layout.is_merge
-        grid.put(r, c, node.marker or ("◆" if merge else "●"),
-                 node.style if node.style is not None else ("bold magenta" if merge else None))
+        if node.id == tip:
+            style = CURSOR_STYLE
+        elif node.id in path_nodes:
+            style = PATH_STYLE
+        elif node.style is not None:
+            style = node.style
+        else:
+            style = "bold magenta" if merge else None
+        grid.put(r, c, node.marker or ("◆" if merge else "●"), style)
         if show_labels and node.label:
             grid.label(r, c + 2, node.label, "dim")
 
@@ -560,11 +596,14 @@ def render(layout: Layout, nodes: Sequence[GraphNode], show_labels: bool = True)
 # ======================================================================================================
 
 class MergeTree(Static, can_focus=True):
-    """Renders a rooted DAG-with-merges from a list of :class:`GraphNode` values.
+    """Renders a rooted DAG-with-merges from a list of :class:`GraphNode` values, with a navigable cursor.
 
-    Pure view: hand it `GraphNode`s via the constructor or :meth:`set_graph` and it lays out and paints. It
-    keeps no model and emits nothing yet; a consumer that owns it is responsible for pushing fresh graph
-    nodes when its data changes. Focusable so keyboard navigation can be added later.
+    Pure view: hand it `GraphNode`s via the constructor or :meth:`set_graph` and it lays out and paints. The
+    CURSOR is a root→current *path* (a tuple of node ids) — the realization of how you reached the current
+    node — so it stays unambiguous through merges: `up` retraces the exact way you came. The path lights up
+    in the diagram. Arrows move structurally (up = parent, down = first child, left/right = siblings); `enter`
+    selects. It owns the cursor outright (no view-model), so a consumer reacts to :class:`NodeHighlighted` /
+    :class:`NodeSelected`, or drives the cursor itself with :meth:`set_cursor`.
     """
 
     DEFAULT_CSS = """
@@ -574,24 +613,209 @@ class MergeTree(Static, can_focus=True):
     }
     """
 
+    BINDINGS = [
+        Binding("up", "cursor_up", "Parent", show=False),
+        Binding("down", "cursor_down", "Child", show=False),
+        Binding("left", "cursor_left", "Prev sibling", show=False),
+        Binding("right", "cursor_right", "Next sibling", show=False),
+        Binding("enter", "select", "Select", show=False),
+    ]
+
+    cursor: reactive[tuple] = reactive((), init=False)
+    """The root→current id-path. View-owned; assign to move it, or use :meth:`set_cursor`."""
+
+    class NodeHighlighted(Message):
+        """Posted on a user cursor move — the highlighted root→node path changed."""
+
+        def __init__(self, path: tuple, node: Hashable) -> None:
+            super().__init__()
+            self.path = path
+            self.node = node
+
+    class NodeSelected(Message):
+        """Posted when `enter` is pressed on the cursor node."""
+
+        def __init__(self, path: tuple, node: Hashable) -> None:
+            super().__init__()
+            self.path = path
+            self.node = node
+
     def __init__(self, nodes: Sequence[GraphNode] = (), *, show_labels: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
-        # NB: not `self._nodes` — that is Textual's child-widget NodeList. Shadowing it makes the framework
+        self._show_labels = show_labels
+        # NB: not `self._nodes` — that is Textual's child-widget NodeList; shadowing it makes the framework
         # try to walk these graph nodes as if they were mounted widgets.
         self._graph_nodes: list[GraphNode] = list(nodes)
-        self._show_labels = show_labels
+        self._layout: Layout | None = None
+        self._children: dict[Hashable, list] = {}     # id -> child ids, for navigation
+        self._edges: set = set()                      # (parent, child) pairs, for cursor recovery
+        self._root: Hashable | None = None
+
+    # -- public API -----------------------------------------------------------
 
     def set_graph(self, nodes: Sequence[GraphNode]) -> None:
-        """Replace the displayed graph and repaint."""
+        """Replace the displayed graph, recover the cursor by id (else reset to root), and repaint."""
         self._graph_nodes = list(nodes)
-        self._repaint()
+        self._rebuild()
+
+    def set_cursor(self, path: Sequence[Hashable]) -> None:
+        """Move the cursor programmatically (repaints; does NOT post `NodeHighlighted` — the caller drove it)."""
+        self.cursor = tuple(path)
+
+    # -- internals ------------------------------------------------------------
 
     def on_mount(self) -> None:
-        self._repaint()
+        self._rebuild()
 
-    def _repaint(self) -> None:
-        if not self._graph_nodes:
+    def _rebuild(self) -> None:
+        """(Re)index the graph, recover the cursor, rebuild the (cached) layout, and paint."""
+        self._index()
+        self._layout = build_layout(self._graph_nodes) if self._graph_nodes else None
+        # Silent set: a fresh graph is consumer-driven, so it must not echo a NodeHighlighted back. We still
+        # paint explicitly below, since the layout changed even when the recovered cursor is unchanged.
+        self.set_reactive(MergeTree.cursor, self._recovered_cursor())
+        self._paint()
+
+    def _index(self) -> None:
+        self._children = {n.id: [] for n in self._graph_nodes}
+        self._edges = set()
+        self._root = None
+        for n in self._graph_nodes:
+            if not n.parents:
+                self._root = n.id
+            for p in n.parents:
+                self._children[p].append(n.id)
+                self._edges.add((p, n.id))
+
+    def _recovered_cursor(self) -> tuple:
+        # Keep the current id-path iff it is still a valid root→node path (every id present, every step an
+        # edge); otherwise fall back to the root. No partial-prefix salvage — it is all-or-root.
+        c = self.cursor
+        valid = (bool(c) and c[0] == self._root and all(cid in self._children for cid in c)
+                 and all(step in self._edges for step in zip(c, c[1:])))
+        return c if valid else (() if self._root is None else (self._root,))
+
+    def _move_to(self, path: tuple) -> None:
+        """User-initiated move: update the cursor and announce it."""
+        self.cursor = path
+        self.post_message(self.NodeHighlighted(path, path[-1]))
+
+    def watch_cursor(self) -> None:
+        self._paint()
+
+    def _paint(self) -> None:
+        if self._layout is None:
             self.update("")
             return
-        layout = build_layout(self._graph_nodes)
-        self.update(render(layout, self._graph_nodes, self._show_labels).to_text())
+        self.update(render(self._layout, self._graph_nodes, self.cursor, self._show_labels).to_text())
+
+    # -- navigation -----------------------------------------------------------
+    #
+    # Siblings are taken in DISPLAY order (left→right by grid column), not graph/insertion order — the
+    # layout reorders children, so "left"/"right" follows what the eye sees. left/right also "jag": if the
+    # tip has no sibling that way, walk up the path to the nearest ancestor that does, swap it, and descend
+    # back to the same end node if it is still reachable (else stop at the sibling). At a merge this lets you
+    # swap which parent-branch you took to reach it.
+
+    def _display_children(self, node: Hashable) -> list:
+        """Children of `node` in left→right display order (by grid column)."""
+        kids = self._children.get(node, [])
+        return kids if self._layout is None else sorted(kids, key=lambda c: self._layout.col[c])
+
+    def action_cursor_up(self) -> None:
+        if len(self.cursor) > 1:
+            self._move_to(self.cursor[:-1])                 # pop back the exact way we came in
+
+    def action_cursor_down(self) -> None:
+        kids = self._display_children(self.cursor[-1]) if self.cursor else []
+        if kids:
+            self._move_to(self.cursor + (kids[0],))         # the leftmost child
+
+    def action_cursor_left(self) -> None:
+        target = self._jag(-1)
+        if target is not None:
+            self._move_to(target)
+
+    def action_cursor_right(self) -> None:
+        target = self._jag(+1)
+        if target is not None:
+            self._move_to(target)
+
+    def _jag(self, direction: int) -> tuple | None:
+        """The cursor after a left (-1) / right (+1): swap at the deepest ancestor with a sibling that way,
+        then either keep the same end node if it's still reachable, or descend the new branch to the same
+        vertical level (a spatial feel — see :meth:`_descend_to_level`)."""
+        p = self.cursor
+        for i in range(len(p) - 1, 0, -1):                  # from the tip upward to the first usable branch
+            siblings = self._display_children(p[i - 1])
+            j = siblings.index(p[i]) + direction
+            if 0 <= j < len(siblings):
+                tail = self._path_down(siblings[j], p[-1])  # 1) keep the exact endpoint if reachable…
+                if tail:
+                    return p[:i] + tail
+                return p[:i] + self._descend_to_level(siblings[j], self._layout.rank[p[-1]])  # 2) …else level
+        return None
+
+    def _path_down(self, start: Hashable, target: Hashable) -> tuple | None:
+        """A shortest downward path `start → … → target` (display order), or None if target isn't below."""
+        queue = deque([(start, (start,))])
+        seen = {start}
+        while queue:
+            node, path = queue.popleft()
+            if node == target:
+                return path
+            for c in self._display_children(node):
+                if c not in seen:
+                    seen.add(c)
+                    queue.append((c, path + (c,)))
+        return None
+
+    def _descend_to_level(self, start: Hashable, max_rank: int) -> tuple:
+        """Path from `start` down to its deepest descendant whose rank stays ≤ `max_rank` (ties: leftmost).
+
+        When a jag swaps branches but can't reach the old endpoint, this keeps the cursor at the same
+        vertical level instead of snapping shallow to the bare sibling — a spatial rather than purely
+        graph-semantic feel. Ranks strictly increase downward, so "deepest within the level" is well-defined
+        and pruning at `rank > max_rank` loses nothing.
+        """
+        if self._layout is None:
+            return (start,)
+        best_path = (start,)
+        best_key = (self._layout.rank[start], -self._layout.col[start])
+        queue = deque([(start, (start,))])
+        seen = {start}
+        while queue:
+            node, path = queue.popleft()
+            key = (self._layout.rank[node], -self._layout.col[node])    # deepest, then leftmost
+            if key > best_key:
+                best_key, best_path = key, path
+            for c in self._display_children(node):
+                if c not in seen and self._layout.rank[c] <= max_rank:
+                    seen.add(c)
+                    queue.append((c, path + (c,)))
+        return best_path
+
+    def action_select(self) -> None:
+        if self.cursor:
+            self.post_message(self.NodeSelected(self.cursor, self.cursor[-1]))
+
+    def check_action(self, action: str, parameters: tuple) -> bool:
+        # Disable (so the key bubbles to a parent) when the cursor can't move that way.
+        if not self.cursor:
+            return action == "select"
+        if action == "cursor_up":
+            return len(self.cursor) > 1
+        if action == "cursor_down":
+            return bool(self._children.get(self.cursor[-1]))
+        if action in ("cursor_left", "cursor_right"):
+            return self._has_jag(-1 if action == "cursor_left" else +1)
+        return True
+
+    def _has_jag(self, direction: int) -> bool:
+        """Whether a left/right jag can move at all (cheap — no descent search)."""
+        p = self.cursor
+        for i in range(len(p) - 1, 0, -1):
+            siblings = self._display_children(p[i - 1])
+            if 0 <= siblings.index(p[i]) + direction < len(siblings):
+                return True
+        return False
