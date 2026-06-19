@@ -22,12 +22,6 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 from rhizome.resources import ResourceManager
-from rhizome.resources.embeddings import (
-    chunk_text,
-    embed_batch,
-    embed_chunks,
-    get_voyage_api_key,
-)
 
 _log = get_logger("agent.tools.resources")
 
@@ -233,13 +227,17 @@ def build_resource_tools(
             )
 
         try:
-            api_key = get_voyage_api_key()
-            vecs = await embed_batch([query], api_key)
+            query_vec_list = await resource_manager.embed_query(query)
         except Exception as e:
             _log.exception("query_resources: failed to embed query")
             return f"Error embedding query: {e}"
+        if query_vec_list is None:
+            return (
+                "query_resources is unavailable: no embedding service is configured "
+                "(set VOYAGE_API_KEY)."
+            )
 
-        query_vec = np.asarray(vecs[0], dtype=np.float32)
+        query_vec = np.asarray(query_vec_list, dtype=np.float32)
         hits = await store.query(query_vec, k)
         if not hits:
             return f"No matches found for {query!r}."

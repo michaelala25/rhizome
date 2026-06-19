@@ -11,7 +11,7 @@ from textual.binding import Binding
 import rhizome.tui.graphics as graphics
 
 from rhizome.config import get_default_db_path
-from rhizome.credentials import has_api_key
+from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
 from rhizome.app.options import Options, OptionScope, OptionService
@@ -84,6 +84,15 @@ class RhizomeApp(App):
         # Root options service. Child scopes (per conversation) shadow this with a handle that also
         # reaches a Session node; this root one dispenses only Root.
         self.services.register(OptionService, OptionService(self.options))
+        # API keys (injected resolver) + the optional embedding service. EmbeddingService is registered
+        # only when a provider is configured, so consumers that ``try_get`` it degrade gracefully when
+        # embeddings aren't set up. The Voyage impl is deferred-imported so its REST/splitter deps stay
+        # off the startup path unless a key is present.
+        api_keys = CredentialsAPIKeyService()
+        self.services.register(APIKeyService, api_keys)
+        if api_keys.has("voyage"):
+            from rhizome.resources.embeddings import EmbeddingService, VoyageEmbedder
+            self.services.register(EmbeddingService, VoyageEmbedder(api_keys))
         self.options.subscribe_on_changed(Options.Theme, self._on_theme_changed)
         self.options.subscribe_on_changed(Options.TabMaxLength, self._on_tab_max_length_changed)
         self.theme = self.options.get(Options.Theme)
@@ -108,7 +117,7 @@ class RhizomeApp(App):
             pane.update_tab_max_length(new)
 
     def on_mount(self) -> None:
-        if not has_api_key("anthropic"):
+        if not self.services.get(APIKeyService).has("anthropic"):
             self.push_screen(SetupScreen(), callback=self._on_setup_complete)
         else:
             self.push_screen(MainScreen())

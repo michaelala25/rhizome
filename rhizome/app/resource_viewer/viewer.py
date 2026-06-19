@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from rhizome.app.model import ViewModelBase
 from rhizome.resources import ResourceManager
+from rhizome.resources.embeddings import EmbeddingService
 from rhizome.db import SessionFactoryService
 from rhizome.utils.services import ServiceAccessor
 
@@ -46,7 +47,10 @@ class ResourceViewerModel(ViewModelBase):
         super().__init__()
         self._services = services
         self._session_factory = services.get(SessionFactoryService)
-        self._manager = manager or ResourceManager(session_factory=self._session_factory)
+        self._manager = manager or ResourceManager(
+            session_factory=self._session_factory,
+            embedding_service=services.try_get(EmbeddingService),
+        )
 
         self._current_topic_id: int | None = None
         # Display-only label for the active topic — children scope by id, but the view shows the name.

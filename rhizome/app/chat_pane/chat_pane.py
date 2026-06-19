@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from rhizome.db import SessionFactoryService
 from rhizome.utils.services import ServiceAccessor
+from rhizome.resources.embeddings import EmbeddingService
 from rhizome.resources.manager import ResourceManager
 from rhizome.app.model import ViewModelBase
 from rhizome.app.resource_viewer import ResourceViewerModel
@@ -44,7 +45,10 @@ class ChatPaneModel(ViewModelBase):
 
         # Shared resource substrate: the agent (inside the conversation) and the side-panel resource
         # viewer both read/write the same ``ResourceManager``, so it's owned here and injected down.
-        self.resource_manager: ResourceManager = ResourceManager(session_factory=self._session_factory)
+        self.resource_manager: ResourceManager = ResourceManager(
+            session_factory=self._session_factory,
+            embedding_service=self._services.try_get(EmbeddingService),
+        )
 
         # Side-panel resource viewer. Owned here (not by the view) so its load/link/cursor state
         # survives toggling the panel open and closed — the view mounts/unmounts the widget against
