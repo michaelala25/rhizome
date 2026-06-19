@@ -12,6 +12,7 @@ from rhizome.utils.services import (
     Handle,
     ServiceAccessor,
     ServiceError,
+    ServiceMeta,
     ServiceNotFoundError,
 )
 
@@ -44,6 +45,12 @@ class Configurable:
     def __init__(self, *, db: Database, limit: int = 10):   # limit is configuration, not a dependency
         self.db = db
         self.limit = limit
+
+
+class Provenanced:
+    def __init__(self, *, db: Database, meta: ServiceMeta):   # self-meta edge: its own provenance
+        self.db = db
+        self.meta = meta
 
 
 # Marker key types, defined before the factories that reference them, so mutual / cyclic shapes have
@@ -219,7 +226,7 @@ def test_explicit_requires_injects_string_key():
 def test_child_falls_through_to_parent_and_caches_at_owner():
     root = ServiceAccessor()
     root.register_descriptor(Database)
-    child = root.child()
+    child = root.child("child")
     child.register_descriptor(Repo)
 
     repo = child.get(Repo)
@@ -236,7 +243,7 @@ def test_service_resolves_dependencies_from_its_registration_scope():
     root.register(Marker, "root-value")
     root.register_descriptor(Svc)
 
-    child = root.child()
+    child = root.child("child")
     child.register(Marker, "child-value")
     child.register_descriptor(Svc)   # child's own descriptor shadows root's
 
@@ -291,3 +298,111 @@ def test_requires_naming_unknown_parameter_raises():
     s.register_descriptor(Database)
     with pytest.raises(ServiceError):
         s.register_descriptor(Repo, requires={"nope": Database})
+
+
+# --------------------------------------------------------------------------- #
+# Provenance: names, paths, ServiceMeta, describe, self-meta edge
+# --------------------------------------------------------------------------- #
+
+def test_scope_name_and_path():
+    root = ServiceAccessor()                 # default name
+    sess = root.child("conversation")
+    leaf = sess.child("browser")
+    assert root.name == "root"
+    assert sess.path == "root -> conversation"
+    assert leaf.path == "root -> conversation -> browser"
+
+
+def test_describe_descriptor_metadata():
+    root = ServiceAccessor()
+    root.register_descriptor(Database)
+    root.register_descriptor(Repo)
+
+    meta = root.describe(Repo)
+    assert isinstance(meta, ServiceMeta)
+    assert meta.key is Repo
+    assert meta.scope_name == "root"
+    assert meta.scope_path == "root"
+    assert meta.kind == "descriptor"
+    assert meta.strong == (Database,)   # Repo's one strong edge
+    assert "Repo" in meta.source
+
+
+def test_describe_instance_metadata():
+    root = ServiceAccessor()
+    root.register("db", Database())
+    meta = root.describe("db")
+    assert meta.kind == "instance"
+    assert meta.scope_name == "root"
+
+
+def test_describe_falls_through_to_owning_scope():
+    root = ServiceAccessor()
+    root.register_descriptor(Database)
+    leaf = root.child("a").child("b")
+    # The metadata reports the scope that actually owns the registration, not the asker's scope.
+    assert leaf.describe(Database).scope_name == "root"
+
+
+def test_describe_missing_key_raises():
+    root = ServiceAccessor()
+    with pytest.raises(ServiceNotFoundError):
+        root.describe(Database)
+
+
+def test_self_meta_injection_reports_registration_scope():
+    root = ServiceAccessor()
+    root.register_descriptor(Database)
+    sess = root.child("conversation")
+    sess.register_descriptor(Provenanced)
+
+    p = sess.get(Provenanced)
+    assert isinstance(p.db, Database)            # strong edge still resolves (falls through to root)
+    assert isinstance(p.meta, ServiceMeta)
+    assert p.meta.key is Provenanced
+    assert p.meta.scope_name == "conversation"   # its OWN registration scope, not the dep's
+    assert p.meta.scope_path == "root -> conversation"
+    assert p.meta.strong == (Database,)
+
+
+def test_self_meta_via_explicit_requires():
+    root = ServiceAccessor()
+
+    class Bare:
+        def __init__(self, *, meta):   # unannotated -- self-meta requested via requires
+            self.meta = meta
+
+    root.register_descriptor(Bare, requires={"meta": ServiceMeta})
+    assert root.get(Bare).meta.key is Bare
+
+
+def test_not_found_error_carries_origin_scope_and_chain():
+    root = ServiceAccessor()
+    root.register_descriptor(Repo)   # depends on Database, which is never registered
+    leaf = root.child("conversation")
+
+    with pytest.raises(ServiceNotFoundError) as exc:
+        leaf.get(Repo)
+    # The miss is for Database; the search originates at Repo's owning (root) scope and names the
+    # in-flight chain that needed it.
+    assert exc.value.key is Database
+    assert exc.value.scope == "root"
+    assert exc.value.chain == (Repo,)
+    assert "needed by" in str(exc.value)
+
+
+def test_cycle_error_carries_scope():
+    s = ServiceAccessor("only")
+    s.register_descriptor(XKey, StrongX)
+    s.register_descriptor(YKey, StrongY)
+    with pytest.raises(CyclicalServiceDependencyError) as exc:
+        s.get(XKey)
+    assert exc.value.scope == "only"
+
+
+def test_duplicate_registration_error_names_scope():
+    s = ServiceAccessor("only")
+    s.register_descriptor(Database)
+    with pytest.raises(DuplicateRegistrationError) as exc:
+        s.register_descriptor(Database)
+    assert "scope only" in str(exc.value)

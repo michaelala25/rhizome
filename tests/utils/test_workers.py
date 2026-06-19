@@ -80,7 +80,7 @@ def test_child_scope_shadows_the_non_bindable_root():
     root = ServiceAccessor()
     root.register(WorkerSchedulerService, WorkerSchedulerService(bindable=False))
 
-    scope = root.child()
+    scope = root.child("scope")
     scope.register(WorkerSchedulerService, WorkerSchedulerService())   # bindable, scoped
 
     def run_worker(work):

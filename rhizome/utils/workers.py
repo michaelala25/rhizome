@@ -59,7 +59,7 @@ class WorkerSchedulerService:
             raise RuntimeError(
                 "Cannot bind the root WorkerSchedulerService: a view resolved the shared root "
                 "scheduler, which means its view-model never registered a scoped one. Open a child "
-                "scope (services.child()) and register a WorkerSchedulerService there before binding."
+                "scope (services.child(name)) and register a WorkerSchedulerService there before binding."
             )
         self._bound = scheduler
 

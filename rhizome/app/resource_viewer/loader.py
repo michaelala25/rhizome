@@ -201,7 +201,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
         # Scheduler scope owner (embedding workers): open a child scope and register a
         # WorkerSchedulerService the presenting tree view binds ``run_worker`` into; fall through to
         # root for the session factory.
-        self._services = services.child()
+        self._services = services.child("resource_loader")
         self._services.register(WorkerSchedulerService, WorkerSchedulerService())
         self._session_factory = self._services.get(SessionFactoryService)
         self._manager = manager

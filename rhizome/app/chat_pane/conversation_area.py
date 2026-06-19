@@ -232,7 +232,7 @@ class ConversationAreaModel(ViewModelBase):
         # accessor is also handed to each AgentSession (a scope boundary), which resolves the factory
         # and can open a further session-scoped child. ``_session_factory`` is resolved once here and
         # handed raw to the leaf VMs (browser / interrupt feeds).
-        self._services = services.child()
+        self._services = services.child("conversation")
         self._services.register(WorkerSchedulerService, WorkerSchedulerService())
         self._session_factory = self._services.get(SessionFactoryService)
 
