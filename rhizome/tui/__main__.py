@@ -1,9 +1,7 @@
 """Entry point: ``uv run python -m rhizome.tui``."""
 
+import argparse
 from datetime import datetime
-from pathlib import Path
-
-import rich_click as click
 
 import rhizome.tui.graphics as graphics
 from rhizome.config import get_default_db_path
@@ -11,32 +9,34 @@ from rhizome.db import init_db
 from rhizome.tui.app import PROFILE_DIR, RhizomeApp
 
 
-@click.command()
-@click.option(
-    "--db",
-    default=None,
-    type=click.Path(dir_okay=False),
-    help="Path to the SQLite database file. [default: platform data dir or $RHIZOME_DB]",
-)
-@click.option("--debug", is_flag=True, default=False, help="Enable debug logging of agent stream events.")
-@click.option(
-    "--profile",
-    is_flag=True,
-    default=False,
-    help="Wrap the entire session in a pyinstrument profile. Writes HTML to /tmp/rhizome-profiles on exit.",
-)
-def main(db: str | None, debug: bool, profile: bool) -> None:
-    """Launch the rhizome TUI."""
-    db_path = db or str(get_default_db_path())
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="rhizome.tui", description="Launch the rhizome TUI.")
+    parser.add_argument(
+        "--db", default=None, metavar="PATH",
+        help="Path to the SQLite database file. [default: platform data dir or $RHIZOME_DB]",
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug logging of agent stream events.",
+    )
+    parser.add_argument(
+        "--profile", action="store_true",
+        help="Wrap the entire session in a pyinstrument profile. Writes HTML to /tmp/rhizome-profiles on exit.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    db_path = args.db or str(get_default_db_path())
     init_db(db_path)
 
     # Probe the terminal + select a graphics backend BEFORE Textual starts (it needs raw stdin while it
     # is still ours). No backend selected -> the chat falls back to plain Markdown; no error either way.
     graphics.initialize()
 
-    app = RhizomeApp(db_path=db_path, debug=debug)
+    app = RhizomeApp(db_path=db_path, debug=args.debug)
 
-    if not profile:
+    if not args.profile:
         app.run()
         return
 
@@ -52,7 +52,7 @@ def main(db: str | None, debug: bool, profile: bool) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         out = PROFILE_DIR / f"profile-startup-{stamp}.html"
         out.write_text(profiler.output_html())
-        click.echo(f"Profile written: {out}")
+        print(f"Profile written: {out}")
 
 
 main()

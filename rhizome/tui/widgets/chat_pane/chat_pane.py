@@ -88,24 +88,10 @@ class ChatPane(ViewBase[ChatPaneModel]):
     # ------------------------------------------------------------------
     # Workspace action handlers
     # ------------------------------------------------------------------
-
-    def _notify_quit(self) -> None:
-        self.app.exit()
-
-    def _notify_new_tab(self) -> None:
-        screen = self._main_screen()
-        if screen is not None:
-            self.run_worker(screen._add_tab())
-
-    def _notify_close_tab(self) -> None:
-        screen = self._main_screen()
-        if screen is not None:
-            self.run_worker(screen._close_active_tab())
-
-    def _notify_open_logs(self) -> None:
-        screen = self._main_screen()
-        if screen is not None:
-            self.run_worker(screen._add_log_tab())
+    #
+    # Tab/app actions (quit, new/close tab, open logs) are global slash commands now — their handlers
+    # live on the App, which dispatch reaches through the command registry. What stays here is the
+    # resource-viewer toggle: a per-pane widget mount/unmount the VM can't perform itself.
 
     def _toggle_resource_viewer(self) -> None:
         # Toggle the left-docked panel. The VM persists on this orchestrator VM, so closing and
@@ -127,10 +113,6 @@ class ChatPane(ViewBase[ChatPaneModel]):
         panel.focus()
 
     _WORKSPACE_HANDLERS = {
-        ConversationAreaModel.NotifyAction.QUIT: _notify_quit,
-        ConversationAreaModel.NotifyAction.NEW_TAB: _notify_new_tab,
-        ConversationAreaModel.NotifyAction.CLOSE_TAB: _notify_close_tab,
-        ConversationAreaModel.NotifyAction.OPEN_LOGS: _notify_open_logs,
         ConversationAreaModel.NotifyAction.TOGGLE_RESOURCE_VIEWER: _toggle_resource_viewer,
     }
 
@@ -171,11 +153,6 @@ class ChatPane(ViewBase[ChatPaneModel]):
     # ------------------------------------------------------------------
     # Tab plumbing
     # ------------------------------------------------------------------
-
-    def _main_screen(self):
-        from rhizome.tui.screens.main import MainScreen
-        screen = self.app.screen
-        return screen if isinstance(screen, MainScreen) else None
 
     def _enclosing_tab_pane(self):
         from rhizome.tui.screens.main import ChatTabPane

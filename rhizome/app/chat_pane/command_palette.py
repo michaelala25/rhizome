@@ -1,21 +1,23 @@
 """Slash-command palette — sub-VM + view used by the MVVM chat pane.
 
-The palette knows nothing about the chat pane: the parent VM hands it a list of ``(name, description)``
-rows, pushes the current input buffer into ``update_for_input``, and reads ``selected_command`` on
-tab-confirm. The palette owns its own filtering, visibility, cursor, and dirty channel; the view
-subscribes to it directly.
+The palette knows nothing about the chat pane: it holds the conversation's ``CommandRegistryService``
+and pulls ``rows()`` lazily, so commands registered at any reachable scope (session or inherited global)
+show up without anyone pushing a snapshot. The parent VM pushes the current input buffer into
+``update_for_input`` and reads ``selected_command`` on tab-confirm. The palette owns its own filtering,
+visibility, cursor, and dirty channel; the view subscribes to it directly.
 """
 
 from __future__ import annotations
 
+from rhizome.app.commands import CommandRegistryService
 from rhizome.app.model import ViewModelBase
 
 
 class CommandPaletteModel(ViewModelBase):
 
-    def __init__(self) -> None:
+    def __init__(self, commands: CommandRegistryService) -> None:
         super().__init__()
-        self._all_commands: list[tuple[str, str]] = []
+        self._commands = commands
         self._filter_text: str = ""
         self._visible: bool = False
         self._cursor: int = 0
@@ -39,7 +41,7 @@ class CommandPaletteModel(ViewModelBase):
     @property
     def filtered(self) -> list[tuple[str, str]]:
         prefix = self._name_prefix(self._filter_text)
-        return [row for row in self._all_commands if row[0].startswith(prefix)]
+        return [row for row in self._commands.rows() if row[0].startswith(prefix)]
 
     @property
     def selected_command(self) -> str | None:
@@ -57,7 +59,7 @@ class CommandPaletteModel(ViewModelBase):
         name = self._name_prefix(buffer_text)
         if not name:
             return False
-        return any(cmd_name == name for cmd_name, _ in self._all_commands)
+        return self._commands.resolve(name) is not None
 
     @staticmethod
     def _name_prefix(buffer_text: str) -> str:
@@ -70,14 +72,6 @@ class CommandPaletteModel(ViewModelBase):
     # ------------------------------------------------------------------
     # Mutators
     # ------------------------------------------------------------------
-
-    def set_commands(self, commands: list[tuple[str, str]]) -> None:
-        commands = sorted(commands, key=lambda r: r[0])
-        if commands == self._all_commands:
-            return
-        self._all_commands = commands
-        self._cursor = 0
-        self.emit(self.Callbacks.OnDirty)
 
     def update_for_input(self, buffer_text: str) -> None:
         """Derive filter + visibility from a chat input buffer.

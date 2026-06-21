@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, cast
 
-import rich_click as click
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
@@ -27,7 +26,15 @@ from rhizome.db import SessionFactoryService, Topic
 from rhizome.utils.services import ServiceAccessor
 from rhizome.utils.workers import WorkerSchedulerService
 from rhizome.resources.manager import ResourceManager
-from rhizome.app.command_registry import CommandRegistry
+from rhizome.app.commands import (
+    CommandError,
+    CommandRegistry,
+    CommandRegistryService,
+    DefaultParser,
+    Flag,
+    RAW,
+    UnknownCommandError,
+)
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.tui.types import Mode, Role
 
@@ -152,10 +159,6 @@ class ConversationAreaModel(ViewModelBase):
         HINT_HIGHER_VERBOSITY = "hint_higher_verbosity"
         AGENT_BUSY = "agent_busy"
         DESCEND_REQUIRED = "descend_required"
-        QUIT = "quit"
-        NEW_TAB = "new_tab"
-        CLOSE_TAB = "close_tab"
-        OPEN_LOGS = "open_logs"
         TOGGLE_RESOURCE_VIEWER = "toggle_resource_viewer"
 
     def __init__(
@@ -206,10 +209,13 @@ class ConversationAreaModel(ViewModelBase):
 
         self.session_mode: Mode = Mode.IDLE
 
-        self.command_palette = CommandPaletteModel()
-        self._command_registry = CommandRegistry()
+        # Session command scope, parented to the app-root (global) registry so dispatch and the palette
+        # see the merged set: workspace commands here, tab/app commands inherited from global. ``try_get``
+        # leaves the parent None in headless/test scopes that register no global registry. Registered at
+        # this conversation's service scope (below) for parity with the OptionService shadow.
+        self._commands = CommandRegistry(parent=services.try_get(CommandRegistryService))
         self._register_commands()
-        self.command_palette.set_commands(self._registry_rows())
+        self.command_palette = CommandPaletteModel(self._commands)
 
         # Input sub-VM owns buffer/enabled/hint/history + holds the shared palette so the input view
         # never reaches into the pane to filter, navigate, or decide tab-completion vs submit. The pane
@@ -234,6 +240,7 @@ class ConversationAreaModel(ViewModelBase):
         # handed raw to the leaf VMs (browser / interrupt feeds).
         self._services = services.child("conversation")
         self._services.register(WorkerSchedulerService, WorkerSchedulerService())
+        self._services.register(CommandRegistryService, self._commands)
         self._session_factory = self._services.get(SessionFactoryService)
 
         # Session-scoped options: a Session-level override layer parented to the app's Root options, so
@@ -280,8 +287,8 @@ class ConversationAreaModel(ViewModelBase):
         return self._services
 
     @property
-    def command_registry(self) -> CommandRegistry:
-        return self._command_registry
+    def commands(self) -> CommandRegistryService:
+        return self._commands
 
     @property
     def agent_session(self) -> AgentSession | None:
@@ -1022,10 +1029,9 @@ class ConversationAreaModel(ViewModelBase):
         """Branch from the current node and send ``prompt`` as the first user message on the
         new branch.
 
-        Used by ``/branch <prompt>``: the dispatch in ``_on_input_submitted`` peels off the raw
-        post-name string and forwards it here, bypassing the click/shlex pipeline so the prompt
-        can contain apostrophes, quotes, and other characters that would otherwise crash
-        tokenization. The new branch is left unnamed — the indicator falls back to
+        Used by ``/branch <prompt>``: the command's RAW parser forwards the untokenized remainder
+        here, so the prompt can contain apostrophes, quotes, and other characters with no tokenizer
+        to crash on. The new branch is left unnamed — the indicator falls back to
         ``branch-{id}`` until the agent calls ``update_app_state(current_branch_name=...)``
         (prompted by the queued system notification below) to set a meaningful one.
 
@@ -1281,17 +1287,6 @@ class ConversationAreaModel(ViewModelBase):
             if self.agent_busy and name in self._AGENT_GATED_COMMANDS:
                 self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.AGENT_BUSY)
                 return
-
-            # /branch <prompt> is intercepted here instead of going through the click registry:
-            # the registry tokenizes via ``shlex_split``, which mangles quotes and crashes on
-            # unbalanced apostrophes (``Can't`` → ValueError). Bare /branch (no rest after the
-            # name) still falls through to the registry to hit the no-arg ``_branch`` handler.
-            if name == "branch":
-                rest = stripped[len("/branch"):].strip()
-                if rest:
-                    self.chat_input.accept_submission(text)
-                    self.branch_and_send(rest)
-                    return
 
             self.chat_input.accept_submission(text)
             self._schedule_worker(self._execute_command(stripped))
@@ -1556,24 +1551,17 @@ class ConversationAreaModel(ViewModelBase):
     # Command registry
     # ------------------------------------------------------------------
 
-    def _registry_rows(self) -> list[tuple[str, str]]:
-        rows: list[tuple[str, str]] = []
-        for name, cmd in self._command_registry.commands.items():
-            desc = cmd.help or (cmd.callback.__doc__ if cmd.callback else "") or ""
-            desc = desc.strip().splitlines()[0] if desc else ""
-            rows.append((name, desc))
-        return rows
-
-
     async def _execute_command(self, text: str) -> None:
-        line = text.lstrip("/").strip()
-        if not line:
+        if not text.strip().lstrip("/"):
             return
 
         try:
-            result = await self._command_registry.execute(line)
-        except KeyError as exc:
-            self.append_message(ChatMessageModel(role=Role.ERROR, content=str(exc).strip("'")))
+            result = await self._commands.execute(text)
+        except UnknownCommandError as exc:
+            self.append_message(ChatMessageModel(role=Role.ERROR, content=str(exc)))
+            return
+        except CommandError as exc:
+            self.append_message(ChatMessageModel(role=Role.ERROR, content=str(exc)))
             return
         except Exception as exc:  # noqa: BLE001 — surface unexpected handler errors as ERROR messages
             self.append_message(ChatMessageModel(role=Role.ERROR, content=f"Command error: {exc}"))
@@ -1587,109 +1575,60 @@ class ConversationAreaModel(ViewModelBase):
 
 
     def _register_commands(self) -> None:
-        reg = self._command_registry
+        reg = self._commands
 
-        @reg.command(name="clear", help="Clear the message feed.")
+        # Tab/app commands (/quit, /new, /close, /logs) live in the global registry this scope inherits
+        # from; /help is built into the registry core. Everything registered here is conversation-scoped.
+
         def _clear() -> None:
             self.clear_feed()
+        reg.register("clear", _clear, help="Clear the message feed.")
 
-        @reg.command(name="quit", help="Quit the application.")
-        def _quit() -> None:
-            self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.QUIT)
+        async def _rename(name: str) -> None:
+            await self.set_tab_name(name)
+        reg.register("rename", _rename, help="Rename the current tab.", parser=RAW)
 
-        @reg.command(name="new", help="Open a new chat session tab.")
-        def _new() -> None:
-            self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.NEW_TAB)
-
-        @reg.command(name="close", help="Close the current chat session tab.")
-        def _close() -> None:
-            self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.CLOSE_TAB)
-
-        @reg.command(name="logs", help="Open the logs viewer tab.")
-        def _logs() -> None:
-            self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.OPEN_LOGS)
-
-        @reg.command(name="rename", help="Rename the current tab.")
-        @click.argument("words", nargs=-1, required=True)
-        async def _rename(words: tuple[str, ...]) -> None:
-            await self.set_tab_name(" ".join(words))
-
-        @reg.command(name="help", help="Show available commands, or details for a specific command.")
-        @click.argument("command_name", default="", required=False)
-        def _help(command_name: str) -> str:
-            if command_name:
-                name = command_name.strip().lstrip("/")
-                cmd = reg.commands.get(name)
-                if cmd is None:
-                    return f"Unknown command: /{name}\nType /help to see available commands."
-                with cmd.make_context(
-                    name, [], max_content_width=reg.max_content_width, resilient_parsing=True
-                ) as ctx:
-                    return ctx.get_help()
-            lines = ["**Available commands:**", ""]
-            for cmd_name in sorted(reg.commands):
-                cmd = reg.commands[cmd_name]
-                desc = cmd.help or (cmd.callback.__doc__ if cmd.callback else "") or ""
-                desc = desc.strip().split("\n")[0] if desc else ""
-                lines.append(f"  /{cmd_name} — {desc}")
-            lines.append("")
-            lines.append("Commands support standard CLI syntax (options, flags, --help).")
-            return "\n".join(lines)
-
-        @reg.command(name="commit", help="Enter commit mode to select learn-mode messages.")
         def _commit() -> None:
             # TODO: port legacy ``/commit --auto [instructions]``. Needs rethinking under the
             # conversation graph — auto-commit drafts from "the conversation", but which branch's
             # feed counts as the conversation now isn't obvious.
             self.enter_commit_mode()
+        reg.register("commit", _commit, help="Enter commit mode to select learn-mode messages.")
 
-        @reg.command(
-            name="branch",
-            help="Fork a new branch. Optionally provide a prompt to send.",
-        )
-        def _branch() -> None:
-            # The ``/branch <prompt>`` form is intercepted in ``_on_input_submitted`` so the
-            # prompt never reaches click/shlex tokenization. By the time we get here, the rest
-            # of the line is empty — this handler covers only the bare ``/branch`` case.
-            self.branch()
+        def _branch(prompt: str) -> None:
+            # RAW parser hands us the untokenized remainder, so a prompt keeps its quotes/apostrophes.
+            # Bare ``/branch`` (empty remainder) just forks; ``/branch <prompt>`` forks and sends.
+            self.branch_and_send(prompt) if prompt else self.branch()
+        reg.register("branch", _branch, help="Fork a new branch; optionally provide a prompt to send.",
+                     parser=RAW)
 
-        @reg.command(name="rename-branch", help="Rename the current branch.")
-        @click.argument("words", nargs=-1, required=True)
-        def _rename_branch(words: tuple[str, ...]) -> None:
-            # No /branch-style intercept: branch names are short enough that shlex
-            # tokenization is fine, and ``nargs=-1`` + ``" ".join(...)`` recovers the spacing
-            # for typical names. Quotes/apostrophes would still get mangled by shlex, but
-            # branch names rarely need them.
-            self.set_branch_name(" ".join(words))
+        def _rename_branch(name: str) -> None:
+            self.set_branch_name(name)
+        reg.register("rename-branch", _rename_branch, help="Rename the current branch.", parser=RAW)
 
-        @reg.command(name="idle", help="Switch to idle mode.")
         async def _idle() -> None:
             await self.set_mode(Mode.IDLE)
+        reg.register("idle", _idle, help="Switch to idle mode.")
 
-        @reg.command(name="learn", help="Switch to learn mode.")
         async def _learn() -> None:
             await self.set_mode(Mode.LEARN)
+        reg.register("learn", _learn, help="Switch to learn mode.")
 
-        @reg.command(name="review", help="Switch to review mode.")
         async def _review() -> None:
             await self.set_mode(Mode.REVIEW)
+        reg.register("review", _review, help="Switch to review mode.")
 
-        @reg.command(name="browse", help="Open the data browser inline in the feed.")
         def _browse() -> None:
             self._append_feed(BrowserModel(self._session_factory))
+        reg.register("browse", _browse, help="Open the data browser inline in the feed.")
 
-        @reg.command(name="resources", help="Toggle the resource viewer side panel.")
         def _resources() -> None:
             # The orchestrator owns the actual mount/unmount — we just request the toggle, which the
             # view forwards up.
             self.emit(self.Callbacks.OnNotification, ConversationAreaModel.NotifyAction.TOGGLE_RESOURCE_VIEWER)
+        reg.register("resources", _resources, help="Toggle the resource viewer side panel.")
 
-        @reg.command(name="options", help="Open the options editor inline in the feed.")
-        @click.option(
-            "--global", "global_", is_flag=True,
-            help="Edit global (Root) options instead of this conversation's session options.",
-        )
-        def _options(global_: bool) -> None:
+        def _options(*, global_: bool) -> None:
             # No OptionService in scope (headless / test) -> no target to edit; surface a system
             # message instead of mounting a non-functional widget.
             if self._options is None:
@@ -1706,30 +1645,25 @@ class ConversationAreaModel(ViewModelBase):
             service = self._services.get(OptionService)
             target = service.at_scope(OptionScope.Root) if global_ else service
             self._append_feed(OptionsEditorModel(target))
+        reg.register("options", _options, help="Open the options editor inline in the feed.",
+                     parser=DefaultParser(flags=[Flag(
+                         "global", short="-g",
+                         help="Edit global (Root) options instead of this conversation's session options.",
+                     )]))
 
-        @reg.command(name="echo", help="Echo arguments back as a system message.")
-        @click.argument("words", nargs=-1)
-        def _echo(words: tuple[str, ...]) -> None:
+        def _echo(text: str) -> None:
             self.append_message(
-                ChatMessageModel(role=Role.SYSTEM, content=" ".join(words) if words else ""),
+                ChatMessageModel(role=Role.SYSTEM, content=text),
                 include_in_agent_context=False,
             )
+        reg.register("echo", _echo, help="Echo arguments back as a system message.", parser=RAW)
 
-        @reg.command(name="test-turn", help="Run a synthetic agent turn to exercise routing.")
         async def _test_turn() -> None:
             await self._run_synthetic_turn()
 
-        @reg.command(
-            name="test-flow",
-            help=(
-                "Stream → pause (try typing!) → interrupt → resume. "
-                "Exercises mid-stream input + interrupt teardown."
-            ),
-        )
         async def _test_flow() -> None:
             await self._run_synthetic_flow()
 
-        @reg.command(name="test-interrupt", help="Spawn a synthetic interrupt to exercise routing.")
         async def _test_interrupt() -> None:
             interrupt = TestInterruptModel(prompt="Pick an option:", options=["alpha", "beta", "gamma"])
             result = await self.present_interrupt(interrupt)
@@ -1744,7 +1678,6 @@ class ConversationAreaModel(ViewModelBase):
                     include_in_agent_context=False,
                 )
 
-        @reg.command(name="test-choices", help="Spawn a Choices interrupt with sample options.")
         async def _test_choices() -> None:
             interrupt = UserChoicesModel.from_interrupt({
                 "message": "Which fruit do you prefer?",
@@ -1757,7 +1690,6 @@ class ConversationAreaModel(ViewModelBase):
                 include_in_agent_context=False,
             )
 
-        @reg.command(name="test-warning-choices", help="Spawn a WarningChoices interrupt.")
         async def _test_warning_choices() -> None:
             interrupt = WarningUserChoicesModel.from_interrupt({
                 "message": "The agent wants to delete 42 files from the working tree.",
@@ -1774,7 +1706,6 @@ class ConversationAreaModel(ViewModelBase):
                 include_in_agent_context=False,
             )
 
-        @reg.command(name="test-multiple-choices", help="Spawn a MultipleChoices interrupt with 3 questions.")
         async def _test_multiple_choices() -> None:
             interrupt = MultiUserChoicesModel.from_interrupt({
                 "questions": [
@@ -1806,7 +1737,6 @@ class ConversationAreaModel(ViewModelBase):
                 include_in_agent_context=False,
             )
 
-        @reg.command(name="test-sql-confirmation", help="Spawn a SqlConfirmation interrupt with sample preview.")
         async def _test_sql_confirmation() -> None:
             interrupt = SqlConfirmationModel.from_interrupt({
                 "sql": (
@@ -1836,7 +1766,6 @@ class ConversationAreaModel(ViewModelBase):
                 include_in_agent_context=False,
             )
 
-        @reg.command(name="test-flashcards", help="Spawn a FlashcardReview interrupt with sample data.")
         async def _test_flashcards() -> None:
             from types import SimpleNamespace
             from fsrs import Card
@@ -1916,9 +1845,7 @@ class ConversationAreaModel(ViewModelBase):
                 include_in_agent_context=False,
             )
 
-        @reg.command(name="test-commit-proposal", help="Spawn a CommitProposal interrupt with sample data.")
-        @click.option("--big", is_flag=True, help="Spawn 10× the sample entries to exercise sizing/scroll.")
-        async def _test_commit_proposal(big: bool) -> None:
+        async def _test_commit_proposal(*, big: bool) -> None:
             algorithms_topic = Topic(id=1, name="Algorithms")
             distributed_topic = Topic(id=2, name="Distributed systems")
             sample_entries = [
@@ -1972,9 +1899,7 @@ class ConversationAreaModel(ViewModelBase):
                 include_in_agent_context=False,
             )
 
-        @reg.command(name="test-flashcard-proposal", help="Spawn a FlashcardProposal interrupt with sample data.")
-        @click.option("--big", is_flag=True, help="Spawn 10× the sample flashcards to exercise sizing/scroll.")
-        async def _test_flashcard_proposal(big: bool) -> None:
+        async def _test_flashcard_proposal(*, big: bool) -> None:
             algorithms_topic = Topic(id=1, name="Algorithms")
             distributed_topic = Topic(id=2, name="Distributed systems")
             sample_flashcards = [
@@ -2030,6 +1955,29 @@ class ConversationAreaModel(ViewModelBase):
                 ChatMessageModel(role=Role.SYSTEM, content=content),
                 include_in_agent_context=False,
             )
+
+        # Test/demo commands — exercise routing, interrupts, and proposal widgets with synthetic data.
+        reg.register("test-turn", _test_turn, help="Run a synthetic agent turn to exercise routing.")
+        reg.register("test-flow", _test_flow,
+                     help="Stream → pause (try typing!) → interrupt → resume. "
+                          "Exercises mid-stream input + interrupt teardown.")
+        reg.register("test-interrupt", _test_interrupt, help="Spawn a synthetic interrupt to exercise routing.")
+        reg.register("test-choices", _test_choices, help="Spawn a Choices interrupt with sample options.")
+        reg.register("test-warning-choices", _test_warning_choices, help="Spawn a WarningChoices interrupt.")
+        reg.register("test-multiple-choices", _test_multiple_choices,
+                     help="Spawn a MultipleChoices interrupt with 3 questions.")
+        reg.register("test-sql-confirmation", _test_sql_confirmation,
+                     help="Spawn a SqlConfirmation interrupt with sample preview.")
+        reg.register("test-flashcards", _test_flashcards,
+                     help="Spawn a FlashcardReview interrupt with sample data.")
+        reg.register("test-commit-proposal", _test_commit_proposal,
+                     help="Spawn a CommitProposal interrupt with sample data.",
+                     parser=DefaultParser(flags=[Flag(
+                         "big", help="Spawn 10× the sample entries to exercise sizing/scroll.")]))
+        reg.register("test-flashcard-proposal", _test_flashcard_proposal,
+                     help="Spawn a FlashcardProposal interrupt with sample data.",
+                     parser=DefaultParser(flags=[Flag(
+                         "big", help="Spawn 10× the sample flashcards to exercise sizing/scroll.")]))
 
     async def _run_synthetic_turn(self) -> None:
         """Drive the router without invoking the real agent.

@@ -8,10 +8,6 @@ from rhizome.app.model import CallbackGroup, Emitter, ViewModelBase
 from .shared.topic_tree import TopicTree
 
 # Legacy widgets (in-place re-exports — sourced from .legacy)
-from .legacy.agent_message_harness import AgentMessageHarness
-from .legacy.chat_input import ChatInput
-from .legacy.chat_pane import ChatPane, HintHigherVerbosity
-from .legacy.command_palette import CommandPalette
 from .legacy.entry_list import EntryList
 from .legacy.explorer_viewer import ExplorerViewer
 from .legacy.flashcard_list import FlashcardList
@@ -46,19 +42,14 @@ __all__ = [
     "ViewModelBase",
     "register_panel",
 
-    "AgentMessageHarness",
-    "ChatInput",
     "ChatMessage",
-    "ChatPane",
     "Choices",
-    "CommandPalette",
     "CommitProposal",
     "EntryList",
     "FlashcardProposal",
     "ExplorerViewer",
     "FlashcardList",
     "FlashcardReview",
-    "HintHigherVerbosity",
     "InterruptWidgetBase",
     "MarkdownChatMessage",
     "NavigableWidgetMixin",
