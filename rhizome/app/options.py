@@ -6,13 +6,15 @@ validation, JSONC persistence, and synchronous change events via ``CallbackHost`
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, get_args, get_origin, NamedTuple, Protocol
 
 from rhizome.config import get_options_path
 from rhizome.logs import get_logger
@@ -403,8 +405,122 @@ class OptionsMeta(type):
 
 
 # ---------------------------------------------------------------------------
+# Annotation-driven option injection
+# ---------------------------------------------------------------------------
+# The option-value analogue of ``ServiceAccessor.inject``. A builder declares option dependencies as
+# annotated parameters, in one of two flavors that differ by the requested type:
+#
+#   provider: Annotated[str, Options.Agent.Provider]
+#       SNAPSHOT — bound to the current value; a change rebuilds the agent (it joins the invalidation set).
+#   ttl: Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCacheTTL]
+#       LIVE — bound to a handle read fresh on each ``.get()``; a change does NOT rebuild.
+#
+# Snapshot is the safe default (a change always takes effect, via rebuild); live is a deliberate opt-in for
+# behavioral options a long-lived object reads on demand (e.g. an engine stamping a cache TTL). Both are
+# DECLARED — a builder never receives a general ``OptionService``, so every option dependency is visible in
+# the signature and the requested type says whether it invalidates. ``Options.inject`` composes with
+# ``ServiceAccessor.inject`` (``options.inject(services.inject(build))()``): each binds only what it
+# recognizes and leaves the rest open.
+
+
+class OptionRef[T]:
+    """A live, single-spec view of an option value: ``.get()`` reads the current value on each call.
+
+    The live counterpart to a snapshot-injected value — an object holding an ``OptionRef`` reacts to option
+    changes without being rebuilt. Declared as ``Annotated[OptionRef[T], spec]`` on a builder parameter;
+    the runtime binds one and, unlike a snapshot, leaves its spec OUT of the agent's invalidation set.
+    Mirrors ``services.Handle``: a typed handle that opts a dependency out of one piece of automatic
+    machinery (there, cycle detection; here, invalidation)."""
+
+    __slots__ = ("_options", "_spec")
+
+    def __init__(self, options: "OptionService", spec: OptionSpec) -> None:
+        self._options = options
+        self._spec = spec
+
+    def get(self) -> T:
+        return self._options.get(self._spec)
+
+    @property
+    def spec(self) -> OptionSpec:
+        return self._spec
+
+    def __repr__(self) -> str:
+        return f"OptionRef({self._spec.resolved_name!r})"
+
+
+def _option_binding(annotation: Any) -> tuple[OptionSpec, bool] | None:
+    """Classify a parameter annotation as an option dependency.
+
+    Returns ``(spec, live)`` — ``live`` is ``True`` for ``Annotated[OptionRef[T], spec]`` (a live handle,
+    excluded from invalidation) and ``False`` for ``Annotated[T, spec]`` (a snapshot value, triggers
+    invalidation). ``None`` for any non-option annotation."""
+    if get_origin(annotation) is not Annotated:
+        return None
+    args = get_args(annotation)
+    spec = next((m for m in args[1:] if isinstance(m, OptionSpec)), None)
+    if spec is None:
+        return None
+    target = args[0]
+    live = target is OptionRef or get_origin(target) is OptionRef
+    return spec, live
+
+
+class OptionUsage(NamedTuple):
+    """A builder's option dependencies, classified by kind — neutral facts, no policy.
+
+    ``snapshots`` are the invalidation triggers (``Annotated[T, spec]``); ``lives`` are live ``OptionRef``
+    reads that never invalidate (``Annotated[OptionRef[T], spec]``); ``wants_service`` is ``True`` when the
+    builder takes a general ``OptionService`` parameter (the un-narrowed accessor). Consumers decide what to
+    do with these — the runtime subscribes to ``snapshots``; the agent factory warns on suspicious shapes."""
+
+    snapshots: tuple[OptionSpec, ...]
+    lives: tuple[OptionSpec, ...]
+    wants_service: bool
+
+
+def option_usage(fn: Callable) -> OptionUsage:
+    """Classify ``fn``'s option dependencies (see ``OptionUsage``) by pure signature inspection."""
+    snapshots: list[OptionSpec] = []
+    lives: list[OptionSpec] = []
+    wants_service = False
+    for name, param in inspect.signature(fn).parameters.items():
+        if name == "self":
+            continue
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if param.annotation is OptionService:
+            wants_service = True
+            continue
+        binding = _option_binding(param.annotation)
+        if binding is not None:
+            (lives if binding[1] else snapshots).append(binding[0])
+    return OptionUsage(tuple(dict.fromkeys(snapshots)), tuple(dict.fromkeys(lives)), wants_service)
+
+
+def option_bindings(fn: Callable) -> tuple[OptionSpec, ...]:
+    """The SNAPSHOT option specs ``fn`` depends on — its invalidation triggers. The runtime subscribes to
+    each so a change rebuilds the agent; live ``OptionRef`` parameters are excluded (they read fresh and
+    never need a rebuild). Convenience for ``option_usage(fn).snapshots``."""
+    return option_usage(fn).snapshots
+
+
+# ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
+
+
+class OptionService(Protocol):
+    """The consumer-facing slice of ``Options`` -- read a spec's value, subscribe to its changes, curry
+    option values into an injectable callable.
+
+    Consumers (e.g. the agent runtime) depend on this protocol rather than the concrete ``Options`` so
+    the dependency reads as an injected service and stays off the full options machinery; ``Options``
+    satisfies it structurally."""
+
+    def get(self, spec: OptionSpec) -> Any: ...
+    def subscribe_on_changed(self, spec: OptionSpec, handler: Callable[[Any, Any], None]) -> None: ...
+    def inject(self, fn: Callable) -> Callable: ...
 
 
 class Options(CallbackHost, metaclass=OptionsMeta):
@@ -677,6 +793,27 @@ class Options(CallbackHost, metaclass=OptionsMeta):
         if self._parent is not None:
             return self._parent.get(spec)
         return spec.default
+
+    def inject(self, fn: Callable) -> Callable:
+        """Curry ``fn``'s option-annotated parameters against this instance, returning a callable over the
+        remaining parameters. ``Annotated[T, spec]`` binds the current value (a snapshot); ``Annotated[
+        OptionRef[T], spec]`` binds a live ``OptionRef``.
+
+        Lenient like ``ServiceAccessor.inject``: a parameter that is not option-annotated is left open for
+        the caller, which is what lets the two compose (services in one pass, options in the other). See
+        the module-level injection section and the ``option_bindings`` reader.
+        """
+        bound: dict[str, Any] = {}
+        for name, param in inspect.signature(fn).parameters.items():
+            if name == "self":
+                continue
+            if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                continue
+            binding = _option_binding(param.annotation)
+            if binding is not None:
+                spec, live = binding
+                bound[name] = OptionRef(self, spec) if live else self.get(spec)
+        return functools.partial(fn, **bound)
 
     # -- Write --
 
