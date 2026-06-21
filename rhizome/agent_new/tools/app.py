@@ -9,7 +9,7 @@
 - ``set_mode`` switches the active conversation mode. It writes the live ``AppContextStore`` on the
   context (``ctx.app_state``) rather than returning a state update: that store is the single source of
   truth both the user and the agent write through, and the prompt engine commits the change into
-  ``AgentState["mode"]`` at the next compile (see ``rhizome/agent_new/app_context.py``).
+  ``RootAgentState["mode"]`` at the next compile (see ``rhizome/agent_new/app_context.py``).
 """
 
 from langchain.tools import tool
@@ -63,7 +63,7 @@ def build_app_tools() -> dict:
     @tool("set_mode", description=_SET_MODE_DESC)
     async def set_mode_tool(mode: str, runtime: ToolRuntime) -> str:
         # The agent expresses the switch by writing the live store; the prompt engine commits it into
-        # AgentState at the next compile and reacts (mode guide/header). No Command — see module docstring.
+        # RootAgentState at the next compile and reacts (mode guide/header). No Command — see module docstring.
         store = getattr(runtime.context, "app_state", None)
         if store is None:
             return "Mode control is unavailable in this conversation."

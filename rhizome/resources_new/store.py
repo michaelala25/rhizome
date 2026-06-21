@@ -13,7 +13,7 @@ Two pieces of logic intentionally live ELSEWHERE:
   writes to the stores — the resource viewer / app layer — not to the stores themselves.
 - Consumption bookkeeping lives with the consumer. Both context channels and the index *message* have
   N consumers (every agent node diffs the desired set against its own per-branch snapshot in
-  ``AgentState``), so neither store carries that state. The index's *ingestion* has exactly one
+  ``RootAgentState``), so neither store carries that state. The index's *ingestion* has exactly one
   consumer — the single vector index — so ``ResourceIndexStore`` keeps that watermark internally.
 """
 
@@ -193,7 +193,7 @@ class ResourceStore:
 class ResourceContextStore(ResourceStore):
     """Context-stuffing channel: one global instance on the ``AgentGraph``, one local instance per
     ``AgentNode``. Carries no consumption state — each consuming node diffs ``loaded`` against its
-    own consumed snapshot in ``AgentState.consumed_resource_context`` via ``load_delta``.
+    own consumed snapshot in ``RootAgentState.consumed_resource_context`` via ``load_delta``.
 
     Optionally memoizes built content blocks (``cache=True``). Worth it only for the shared global store,
     where one instance backs every branch, so a freshly loaded resource's DB read is paid once across all
@@ -253,7 +253,7 @@ class ResourceIndexStore(ResourceStore):
     Two consumption stories, with different scopes:
 
     - The "what can be queried" reminder is a per-thread message: the prompt engine diffs ``loaded``
-      against each branch's snapshot in ``AgentState.consumed_resource_index`` and refreshes a
+      against each branch's snapshot in ``RootAgentState.consumed_resource_index`` and refreshes a
       stable-id message only on a change (mirroring the context channel). The store holds none of
       that — it is per-branch state.
     - ``consume()`` is the single consumer that actually populates the vector index, run lazily from

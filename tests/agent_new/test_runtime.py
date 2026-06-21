@@ -13,7 +13,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from rhizome.agent_new.checkpointer import AgentCheckpointerService
 from rhizome.agent_new.context import RootAgentContext
-from rhizome.agent_new.prompt_engine import PromptEngine
+from rhizome.agent_new.engine import PromptEngine
 from rhizome.agent_new.runtime import AgentRuntimeService
 from rhizome.app.options import OptionRef, Options
 from rhizome.db import SessionFactoryService

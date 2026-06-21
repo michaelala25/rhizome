@@ -11,7 +11,7 @@ Two writers, one cell:
 - the **agent** flips it via the ``set_mode`` tool, reaching this store through ``ctx.app_state``.
 
 Both go through ``set_mode`` here, which emits ``OnModeChanged`` so a status bar reflects either path
-immediately. The matching ``AgentState["mode"]`` is a separate, checkpointed snapshot written *only* by
+immediately. The matching ``RootAgentState["mode"]`` is a separate, checkpointed snapshot written *only* by
 the prompt engine, which diffs this store against it at compile time (the resource-store discipline: the
 store carries desire, state carries the engine-committed fact). A tool must never write ``state["mode"]``
 itself — a double write would erase the store-vs-state delta the engine relies on to react to a switch.
@@ -24,7 +24,7 @@ from rhizome.utils.callbacks import CallbackHost
 
 VALID_MODES: tuple[str, ...] = ("idle", "learn", "review")
 """The agent-side mode vocabulary. The view's ``rhizome.tui.types.Mode`` enum carries the same values;
-kept as bare strings here so the agent stack stays free of a TUI dependency, matching ``AgentState``."""
+kept as bare strings here so the agent stack stays free of a TUI dependency, matching ``RootAgentState``."""
 
 
 class AppContextStore(CallbackHost):

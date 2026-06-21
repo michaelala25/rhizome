@@ -29,12 +29,12 @@ Position = Literal["inline", "pinned"]
 ``pinned`` messages are relocated in the ``prepare`` step according to their ``pin`` position (see below)."""
 
 Pin = Literal["head", "branch", "tail"]
-"""Named layout anchors a pinned message floats to (see the ``prompt_engine`` module docstring): ``head``
+"""Named layout anchors a pinned message floats to (see the ``engine.base`` module docstring): ``head``
 (after the system block — a graph-wide prefix), ``branch`` (this node's segment boundary), ``tail`` (the
 volatile end a breakpoint sits before)."""
 
 Lifetime = Literal["permanent", "semi-permanent"]
-"""How long a compile-born message's identity persists in state (see the ``prompt_engine`` module
+"""How long a compile-born message's identity persists in state (see the ``engine.base`` module
 docstring): ``permanent`` (the default when untagged) lives forever; ``semi-permanent`` is eligible for
 later reclamation."""
 

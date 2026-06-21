@@ -13,7 +13,7 @@ from langchain_core.tools import tool
 from langgraph.prebuilt.tool_node import ToolRuntime
 
 from rhizome.agent_new.session import AgentSession, InvokeResult
-from rhizome.agent_new.state import AgentState
+from rhizome.agent_new.state import RootAgentState
 from rhizome.app.options import Options
 
 from .fakes import (
@@ -236,7 +236,7 @@ async def test_concurrent_runs_same_key_are_isolated():
 # ------------------------------------------------------------------------------------------------
 
 async def test_run_state_view_folds_scalars_excludes_messages():
-    s = _echo_session(state_schema=AgentState)
+    s = _echo_session(state_schema=RootAgentState)
     # The StateUpdatePayload's mode lands in the first compile update; the view folds it before completion.
     ctx = await drive(s, state_update(mode="learn"), user("hi"))
     view = ctx.last_state

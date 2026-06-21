@@ -34,9 +34,9 @@ from langgraph.types import Command
 from rhizome.logs import get_logger
 
 # AgentPayload et al. are re-exported here: payload types are part of the session's public API (callers
-# construct them for send()), even though they live in payload.py to keep the import graph acyclic.
-from .payload import AgentPayload, MessagePayload, PayloadQueue, StateUpdatePayload  # noqa: F401
-from .prompt_engine import PromptEngine
+# construct them for send()), though they live in engine.payload — the engine's input vocabulary.
+from .engine import AgentPayload, MessagePayload, PayloadQueue, StateUpdatePayload  # noqa: F401
+from .engine import PromptEngine
 from .streaming import AgentStreamingContext, RunStateView
 
 if TYPE_CHECKING:

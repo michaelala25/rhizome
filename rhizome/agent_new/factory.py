@@ -27,7 +27,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from rhizome.app.options import option_usage
 
-from .prompt_engine import PromptEngine
+from .engine import PromptEngine
 
 
 def _builder_warnings(build: Callable) -> list[str]:

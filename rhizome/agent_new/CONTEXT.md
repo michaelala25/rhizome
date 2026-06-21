@@ -75,14 +75,13 @@ sessions into a branchable structure. You can use sessions directly without ever
 - **`graph.py`** — `AgentGraph` and `AgentNode`, the branch/merge topology, and the `Cursor` alias.
 - **`context.py`** — the per-conversation context schemas (`BaseAgentContext` and `RootAgentContext`):
   the live channels and services an agent runs against.
-- **`payload.py`** — the input language (`MessagePayload`, `StateUpdatePayload`) and the live
-  `PayloadQueue` connecting a session to its prompt engine.
 - **`streaming.py`** — `AgentStreamingContext` (the callback surface a streaming run drives) and
   `RunStateView` (the run-scoped view of state those callbacks see).
-- **`prompt_engine.py`** — the layer that turns conversation state into the actual prompt sent to the
-  model (see _The prompt engine_, below).
-- **`state.py`** — the graph state schema (messages, mode, verbosity, loaded resources, workflow
-  proposal state).
+- **`engine/`** — the prompt engine: turns conversation state into the actual model request, plus the
+  input language (`MessagePayload`, `StateUpdatePayload`, `PayloadQueue`) a session feeds it. See
+  _The prompt engine_, below, and `engine/CONTEXT.md`.
+- **`state.py`** — the graph state schema (`RootAgentState`: messages, mode, verbosity, loaded resources,
+  workflow proposal state).
 - **`prompts/`** and **`tools/`** — the system prompt / guides / tool allowlists, and the agent's tools.
 
 
@@ -155,7 +154,8 @@ hooks, the database session factory. The runtime instantiates one per session in
 for the duration of a run (LangGraph's rule), but the objects behind it are live — and it is **not**
 checkpointed, so it is re-supplied on every run and rides through rebuilds untouched.
 
-The **state schema** (`AgentState`, a `TypedDict`) is the *graph state* that flows through the agent and
+The **state schema** (a `BaseAgentState` subclass such as `RootAgentState`, a `TypedDict`) is the *graph
+state* that flows through the agent and
 **is** checkpointed: the message history, the current mode and verbosity, which resources are loaded, any
 in-progress workflow proposals. This is what `session.agent_state` reads and what `branch` copies into a
 child thread.

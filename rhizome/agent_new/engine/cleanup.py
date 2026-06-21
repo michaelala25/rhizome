@@ -1,7 +1,7 @@
 """Message reclamation: marking messages reclaimable, and reclaiming them on request.
 
-Two halves of the message-lifetime machinery live here (see ``prompt_engine.PromptEngine`` for the
-overview), above ``metadata`` (the tag schema) and below ``state``/``prompt_engine`` (which drive it):
+Two halves of the message-lifetime machinery live here (see ``engine.base.PromptEngine`` for the
+overview), above ``metadata`` (the tag schema) and below ``state`` and the engines (which drive it):
 
 - *Marking* — ``mark_reclaimable`` tags a message ``semi-permanent`` and bakes the inline marker. The
   auto-tagger calls it on bulky tool results; a tool may call it on its own result to self-tag.

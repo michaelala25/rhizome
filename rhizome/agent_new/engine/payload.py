@@ -2,19 +2,21 @@
 
 ``AgentSession.send`` accepts ``AgentPayload`` objects rather than raw messages: payloads are the session's
 input language, and converting them into concrete state updates is the prompt engine's job (at ``compile``
-time, inside the agent's ``before_model`` hook — see ``prompt_engine.py``).
+time, inside the agent's ``before_model`` hook — see ``engine.base``).
 
 ``PayloadQueue`` is the delivery channel, and it is deliberately a *live* handle shared between a session
 and its agent context (``context.pending``): the session posts into it, the engine drains it at every
 model call. Payloads posted mid-run (``send(..., eager=True)`` while the session is busy) are
 therefore picked up at the next model call of the *current* run; payloads posted while idle wait in the
 session's backlog until the next run begins.
+
+This module is a leaf — stdlib only. ``StateUpdatePayload`` is generic over the target state schema
+``S`` rather than naming a concrete one, so the input language stays independent of any particular
+agent's state (and the engine package imports nothing from ``state``).
 """
 
 from dataclasses import dataclass
 from enum import auto, Enum
-
-from .state import AgentState
 
 
 @dataclass
@@ -33,8 +35,9 @@ class MessagePayload(AgentPayload[str]):
 
 
 @dataclass
-class StateUpdatePayload(AgentPayload[AgentState]):
-    """A partial ``AgentState`` update, merged into graph state through the state schema's reducers."""
+class StateUpdatePayload[S](AgentPayload[S]):
+    """A partial update to an arbitrary state schema ``S`` (a dict of the changed fields at runtime),
+    merged into graph state through that schema's reducers."""
 
 
 class PayloadQueue:

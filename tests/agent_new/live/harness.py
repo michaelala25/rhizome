@@ -10,8 +10,8 @@ from langchain.agents import create_agent
 
 from rhizome.agent_new.checkpointer import AgentCheckpointerService, build_checkpointer
 from rhizome.agent_new.context import RootAgentContext
+from rhizome.agent_new.engine import PromptCompilerMiddleware, PromptEngine
 from rhizome.agent_new.factory import AgentFactory, AgentFactoryService
-from rhizome.agent_new.prompt_engine import PromptCompilerMiddleware, PromptEngine
 from rhizome.agent_new.runtime import AgentRuntime, AgentRuntimeService
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.utils.services import ServiceAccessor

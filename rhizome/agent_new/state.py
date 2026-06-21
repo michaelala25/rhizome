@@ -12,7 +12,7 @@ from typing import Annotated, TypedDict
 
 from rhizome.resources_new import ResourceTreeNode
 
-from .cleanup import accumulate_cleanups, CleanupRequest
+from .engine import accumulate_cleanups, CleanupRequest, ConsumedResources
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ class ReviewConfig(TypedDict):
 class ReviewState(TypedDict):
     """State for an active review session.
 
-    Stored in ``RhizomeAgentState.review``.  ``None`` when no review
+    Stored in ``RootAgentState.review``.  ``None`` when no review
     session is active.  Lazily initialized by the first call to
     ``review_update_session_state``.
     """
@@ -94,19 +94,6 @@ def merge_typeddict_field(left: dict | None, right: dict | None) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Resource consumption state
-# ---------------------------------------------------------------------------
-
-# Functional syntax because "global" is a Python keyword. Channel-split on purpose: the prompt
-# engine's deltas edit different context messages — one shared global message, one per-node local
-# message — so consumption must be tracked per channel.
-ConsumedResources = TypedDict(
-    "ConsumedResources",
-    {"global": list[ResourceTreeNode], "local": list[ResourceTreeNode]},
-)
-
-
-# ---------------------------------------------------------------------------
 # Flashcard proposal state
 # ---------------------------------------------------------------------------
 
@@ -123,7 +110,7 @@ class FlashcardProposalItem(TypedDict):
 class FlashcardProposalState(TypedDict):
     """Consolidated state for the flashcard proposal workflow.
 
-    Stored in ``RhizomeAgentState.flashcard_proposal_state``.
+    Stored in ``RootAgentState.flashcard_proposal_state``.
     """
     items: list[FlashcardProposalItem]
     """The staged flashcard items."""
@@ -141,7 +128,7 @@ class CommitProposalEntry(TypedDict):
 class CommitProposalState(TypedDict):
     """Consolidated state for the commit proposal workflow.
 
-    Stored in ``RhizomeAgentState.commit_proposal_state``.
+    Stored in ``RootAgentState.commit_proposal_state``.
     """
     payload: list[dict]
     """Selected conversation messages for knowledge commit (``{"index", "content"}``)."""
@@ -157,7 +144,7 @@ class CommitProposalState(TypedDict):
 
 class BaseAgentState(_AgentState):
     """Framework-level agent state every conversation has, independent of agent kind — today just the
-    message-lifetime request channel. Domain agents extend it (see ``AgentState``)."""
+    message-lifetime request channel. Domain agents extend it (see ``RootAgentState``)."""
 
     pending_cleanups: Annotated[list[CleanupRequest], accumulate_cleanups]
     """Declarative cleanup requests (``cleanup.CleanupRequest``) filed by tools / app hooks / the agent's
@@ -166,7 +153,7 @@ class BaseAgentState(_AgentState):
     Appended via ``accumulate_cleanups``; the pass writes ``None`` to drain."""
 
 
-class AgentState(BaseAgentState):
+class RootAgentState(BaseAgentState):
     """Extended agent state for checkpoint/replay.
 
     All fields use default last-write-wins semantics.  Nullable fields

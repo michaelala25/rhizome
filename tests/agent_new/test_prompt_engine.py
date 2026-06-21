@@ -11,25 +11,25 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from rhizome.agent_new.app_context import AppContextStore
-from rhizome.agent_new.cleanup import mark_reclaimable
 from rhizome.agent_new.context import RootAgentContext
-from rhizome.agent_new.metadata import lifetime_of, meta, pin, pin_of, role_of, set_lifetime, set_role
-from rhizome.agent_new.payload import MessagePayload, PayloadQueue, StateUpdatePayload
-from rhizome.agent_new.prompt_engine import (
-    branch_marker_message_id,
-    global_resource_message_id,
-    INDEX_RESOURCE_MESSAGE_ID,
+from rhizome.agent_new.engine.base import (
     ingest_payloads,
-    is_global_resource_message,
-    is_index_resource_message,
-    local_resource_message_id,
-    mode_guide_message_id,
     patch_orphaned_tool_calls,
     payload_message,
     PromptEngine,
-    resource_deltas,
-    RootPromptEngine,
 )
+from rhizome.agent_new.engine.cleanup import mark_reclaimable
+from rhizome.agent_new.engine.metadata import lifetime_of, meta, pin, pin_of, role_of, set_lifetime, set_role
+from rhizome.agent_new.engine.payload import MessagePayload, PayloadQueue, StateUpdatePayload
+from rhizome.agent_new.engine.resources import (
+    global_resource_message_id,
+    INDEX_RESOURCE_MESSAGE_ID,
+    is_global_resource_message,
+    is_index_resource_message,
+    local_resource_message_id,
+    resource_deltas,
+)
+from rhizome.agent_new.engine.root import branch_marker_message_id, mode_guide_message_id, RootPromptEngine
 from rhizome.agent_new.topology import NodeInfo, TopologySnapshot, TopologyView
 from rhizome.db.models import Base, Resource, ResourceContent, ResourceSection
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceTreeNode

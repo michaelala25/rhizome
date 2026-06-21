@@ -13,10 +13,10 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-from rhizome.agent_new.state import AgentState
+from rhizome.agent_new.state import RootAgentState
 from rhizome.app.chat_area.branch import BranchPointModel
 from rhizome.app.chat_area.chat_area import ChatAreaModel
-from rhizome.agent_new.payload import MessagePayload, StateUpdatePayload
+from rhizome.agent_new.engine import MessagePayload, StateUpdatePayload
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
@@ -49,7 +49,7 @@ def choices_tool() -> str:
 
 def make_area(model_factory=None, tools=()) -> ChatAreaModel:
     runtime = build_runtime(
-        model_factory or (lambda: StreamingEchoModel()), tools=tools, state_schema=AgentState
+        model_factory or (lambda: StreamingEchoModel()), tools=tools, state_schema=RootAgentState
     )
     return ChatAreaModel(runtime)
 
@@ -141,7 +141,7 @@ async def test_mode_writes_store_and_verbosity_payload_reaches_branch_state():
     reason="mode→display now flows store -> (prompt-engine store/state alignment) -> state -> router. "
            "That alignment is pending, and this harness runs the base PromptEngine which has none, so "
            "state['mode'] stays unset and the router tags IDLE. Re-enable once the engine commits "
-           "AppContextStore.mode into AgentState.",
+           "AppContextStore.mode into RootAgentState.",
     strict=False,
 )
 async def test_mode_set_while_idle_tags_that_same_runs_segments():

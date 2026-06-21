@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Coroutine
 
-from rhizome.agent_new.payload import MessagePayload, StateUpdatePayload
+from rhizome.agent_new.engine import MessagePayload, StateUpdatePayload
 from rhizome.agent_new.runtime import AgentRuntime
 from rhizome.app.chat_pane.interrupts.base import CANCELLED
 from rhizome.app.chat_pane.messages.static import ChatMessageModel

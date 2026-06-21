@@ -3,7 +3,7 @@ emitter (stub strategy today), with eligibility, message > request > default pre
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from rhizome.agent_new.cleanup import (
+from rhizome.agent_new.engine.cleanup import (
     _effective_strategy,
     accumulate_cleanups,
     apply_cleanup,
@@ -11,7 +11,7 @@ from rhizome.agent_new.cleanup import (
     promote,
     STUB_CONTENT,
 )
-from rhizome.agent_new.metadata import group_of, lifetime_of, set_role, set_strategy
+from rhizome.agent_new.engine.metadata import group_of, lifetime_of, set_role, set_strategy
 
 
 # ----- marking ----- #

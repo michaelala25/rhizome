@@ -21,7 +21,7 @@ from rhizome.db import SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 
 from .app_context import AppContextStore
-from .payload import PayloadQueue
+from .engine import PayloadQueue
 from .topology import TopologyView
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ class RootAgentContext(BaseAgentContext):
     app_state: AppContextStore | None = None
     """Node-local store of live app settings (the active mode today). The single source of truth both the
     user (view) and the agent (the ``set_mode`` tool) write through; the prompt engine diffs it against
-    ``AgentState["mode"]`` at compile and commits the change, narrating it via guides/headers. A live
+    ``RootAgentState["mode"]`` at compile and commits the change, narrating it via guides/headers. A live
     channel, never checkpointed — re-supplied per session and carried across a branch by ``copy_from``.
     ``None`` outside the conversation graph that wires it."""
 

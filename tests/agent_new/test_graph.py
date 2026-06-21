@@ -12,8 +12,8 @@ import asyncio
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from rhizome.agent_new.engine import PromptEngine
 from rhizome.agent_new.graph import AgentGraph
-from rhizome.agent_new.prompt_engine import PromptEngine
 
 from .fakes import (
     ai_contents,
