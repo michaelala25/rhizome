@@ -56,6 +56,13 @@ def chunk_text(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# ==========================================================================================
+# Service: EmbeddingService
+#   Shape : protocol + first-party impl (VoyageEmbedder, below)
+#   Scope : root  ·  optional -- registered only when a provider is configured (resolve with try_get)
+# ==========================================================================================
+
+
 class EmbeddingService(Protocol):
     """Text → vectors: the injectable embedding capability, one implementation per provider.
 
@@ -71,7 +78,7 @@ class EmbeddingService(Protocol):
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
-class VoyageEmbedder:
+class VoyageEmbedder(EmbeddingService):
     """``EmbeddingService`` backed by the Voyage REST API.
 
     Holds an injected ``APIKeyService`` and resolves the ``voyage`` key per call, so a rotated key is

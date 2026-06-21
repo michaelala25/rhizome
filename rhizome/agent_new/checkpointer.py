@@ -8,8 +8,12 @@ template rebuilds for a thread id to keep meaning across a provider/model change
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 
-# The service key is the saver interface itself -- there is exactly one shared checkpointer. Aliased so
-# the dependency site reads as intent (``checkpointer: AgentCheckpointerService``).
+# ==========================================================================================
+# Service: AgentCheckpointerService
+#   Shape : alias -- the contract is langgraph's ``BaseCheckpointSaver`` (no first-party slice)
+#   Scope : workspace (one shared saver)
+# ==========================================================================================
+# Aliased so the dependency site reads as intent (``checkpointer: AgentCheckpointerService``).
 AgentCheckpointerService = BaseCheckpointSaver
 
 

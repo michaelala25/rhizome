@@ -19,7 +19,7 @@ from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.db import SessionFactoryService, get_engine, get_session_factory
 from rhizome.app.sql_session import NotifyingSessionFactory
 from rhizome.utils.services import ServiceAccessor
-from rhizome.utils.workers import WorkerSchedulerService
+from rhizome.utils.workers import WorkerSchedulerBinding, WorkerSchedulerService
 from rhizome.tui.screens.main import MainScreen, ChatTabPane, LogTabPane
 from rhizome.tui.screens.setup import SetupScreen
 from rhizome.tui.types import DatabaseCommitted
@@ -80,7 +80,7 @@ class RhizomeApp(App):
         # Scope-less fallback worker scheduler. Scope-owner VMs shadow this in their own child scope;
         # this root holder is non-bindable, so a view that binds here (because its VM never opened a
         # scoped scheduler) fails loudly instead of clobbering a single global binding.
-        self.services.register(WorkerSchedulerService, WorkerSchedulerService(bindable=False))
+        self.services.register(WorkerSchedulerService, WorkerSchedulerBinding(bindable=False))
         self.options: Options = Options.load()
         # Root options service. Per-conversation child scopes shadow this with a Session node parented
         # here, reachable via ``at_scope``; the root scope dispenses only Root. ``Options`` satisfies the

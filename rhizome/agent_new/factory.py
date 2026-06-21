@@ -62,7 +62,26 @@ class AgentDeclaration:
     response_schema: type | None = None
 
 
-class AgentFactory:
+# ==========================================================================================
+# Service: AgentFactoryService
+#   Shape : protocol + first-party impl (AgentFactory, below)
+#   Scope : workspace
+#   Notes : the runtime's read-only view of the registry; the full AgentFactory adds ``register``,
+#           used only at composition.
+# ==========================================================================================
+
+
+class AgentFactoryService(Protocol):
+    """The runtime's read-only view of the registry -- the service it depends on (the full ``AgentFactory``
+    adds ``register``, used only at composition). Annotating a dependency with this signals injection."""
+
+    def get(self, key: Hashable) -> AgentDeclaration: ...
+
+    @property
+    def declarations(self) -> tuple[AgentDeclaration, ...]: ...
+
+
+class AgentFactory(AgentFactoryService):
     """The declaration registry. Holds no accessor or runtime -- pure data the runtime consumes."""
 
     def __init__(self) -> None:
@@ -92,13 +111,3 @@ class AgentFactory:
     @property
     def declarations(self) -> tuple[AgentDeclaration, ...]:
         return tuple(self._declarations.values())
-
-
-class AgentFactoryService(Protocol):
-    """The runtime's read-only view of the registry -- the service it depends on (the full ``AgentFactory``
-    adds ``register``, used only at composition). Annotating a dependency with this signals injection."""
-
-    def get(self, key: Hashable) -> AgentDeclaration: ...
-
-    @property
-    def declarations(self) -> tuple[AgentDeclaration, ...]: ...

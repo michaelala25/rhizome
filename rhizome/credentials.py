@@ -66,9 +66,11 @@ def has_api_key(provider: str = "anthropic") -> bool:
     return get_api_key(provider) is not None
 
 
-# ---------------------------------------------------------------------------
-# APIKeyService (DI handle)
-# ---------------------------------------------------------------------------
+# ==========================================================================================
+# Service: APIKeyService
+#   Shape : protocol + first-party impl (CredentialsAPIKeyService, below)
+#   Scope : root
+# ==========================================================================================
 
 
 class APIKeyService(Protocol):
@@ -85,7 +87,7 @@ class APIKeyService(Protocol):
     def has(self, provider: str) -> bool: ...
 
 
-class CredentialsAPIKeyService:
+class CredentialsAPIKeyService(APIKeyService):
     """Production ``APIKeyService`` backed by this module's env→file resolution. Stateless: it reads
     on demand, so a key rotated in the environment or file is picked up without reconstruction."""
 

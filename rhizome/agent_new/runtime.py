@@ -121,6 +121,10 @@ class AgentRuntime:
             raise KeyError(f"no session for ({key!r}, {thread_id!r})") from None
 
 
-# Service key for the runtime itself. Builders depend on the whole runtime (no narrowing), so this is the
-# concrete class under a name that reads as an injected service at the dependency site.
+# ==========================================================================================
+# Service: AgentRuntimeService
+#   Shape : alias -- the contract is the whole AgentRuntime (builders need it un-narrowed)
+#   Scope : workspace
+# ==========================================================================================
+# Aliased so the dependency site reads as an injected service (``runtime: AgentRuntimeService``).
 AgentRuntimeService = AgentRuntime

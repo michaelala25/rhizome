@@ -510,6 +510,15 @@ def option_bindings(fn: Callable) -> tuple[OptionSpec, ...]:
 # ---------------------------------------------------------------------------
 
 
+# ==========================================================================================
+# Service: OptionService
+#   Shape : protocol + first-party impl (Options, below)
+#   Scope : root, shadowed per-conversation (a Session node parented to Root)
+#   Notes : Options satisfies this structurally -- its OptionsMeta metaclass precludes explicitly
+#           subclassing a Protocol (metaclass conflict); the type-checker still enforces the contract.
+# ==========================================================================================
+
+
 class OptionService(Protocol):
     """The consumer-facing slice of ``Options`` -- read a spec's value, subscribe to its changes, curry
     option values into an injectable callable, and reach the node at a higher scope (``at_scope``).

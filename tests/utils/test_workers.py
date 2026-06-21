@@ -1,4 +1,4 @@
-"""WorkerSchedulerService: the scheduler-resolving holder, exercised through the DI container.
+"""WorkerSchedulerBinding: the scheduler-resolving holder behind WorkerSchedulerService, via the DI container.
 
 The service is no longer the scheduler callable itself -- it's a holder that *resolves* one, carrying
 a mutable binding the presenting view sets on mount and clears on unmount. Headless callers never
@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from rhizome.utils.services import ServiceAccessor
-from rhizome.utils.workers import WorkerHandle, WorkerSchedulerService
+from rhizome.utils.workers import WorkerHandle, WorkerSchedulerBinding, WorkerSchedulerService
 
 
 class BackgroundJob:
@@ -29,7 +29,7 @@ class BackgroundJob:
 
 async def test_unbound_holder_falls_back_to_create_task_and_injects():
     services = ServiceAccessor()
-    services.register(WorkerSchedulerService, WorkerSchedulerService())
+    services.register(WorkerSchedulerService, WorkerSchedulerBinding())
     services.register_descriptor(BackgroundJob)
 
     job = services.get(BackgroundJob)
@@ -39,7 +39,7 @@ async def test_unbound_holder_falls_back_to_create_task_and_injects():
 
 
 async def test_bound_scheduler_is_used_over_the_fallback():
-    holder = WorkerSchedulerService()
+    holder = WorkerSchedulerBinding()
     seen: list = []
 
     def scheduler(work):
@@ -53,7 +53,7 @@ async def test_bound_scheduler_is_used_over_the_fallback():
 
 
 async def test_unbind_is_compare_and_clear():
-    holder = WorkerSchedulerService()
+    holder = WorkerSchedulerBinding()
 
     def first(work):
         return asyncio.create_task(work)
@@ -70,7 +70,7 @@ async def test_unbind_is_compare_and_clear():
 
 
 def test_root_holder_is_not_bindable():
-    root = WorkerSchedulerService(bindable=False)
+    root = WorkerSchedulerBinding(bindable=False)
     assert root.get_scheduler() is asyncio.create_task   # still resolves a scheduler
     with pytest.raises(RuntimeError):
         root.bind(lambda work: asyncio.create_task(work))
@@ -78,10 +78,10 @@ def test_root_holder_is_not_bindable():
 
 def test_child_scope_shadows_the_non_bindable_root():
     root = ServiceAccessor()
-    root.register(WorkerSchedulerService, WorkerSchedulerService(bindable=False))
+    root.register(WorkerSchedulerService, WorkerSchedulerBinding(bindable=False))
 
     scope = root.child("scope")
-    scope.register(WorkerSchedulerService, WorkerSchedulerService())   # bindable, scoped
+    scope.register(WorkerSchedulerService, WorkerSchedulerBinding())   # bindable, scoped
 
     def run_worker(work):
         return asyncio.ensure_future(work)
@@ -92,7 +92,7 @@ def test_child_scope_shadows_the_non_bindable_root():
 
 
 async def test_scheduled_worker_is_cancelable():
-    holder = WorkerSchedulerService()
+    holder = WorkerSchedulerBinding()
     holder.bind(asyncio.create_task)
 
     started = asyncio.Event()

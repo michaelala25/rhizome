@@ -24,7 +24,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from rhizome.agent.session import AgentSession, get_agent_kwargs
 from rhizome.db import SessionFactoryService, Topic
 from rhizome.utils.services import ServiceAccessor
-from rhizome.utils.workers import WorkerSchedulerService
+from rhizome.utils.workers import WorkerSchedulerBinding, WorkerSchedulerService
 from rhizome.resources.manager import ResourceManager
 from rhizome.app.commands import (
     CommandError,
@@ -239,7 +239,7 @@ class ConversationAreaModel(ViewModelBase):
         # and can open a further session-scoped child. ``_session_factory`` is resolved once here and
         # handed raw to the leaf VMs (browser / interrupt feeds).
         self._services = services.child("conversation")
-        self._services.register(WorkerSchedulerService, WorkerSchedulerService())
+        self._services.register(WorkerSchedulerService, WorkerSchedulerBinding())
         self._services.register(CommandRegistryService, self._commands)
         self._session_factory = self._services.get(SessionFactoryService)
 

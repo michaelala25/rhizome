@@ -187,7 +187,9 @@ class CommandUsageError(CommandError):
 
 
 # ========================================================================================================================
-# The registry (a scoped service)
+# Service: CommandRegistryService
+#   Shape : protocol + first-party impl (CommandRegistry, below)
+#   Scope : root -> workspace -> conversation (scoped; child registries merge with their parent)
 # ========================================================================================================================
 
 
@@ -204,7 +206,7 @@ class CommandRegistryService(Protocol):
     async def execute(self, line: str) -> str | None: ...
 
 
-class CommandRegistry:
+class CommandRegistry(CommandRegistryService):
     """A scoped slash-command registry. Children created with ``parent=`` shadow the parent by command
     name and merge for the read paths (``all_commands`` / ``rows``); dispatch falls through to the parent
     for names this scope doesn't own. ``Options`` is the model for the shape.

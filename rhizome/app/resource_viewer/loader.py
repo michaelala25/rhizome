@@ -57,7 +57,7 @@ from rhizome.db.models import LoadingPreference, ResourceSection
 from rhizome.db.operations import list_resources_for_topic
 from rhizome.resources import ResourceLoadType, ResourceManager, ResourceTreeNodeKey
 from rhizome.utils.services import ServiceAccessor
-from rhizome.utils.workers import WorkerSchedulerService
+from rhizome.utils.workers import WorkerSchedulerBinding, WorkerSchedulerService
 
 # A tree node is either a whole resource (root) or one of its sections (descendant).
 ResourceTreeNodeData = Resource | ResourceSection
@@ -202,7 +202,7 @@ class ResourceLoaderModel(QueryBackedViewModel):
         # WorkerSchedulerService the presenting tree view binds ``run_worker`` into; fall through to
         # root for the session factory.
         self._services = services.child("resource_loader")
-        self._services.register(WorkerSchedulerService, WorkerSchedulerService())
+        self._services.register(WorkerSchedulerService, WorkerSchedulerBinding())
         self._session_factory = self._services.get(SessionFactoryService)
         self._manager = manager
 

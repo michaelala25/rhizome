@@ -37,6 +37,15 @@ def get_session_factory(engine: AsyncEngine) -> async_sessionmaker:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+# ==========================================================================================
+# Service: SessionFactoryService
+#   Shape : protocol (structural)
+#   Scope : root
+#   Notes : satisfied by SQLAlchemy's ``async_sessionmaker`` and the ``NotifyingSessionFactory``
+#           wrapper -- both are plain callables, so the contract stays structural.
+# ==========================================================================================
+
+
 class SessionFactoryService(Protocol):
     """SSOT async DB session factory -- ``async with sessions() as session:``.
 
