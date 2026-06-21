@@ -7,6 +7,7 @@ from rhizome.agent_new.context import RootAgentContext
 from rhizome.agent_new.factory import AgentFactory, AgentFactoryService
 from rhizome.agent_new.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
+from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.workspace.workspace import WorkspaceModel
 from rhizome.utils.services import ServiceAccessor
@@ -49,3 +50,15 @@ def test_each_workspace_gets_its_own_runtime():
 
     # Two workspaces off one root share the agent factory but get independent (workspace-scoped) runtimes.
     assert a.chat_area.runtime is not b.chat_area.runtime
+
+
+def test_workspace_registry_parents_to_global_and_backs_the_chat_area():
+    root = make_root_accessor()
+    global_reg = CommandRegistry()
+    global_reg.register("ping", lambda: "pong", help="ping")
+    root.register(CommandRegistryService, global_reg)
+
+    reg = WorkspaceModel(root).chat_area.commands
+
+    assert reg.resolve("branch") is not None     # conversation command, registered by the chat area
+    assert reg.resolve("ping") is not None        # global command, reached via the parent chain

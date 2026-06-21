@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from rhizome.agent_new.runtime import AgentRuntime, AgentRuntimeService
 from rhizome.app.chat_area.chat_area import ChatAreaModel
+from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.orchestrator import OrchestratorModel
 from rhizome.utils.services import ServiceAccessor
@@ -55,6 +56,13 @@ class WorkspaceModel(OrchestratorModel):
         # deps (factory, checkpointer, options) inject from the scope: factory + checkpointer resolve from
         # root, options from the shadow above.
         self._services.register_descriptor(AgentRuntimeService, AgentRuntime)
+
+        # Workspace command registry: parented to the app-global registry (resolved from the parent scope),
+        # registered as the workspace-scope CommandRegistryService, and injected into the chat area, which
+        # registers its conversation commands on it. App / tab commands live in the global registry this
+        # one inherits from; workspace-level commands (/resources, /rename) register here as they port.
+        self._commands = CommandRegistry(parent=services.try_get(CommandRegistryService))
+        self._services.register(CommandRegistryService, self._commands)
 
         # Panel descriptors. Registration is cheap (no build); ``bootstrap`` surfaces the initial set. The
         # status bar (workspace-owned, fed by per-branch contributors), the resource viewer (pending its
@@ -88,4 +96,4 @@ class WorkspaceModel(OrchestratorModel):
         Left as the defaults (no resources) until that lands — resources are optional.
         """
         runtime = self._services.get(AgentRuntimeService)
-        return ChatAreaModel(runtime)
+        return ChatAreaModel(runtime, command_registry=self._commands)

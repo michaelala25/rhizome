@@ -409,16 +409,40 @@ async def test_shell_submission_routes_to_the_shell_stub_with_a_hint():
     assert not area.agent_busy()                    # no agent run
 
 
-async def test_slash_submission_routes_to_the_slash_stub_with_a_hint():
+async def test_slash_command_dispatches_through_the_registry():
     area = make_area()
-    listener = Listener(area)
+    node = area.cursor.node
 
-    area.chat_input.set_buffer("/help")
+    area.chat_input.set_buffer("/help")          # /help is built into the registry core
     area.chat_input.submit()
 
-    assert area.chat_input.buffer == ""
-    assert listener.hints and "slash" in listener.hints[-1]
-    assert not area.agent_busy()
+    assert area.chat_input.buffer == ""          # accepted; dispatch is scheduled
+    await wait_for(lambda: any(
+        isinstance(e, ChatMessageModel) and e.role == Role.SYSTEM and "commands" in e.content.lower()
+        for e in entries(node)
+    ))
+
+
+async def test_unknown_slash_command_surfaces_an_error():
+    area = make_area()
+    node = area.cursor.node
+
+    area.chat_input.set_buffer("/nope")
+    area.chat_input.submit()
+
+    await wait_for(lambda: any(
+        isinstance(e, ChatMessageModel) and e.role == Role.ERROR and "nope" in e.content for e in entries(node)
+    ))
+
+
+async def test_mode_slash_command_runs():
+    area = make_area()
+    node = area.cursor.node
+
+    area.chat_input.set_buffer("/learn")
+    area.chat_input.submit()
+
+    await wait_for(lambda: node.app_state.mode == "learn")
 
 
 async def test_branch_prompt_submission_forks_and_streams_on_the_new_branch():

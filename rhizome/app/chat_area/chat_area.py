@@ -33,6 +33,7 @@ from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 from rhizome.app.chat_pane.interrupts.base import CANCELLED
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
+from rhizome.app.commands import CommandError, CommandRegistry, CommandRegistryService, RAW
 from rhizome.app.model import ViewModelBase
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 from rhizome.tui.types import Mode, Role
@@ -64,6 +65,7 @@ class ChatAreaModel(ViewModelBase):
         resource_context: ResourceContextStore | None = None,
         resource_index: ResourceIndexStore | None = None,
         local_resources_factory: Callable[[], ResourceContextStore] | None = None,
+        command_registry: CommandRegistryService | None = None,
     ) -> None:
         super().__init__()
         self.make_callback_groups({
@@ -109,11 +111,14 @@ class ChatAreaModel(ViewModelBase):
         graph.subscribe(graph.Callbacks.OnNodeRenamed, self._on_graph_node_renamed)
         graph.subscribe(graph.Callbacks.OnNodeBusyChanged, self._on_graph_busy_changed)
 
-        # Input + command palette. Both VMs are conversation-agnostic (buffer, history, filtering)
-        # and owned here, mirroring the old pane: this layer subscribes to the input's OnSubmitted and
-        # routes (chat / shell / slash / prompted-branch). The palette ships empty — no command registry
-        # feeds it yet — so it stays dormant (nothing matches a "/") while plain chat is fully live.
-        self.command_palette = CommandPaletteModel()
+        # Command registry + input + palette. The conversation registers its commands on the registry the
+        # workspace injects (parented to the app-global scope), or on a bare fallback when constructed
+        # standalone. The palette reads the registry's rows lazily; the input + palette are
+        # conversation-agnostic VMs bridge-imported from chat_pane. This layer subscribes to the input's
+        # OnSubmitted and routes (chat / shell / slash).
+        self._commands: CommandRegistryService = command_registry if command_registry is not None else CommandRegistry()
+        self._register_commands()
+        self.command_palette = CommandPaletteModel(self._commands)
         self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
@@ -418,14 +423,13 @@ class ChatAreaModel(ViewModelBase):
     # ------------------------------------------------------------------
 
     def _on_input_submitted(self, text: str) -> None:
-        """Route the chat input's submitted text to a shell command, a slash command, a prompted
-        branch, or an agent turn.
+        """Route the chat input's submitted text to a shell command, a slash command, or an agent turn.
 
-        ``text`` arrives stripped. The input VM holds the buffer until ``accept_submission`` clears it,
-        so a gated/rejected submission stays editable for retry. Plain chat is gated on the current leaf
-        the way ``submit`` is (busy / frozen → hint); shell and slash commands are side-channel and pass
-        through. ``/branch <prompt>`` is intercepted ahead of the (future) command registry, whose shlex
-        tokenization would mangle the free-text prompt.
+        ``text`` arrives stripped. The input VM holds the buffer until ``accept_submission`` clears it, so
+        a gated/rejected submission stays editable for retry. Plain chat is gated on the current leaf the
+        way ``submit`` is (busy / frozen → hint); shell and slash commands are side-channel and pass
+        through. Slash commands go straight to the registry — its ``RAW`` parser keeps a command's free-text
+        remainder intact (so ``/branch Can't Stop`` just works), with no special-casing here.
         """
         stripped = text.lstrip()
 
@@ -437,13 +441,6 @@ class ChatAreaModel(ViewModelBase):
             return
 
         if stripped.startswith("/"):
-            name = stripped.lstrip("/").split(maxsplit=1)[0]
-            if name == "branch":
-                rest = stripped[len("/branch"):].strip()
-                if rest:
-                    self.chat_input.accept_submission(text)
-                    self._schedule(self.branch(prompt=rest))
-                    return
             self.chat_input.accept_submission(text)
             self.submit_slash_command(stripped)
             return
@@ -470,10 +467,46 @@ class ChatAreaModel(ViewModelBase):
         self.hint("shell commands aren't wired up in the chat area yet")
 
     def submit_slash_command(self, line: str) -> None:
-        """Dispatch a ``/`` command. TODO: the command registry is getting a rewrite; until then this
-        hints rather than dispatching. The palette is dormant (no commands registered), so nothing
-        guides the user here, but a hand-typed ``/cmd`` lands softly instead of raising."""
-        self.hint("slash commands aren't wired up in the chat area yet")
+        """Dispatch a ``/`` command through the registry (async, so it schedules). Help/echo results and
+        errors land in the feed; nothing is forwarded to the agent."""
+        self._schedule(self._execute_command(line))
+
+    async def _execute_command(self, line: str) -> None:
+        try:
+            result = await self._commands.execute(line)
+        except CommandError as exc:
+            self.append_item(ChatMessageModel(role=Role.ERROR, content=str(exc)))
+            return
+        except Exception as exc:  # noqa: BLE001 — surface unexpected handler errors as ERROR messages
+            self.append_item(ChatMessageModel(role=Role.ERROR, content=f"Command error: {exc}"))
+            return
+        if result is not None:
+            self.append_item(ChatMessageModel(role=Role.SYSTEM, content=str(result), rich=True))
+
+    # ------------------------------------------------------------------
+    # Command registry
+    # ------------------------------------------------------------------
+
+    @property
+    def commands(self) -> CommandRegistryService:
+        """The conversation's command registry (parented to the workspace/global scope when injected)."""
+        return self._commands
+
+    def _register_commands(self) -> None:
+        """Register the conversation-scoped slash commands. Tab / app commands (/quit, /new, ...) live in
+        the global registry this scope inherits from, and /help is built into the registry core. Commands
+        whose VM operations aren't ported yet (/clear, /commit, /options, /resources, /rename-branch) land
+        as their features do."""
+        reg = self._commands
+        reg.register("idle", lambda: self.set_mode(Mode.IDLE), help="Switch to idle mode.")
+        reg.register("learn", lambda: self.set_mode(Mode.LEARN), help="Switch to learn mode.")
+        reg.register("review", lambda: self.set_mode(Mode.REVIEW), help="Switch to review mode.")
+        reg.register("branch", self._cmd_branch, parser=RAW,
+                     help="Fork a new branch; optionally provide a prompt to send.")
+        reg.register("echo", lambda text: text, parser=RAW, help="Echo arguments back as a system message.")
+
+    async def _cmd_branch(self, rest: str) -> None:
+        await self.branch(prompt=rest or None)
 
     # ------------------------------------------------------------------
     # Commit mode (stubs)
