@@ -1,5 +1,7 @@
 # Core
 from .view_base import ViewBase
+from .orchestrator import Orchestrator
+from .panel_orchestrator import PanelOrchestrator, PanelSlot, register_panel
 from rhizome.app.model import CallbackGroup, Emitter, ViewModelBase
 
 # Shared widgets
@@ -37,8 +39,12 @@ from .flashcard_review.flashcard_review import FlashcardReview
 __all__ = [
     "CallbackGroup",
     "Emitter",
+    "Orchestrator",
+    "PanelOrchestrator",
+    "PanelSlot",
     "ViewBase",
     "ViewModelBase",
+    "register_panel",
 
     "AgentMessageHarness",
     "ChatInput",

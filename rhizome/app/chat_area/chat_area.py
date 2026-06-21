@@ -29,6 +29,8 @@ from typing import Any, Callable, Coroutine
 
 from rhizome.agent_new.engine import MessagePayload, StateUpdatePayload
 from rhizome.agent_new.runtime import AgentRuntime
+from rhizome.app.chat_pane.chat_input import ChatInputModel
+from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 from rhizome.app.chat_pane.interrupts.base import CANCELLED
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
 from rhizome.app.model import ViewModelBase
@@ -38,6 +40,9 @@ from rhizome.tui.types import Mode, Role
 from .branch import BranchPointModel
 from .conversation_graph import ConversationGraph, ConversationItem, ConversationNode, Cursor
 from .stream_router import ChatAreaStreamRouter
+
+
+_DEFAULT_HINT = "Type a message or /command ..."
 
 
 class ChatAreaModel(ViewModelBase):
@@ -103,6 +108,14 @@ class ChatAreaModel(ViewModelBase):
         graph.subscribe(graph.Callbacks.OnFeedCleared, self._on_graph_feed_cleared)
         graph.subscribe(graph.Callbacks.OnNodeRenamed, self._on_graph_node_renamed)
         graph.subscribe(graph.Callbacks.OnNodeBusyChanged, self._on_graph_busy_changed)
+
+        # Input + command palette. Both VMs are conversation-agnostic (buffer, history, filtering)
+        # and owned here, mirroring the old pane: this layer subscribes to the input's OnSubmitted and
+        # routes (chat / shell / slash / prompted-branch). The palette ships empty — no command registry
+        # feeds it yet — so it stays dormant (nothing matches a "/") while plain chat is fully live.
+        self.command_palette = CommandPaletteModel()
+        self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
+        self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
     def _schedule(self, coro: Coroutine[Any, Any, Any]) -> Any:
         return self._scheduler(coro)
@@ -401,17 +414,66 @@ class ChatAreaModel(ViewModelBase):
         return new
 
     # ------------------------------------------------------------------
-    # Input dispatch (stubs — command registry port comes later)
+    # Input dispatch
     # ------------------------------------------------------------------
 
+    def _on_input_submitted(self, text: str) -> None:
+        """Route the chat input's submitted text to a shell command, a slash command, a prompted
+        branch, or an agent turn.
+
+        ``text`` arrives stripped. The input VM holds the buffer until ``accept_submission`` clears it,
+        so a gated/rejected submission stays editable for retry. Plain chat is gated on the current leaf
+        the way ``submit`` is (busy / frozen → hint); shell and slash commands are side-channel and pass
+        through. ``/branch <prompt>`` is intercepted ahead of the (future) command registry, whose shlex
+        tokenization would mangle the free-text prompt.
+        """
+        stripped = text.lstrip()
+
+        if stripped.startswith("!"):
+            command = stripped[1:].strip()
+            if command:
+                self.chat_input.accept_submission(text)
+                self.submit_shell_command(command)
+            return
+
+        if stripped.startswith("/"):
+            name = stripped.lstrip("/").split(maxsplit=1)[0]
+            if name == "branch":
+                rest = stripped[len("/branch"):].strip()
+                if rest:
+                    self.chat_input.accept_submission(text)
+                    self._schedule(self.branch(prompt=rest))
+                    return
+            self.chat_input.accept_submission(text)
+            self.submit_slash_command(stripped)
+            return
+
+        # Plain chat: pre-check the leaf the way ``submit`` does, but before consuming the buffer or
+        # appending — ``append`` refuses a frozen node outright, and a busy node would queue the message
+        # into the next run rather than block (the parity behaviour we keep for now). A blocked message
+        # stays in the buffer for retry.
+        node = self._cursor.node
+        if node.busy:
+            self.hint("the agent is already responding on this branch")
+            return
+        if node.frozen:
+            self.hint("this branch is frozen — descend into one of its children")
+            return
+
+        self.chat_input.accept_submission(text)
+        self.append_message(text, Role.USER)
+        self.submit()
+
     def submit_shell_command(self, command: str) -> None:
-        """Run a ``!`` shell command as a feed-resident widget. TODO: port ShellCommandModel."""
-        raise NotImplementedError
+        """Run a ``!`` shell command as a feed-resident widget. TODO: port ShellCommandModel; until
+        then this hints rather than running — the dispatch path is wired, the executor is not."""
+        self.hint("shell commands aren't wired up in the chat area yet")
 
     def submit_slash_command(self, line: str) -> None:
-        """Dispatch a ``/`` command. TODO: the command registry is getting a rewrite; until then
-        commands stay on the legacy pane."""
-        raise NotImplementedError
+        """Dispatch a ``/`` command. TODO: the command registry is getting a rewrite; until then this
+        hints rather than dispatching. The palette is dormant (no commands registered), so nothing
+        guides the user here, but a hand-typed ``/cmd`` lands softly instead of raising."""
+        self.hint("slash commands aren't wired up in the chat area yet")
 
     # ------------------------------------------------------------------
     # Commit mode (stubs)

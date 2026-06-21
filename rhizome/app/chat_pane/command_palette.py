@@ -8,10 +8,6 @@ subscribes to it directly.
 
 from __future__ import annotations
 
-from rich.text import Text
-from textual.app import ComposeResult
-from textual.widgets import Static
-
 from rhizome.app.model import ViewModelBase
 
 

@@ -361,3 +361,106 @@ async def test_swap_sibling_updates_indicator_and_navigation_soft_fails_hint():
     area.swap_sibling(-1)                # leftmost already: hint, cursor unchanged
     assert listener.hints and area.cursor.node is continuation
     assert listener.cursor_moves == []
+
+
+# ------------------------------------------------------------------------------------------------
+# Input dispatch
+# ------------------------------------------------------------------------------------------------
+#
+# Drive the bridge-imported ChatInputModel directly (set_buffer + submit) to exercise the routing
+# that ChatAreaModel hangs off the input's OnSubmitted.
+
+async def test_plain_chat_submission_appends_user_and_starts_a_run():
+    area = make_area()
+    node = area.cursor.node
+
+    area.chat_input.set_buffer("hello")
+    area.chat_input.submit()
+
+    assert area.agent_busy()                        # a run kicked off
+    assert area.chat_input.buffer == ""             # accepted: buffer cleared, history pushed
+    assert area.chat_input.can_history_prev()
+    await wait_idle(node)
+
+    user_msgs = [e.content for e in entries(node) if isinstance(e, ChatMessageModel) and e.role == Role.USER]
+    assert user_msgs == ["hello"]
+    agent_msgs = [e for e in entries(node) if isinstance(e, AgentMessageModel)]
+    assert agent_msgs and agent_msgs[-1].body.startswith("echo:hello")
+
+
+async def test_empty_submission_does_nothing():
+    area = make_area()
+    area.chat_input.set_buffer("   ")
+    area.chat_input.submit()                        # CHAT state: the input VM no-ops an empty submit
+
+    assert not area.agent_busy()
+    assert entries(area.cursor.node) == []
+
+
+async def test_shell_submission_routes_to_the_shell_stub_with_a_hint():
+    area = make_area()
+    listener = Listener(area)
+
+    area.chat_input.set_buffer("!ls -la")
+    area.chat_input.submit()
+
+    assert area.chat_input.buffer == ""             # accepted (side-channel command)
+    assert listener.hints and "shell" in listener.hints[-1]
+    assert not area.agent_busy()                    # no agent run
+
+
+async def test_slash_submission_routes_to_the_slash_stub_with_a_hint():
+    area = make_area()
+    listener = Listener(area)
+
+    area.chat_input.set_buffer("/help")
+    area.chat_input.submit()
+
+    assert area.chat_input.buffer == ""
+    assert listener.hints and "slash" in listener.hints[-1]
+    assert not area.agent_busy()
+
+
+async def test_branch_prompt_submission_forks_and_streams_on_the_new_branch():
+    area = make_area()
+    graph = area.conversation_graph
+    root = graph.root
+    area.append_message("seed", Role.USER)
+
+    area.chat_input.set_buffer("/branch tell me more")
+    area.chat_input.submit()
+    assert area.chat_input.buffer == ""             # accepted; branch() runs on the scheduler
+
+    # branch() is async (scheduled, not awaited here) — wait for the streamed prompt to land on a
+    # child branch rather than the root.
+    await wait_for(lambda: any(
+        isinstance(e, AgentMessageModel) for child in graph.children(root) for e in entries(child)
+    ))
+    branch_node = next(
+        c for c in graph.children(root) if any(isinstance(e, AgentMessageModel) for e in entries(c))
+    )
+    await wait_idle(branch_node)
+
+    agent_msgs = [e for e in entries(branch_node) if isinstance(e, AgentMessageModel)]
+    assert agent_msgs[-1].body.startswith("echo:tell me more")
+    assert not any(isinstance(e, AgentMessageModel) for e in entries(root))
+
+
+async def test_plain_chat_blocked_while_busy_keeps_the_buffer():
+    area = make_area(lambda: StreamingEchoModel(delay=0.3))
+    listener = Listener(area)
+    node = area.cursor.node
+
+    area.chat_input.set_buffer("first")
+    area.chat_input.submit()
+    assert area.agent_busy()
+
+    area.chat_input.set_buffer("second")
+    area.chat_input.submit()                        # busy: hint, buffer kept for retry, no append
+
+    assert listener.hints and "already responding" in listener.hints[-1]
+    assert area.chat_input.buffer == "second"
+    await wait_idle(node)
+
+    user_msgs = [e.content for e in entries(node) if isinstance(e, ChatMessageModel) and e.role == Role.USER]
+    assert user_msgs == ["first"]                   # "second" never reached the feed
