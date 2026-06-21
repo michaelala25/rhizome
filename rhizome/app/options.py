@@ -512,13 +512,16 @@ def option_bindings(fn: Callable) -> tuple[OptionSpec, ...]:
 
 class OptionService(Protocol):
     """The consumer-facing slice of ``Options`` -- read a spec's value, subscribe to its changes, curry
-    option values into an injectable callable.
+    option values into an injectable callable, and reach the node at a higher scope (``at_scope``).
 
     Consumers (e.g. the agent runtime) depend on this protocol rather than the concrete ``Options`` so
     the dependency reads as an injected service and stays off the full options machinery; ``Options``
     satisfies it structurally."""
 
+    @property
+    def scope(self) -> OptionScope: ...
     def get(self, spec: OptionSpec) -> Any: ...
+    def at_scope(self, scope: OptionScope) -> OptionService: ...
     def subscribe_on_changed(self, spec: OptionSpec, handler: Callable[[Any, Any], None]) -> None: ...
     def inject(self, fn: Callable) -> Callable: ...
 
@@ -793,6 +796,21 @@ class Options(CallbackHost, metaclass=OptionsMeta):
         if self._parent is not None:
             return self._parent.get(spec)
         return spec.default
+
+    def at_scope(self, scope: OptionScope) -> Options:
+        """Return the node in this instance's parent chain whose scope is exactly *scope*.
+
+        The chain runs most-specific → Root, so a Session node reaches Session or Root while a Root
+        node reaches only Root. Raises ``ValueError`` for a scope not present above this node (e.g.
+        asking a Root node for Session). Lets a holder of the low-scope node read or edit a higher
+        scope without threading the higher instance through separately.
+        """
+        node: Options | None = self
+        while node is not None:
+            if node._scope == scope:
+                return node
+            node = node._parent
+        raise ValueError(f"No options at {scope.name} scope reachable from {self._scope.name} scope")
 
     def inject(self, fn: Callable) -> Callable:
         """Curry ``fn``'s option-annotated parameters against this instance, returning a callable over the
