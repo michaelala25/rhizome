@@ -1,0 +1,422 @@
+"""ChatAreaModel — the conversation's view-model: user actions in, feed items + agent payloads out.
+
+This is the final API the view drives. It owns the conversation **cursor** (the checked-out path
+through the graph — business state, unlike widget carets: rebuilding the view from this VM must
+restore the checkout) and composes the layers below:
+
+- ``ConversationGraph`` carries the durable substance — feeds, names, interrupt slots, navigation
+  memory, and the agent threads underneath. The VM subscribes to its model-level events and re-emits
+  view-facing callbacks, so views only ever subscribe here.
+- ``ChatAreaStreamRouter`` is constructed per ``submit`` and referenced by nobody afterwards: all
+  run-lifecycle handling arrives through its own stream-context callbacks.
+
+Policy that is deliberately *this* layer's and not the graph's: the two-children branch shape
+(continuation + new branch on the first fork), the walk-up hoist from an empty leaf, consecutive
+system-message dedup, and which roles forward to the agent as payloads.
+
+Mode and verbosity travel as ``StateUpdatePayload``s into per-branch agent state — branches inherit
+them through checkpoint copy and diverge after. Eager sends reach the *current* run's next model
+call; idle sends wait in the backlog for the next run.
+
+Feed-entry and interrupt VM classes are bridge-imported from ``chat_pane`` for now — they're already
+view-models and move here wholesale when the old pane retires.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Callable, Coroutine
+
+from rhizome.agent_new.payload import MessagePayload, StateUpdatePayload
+from rhizome.agent_new.runtime import AgentRuntime
+from rhizome.app.chat_pane.interrupts.base import CANCELLED
+from rhizome.app.chat_pane.messages.static import ChatMessageModel
+from rhizome.app.model import ViewModelBase
+from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
+from rhizome.tui.types import Mode, Role
+
+from .branch import BranchPointModel
+from .conversation_graph import ConversationGraph, ConversationItem, ConversationNode, Cursor
+from .stream_router import ChatAreaStreamRouter
+
+
+class ChatAreaModel(ViewModelBase):
+
+    class Callbacks(ViewModelBase.Callbacks):
+        OnCursorMoved      = "OnCursorMoved"
+        OnFeedAppended     = "OnFeedAppended"
+        OnFeedRemoved      = "OnFeedRemoved"
+        OnFeedCleared      = "OnFeedCleared"
+        OnNodeRenamed      = "OnNodeRenamed"
+        OnBusyChanged      = "OnBusyChanged"
+        OnInterruptChanged = "OnInterruptChanged"
+
+    def __init__(
+        self,
+        runtime: AgentRuntime,
+        *,
+        agent_key: str = "root",
+        resource_context: ResourceContextStore | None = None,
+        resource_index: ResourceIndexStore | None = None,
+        local_resources_factory: Callable[[], ResourceContextStore] | None = None,
+    ) -> None:
+        super().__init__()
+        self.make_callback_groups({
+            self.Callbacks.OnCursorMoved:      Cursor,                                # the new cursor
+            self.Callbacks.OnFeedAppended:     (ConversationNode, ConversationItem),
+            self.Callbacks.OnFeedRemoved:      (ConversationNode, ConversationItem),
+            self.Callbacks.OnFeedCleared:      ConversationNode,
+            self.Callbacks.OnNodeRenamed:      ConversationNode,
+            self.Callbacks.OnBusyChanged:      (ConversationNode, bool),              # see _notify_stream_complete
+            self.Callbacks.OnInterruptChanged: ConversationNode,
+        })
+
+        self.runtime = runtime
+
+        # Worker scheduler, late-bound: the graph captures ``self._schedule`` at construction, and
+        # the view swaps the underlying callable for Textual's ``run_worker`` at mount.
+        self._scheduler: Callable[[Coroutine[Any, Any, Any]], Any] = asyncio.create_task
+
+        # TODO(resources): when the composition root that builds this model is wired up, construct the
+        # graph-global ``resource_context`` store with ``ResourceContextStore(tree, cache=True)`` — it is
+        # the single instance shared by every branch, so its content cache collapses the per-branch DB
+        # reads a freshly loaded resource would otherwise trigger. Per-node local stores (minted by
+        # ``local_resources_factory``) keep the default, uncached: each is used once.
+        self.conversation_graph: ConversationGraph = ConversationGraph(
+            runtime,
+            self._schedule,
+            agent_key=agent_key,
+            resource_context=resource_context,
+            resource_index=resource_index,
+            local_resources_factory=local_resources_factory,
+        )
+        self.conversation_graph.make_root()   # opens the topology — mints the root node after wiring
+        self.conversation_graph.rename(self.conversation_graph.root, "main")
+        self._cursor: Cursor = self.conversation_graph.root_cursor()
+
+        # Model-level graph events re-emit as this VM's view-facing groups (views subscribe to their
+        # VM, never to the graph directly). Bound-method subscribers are weakly held by the graph;
+        # this VM outlives the graph it owns, so the subscriptions are safe.
+        graph = self.conversation_graph
+        graph.subscribe(graph.Callbacks.OnFeedAppended, self._on_graph_feed_appended)
+        graph.subscribe(graph.Callbacks.OnFeedRemoved, self._on_graph_feed_removed)
+        graph.subscribe(graph.Callbacks.OnFeedCleared, self._on_graph_feed_cleared)
+        graph.subscribe(graph.Callbacks.OnNodeRenamed, self._on_graph_node_renamed)
+        graph.subscribe(graph.Callbacks.OnNodeBusyChanged, self._on_graph_busy_changed)
+
+    def _schedule(self, coro: Coroutine[Any, Any, Any]) -> Any:
+        return self._scheduler(coro)
+
+    def set_worker_scheduler(self, scheduler: Callable[[Coroutine[Any, Any, Any]], Any]) -> None:
+        """Swap the worker scheduler (the view injects Textual's ``run_worker`` on mount)."""
+        self._scheduler = scheduler
+
+    def bootstrap(self) -> None:
+        """Register the root agent (and its subagents) on the runtime.
+
+        TODO: agent descriptors for the rewritten stack are in flux — until they land, the runtime
+        is expected to arrive with its agents already registered (tests register fakes).
+        """
+
+    # ------------------------------------------------------------------
+    # Graph event pass-through
+    # ------------------------------------------------------------------
+
+    def _on_graph_feed_appended(self, node: ConversationNode, item: ConversationItem) -> None:
+        self.emit(self.Callbacks.OnFeedAppended, node, item)
+
+    def _on_graph_feed_removed(self, node: ConversationNode, item: ConversationItem) -> None:
+        self.emit(self.Callbacks.OnFeedRemoved, node, item)
+
+    def _on_graph_feed_cleared(self, node: ConversationNode) -> None:
+        self.emit(self.Callbacks.OnFeedCleared, node)
+
+    def _on_graph_node_renamed(self, node: ConversationNode) -> None:
+        self.emit(self.Callbacks.OnNodeRenamed, node)
+
+    def _on_graph_busy_changed(self, node: ConversationNode, busy: bool) -> None:
+        # Relayed from the agent layer's worker pinpoints, so the payload always agrees with
+        # ``node.busy`` — the idle edge fires only after the run's teardown has settled.
+        self.emit(self.Callbacks.OnBusyChanged, node, busy)
+
+    # ------------------------------------------------------------------
+    # Cursor & navigation
+    # ------------------------------------------------------------------
+
+    @property
+    def cursor(self) -> Cursor:
+        return self._cursor
+
+    def _resolve(self, cursor: Cursor | ConversationNode | int | None) -> Cursor:
+        """The target for an operation: the current checkout when ``cursor`` is None."""
+        if cursor is None:
+            return self._cursor
+        return self.conversation_graph.cursor(cursor)
+
+    def set_cursor(self, cursor: Cursor | ConversationNode | int) -> None:
+        """Check out a path. Records the visit, pushes selected-child state to the branch
+        indicators along it, and emits ``OnCursorMoved`` (the view re-derives the visible feed)."""
+        path = self.conversation_graph.cursor(cursor)
+        if path == self._cursor:
+            return
+        self._cursor = path
+        self.conversation_graph.record_visit(path)
+        self._sync_branch_indicators()
+        self.emit(self.Callbacks.OnCursorMoved, path)
+
+    def descend(self, child: ConversationNode | int) -> None:
+        self._navigate(lambda: self.conversation_graph.descend(self._cursor, child))
+
+    def ascend(self, *, to: ConversationNode | int | None = None) -> None:
+        self._navigate(lambda: self.conversation_graph.ascend(self._cursor, to=to))
+
+    def swap_sibling(self, direction: int, *, at: ConversationNode | int | None = None) -> None:
+        self._navigate(lambda: self.conversation_graph.swap_sibling(self._cursor, direction, at=at))
+
+    def _navigate(self, op: Callable[[], Cursor]) -> None:
+        """Run a graph navigation op against the current cursor; boundary conditions (no sibling
+        that way, already at the root) surface as hints, not exceptions — keystrokes get spammed."""
+        try:
+            path = op()
+        except (KeyError, ValueError) as exc:
+            self.hint(str(exc))
+            return
+        self.set_cursor(path)
+
+    def _sync_branch_indicators(self) -> None:
+        """Push cursor-derived selection to every branch indicator on the cursor path: the child the
+        path descends into, or ``None`` when the indicator's node is the leaf. The setter is
+        equality-guarded, so untouched indicators stay quiet. Off-path indicators keep their last
+        selection until revisited — they aren't visible anyway."""
+        nodes = self._cursor.nodes()
+        for i, node in enumerate(nodes):
+            selected = nodes[i + 1] if i + 1 < len(nodes) else None
+            for item in node.feed:
+                if isinstance(item.entry, BranchPointModel):
+                    item.entry.set_selected_child(selected)
+
+    # ------------------------------------------------------------------
+    # Feed
+    # ------------------------------------------------------------------
+
+    def append_item(self, entry: Any, *, cursor: Cursor | None = None) -> ConversationItem:
+        """Append an arbitrary feed entry to the target branch (current cursor by default)."""
+        return self.conversation_graph.append(self._resolve(cursor), entry)
+
+    def remove_item(self, item: ConversationItem | int, *, cursor: Cursor | None = None) -> ConversationItem | None:
+        """Remove a feed item (or item id) from the target branch. Returns it, or None if absent."""
+        item_id = item.id if isinstance(item, ConversationItem) else item
+        return self.conversation_graph.remove(self._resolve(cursor), item_id)
+
+    def append_message(
+        self,
+        content: str,
+        role: Role = Role.SYSTEM,
+        *,
+        cursor: Cursor | None = None,
+        to_agent: bool = True,
+        eager: bool = False,
+    ) -> ConversationItem | None:
+        """Append a chat message to the feed and (optionally) forward it to the branch's agent.
+
+        Dedup rule: a SYSTEM message identical to the tail of the target's *visible* feed is
+        suppressed (returns None) — so a system message arriving in a freshly descended branch
+        dedupes against an identical tail-of-parent message.
+
+        Forwarding: USER and SYSTEM roles become ``MessagePayload``s on the branch's session (ERROR
+        and other roles are UI-side noise the agent shouldn't react to). ``eager=True`` posts into
+        the *current* run mid-stream — the session's eager queue — instead of the next run's backlog.
+        """
+        target = self._resolve(cursor)
+
+        visible = self.conversation_graph.visible_feed(target)
+        tail = visible[-1].entry if visible else None
+        if (
+            role == Role.SYSTEM
+            and isinstance(tail, ChatMessageModel)
+            and tail.role == Role.SYSTEM
+            and tail.content == content
+        ):
+            # TODO: ping the existing entry (visual nudge) instead of silently swallowing.
+            return None
+
+        item = self.conversation_graph.append(target, ChatMessageModel(role=role, content=content))
+
+        if to_agent and role in (Role.USER, Role.SYSTEM):
+            payload_role = MessagePayload.Role.USER if role == Role.USER else MessagePayload.Role.SYSTEM
+            self.conversation_graph.send(target, MessagePayload(data=content, role=payload_role), eager=eager)
+
+        return item
+
+    def clear(self) -> None:
+        """Clear the entire conversation slate (every branch). TODO: semantics under the graph are
+        unsettled — see also the eventual ``clear_branch`` (delete one branch)."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Per-branch agent state (mode / verbosity)
+    # ------------------------------------------------------------------
+
+    def set_mode(self, mode: Mode, *, cursor: Cursor | None = None, silent: bool = False) -> None:
+        """Switch the branch's mode by writing its live ``AppContextStore`` — the single source of truth
+        both the user (here) and the agent (the ``set_mode`` tool) write through.
+
+        The store is always live, so the change needs no eager send: the prompt engine reads it at the
+        next compile (mid-run or next run), commits it into agent state, and narrates it agent-side
+        (guides/headers). The feed message here is UI-only.
+        """
+        target = self._resolve(cursor)
+        self.conversation_graph.node(target).app_state.set_mode(mode.value)
+
+        if not silent:
+            text = "Returned to idle mode." if mode == Mode.IDLE else f"Entered {mode.value} mode."
+            self.append_message(text, Role.SYSTEM, cursor=target, to_agent=False)
+
+    def set_verbosity(self, verbosity: str, *, cursor: Cursor | None = None) -> None:
+        """Send an answer-verbosity change into the branch's agent state. Same delivery semantics
+        as ``set_mode``."""
+        target = self._resolve(cursor)
+        self.conversation_graph.send(target, StateUpdatePayload(data={"verbosity": verbosity}), eager=True)
+
+    # ------------------------------------------------------------------
+    # Runs
+    # ------------------------------------------------------------------
+
+    def agent_busy(self, cursor: Cursor | None = None) -> bool:
+        """A run is in flight on the target branch. Cancellation is cooperative — this stays True
+        until the unwind completes; ``OnBusyChanged`` fires at the exact flip."""
+        return self.conversation_graph.node(self._resolve(cursor)).busy
+
+    def pending_interrupt(self, cursor: Cursor | None = None) -> Any | None:
+        """The interrupt VM blocking the target branch on user input, if any."""
+        return self.conversation_graph.node(self._resolve(cursor)).pending_interrupt
+
+    def submit(self, *, cursor: Cursor | None = None) -> None:
+        """Start a run on the target branch: everything in the session's backlog (queued
+        ``append_message`` payloads, mode changes, ...) is ingested at the run's first model call.
+
+        Soft-fails with a hint when the branch is frozen or already running — both are states the
+        user can reach with ordinary keystrokes, not programming errors.
+        """
+        path = self._resolve(cursor)
+        node = self.conversation_graph.node(path)
+        if node.frozen:
+            self.hint("this branch is frozen — descend into one of its children")
+            return
+        if node.busy:
+            self.hint("the agent is already responding on this branch")
+            return
+
+        router = ChatAreaStreamRouter(self, path)  # mounts the thinking indicator
+        self.conversation_graph.stream(path, router)  # fires OnNodeBusyChanged(node, True)
+
+    def cancel(self, *, cursor: Cursor | None = None) -> None:
+        """Cancel the target branch's in-flight run. Cooperative: teardown (history repair, the
+        "(user cancelled)" message, indicator removal, the busy-flip event) runs when the
+        cancellation unwinds through the router's callbacks."""
+        self.conversation_graph.cancel(self._resolve(cursor))
+
+    # ------------------------------------------------------------------
+    # Interrupts
+    # ------------------------------------------------------------------
+
+    async def present_interrupt(self, vm: Any, *, cursor: Cursor | None = None) -> Any:
+        """Append an interrupt VM to the target feed and await its resolution.
+
+        The VM stays in the feed afterwards as an inert record. ``pending_interrupt`` on the node is
+        the "blocked on user input" flag for the duration; ``OnInterruptChanged`` fires on both
+        edges so views derive input lockout from it.
+
+        Cancellation discipline: dismissal (``vm.cancel()``) resolves the future with the
+        ``CANCELLED`` sentinel — translated to None here, and the run continues. A real
+        ``CancelledError`` therefore always means the *task* was cancelled (the user killed the
+        run); it propagates untouched so the session's cancel path runs.
+        """
+        target = self._resolve(cursor)
+        node = self.conversation_graph.node(target)
+
+        node.pending_interrupt = vm
+        self.conversation_graph.append(target, vm)
+        self.emit(self.Callbacks.OnInterruptChanged, node)
+
+        try:
+            result = await vm.future()
+            return None if result is CANCELLED else result
+        finally:
+            node.pending_interrupt = None
+            self.emit(self.Callbacks.OnInterruptChanged, node)
+
+    # ------------------------------------------------------------------
+    # Branching
+    # ------------------------------------------------------------------
+
+    async def branch(
+        self,
+        name: str | None = None,
+        prompt: str | None = None,
+        *,
+        cursor: Cursor | None = None,
+    ) -> Cursor | None:
+        """Fork the conversation at the target and check out the new branch.
+
+        This is where "branch = two children" lives, deliberately above the graph's one-child
+        primitive: the first fork at a live leaf creates a *continuation* (leftmost, inheriting the
+        name — the original line stays writable) plus the new branch; later forks at the same node
+        just add siblings. The branch indicator must land in the parent's feed before the first
+        ``graph.branch`` freezes it — the sealed-history rule enforces the ordering.
+
+        Walk-up hoist: branching from an empty live leaf hoists to its parent — the natural reading
+        of "/branch right after descending into a fresh branch" is "give me another sibling", not a
+        branch buried inside an empty node.
+
+        ``prompt`` is appended as the first USER message on the new branch and submitted.
+        Soft-fails (hint, returns None) when the target is mid-run.
+        """
+        graph = self.conversation_graph
+        path = self._resolve(cursor)
+        node = path.node
+
+        if path.parent is not None and not node.frozen and not node.feed:
+            path = path.parent
+            node = path.node
+
+        if node.busy:
+            self.hint("cannot branch while the agent is responding")
+            return None
+
+        if not node.frozen:
+            # First fork here: indicator, then the continuation child (leftmost, keeps the name).
+            graph.append(path, BranchPointModel(self, node))
+            continuation = await graph.branch(path)
+            graph.rename(continuation.node, node.name)
+
+        new = await graph.branch(path)
+        if name:
+            graph.rename(new.node, name)
+
+        self.set_cursor(new)
+        if prompt:
+            self.append_message(prompt, Role.USER)
+            self.submit()
+        return new
+
+    # ------------------------------------------------------------------
+    # Input dispatch (stubs — command registry port comes later)
+    # ------------------------------------------------------------------
+
+    def submit_shell_command(self, command: str) -> None:
+        """Run a ``!`` shell command as a feed-resident widget. TODO: port ShellCommandModel."""
+        raise NotImplementedError
+
+    def submit_slash_command(self, line: str) -> None:
+        """Dispatch a ``/`` command. TODO: the command registry is getting a rewrite; until then
+        commands stay on the legacy pane."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Commit mode (stubs)
+    # ------------------------------------------------------------------
+
+    def enter_commit_mode(self) -> None:
+        """TODO: commit mode is being reworked — selection/cursor mechanics move view-side."""
+        raise NotImplementedError
