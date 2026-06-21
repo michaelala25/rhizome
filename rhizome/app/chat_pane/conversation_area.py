@@ -40,7 +40,7 @@ from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 from rhizome.app.chat_pane.conversation_graph import ConversationGraph, ConversationGraphCursor, ConversationNode, NodeId
-from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.base import CANCELLED, InterruptModelBase
 from rhizome.app.chat_pane.interrupts.test import TestInterruptModel
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
@@ -669,7 +669,11 @@ class ConversationAreaModel(ViewModelBase):
         self._sync_chat_input_to_cursor()
 
         try:
-            return await vm.future()
+            # Dismissal resolves with the CANCELLED sentinel (see interrupts.base); this pane's
+            # callers expect None for that case. The except keeps this pane's legacy behavior of
+            # also swallowing task cancellation.
+            result = await vm.future()
+            return None if result is CANCELLED else result
         except asyncio.CancelledError:
             return None
         finally:

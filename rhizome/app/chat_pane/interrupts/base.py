@@ -21,6 +21,20 @@ from typing import Any
 from rhizome.app.model import ViewModelBase
 
 
+class _CancelledSentinel:
+    def __repr__(self) -> str:
+        return "<interrupt CANCELLED>"
+
+
+CANCELLED = _CancelledSentinel()
+"""Resolution value for a dismissed interrupt. ``cancel()`` resolves the future with this sentinel
+rather than cancelling it: dismissal is an ordinary resolution the awaiter translates (e.g. to
+``None``), so an ``asyncio.CancelledError`` at the ``future()`` await always means the surrounding
+*task* was cancelled — the two signals never conflate. (The richer interrupt VMs — proposals,
+flashcard review — already follow this shape, resolving with their own cancelled-flavored payloads.)
+"""
+
+
 class InterruptModelBase(ViewModelBase):
     """Common machinery for any feed-resident interrupt VM. Subclasses define the interaction surface
     (cursor, options, etc.); the base owns the future plumbing + idempotency guards.
@@ -41,8 +55,9 @@ class InterruptModelBase(ViewModelBase):
         return self._cancelled
 
     async def future(self) -> Any:
-        """Block until the user resolves (or cancels) this interrupt. Returns the resolved value, or
-        raises ``asyncio.CancelledError`` on cancel.
+        """Block until the user resolves (or dismisses) this interrupt. Returns the resolved value —
+        the ``CANCELLED`` sentinel on dismissal. ``asyncio.CancelledError`` here means the awaiting
+        task itself was cancelled, never a dismissal.
         """
         return await self._future
 
@@ -63,8 +78,9 @@ class InterruptModelBase(ViewModelBase):
         self.emit(self.Callbacks.OnDirty)
 
     def cancel(self) -> None:
-        """Cancel the future (the awaiter sees ``CancelledError``). No-op if already resolved or
-        cancelled."""
+        """Dismiss the interrupt: resolve the future with the ``CANCELLED`` sentinel (see its
+        docstring — dismissal is a resolution, not an asyncio cancellation). No-op if already
+        resolved or cancelled."""
         if self.resolved:
             return
 
@@ -72,6 +88,6 @@ class InterruptModelBase(ViewModelBase):
         self.is_navigable = False
         self._cancelled = True
         if not self._future.done():
-            self._future.cancel()
+            self._future.set_result(CANCELLED)
 
         self.emit(self.Callbacks.OnDirty)
