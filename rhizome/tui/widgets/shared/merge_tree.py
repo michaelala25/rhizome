@@ -23,8 +23,10 @@ testable on its own — call :func:`build_layout` / :func:`render` directly to d
               mean-preserving min-gap (isotonic) step so nothing drifts; then DECLASH slides a merge off any
               column it shares with an unconnected neighbour (which would draw a phantom vertical).
   5. ROUTE  — paint edges into a character grid. Each gap assigns edges to horizontal *tracks* so stacked
-              merges stay legible; box glyphs merge bitwise into ┬/┴/┼, and true crossings become double-
-              line bridges ╪/╫.
+              merges stay legible; box glyphs merge bitwise into ┬/┴/┼. Where two *unrelated* edges cross,
+              one rides over the other: two straight runs make a double-line bridge ╪/╫, while a stroke
+              passing over a turn draws the foreground heavy and the background light (┠/┩/╃ …) so the
+              corner never collapses into a phantom junction.
 
 Presentation is per-node (``marker`` / ``style`` on the `GraphNode`), so the widget stays domain-agnostic.
 Cursor / keyboard navigation is intentionally not implemented yet — the widget is focusable so it can grow
@@ -80,11 +82,33 @@ _GLYPH = {
     8: "─", 9: "└", 10: "┌", 11: "├", 12: "─", 13: "┴", 14: "┬", 15: "┼",
 }
 
-# A *crossing* — one edge's straight run passing over another's — is drawn as a double-line "bridge", the
-# line drawn second riding on top: ╪ = horizontal over vertical, ╫ = vertical over horizontal. Two high
-# bits record that a through-run has already passed a cell, so the second arrival knows it is a crossing.
+# A *crossing* — one edge's stroke passing over an unrelated edge's — draws the line that arrives second
+# on top. When both are straight through-runs it is a double-line "bridge": ╪ = horizontal over vertical,
+# ╫ = vertical over horizontal. Two high bits record that a through-run has already passed a cell, so the
+# second arrival knows it is a crossing.
 PASS_V, PASS_H = 16, 32
 HL = 64                       # this cell lies on the highlighted cursor path
+
+
+def _is_corner(arms: int) -> bool:
+    """A turn — connects both a vertical and a horizontal side (└┌┘┐, the tees, the cross). A straight run
+    (a lone │ or ─) is not a corner, and that is what separates a clean bridge from a heavy/light crossing."""
+    return bool(arms & (U | D)) and bool(arms & (L | R))
+
+
+# When a stroke crosses a *turn* from an unrelated edge, the cell can't collapse to one light glyph without
+# reading as a phantom junction. Instead the foreground stroke is drawn HEAVY and the background LIGHT, so
+# the two lines stay distinct (the box-drawing set is far richer in the heavy weight). Keyed by (heavy arm
+# bits, light arm bits) — disjoint, since the foreground wins any side the two share.
+_HEAVY_LIGHT = {
+    (R, U | D): "┝", (U, D | R): "┞", (D, U | R): "┟", (U | D, R): "┠", (U | R, D): "┡", (D | R, U): "┢",
+    (L, U | D): "┥", (U, D | L): "┦", (D, U | L): "┧", (U | D, L): "┨", (U | L, D): "┩", (D | L, U): "┪",
+    (L, D | R): "┭", (R, D | L): "┮", (L | R, D): "┯", (D, L | R): "┰", (D | L, R): "┱", (D | R, L): "┲",
+    (L, U | R): "┵", (R, U | L): "┶", (L | R, U): "┷", (U, L | R): "┸", (U | L, R): "┹", (U | R, L): "┺",
+    (L, U | D | R): "┽", (R, U | D | L): "┾", (L | R, U | D): "┿", (U, D | L | R): "╀", (D, U | L | R): "╁",
+    (U | D, L | R): "╂", (U | L, D | R): "╃", (U | R, D | L): "╄", (D | L, U | R): "╅", (D | R, U | L): "╆",
+    (U | L | R, D): "╇", (D | L | R, U): "╈", (U | D | L, R): "╉", (U | D | R, L): "╊",
+}
 
 # Cursor colours: the whole root→current path lights up in PATH_STYLE, its tip (the current node) in the
 # stronger CURSOR_STYLE; everything else stays dim / in the node's own style.
@@ -101,30 +125,52 @@ class Grid:
         self.bits: list[list[int]] = [[0] * w for _ in range(h)]
         self.over: list[list[tuple[str, str | None] | None]] = [[None] * w for _ in range(h)]
         self.bridge: list[list[str | None]] = [[None] * w for _ in range(h)]   # 'H'→╪ / 'V'→╫ at crossings
+        # The node that owns a cell's vertical lineage — its parent for the upper half of an edge, its child
+        # for the lower half. A vertical/turn meeting a *different* owner here is a crossing, not a junction.
+        self.owner: list[list[Hashable | None]] = [[None] * w for _ in range(h)]
+        self.cross: list[list[tuple[int, int] | None]] = [[None] * w for _ in range(h)]   # (heavy, light) arms
 
     def put(self, r: int, c: int, ch: str, style: str | None = None) -> None:
         """Stamp a character (node / glyph) that overrides any line strokes beneath it."""
         if 0 <= r < self.h and 0 <= c < self.w:
             self.over[r][c] = (ch, style)
 
-    def stroke(self, r: int, c: int, bits: int, hl: bool = False) -> None:
-        """Accumulate edge-line direction bits in a cell (used for turns / single-direction arms)."""
+    def corner(self, r: int, c: int, arms: int, owner: Hashable, hl: bool = False) -> None:
+        """Stamp a turn (e.g. ``U | R`` = └) owned by `owner`. A turn landing on an unrelated edge's *through-
+        vertical* crosses it (heavy/light); a turn meeting another turn is always same-bundle — the track
+        colouring keeps unrelated jogs on separate rows — so those just fuse into a ┬/┴/┼ junction."""
         if 0 <= r < self.h and 0 <= c < self.w:
-            self.bits[r][c] |= bits | (HL if hl else 0)
+            if self.bits[r][c] & PASS_V and self.owner[r][c] is not None and self.owner[r][c] != owner:
+                self._record_cross(r, c, self.bits[r][c] & 0b1111, arms)
+            self.bits[r][c] |= arms | (HL if hl else 0)
+            if self.owner[r][c] is None:
+                self.owner[r][c] = owner
 
-    def cross_v(self, r: int, c: int, hl: bool = False) -> None:
-        """A vertical through-run. If a horizontal run already passed here, this one bridges over it (╫)."""
+    def cross_v(self, r: int, c: int, owner: Hashable, hl: bool = False) -> None:
+        """A vertical through-run owned by `owner`. Over a straight horizontal run it bridges (╫); passing
+        through a turn (or run) that belongs to an unrelated edge it rides heavy-over-light instead."""
         if 0 <= r < self.h and 0 <= c < self.w:
-            if self.bits[r][c] & PASS_H and not self.bits[r][c] & PASS_V:
+            pre = self.bits[r][c] & 0b1111
+            if self.bits[r][c] & PASS_H and not self.bits[r][c] & PASS_V and not _is_corner(pre):
                 self.bridge[r][c] = "V"
+            elif pre and self.owner[r][c] is not None and self.owner[r][c] != owner:
+                self._record_cross(r, c, pre, U | D)
             self.bits[r][c] |= U | D | PASS_V | (HL if hl else 0)
+            if self.owner[r][c] is None:
+                self.owner[r][c] = owner
 
     def cross_h(self, r: int, c: int, hl: bool = False) -> None:
-        """A horizontal through-run. If a vertical run already passed here, this one bridges over it (╪)."""
+        """A horizontal through-run. If a straight vertical already passed here, this one bridges over it (╪).
+        A horizontal only ever meets a turn within its own bundle (a fan-out/fan-in bus), so it never crosses."""
         if 0 <= r < self.h and 0 <= c < self.w:
             if self.bits[r][c] & PASS_V and not self.bits[r][c] & PASS_H:
                 self.bridge[r][c] = "H"
             self.bits[r][c] |= L | R | PASS_H | (HL if hl else 0)
+
+    def _record_cross(self, r: int, c: int, pre: int, fg: int) -> None:
+        """Mark `fg` as the foreground (heavy) arms and everything already in the cell as background (light).
+        A later crossing re-runs this, so the stroke drawn most recently is always the one riding on top."""
+        self.cross[r][c] = (fg, pre & ~fg)
 
     def label(self, r: int, c: int, text: str, style: str | None = None) -> None:
         """Best-effort text: write into truly blank cells only, stop at the first occupied one."""
@@ -141,6 +187,9 @@ class Grid:
             return self.over[r][c]
         b = self.bits[r][c]
         style = PATH_STYLE if b & HL else "dim"        # a stroke on the cursor path lights up
+        if self.cross[r][c] is not None:               # a turn crossed by an unrelated stroke → heavy/light
+            heavy, light = self.cross[r][c]
+            return (_HEAVY_LIGHT.get((heavy, light)) or _GLYPH[(heavy | light) & 0b1111], style)
         if self.bridge[r][c]:
             return ("╪" if self.bridge[r][c] == "H" else "╫", style)
         glyph = b & 0b1111                             # mask off PASS_* / HL tracking bits for the lookup
@@ -525,23 +574,25 @@ def build_layout(nodes: Sequence[GraphNode]) -> Layout:
 # RENDER  ·  Layout -> Grid
 # ======================================================================================================
 
-def _route(grid: Grid, ca: int, ra: int, cb: int, rb: int, corner: int, hl: bool = False) -> None:
-    """Draw one adjacent-rank edge: drop from the parent, jog sideways on its assigned track row
-    (`corner`), drop into the child. Only direction bits are written, so where this edge meets or crosses
-    another, the bitmask composes the right junction (┬/┴) or crossing (┼/bridge) for free at flatten.
-    `hl` marks every cell as part of the cursor path so it renders highlighted."""
-    for r in range(ra + 1, corner):                         # upper vertical, in the parent's column
-        grid.cross_v(r, ca, hl)
-    grid.stroke(corner, ca, U, hl)                          # arrive at the track row from above…
+def _route(grid: Grid, ca: int, ra: int, cb: int, rb: int, jog: int,
+           a: Hashable, b: Hashable, hl: bool = False) -> None:
+    """Draw one adjacent-rank edge from node `a` (column `ca`, row `ra`) to node `b`: drop from the parent,
+    jog sideways on its assigned track row (`jog`), drop into the child. `a` / `b` tag each segment with the
+    node that owns its column, so where this edge crosses an *unrelated* one the grid tells a real junction
+    (┬/┴/┼) from a phantom one and rides the crossing over it. `hl` marks the cells as part of the cursor
+    path so they render highlighted."""
+    for r in range(ra + 1, jog):                            # upper vertical, in the parent's column
+        grid.cross_v(r, ca, a, hl)
     if ca != cb:
         lo, hi = sorted((ca, cb))
         for c in range(lo + 1, hi):                         # the horizontal run between the two columns
-            grid.cross_h(corner, c, hl)
-        grid.stroke(corner, ca, R if cb > ca else L, hl)    # …turn toward the child → └ or ┘
-        grid.stroke(corner, cb, L if cb > ca else R, hl)    # child column: the arm coming from the parent
-    grid.stroke(corner, cb, D, hl)                          # …then leave downward → ┌/┐ (or │ if ca == cb)
-    for r in range(corner + 1, rb):                         # lower vertical, in the child's column
-        grid.cross_v(r, cb, hl)
+            grid.cross_h(jog, c, hl)
+        grid.corner(jog, ca, U | (R if cb > ca else L), a, hl)    # parent column: turn toward the child └/┘
+        grid.corner(jog, cb, (L if cb > ca else R) | D, b, hl)    # child column: the arm from the parent ┌/┐
+    else:
+        grid.corner(jog, ca, U | D, a, hl)                  # straight through (ca == cb): a plain │
+    for r in range(jog + 1, rb):                            # lower vertical, in the child's column
+        grid.cross_v(r, cb, b, hl)
 
 
 def _real_edge(a: Hashable, b: Hashable) -> tuple:
@@ -568,10 +619,11 @@ def render(layout: Layout, nodes: Sequence[GraphNode], cursor: tuple = (), show_
     for edge in layout.edges:
         a, b = edge
         hl = _real_edge(a, b) in path_edges
-        _route(grid, layout.col[a], layout.row(a), layout.col[b], layout.row(b), layout.edge_jog[edge], hl)
+        _route(grid, layout.col[a], layout.row(a), layout.col[b], layout.row(b),
+               layout.edge_jog[edge], a, b, hl)
 
     for v in layout.virtuals:                               # a waypoint's own cell bridges its two segments
-        grid.cross_v(layout.row(v), layout.col[v], v.edge in path_edges)
+        grid.cross_v(layout.row(v), layout.col[v], v, v.edge in path_edges)
 
     for node in nodes:
         r, c = layout.row(node.id), layout.col[node.id]
