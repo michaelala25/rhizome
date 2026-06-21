@@ -8,6 +8,14 @@ keystroke landing mid-read, one timeout instead of several, one place to reason 
 Works only *before* the UI framework starts: Textual spawns a thread that reads stdin for key/mouse
 events and would grab the terminal's replies first. After that the channel is gone — the live cell-size
 path rides Textual's resize events instead (see ``cellsize`` / ``environment.note_resize``).
+
+Inside tmux we query *tmux itself*, not the terminal underneath it. tmux composites our pane — it owns
+the cell grid we draw into and decides whether sixel passes through — so its own DA1/XTWINOPS replies are
+the authoritative answer, and they come back synchronously on the read. The tempting alternative, wrapping
+the queries in tmux's passthrough envelope to ask the outer terminal, is wrong twice over: it asks a layer
+whose "yes, I do sixel" tmux can't honor, and the outer terminal's replies return out-of-band *after*
+tmux's own — landing on stdin once the read has already stopped, where they leak into the app as stray
+input (a stray ``ESC[>…c`` DA2 reply also trips the ``end="c"`` terminator early, which is what races).
 """
 
 import os
@@ -17,8 +25,6 @@ import tty
 from array import array
 from fcntl import ioctl
 from select import select
-
-_IN_TMUX = bool(os.environ.get("TMUX"))
 
 
 def is_terminal() -> bool:
@@ -52,18 +58,6 @@ def tiocgwinsz() -> tuple[int, int, int, int] | None:
         return None
 
 
-def _tmux_wrap(sequence: str) -> str:
-    """Wrap a sequence in tmux's passthrough envelope so it reaches the real terminal underneath.
-
-    Inside tmux, escapes tmux doesn't recognize are swallowed unless wrapped as ``ESC P tmux; … ESC \\``
-    with every embedded ESC doubled. Best-effort: reply routing back through tmux is unreliable for some
-    queries, and tmux sixel itself needs tmux >= 3.4 built ``--enable-sixel``.
-    """
-    if not _IN_TMUX:
-        return sequence
-    return "\x1bPtmux;" + sequence.replace("\x1b", "\x1b\x1b") + "\x1b\\"
-
-
 def exchange(payload: str, *, end: str, timeout: float = 0.5) -> str | None:
     """The library's only raw-mode excursion: write ``payload``, read until ``end`` or a silent ``timeout``.
 
@@ -82,7 +76,7 @@ def exchange(payload: str, *, end: str, timeout: float = 0.5) -> str | None:
     buf = ""
     try:
         tty.setcbreak(fd, termios.TCSANOW)
-        sys.__stdout__.write(_tmux_wrap(payload))
+        sys.__stdout__.write(payload)                  # straight to the terminal — tmux answers for itself
         sys.__stdout__.flush()
         while not buf.endswith(end):
             ready, _, _ = select([fd], [], [], timeout)
@@ -92,5 +86,7 @@ def exchange(payload: str, *, end: str, timeout: float = 0.5) -> str | None:
     except OSError:
         return None
     finally:
-        termios.tcsetattr(fd, termios.TCSANOW, original)
+        # TCSAFLUSH (not TCSANOW): discard anything still unread on restore, so a reply byte we didn't
+        # consume can't survive into the app's stdin as stray input.
+        termios.tcsetattr(fd, termios.TCSAFLUSH, original)
     return buf

@@ -24,8 +24,9 @@ from the app's `on_resize` to keep the cell size live.
 
 **`terminal/`** — the "dance": discovering what the terminal can do, before the UI takes over.
 - **`query.py`** — the substrate. ONE raw-mode excursion (`exchange`: write a payload, read until a
-  terminator or a silent timeout), the `TIOCGWINSZ` ioctl (`tiocgwinsz`), `over_ssh()`, and tmux
-  passthrough. The only place the library touches raw stdin; works only pre-Textual (see the contract).
+  terminator or a silent timeout), the `TIOCGWINSZ` ioctl (`tiocgwinsz`), and `over_ssh()`. Inside tmux it
+  queries tmux directly (no passthrough — tmux answers for the pane it composites; see the file header for
+  why passthrough leaks). The only place the library touches raw stdin; works only pre-Textual (see the contract).
 - **`probe.py`** — the single probe. Sends `16t;14t;18t` + DA1 together and reads until the DA1 reply
   (the "all replies in" sentinel), returning a `TerminalProbe` (cell-size replies + `supports_sixel`).
   One excursion, one timeout, one failure mode (no DA1 reply ⇒ not a responsive graphics terminal);
