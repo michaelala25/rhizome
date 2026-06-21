@@ -10,6 +10,9 @@ from textual.binding import Binding
 
 import rhizome.tui.graphics as graphics
 
+from rhizome.agent_new.checkpointer import AgentCheckpointerService, build_checkpointer
+from rhizome.agent_new.factory import AgentFactoryService
+from rhizome.agent_new.root import build_agent_factory
 from rhizome.config import get_default_db_path
 from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger
@@ -95,6 +98,13 @@ class RhizomeApp(App):
         if api_keys.has("voyage"):
             from rhizome.resources.embeddings import EmbeddingService, VoyageEmbedder
             self.services.register(EmbeddingService, VoyageEmbedder(api_keys))
+        # Agent stack (app-global). The populated factory + the one shared checkpointer live at root and
+        # fall through to each workspace's ``AgentRuntime`` (declared on ``WorkspaceModel``); agent
+        # registration is composition's concern, not a per-workspace one. Both are lazy descriptors, so
+        # nothing builds until a workspace first mints a session — harmless while the legacy chat pane is
+        # still the live surface.
+        self.services.register_descriptor(AgentCheckpointerService, build_checkpointer)
+        self.services.register_descriptor(AgentFactoryService, build_agent_factory)
         # Global command scope. Slash commands split by scope the way options do: the app-root registry
         # holds the workspace-wide commands (tab management + quit), and each conversation parents a
         # session registry to it. These handlers are the composition root's to own -- they reach the App
