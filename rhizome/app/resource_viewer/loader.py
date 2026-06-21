@@ -40,22 +40,24 @@ Cursor & embedding
 ------------------
 The cursor lives in the view; this VM mirrors only the highlighted *node* (pushed via
 :meth:`set_cursor`, emitting ``Callbacks.OnCursorChanged``) so the orchestrator can feed the preview without
-poking the widget. Embedding runs off the injected worker scheduler (see
-:meth:`set_worker_scheduler`): the VM owns the orchestration coroutine, the view supplies Textual's
-``run_worker`` so the worker's lifecycle binds to the widget.
+poking the widget. Embedding runs off the scope's ``WorkerSchedulerService``: this VM owns a child
+scope (registered in ``__init__``) holding the service; the presenting tree view binds Textual's
+``run_worker`` on mount so the worker's lifecycle tracks the widget, and the VM schedules through
+``_schedule_worker`` (falling back to ``asyncio.create_task`` when nothing is bound).
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine
+from typing import Any, Coroutine
 
 from rhizome.app.query_backed_model import QueryBackedViewModel
-from rhizome.db import Resource
+from rhizome.db import Resource, SessionFactoryService
 from rhizome.db.models import LoadingPreference, ResourceSection
 from rhizome.db.operations import list_resources_for_topic
 from rhizome.resources import ResourceLoadType, ResourceManager, ResourceTreeNodeKey
+from rhizome.utils.services import ServiceAccessor
+from rhizome.utils.workers import WorkerSchedulerService
 
 # A tree node is either a whole resource (root) or one of its sections (descendant).
 ResourceTreeNodeData = Resource | ResourceSection
@@ -194,9 +196,14 @@ class ResourceLoaderModel(QueryBackedViewModel):
     # tokens are context-stuffed, larger ones are indexed.
     AUTO_INDEX_TOKEN_THRESHOLD = 10_000
 
-    def __init__(self, session_factory: Any, manager: ResourceManager) -> None:
+    def __init__(self, services: ServiceAccessor, manager: ResourceManager) -> None:
         super().__init__()
-        self._session_factory = session_factory
+        # Scheduler scope owner (embedding workers): open a child scope and register a
+        # WorkerSchedulerService the presenting tree view binds ``run_worker`` into; fall through to
+        # root for the session factory.
+        self._services = services.child("resource_loader")
+        self._services.register(WorkerSchedulerService, WorkerSchedulerService())
+        self._session_factory = self._services.get(SessionFactoryService)
         self._manager = manager
 
         self.make_callback_groups({self.Callbacks.OnCursorChanged: None})
@@ -217,10 +224,6 @@ class ResourceLoaderModel(QueryBackedViewModel):
 
         # Mirror of the view's highlighted node. The cursor's source of truth is the widget.
         self._cursor_target: ResourceTreeNodeData | None = None
-
-        # Scheduler hook for embedding workers. The view overrides this on mount with Textual's
-        # ``run_worker``; the default keeps headless / test callers working.
-        self._schedule_worker: Callable[[Coroutine[Any, Any, Any]], object] = asyncio.create_task
 
     # ------------------------------------------------------------------
     # Read-only view-side accessors
@@ -293,13 +296,19 @@ class ResourceLoaderModel(QueryBackedViewModel):
         )
 
     # ------------------------------------------------------------------
-    # Worker injection
+    # Worker scheduling
     # ------------------------------------------------------------------
 
-    def set_worker_scheduler(self, scheduler: Callable[[Coroutine[Any, Any, Any]], object]) -> None:
-        """Inject the coroutine scheduler used for embedding workers. Called by the view on mount
-        with Textual's ``run_worker``; tests / headless callers keep the ``asyncio`` default."""
-        self._schedule_worker = scheduler
+    @property
+    def services(self) -> ServiceAccessor:
+        """This loader's service scope (a child of the parent accessor). The presenting tree view
+        resolves the ``WorkerSchedulerService`` from here to bind its ``run_worker``."""
+        return self._services
+
+    def _schedule_worker(self, work: Coroutine[Any, Any, Any]) -> object:
+        """Spawn an embedding worker via this scope's ``WorkerSchedulerService`` -- the tree view binds
+        ``run_worker`` on mount (lifetime tracks the widget); headless falls back to ``create_task``."""
+        return self._services.get(WorkerSchedulerService).get_scheduler()(work)
 
     # ------------------------------------------------------------------
     # Topic scope / fetch

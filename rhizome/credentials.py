@@ -4,12 +4,14 @@ import json
 import os
 import stat
 from pathlib import Path
+from typing import Protocol
 
 from rhizome.config import get_config_dir
 
 _ENV_VARS = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "voyage": "VOYAGE_API_KEY",
 }
 
 
@@ -62,3 +64,40 @@ def delete_api_key(provider: str) -> None:
 def has_api_key(provider: str = "anthropic") -> bool:
     """Return whether an API key is available for *provider*."""
     return get_api_key(provider) is not None
+
+
+# ---------------------------------------------------------------------------
+# APIKeyService (DI handle)
+# ---------------------------------------------------------------------------
+
+
+class APIKeyService(Protocol):
+    """Injected, read-only resolver for provider API keys (env var → credentials file).
+
+    Consumers depend on this rather than calling module-level ``get_api_key`` so key resolution is a
+    single swappable seam — a fake store in tests, a different backend later. Mutation
+    (``store_api_key`` / ``delete_api_key``) stays as module functions: writing a key is a one-shot
+    admin action (the setup wizard), not something injected consumers need.
+    """
+
+    def get(self, provider: str) -> str | None: ...
+    def require(self, provider: str) -> str: ...
+    def has(self, provider: str) -> bool: ...
+
+
+class CredentialsAPIKeyService:
+    """Production ``APIKeyService`` backed by this module's env→file resolution. Stateless: it reads
+    on demand, so a key rotated in the environment or file is picked up without reconstruction."""
+
+    def get(self, provider: str) -> str | None:
+        return get_api_key(provider)
+
+    def has(self, provider: str) -> bool:
+        return has_api_key(provider)
+
+    def require(self, provider: str) -> str:
+        key = get_api_key(provider)
+        if not key:
+            env_var = _ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+            raise RuntimeError(f"No API key found for {provider!r}. Set {env_var} or run the setup wizard.")
+        return key

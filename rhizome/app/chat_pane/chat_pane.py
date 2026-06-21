@@ -16,8 +16,9 @@ composed alongside the conversation.
 
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
-
+from rhizome.db import SessionFactoryService
+from rhizome.utils.services import ServiceAccessor
+from rhizome.resources.embeddings import EmbeddingService
 from rhizome.resources.manager import ResourceManager
 from rhizome.app.model import ViewModelBase
 from rhizome.app.resource_viewer import ResourceViewerModel
@@ -30,33 +31,35 @@ class ChatPaneModel(ViewModelBase):
 
     def __init__(
         self,
-        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        services: ServiceAccessor,
         *,
         show_welcome: bool = False,
     ) -> None:
         super().__init__()
 
-        self._session_factory = session_factory
+        # The accessor is the spine's currency: stored and passed to the child VMs, which open their
+        # own child scopes as needed. SessionFactoryService is required -- a missing registration is a
+        # wiring bug, not a headless mode -- so resolve it with get().
+        self._services = services
+        self._session_factory = services.get(SessionFactoryService)
 
         # Shared resource substrate: the agent (inside the conversation) and the side-panel resource
         # viewer both read/write the same ``ResourceManager``, so it's owned here and injected down.
-        # ``None`` without a session (test / headless).
-        self.resource_manager: ResourceManager | None = (
-            ResourceManager(session_factory=session_factory) if session_factory else None
+        self.resource_manager: ResourceManager = ResourceManager(
+            session_factory=self._session_factory,
+            embedding_service=self._services.try_get(EmbeddingService),
         )
 
         # Side-panel resource viewer. Owned here (not by the view) so its load/link/cursor state
         # survives toggling the panel open and closed — the view mounts/unmounts the widget against
-        # this persistent VM. ``None`` without a session, mirroring ``resource_manager``.
-        self.resource_viewer: ResourceViewerModel | None = (
-            ResourceViewerModel(session_factory, manager=self.resource_manager)
-            if session_factory
-            else None
+        # this persistent VM.
+        self.resource_viewer: ResourceViewerModel = ResourceViewerModel(
+            self._services, manager=self.resource_manager
         )
 
         # The conversation itself. Gets the shared manager so agent-loaded resources reach the panel.
         self.conversation_area = ConversationAreaModel(
-            session_factory,
+            self._services,
             resource_manager=self.resource_manager,
             show_welcome=show_welcome,
         )

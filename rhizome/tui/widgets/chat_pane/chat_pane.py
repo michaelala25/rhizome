@@ -61,8 +61,8 @@ class ChatPane(ViewBase[ChatPaneModel]):
     }
     """
 
-    def __init__(self, *, session_factory=None, show_welcome: bool = False, **kwargs) -> None:
-        super().__init__(ChatPaneModel(session_factory=session_factory, show_welcome=show_welcome), **kwargs)
+    def __init__(self, *, services, show_welcome: bool = False, **kwargs) -> None:
+        super().__init__(ChatPaneModel(services, show_welcome=show_welcome), **kwargs)
 
     def compose(self) -> ComposeResult:
         yield ConversationArea(self._vm.conversation_area, id="conversation-area")

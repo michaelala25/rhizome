@@ -49,7 +49,7 @@ from rhizome.resources.context_message import (
     build_resource_context_message,
     resource_context_message_id,
 )
-from rhizome.resources.embeddings import compute_embeddings, has_embeddings
+from rhizome.resources.embeddings import EmbeddingService, compute_embeddings, has_embeddings
 from rhizome.resources.vector_store import ChunkMeta, ResourceVectorStore
 
 _log = get_logger("resources.manager")
@@ -94,8 +94,11 @@ def _fmt_state(state: dict[ResourceTreeNodeKey, ResourceLoadType]) -> str:
 class ResourceManager:
     """Tracks MDL load state and produces context-stuffing messages."""
 
-    def __init__(self, session_factory=None) -> None:
+    def __init__(self, session_factory=None, embedding_service: EmbeddingService | None = None) -> None:
         self._session_factory = session_factory
+        # Optional: None when no embedding provider is configured. Resolved-and-passed by the owning
+        # VM (like ``session_factory``); embedding paths degrade to a no-op when it's absent.
+        self._embedding_service = embedding_service
 
         self._current: dict[ResourceTreeNodeKey, ResourceLoadType] = {}
         self._next: dict[ResourceTreeNodeKey, ResourceLoadType] = {}
@@ -136,11 +139,16 @@ class ResourceManager:
         """Check for embeddings and compute them if missing.
 
         Returns ``True`` on success (embeddings now exist), ``False`` on
-        failure (API error, missing raw_text, etc.).
+        failure (API error, missing raw_text, etc.) or when no embedding
+        service is configured.
 
         The caller is responsible for running this as an async task or
         Textual worker.
         """
+        if self._embedding_service is None:
+            _log.info("No embedding service configured; skipping embeddings for resource %d", resource_id)
+            return False
+
         self._embedding_in_progress.add(resource_id)
         try:
             if await has_embeddings(self._session_factory, resource_id):
@@ -148,7 +156,7 @@ class ResourceManager:
                 return True
 
             _log.info("Computing embeddings for resource %d ...", resource_id)
-            await compute_embeddings(self._session_factory, resource_id)
+            await compute_embeddings(self._session_factory, resource_id, self._embedding_service)
             _log.info("Embeddings complete for resource %d", resource_id)
             return True
         except Exception:
@@ -156,6 +164,16 @@ class ResourceManager:
             return False
         finally:
             self._embedding_in_progress.discard(resource_id)
+
+    async def embed_query(self, text: str) -> list[float] | None:
+        """Embed a single query string for vector-store search, or ``None`` when no embedding service
+        is configured. Raises on embedding failure (the caller reports it). The ``query_resources``
+        tool uses this so it doesn't take its own embedding dependency.
+        """
+        if self._embedding_service is None:
+            return None
+        vecs = await self._embedding_service.embed([text])
+        return vecs[0] if vecs else None
 
     # ------------------------------------------------------------------
     # Consumption (called by AgentSession.stream)

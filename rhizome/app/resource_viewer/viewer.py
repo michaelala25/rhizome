@@ -18,6 +18,9 @@ from typing import TYPE_CHECKING, Any
 
 from rhizome.app.model import ViewModelBase
 from rhizome.resources import ResourceManager
+from rhizome.resources.embeddings import EmbeddingService
+from rhizome.db import SessionFactoryService
+from rhizome.utils.services import ServiceAccessor
 
 from .linker import ResourceLinkerModel
 from .loader import ResourceLoaderModel
@@ -40,17 +43,23 @@ def _fmt_tokens(n: int | None) -> str:
 class ResourceViewerModel(ViewModelBase):
     """Root VM. Owns the manager + child VMs and fans out topic changes. See module docstring."""
 
-    def __init__(self, session_factory: Any, manager: ResourceManager | None = None) -> None:
+    def __init__(self, services: ServiceAccessor, manager: ResourceManager | None = None) -> None:
         super().__init__()
-        self._session_factory = session_factory
-        self._manager = manager or ResourceManager(session_factory=session_factory)
+        self._services = services
+        self._session_factory = services.get(SessionFactoryService)
+        self._manager = manager or ResourceManager(
+            session_factory=self._session_factory,
+            embedding_service=services.try_get(EmbeddingService),
+        )
 
         self._current_topic_id: int | None = None
         # Display-only label for the active topic — children scope by id, but the view shows the name.
         self._current_topic_name: str | None = None
 
-        self._loader = ResourceLoaderModel(session_factory, self._manager)
-        self._linker = ResourceLinkerModel(session_factory)
+        # The loader is a scope owner (it spawns embedding workers), so it gets the accessor; the
+        # linker only queries, so it takes the resolved factory raw.
+        self._loader = ResourceLoaderModel(services, self._manager)
+        self._linker = ResourceLinkerModel(self._session_factory)
 
         # Cross-child coupling: a committed link change reshapes the loader's resource set.
         self._linker.subscribe(self._linker.Callbacks.OnLinkChanged, self._on_link_changed)

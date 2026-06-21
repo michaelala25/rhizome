@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import struct
+from typing import Protocol
 
 import httpx
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from rhizome.credentials import APIKeyService
 from rhizome.db.operations import add_chunks, get_resource, link_chunks_to_sections
 from rhizome.logs import get_logger
 
@@ -43,9 +44,9 @@ def chunk_text(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Embeddings (VoyageAI via REST)
+# Embedding service (VoyageAI via REST)
 #
-# We call the Voyage API directly instead of using the `voyageai` Python SDK
+# We call the Voyage REST endpoint directly instead of the `voyageai` Python SDK
 # because the SDK (v0.3.7) crashes on import with our Pydantic 2.x setup.
 # The issue is in voyageai/object/multimodal_embeddings.py: a Pydantic v1
 # compat-layer model uses Field(..., min_items=1), which raises ValueError
@@ -54,39 +55,73 @@ def chunk_text(text: str) -> list[dict]:
 # (Encountered 2026-03-27)
 # ---------------------------------------------------------------------------
 
-def get_voyage_api_key() -> str:
-    """Return the Voyage API key from the environment, or raise RuntimeError."""
-    key = os.environ.get("VOYAGE_API_KEY", "")
-    if not key:
-        raise RuntimeError(
-            "VOYAGE_API_KEY environment variable is required for embeddings. "
-            "Set it and try again."
-        )
-    return key
+
+class EmbeddingService(Protocol):
+    """Text → vectors: the injectable embedding capability, one implementation per provider.
+
+    ``embed`` takes any number of texts and batches internally; ``dimension`` is the length of each
+    returned vector (the vector store validates chunk embeddings against it). Registered only when a
+    provider is configured, so consumers resolve it with ``ServiceAccessor.try_get`` and degrade when
+    it is ``None`` — embedding is an optional feature.
+    """
+
+    @property
+    def dimension(self) -> int: ...
+
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
-async def embed_batch(texts: list[str], api_key: str, model: str = "voyage-3.5") -> list[list[float]]:
-    """Embed a batch of texts via Voyage REST API with retry."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        for attempt in range(5):
-            resp = await client.post(
-                "https://api.voyageai.com/v1/embeddings",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={"input": texts, "model": model},
-            )
-            if resp.status_code == 429:
-                wait = min(2 ** attempt, 16)
-                await asyncio.sleep(wait)
-                continue
+class VoyageEmbedder:
+    """``EmbeddingService`` backed by the Voyage REST API.
+
+    Holds an injected ``APIKeyService`` and resolves the ``voyage`` key per call, so a rotated key is
+    picked up without reconstruction. ``embed`` batches in groups of 128 and retries on 429 with
+    capped exponential backoff.
+    """
+
+    _MODEL_DIMS = {"voyage-3.5": 1024}
+    _BATCH = 128
+
+    def __init__(self, api_keys: APIKeyService, *, model: str = "voyage-3.5") -> None:
+        if model not in self._MODEL_DIMS:
+            raise ValueError(f"Unknown Voyage model {model!r}; known: {sorted(self._MODEL_DIMS)}")
+        self._api_keys = api_keys
+        self._model = model
+
+    @property
+    def dimension(self) -> int:
+        return self._MODEL_DIMS[self._model]
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        api_key = self._api_keys.require("voyage")
+        out: list[list[float]] = []
+        for i in range(0, len(texts), self._BATCH):
+            out.extend(await self._embed_batch(texts[i:i + self._BATCH], api_key))
+        return out
+
+    async def _embed_batch(self, texts: list[str], api_key: str) -> list[list[float]]:
+        """One REST call for a single ≤128 batch, retrying on 429 with capped backoff."""
+        async with httpx.AsyncClient(timeout=60) as client:
+            for attempt in range(5):
+                resp = await client.post(
+                    "https://api.voyageai.com/v1/embeddings",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"input": texts, "model": self._model},
+                )
+                if resp.status_code == 429:
+                    await asyncio.sleep(min(2 ** attempt, 16))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()["data"]
+                data.sort(key=lambda x: x["index"])
+                return [d["embedding"] for d in data]
             resp.raise_for_status()
-            data = resp.json()["data"]
-            data.sort(key=lambda x: x["index"])
-            return [d["embedding"] for d in data]
-        resp.raise_for_status()
-        return []  # unreachable, but satisfies type checker
+            return []  # unreachable, but satisfies the type checker
 
 
 def floats_to_bytes(floats: list[float]) -> bytes:
@@ -94,14 +129,11 @@ def floats_to_bytes(floats: list[float]) -> bytes:
     return struct.pack(f"{len(floats)}f", *floats)
 
 
-async def embed_chunks(raw_text: str, chunks: list[dict], api_key: str) -> list[dict]:
-    """Add embedding bytes to each chunk dict. Batches in groups of 128."""
+async def embed_chunks(raw_text: str, chunks: list[dict], embedder: EmbeddingService) -> list[dict]:
+    """Attach embedding bytes to each chunk dict, embedding the chunk slices via *embedder*."""
     texts = [raw_text[c["start_offset"]:c["end_offset"]] for c in chunks]
-    all_embeddings: list[list[float]] = []
-    for i in range(0, len(texts), 128):
-        batch = texts[i:i + 128]
-        all_embeddings.extend(await embed_batch(batch, api_key))
-    for chunk, emb in zip(chunks, all_embeddings):
+    embeddings = await embedder.embed(texts)
+    for chunk, emb in zip(chunks, embeddings):
         chunk["embedding"] = floats_to_bytes(emb)
     return chunks
 
@@ -119,17 +151,15 @@ async def has_embeddings(session_factory, resource_id: int) -> bool:
         return any(c.embedding is not None for c in resource.chunks)
 
 
-async def compute_embeddings(session_factory, resource_id: int) -> None:
-    """Chunk and embed a resource, storing results in the DB.
+async def compute_embeddings(session_factory, resource_id: int, embedder: EmbeddingService) -> None:
+    """Chunk and embed a resource via *embedder*, storing results in the DB.
 
     Handles two cases:
         - No chunks exist yet: creates chunks from raw_text and embeds them.
         - Chunks exist but lack embeddings: computes and attaches embeddings.
 
-    Raises on failure (missing API key, API errors, missing raw_text, etc.).
+    Raises on failure (API errors, missing raw_text, etc.).
     """
-    api_key = get_voyage_api_key()
-
     async with session_factory() as session:
         resource = await get_resource(session, resource_id)
         if resource is None:
@@ -151,7 +181,7 @@ async def compute_embeddings(session_factory, resource_id: int) -> None:
             }
             for c in existing_chunks
         ]
-        chunk_dicts = await embed_chunks(raw_text, chunk_dicts, api_key)
+        chunk_dicts = await embed_chunks(raw_text, chunk_dicts, embedder)
 
         # Update existing chunk rows with embeddings.
         async with session_factory() as session:
@@ -164,7 +194,7 @@ async def compute_embeddings(session_factory, resource_id: int) -> None:
     else:
         # No chunks at all — create from scratch.
         chunk_dicts = chunk_text(raw_text)
-        chunk_dicts = await embed_chunks(raw_text, chunk_dicts, api_key)
+        chunk_dicts = await embed_chunks(raw_text, chunk_dicts, embedder)
 
         async with session_factory() as session:
             await add_chunks(session, resource_id, chunk_dicts)

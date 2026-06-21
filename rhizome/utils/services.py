@@ -9,10 +9,11 @@ function of its dependencies -- it never sees the container.
         def __init__(
             self,
             *,
-            checkpointer: CheckpointerService,           # STRONG   -> resolved instance, cycle-checked
-            factory:      Handle[AgentFactoryService],   # WEAK     -> lazy handle, not cycle-checked
+            checkpointer: CheckpointerService,           # STRONG    -> resolved instance, cycle-checked
+            factory:      Handle[AgentFactoryService],   # WEAK      -> lazy handle, not cycle-checked
             options:      OptionService,                 # STRONG
-            accessor:     ServiceAccessor,               # LOCATOR  -> the scoped accessor itself
+            accessor:     ServiceAccessor,               # LOCATOR   -> the scoped accessor itself
+            meta:         ServiceMeta,                   # SELF-META -> this service's own provenance
         ): ...
 
     services.register_descriptor(AgentRuntimeService, AgentRuntime)   # deps inferred from __init__
@@ -26,6 +27,9 @@ Edge kinds, read straight off each parameter's annotation:
                              lets two services hold mutual references.
     ServiceAccessor          LOCATOR: injects the scoped accessor itself (durable, chain-free, safe to
                              store) for factory/composition services whose edges are emergent.
+    ServiceMeta              SELF-META: injects this service's own ``ServiceMeta`` (registration scope,
+                             declaration source, dependency summary) -- provenance for logging, with no
+                             base type and no instance mutation.
 
 Injection rule: a parameter with NO default is a dependency, and its annotation must be a real (not
 stringized) type -- so a participating factory's module must avoid ``from __future__ import
@@ -34,8 +38,14 @@ mapping (parameter name -> requirement) overrides inference per parameter: the e
 keys, or for injecting a defaulted parameter.
 
 Scope model: a descriptor resolves once per scope that owns it, and the instance is cached there.
-``.child()`` scopes fall through to the parent for keys they don't register, and a service always
+``.child(name)`` scopes fall through to the parent for keys they don't register, and a service always
 resolves its own dependencies from the scope it was registered in.
+
+Provenance: each scope carries a descriptive ``name``; ``path`` joins them from the root
+(``root -> conversation``) for logs and error messages -- it is never a resolution key (there is no
+get-by-name). Every registration captures a ``ServiceMeta`` (scope, declaration source, dependency
+summary), readable via ``describe(key)`` or injected into a service as its own provenance through a
+``ServiceMeta`` parameter.
 
 ``inject(fn)`` applies the same annotation-driven resolution to an arbitrary callable -- it curries the
 parameters that name a service and leaves the rest open, the basis for building services (all
@@ -77,6 +87,8 @@ class Handle(Generic[T]):
         return self._accessor.get(self._key)
 
     def __repr__(self) -> str:
+        if self._accessor is not None:
+            return f"Handle({self._key!r} @ {self._accessor.path})"
         return f"Handle({self._key!r})"
 
 
@@ -84,15 +96,34 @@ class Handle(Generic[T]):
 # Dependency model
 # --------------------------------------------------------------------------- #
 
-_STRONG, _WEAK, _ACCESSOR = "strong", "weak", "accessor"
+_STRONG, _WEAK, _ACCESSOR, _SELF_META = "strong", "weak", "accessor", "self_meta"
 
 
 class _Dep(NamedTuple):
-    kind: str       # _STRONG | _WEAK | _ACCESSOR
-    key: Hashable   # the service key (None for _ACCESSOR)
+    kind: str       # _STRONG | _WEAK | _ACCESSOR | _SELF_META
+    key: Hashable   # the service key (None for _ACCESSOR / _SELF_META)
 
 
 Requirement = Union[Hashable, "Handle"]
+
+
+class ServiceMeta(NamedTuple):
+    """
+    Provenance for one registration: descriptive, immutable, and never an identity key. Reachable three
+    ways -- ``accessor.describe(key)`` (introspection), a ``ServiceAccessor`` locator param then
+    ``describe`` (a dependency's provenance), or a ``ServiceMeta`` param (this service's own).
+    """
+
+    key:        Hashable
+    scope_name: str
+    scope_path: str
+    source:     str             # "<qualname> @ <module>" of the factory (or the instance's type)
+    kind:       str             # "descriptor" | "instance"
+    strong:     tuple = ()      # STRONG dependency keys (descriptors only)
+    weak:       tuple = ()      # WEAK (Handle) dependency keys (descriptors only)
+
+    def __repr__(self) -> str:
+        return f"ServiceMeta({_name(self.key)} @ {self.scope_path} <- {self.source})"
 
 
 def _classify_annotation(ann: Any) -> _Dep:
@@ -104,6 +135,8 @@ def _classify_annotation(ann: Any) -> _Dep:
         return _Dep(_WEAK, key)
     if ann is ServiceAccessor:
         return _Dep(_ACCESSOR, None)
+    if ann is ServiceMeta:
+        return _Dep(_SELF_META, None)
     return _Dep(_STRONG, ann)
 
 
@@ -111,6 +144,8 @@ def _classify_requirement(req: Requirement) -> _Dep:
     """Map an explicit ``requires`` entry onto a dependency edge."""
     if req is ServiceAccessor:
         return _Dep(_ACCESSOR, None)
+    if req is ServiceMeta:
+        return _Dep(_SELF_META, None)
     if isinstance(req, Handle):
         return _Dep(_WEAK, req.key)
     if get_origin(req) is Handle:
@@ -175,7 +210,22 @@ class ServiceError(Exception):
 
 
 class ServiceNotFoundError(ServiceError, KeyError):
-    pass
+    """
+    No scope in the chain registers a key. Carries the originating scope ``path`` and the in-flight
+    resolution chain (who needed it) so the message localizes the failure.
+    """
+
+    def __init__(self, key: Hashable, *, scope: Optional[str] = None, chain: tuple = ()) -> None:
+        self.key = key
+        self.scope = scope
+        self.chain = tuple(chain)
+        message = _name(key)
+        if scope is not None:
+            detail = f"searched from {scope}"
+            if self.chain:
+                detail += f", needed by {' -> '.join(_name(k) for k in self.chain)}"
+            message += f" ({detail})"
+        super().__init__(message)
 
 
 class DuplicateRegistrationError(ServiceError, KeyError):
@@ -183,9 +233,13 @@ class DuplicateRegistrationError(ServiceError, KeyError):
 
 
 class CyclicalServiceDependencyError(ServiceError):
-    def __init__(self, chain: tuple) -> None:
+    def __init__(self, chain: tuple, *, scope: Optional[str] = None) -> None:
         self.chain = tuple(chain)
-        super().__init__("Dependency cycle detected: " + " -> ".join(_name(k) for k in self.chain))
+        self.scope = scope
+        message = "Dependency cycle detected: " + " -> ".join(_name(k) for k in self.chain)
+        if scope is not None:
+            message += f" (resolving from {scope})"
+        super().__init__(message)
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +249,7 @@ class CyclicalServiceDependencyError(ServiceError):
 class ServiceDescriptor:
     """A factory together with its resolved dependency map, computed once at registration."""
 
-    __slots__ = ("factory", "deps", "strong_deps", "weak_deps", "wants_accessor")
+    __slots__ = ("factory", "deps", "strong_deps", "weak_deps", "wants_accessor", "wants_meta")
 
     def __init__(self, factory: Any, requires: Optional[dict[str, Requirement]] = None) -> None:
         self.factory = factory
@@ -203,6 +257,7 @@ class ServiceDescriptor:
         self.strong_deps = tuple(d.key for d in self.deps.values() if d.kind is _STRONG)
         self.weak_deps = tuple(d.key for d in self.deps.values() if d.kind is _WEAK)
         self.wants_accessor = any(d.kind is _ACCESSOR for d in self.deps.values())
+        self.wants_meta = any(d.kind is _SELF_META for d in self.deps.values())
 
     def __repr__(self) -> str:
         return (
@@ -217,15 +272,36 @@ class ServiceDescriptor:
 
 class ServiceAccessor:
     """
-    A scoped DI container. Create children with ``.child()``; resolution falls through to the parent
+    A scoped DI container. Create children with ``.child(name)``; resolution falls through to the parent
     when a key is not registered locally. A descriptor is invoked once per scope that owns it, and the
     instance is cached in that scope.
+
+    Each scope carries a descriptive ``name`` (``path`` joins them from the root). The name is for logs
+    and error messages only -- it is never a resolution key, and there is deliberately no get-by-name.
     """
 
-    def __init__(self, parent: Optional["ServiceAccessor"] = None) -> None:
+    def __init__(self, name: str = "root", parent: Optional["ServiceAccessor"] = None) -> None:
+        self._name = name
         self._parent = parent
         self._descriptors: dict[Hashable, ServiceDescriptor] = {}
         self._instances: dict[Hashable, Any] = {}
+        self._meta: dict[Hashable, ServiceMeta] = {}
+
+    # ----- identity -------------------------------------------------------- #
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def path(self) -> str:
+        """Descriptive scope path from the root (``root -> conversation``). Never a resolution key."""
+        names: list[str] = []
+        node: Optional[ServiceAccessor] = self
+        while node is not None:
+            names.append(node._name)
+            node = node._parent
+        return " -> ".join(reversed(names))
 
     # ----- registration ---------------------------------------------------- #
 
@@ -233,6 +309,7 @@ class ServiceAccessor:
         """Register a ready-made instance at this scope."""
         self._guard_unregistered(key)
         self._instances[key] = value
+        self._meta[key] = self._make_meta(key, _source(type(value)), "instance")
         return self
 
     def register_descriptor(
@@ -256,43 +333,78 @@ class ServiceAccessor:
         factory = descriptor if descriptor is not None else key
         if not callable(factory):
             raise TypeError("register_descriptor needs a callable factory (pass one, or use a callable key).")
-        self._descriptors[key] = ServiceDescriptor(factory, requires)
+        desc = ServiceDescriptor(factory, requires)
+        self._descriptors[key] = desc
+        self._meta[key] = self._make_meta(
+            key, _source(factory), "descriptor", strong=desc.strong_deps, weak=desc.weak_deps
+        )
         return self
+
+    def _make_meta(
+        self, key: Hashable, source: str, kind: str, *, strong: tuple = (), weak: tuple = ()
+    ) -> ServiceMeta:
+        return ServiceMeta(
+            key=key, scope_name=self._name, scope_path=self.path, source=source, kind=kind,
+            strong=strong, weak=weak,
+        )
 
     def _guard_unregistered(self, key: Hashable) -> None:
         if key in self._descriptors or key in self._instances:
-            raise DuplicateRegistrationError(f"{_name(key)} is already registered in this scope.")
+            raise DuplicateRegistrationError(f"{_name(key)} is already registered in scope {self.path}.")
 
     # ----- resolution ------------------------------------------------------ #
 
     def get(self, key: Hashable) -> Any:
         """Resolve a service, starting a fresh resolution chain."""
-        return self._get(key, ())
+        return self._get(key, (), self)
 
-    def _get(self, key: Hashable, _resolving: tuple) -> Any:
+    def try_get(self, key: Hashable, default: Any = None) -> Any:
+        """Resolve a service, or return ``default`` when no scope in the chain registers ``key``.
+
+        Only an absent *top-level* registration falls back to ``default``. A registered service whose
+        own dependency is missing (or whose graph is cyclic) still raises -- this is "maybe absent",
+        not "swallow every resolution error". The headless / no-DB path relies on this: a scope with
+        no ``SessionFactoryService`` resolves to ``None`` instead of blowing up.
+        """
+        return self._get(key, (), self) if key in self else default
+
+    def __contains__(self, key: Hashable) -> bool:
+        """True when ``key`` is registered in this scope or any ancestor (instance or descriptor)."""
+        node: Optional[ServiceAccessor] = self
+        while node is not None:
+            if key in node._instances or key in node._descriptors:
+                return True
+            node = node._parent
+        return False
+
+    def _get(self, key: Hashable, _resolving: tuple, _origin: "ServiceAccessor") -> Any:
         if key in self._instances:
             return self._instances[key]
 
         descriptor = self._descriptors.get(key)
         if descriptor is None:
             # Fall through to the parent, carrying the live chain so cross-scope construction still
-            # detects cycles.
+            # detects cycles, and the origin scope so a miss reports where the search began.
             if self._parent is None:
-                raise ServiceNotFoundError(_name(key))
-            return self._parent._get(key, _resolving)
+                raise ServiceNotFoundError(key, scope=_origin.path, chain=_resolving)
+            return self._parent._get(key, _resolving, _origin)
 
         if key in _resolving:
-            raise CyclicalServiceDependencyError((*_resolving, key))
+            raise CyclicalServiceDependencyError((*_resolving, key), scope=self.path)
 
         chain = (*_resolving, key)
         kwargs: dict[str, Any] = {}
         for pname, dep in descriptor.deps.items():
             if dep.kind is _STRONG:
-                kwargs[pname] = self._get(dep.key, chain)
+                # A service resolves its own dependencies from the scope it was registered in: this
+                # scope becomes the origin for the sub-resolution.
+                kwargs[pname] = self._get(dep.key, chain, self)
             elif dep.kind is _WEAK:
                 kwargs[pname] = Handle(dep.key, self)
-            else:  # _ACCESSOR
+            elif dep.kind is _ACCESSOR:
                 kwargs[pname] = self
+            else:  # _SELF_META
+                kwargs[pname] = self._meta[key]
 
         instance = descriptor.factory(**kwargs)
         self._instances[key] = instance
@@ -301,6 +413,19 @@ class ServiceAccessor:
     def handle(self, key: Hashable) -> Handle:
         """A bound handle for deferred resolution from this scope."""
         return Handle(key, self)
+
+    def describe(self, key: Hashable) -> ServiceMeta:
+        """
+        The ``ServiceMeta`` for ``key`` from the nearest scope that registers it -- the introspection
+        read-path. Resolution still goes through ``get``; this only reports provenance.
+        """
+        node: Optional[ServiceAccessor] = self
+        while node is not None:
+            meta = node._meta.get(key)
+            if meta is not None:
+                return meta
+            node = node._parent
+        raise ServiceNotFoundError(key, scope=self.path)
 
     def inject(self, fn: Callable) -> Callable:
         """
@@ -331,23 +456,15 @@ class ServiceAccessor:
                 bound[name] = self
             elif dep.kind is _WEAK:
                 bound[name] = Handle(dep.key, self)
-            elif self._resolvable(dep.key):
-                bound[name] = self._get(dep.key, ())
-            # else: annotation is not a registered service -> leave the parameter open
+            elif dep.key in self:
+                bound[name] = self._get(dep.key, (), self)
+            # else: not a resolvable service (incl. self-meta) -> leave the parameter open
         return functools.partial(fn, **bound)
-
-    def _resolvable(self, key: Hashable) -> bool:
-        node: Optional["ServiceAccessor"] = self
-        while node is not None:
-            if key in node._instances or key in node._descriptors:
-                return True
-            node = node._parent
-        return False
 
     # ----- scoping --------------------------------------------------------- #
 
-    def child(self) -> "ServiceAccessor":
-        return ServiceAccessor(parent=self)
+    def child(self, name: str) -> "ServiceAccessor":
+        return ServiceAccessor(name, parent=self)
 
     # ----- static validation ---------------------------------------------- #
 
@@ -401,13 +518,8 @@ class ServiceAccessor:
         return merged
 
     def __repr__(self) -> str:
-        depth = 0
-        node = self._parent
-        while node is not None:
-            depth += 1
-            node = node._parent
         return (
-            f"<ServiceAccessor depth={depth} "
+            f"<ServiceAccessor {self.path!r} "
             f"descriptors={list(map(_name, self._descriptors))} "
             f"instances={list(map(_name, self._instances))}>"
         )
@@ -421,3 +533,10 @@ def _name(key: Any) -> str:
     if isinstance(key, type):
         return key.__name__
     return key if isinstance(key, str) else repr(key)
+
+
+def _source(obj: Any) -> str:
+    """\"<qualname> @ <module>\" for a factory or type -- a registration's declaration site."""
+    qual = getattr(obj, "__qualname__", None) or getattr(type(obj), "__qualname__", "?")
+    module = getattr(obj, "__module__", None)
+    return f"{qual} @ {module}" if module else qual
