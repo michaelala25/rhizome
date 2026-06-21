@@ -17,7 +17,7 @@ Field conventions, honoured by ``AgentRuntime.new``:
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
-from rhizome.db import SessionFactoryService
+from rhizome.db import ReadOnlySessionFactoryService, SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 
 from .app_context import AppContextStore
@@ -83,7 +83,13 @@ class RootAgentContext(BaseAgentContext):
     "me" (which segment is the leaf, which messages are inherited). ``None`` outside a graph."""
 
     session_factory: SessionFactoryService = None
-    """DB session factory — widgets that write to the DB (e.g. the flashcard review widget invoking
-    ``apply_rating``) pull this off the context when constructed from an interrupt. Injected by
-    ``AgentRuntime.new`` from the service scope (note the bare service annotation); ``None`` where no DB
-    is registered."""
+    """DB session factory — the root agent's DB tools open sessions off this, and widgets that write to the
+    DB (e.g. the flashcard review widget invoking ``apply_rating``) pull it off the context when constructed
+    from an interrupt. Injected by ``AgentRuntime.new`` from the service scope (note the bare service
+    annotation); ``None`` where no DB is registered."""
+
+    read_only_session_factory: ReadOnlySessionFactoryService = None
+    """Read-only DB session factory — the SQL escape-hatch tool (``execute_sql``) opens sessions off this,
+    a dedicated read-only engine (OS-level ``mode=ro`` + a SQLite authorizer) so the agent's raw-SQL reads
+    can never write or pull binary blobs. A distinct service from ``session_factory`` so DI hands over the
+    read-only instance; ``None`` until that service is registered."""

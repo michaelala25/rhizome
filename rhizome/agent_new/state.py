@@ -12,7 +12,7 @@ from typing import Annotated, TypedDict
 
 from rhizome.resources_new import ResourceTreeNode
 
-from .engine import accumulate_cleanups, CleanupRequest, ConsumedResources
+from .base import accumulate_cleanups, CleanupRequest, ConsumedResources
 
 
 # ---------------------------------------------------------------------------

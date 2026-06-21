@@ -1,18 +1,25 @@
-"""The prompt engine: turning durable conversation state into the concrete model request, and the
-input vocabulary (payloads) a session feeds it.
+"""The prompt engine: turning durable conversation state into the concrete model request.
 
 INVARIANT — **nothing under ``engine/`` imports from ``state``.** State reaches *down* into the engine
-(``state`` pulls ``ConsumedResources`` and the cleanup request types from here), never the reverse.
-Keeping every module in this package free of a ``..state`` import is exactly what lets this ``__init__``
-eagerly re-export the public surface without an import cycle: pulling any engine submodule never re-enters
-``state`` mid-load. Add a ``from ..state import`` to any engine module and that cycle comes back — so the
-resource/state snapshot types that ``state`` needs live in ``engine.resources``, not the other way round.
+package's dependencies, never the reverse. The small leaf types both sides share — the payload input
+vocabulary, the cleanup-request types, and the ``ConsumedResources`` snapshot — live one level below in
+``rhizome.agent_new.base``; ``state`` pulls them straight from there, and the engine pulls them from there
+too (re-exporting them below for back-compat, so ``from .engine import MessagePayload`` still resolves).
+Keeping every engine module free of a ``..state`` import is what lets this ``__init__`` eagerly re-export
+its public surface without an import cycle.
 """
 
+from ..base import (
+    AgentPayload,
+    accumulate_cleanups,
+    CleanupRequest,
+    ConsumedResources,
+    MessagePayload,
+    PayloadQueue,
+    StateUpdatePayload,
+)
 from .base import PromptCompilerMiddleware, PromptEngine
-from .cleanup import accumulate_cleanups, apply_cleanup, CleanupRequest, mark_reclaimable, promote
-from .payload import AgentPayload, MessagePayload, PayloadQueue, StateUpdatePayload
-from .resources import ConsumedResources
+from .cleanup import apply_cleanup, mark_reclaimable, promote
 from .root import RootPromptEngine
 
 __all__ = [
@@ -20,17 +27,17 @@ __all__ = [
     "PromptEngine",
     "PromptCompilerMiddleware",
     "RootPromptEngine",
-    # input vocabulary
+    # input vocabulary (defined in ``base``, re-exported here)
     "AgentPayload",
     "MessagePayload",
     "StateUpdatePayload",
     "PayloadQueue",
-    # cleanup (request types + marking the engine consumes)
+    # cleanup (request types from ``base``; marking/applying machinery from this package)
     "CleanupRequest",
     "accumulate_cleanups",
     "apply_cleanup",
     "mark_reclaimable",
     "promote",
-    # resource-context snapshot type state records
+    # resource-context snapshot type state records (defined in ``base``)
     "ConsumedResources",
 ]

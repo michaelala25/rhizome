@@ -1,15 +1,13 @@
-"""Resource-context machinery for the root prompt engine: the consumed-snapshot type, the per-channel
-load deltas, the well-known message-id scheme for resource/index context blocks, and the tree-grouping
-and block-building helpers.
+"""Resource-context machinery for the root prompt engine: the per-channel load deltas, the well-known
+message-id scheme for resource/index context blocks, and the tree-grouping and block-building helpers.
 
-Deliberately a leaf — it imports ``rhizome.resources_new`` and langchain message types, but nothing from
-``state``, ``payload``, or the engine classes. That is what lets ``state`` pull ``ConsumedResources`` from
-here without an import cycle (see ``engine.__init__`` for the invariant). ``RootPromptEngine`` (in
-``engine.root``) drives all of this: it diffs the stores against a thread's consumed snapshot and emits
-the context messages, anchoring each block by the ids minted here.
+The consumed-snapshot *type* (``ConsumedResources``) lives at the leaf in ``base.resources`` — that is what
+lets ``state`` carry it without importing the engine; this module imports it back to compute deltas against
+it. ``RootPromptEngine`` (in ``engine.root``) drives all of this: it diffs the stores against a thread's
+consumed snapshot and emits the context messages, anchoring each block by the ids minted here.
 """
 
-from typing import Iterable, TYPE_CHECKING, TypedDict
+from typing import Iterable, TYPE_CHECKING
 
 from langchain_core.messages import BaseMessage
 
@@ -22,21 +20,18 @@ from rhizome.resources_new import (
     ResourceTreeNode,
 )
 
+# The consumed-snapshot type is leaf vocab in ``base`` (it rides on graph state); this module is the
+# machinery that diffs against it and writes it back.
+from ..base import ConsumedResources
+
 if TYPE_CHECKING:
     from ..context import RootAgentContext
 
 
 # ========================================================================================================================
-# CONSUMED SNAPSHOT
+# CONSUMED SNAPSHOT DELTAS
 # ========================================================================================================================
-
-# Functional syntax because "global" is a Python keyword. Channel-split on purpose: the prompt engine's
-# deltas edit different context messages — one shared global message, one per-node local message — so
-# consumption must be tracked per channel.
-ConsumedResources = TypedDict(
-    "ConsumedResources",
-    {"global": list[ResourceTreeNode], "local": list[ResourceTreeNode]},
-)
+# ``ConsumedResources`` itself lives in ``base.resources``; the per-channel delta computation lives here.
 
 
 def resource_deltas(

@@ -57,9 +57,9 @@ from langchain_core.messages import (
 
 from rhizome.logs import get_logger
 
+from ..base import AgentPayload, MessagePayload, StateUpdatePayload, Strategy
 from .cleanup import apply_cleanup, mark_reclaimable
-from .metadata import lifetime_of, set_role, Strategy
-from .payload import AgentPayload, MessagePayload, StateUpdatePayload
+from .metadata import lifetime_of, set_role
 
 if TYPE_CHECKING:
     from ..context import BaseAgentContext

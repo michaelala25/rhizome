@@ -1,11 +1,14 @@
 """Tests for the read-only SQL escape hatch, against a real on-disk SQLite file (``mode=ro`` needs one).
 
-Each test drives the actual langchain tool (`.ainvoke`) so the wiring under test is exactly what the agent
-hits. The discriminating cases are PRAGMA/ATTACH/CTE-hidden-write denial and blob redaction — those isolate
-the *authorizer's* contribution from the mode=ro belt (which alone would block a plain INSERT anyway)."""
+Each test drives the tool's coroutine with a stand-in runtime carrying the read-only factory on
+``ctx.read_only_session_factory`` (the same factory the agent's context supplies), so the wiring under test
+— the mode=ro engine and the authorizer — is exactly what the agent hits. The discriminating cases are
+PRAGMA/ATTACH/CTE-hidden-write denial and blob redaction — those isolate the *authorizer's* contribution
+from the mode=ro belt (which alone would block a plain INSERT anyway)."""
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -38,15 +41,16 @@ async def sql_tool():
     await rw.dispose()
 
     factory = read_only_session_factory(path)
-    tool = build_sql_tools(factory)["execute_sql"]
-    yield tool, path
+    tool = build_sql_tools()["execute_sql"]
+    runtime = SimpleNamespace(context=SimpleNamespace(read_only_session_factory=factory))
+
+    async def run_sql(sql: str) -> str:
+        return await tool.coroutine(sql=sql, runtime=runtime)
+
+    yield run_sql
 
     await factory.kw["bind"].dispose()
     os.unlink(path)
-
-
-async def run(tool, sql: str) -> str:
-    return await tool.ainvoke({"sql": sql})
 
 
 # ------------------------------------------------------------------------------------------------------
@@ -54,21 +58,21 @@ async def run(tool, sql: str) -> str:
 # ------------------------------------------------------------------------------------------------------
 
 async def test_select_returns_rows(sql_tool):
-    tool, _ = sql_tool
-    out = await run(tool, "SELECT name FROM topic ORDER BY id")
+    run_sql = sql_tool
+    out = await run_sql("SELECT name FROM topic ORDER BY id")
     assert "Programming" in out and "Git" in out
 
 
 async def test_join_across_tables_works(sql_tool):
-    tool, _ = sql_tool
-    out = await run(tool, "SELECT t.name, e.title FROM knowledge_entry e JOIN topic t ON t.id = e.topic_id")
+    run_sql = sql_tool
+    out = await run_sql("SELECT t.name, e.title FROM knowledge_entry e JOIN topic t ON t.id = e.topic_id")
     assert "Git" in out and "Git Stash" in out
 
 
 async def test_reaches_table_outside_allowlist(sql_tool):
     # resource_chunk is hidden from the structured tools — the escape hatch can still read it.
-    tool, _ = sql_tool
-    out = await run(tool, "SELECT id, chunk_index FROM resource_chunk")
+    run_sql = sql_tool
+    out = await run_sql("SELECT id, chunk_index FROM resource_chunk")
     assert "chunk_index" in out
 
 
@@ -77,8 +81,8 @@ async def test_reaches_table_outside_allowlist(sql_tool):
 # ------------------------------------------------------------------------------------------------------
 
 async def test_blob_column_redacted_to_null(sql_tool):
-    tool, _ = sql_tool
-    out = await run(tool, "SELECT id, embedding FROM resource_chunk")
+    run_sql = sql_tool
+    out = await run_sql("SELECT id, embedding FROM resource_chunk")
     # The bytes were stored, but the authorizer substitutes NULL on read.
     assert "embedding" in out
     assert "null" in out and "dead" not in out.lower()
@@ -86,14 +90,14 @@ async def test_blob_column_redacted_to_null(sql_tool):
 
 async def test_pragma_denied(sql_tool):
     # A read-only PRAGMA would succeed on a mode=ro connection — denial here proves the authorizer is live.
-    tool, _ = sql_tool
-    out = await run(tool, "PRAGMA table_info(topic)")
+    run_sql = sql_tool
+    out = await run_sql("PRAGMA table_info(topic)")
     assert "SQL error" in out and "not authorized" in out
 
 
 async def test_attach_denied(sql_tool):
-    tool, _ = sql_tool
-    out = await run(tool, "ATTACH DATABASE ':memory:' AS evil")
+    run_sql = sql_tool
+    out = await run_sql("ATTACH DATABASE ':memory:' AS evil")
     assert "SQL error" in out and "not authorized" in out
 
 
@@ -102,18 +106,18 @@ async def test_attach_denied(sql_tool):
 # ------------------------------------------------------------------------------------------------------
 
 async def test_insert_denied_and_nothing_written(sql_tool):
-    tool, _ = sql_tool
-    out = await run(tool, "INSERT INTO topic (name) VALUES ('Hacked')")
+    run_sql = sql_tool
+    out = await run_sql("INSERT INTO topic (name) VALUES ('Hacked')")
     assert "SQL error" in out and "read-only" in out
     # Confirm via a fresh read that nothing landed.
-    check = await run(tool, "SELECT count(*) FROM topic WHERE name = 'Hacked'")
+    check = await run_sql("SELECT count(*) FROM topic WHERE name = 'Hacked'")
     assert "\n0" in check
 
 
 async def test_cte_hidden_write_denied(sql_tool):
     # Parser-level gating: a write that does not start with INSERT is still caught.
-    tool, _ = sql_tool
-    out = await run(tool, "WITH x AS (SELECT 1) INSERT INTO topic (name) SELECT 'sneaky'")
+    run_sql = sql_tool
+    out = await run_sql("WITH x AS (SELECT 1) INSERT INTO topic (name) SELECT 'sneaky'")
     assert "SQL error" in out
-    check = await run(tool, "SELECT count(*) FROM topic WHERE name = 'sneaky'")
+    check = await run_sql("SELECT count(*) FROM topic WHERE name = 'sneaky'")
     assert "\n0" in check

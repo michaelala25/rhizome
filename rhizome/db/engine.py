@@ -58,6 +58,24 @@ class SessionFactoryService(Protocol):
     def __call__(self) -> AsyncSession: ...
 
 
+# ==========================================================================================
+# Service: ReadOnlySessionFactoryService
+#   Shape : protocol (structural)
+#   Scope : root
+#   Notes : structurally identical to SessionFactoryService, but a distinct name so DI injects a
+#           *different* instance -- one bound to a read-only engine. Used by the SQL escape-hatch tool
+#           (``agent_new.tools.sql``), whose read-only factory is built by ``read_only_session_factory``.
+# ==========================================================================================
+
+
+class ReadOnlySessionFactoryService(Protocol):
+    """Async DB session factory bound to a read-only engine -- the read-only counterpart of
+    ``SessionFactoryService``. Same structural contract (``async with sessions() as session:``); the
+    separate name is what lets DI hand a consumer the read-only instance rather than the read-write one."""
+
+    def __call__(self) -> AsyncSession: ...
+
+
 def run_migrations(db_path: str | Path = "rhizome.db") -> None:
     """Run all pending Alembic migrations against *db_path*.
 

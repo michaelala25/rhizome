@@ -23,6 +23,7 @@ import functools
 from datetime import datetime
 
 from langchain.tools import tool
+from langgraph.prebuilt.tool_node import ToolRuntime
 from sqlalchemy import delete as sa_delete, func, inspect, select, update as sa_update
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -357,9 +358,10 @@ _DELETE_DESC = (
 )
 
 
-def build_database_tools(session_factory, registry: dict[str, TableSpec] = ALLOWED_TABLES) -> dict:
-    """Build the query/insert/update/delete tools closed over ``session_factory`` and the table registry,
-    following the ``build_*_tools`` convention (name -> tool)."""
+def build_database_tools(registry: dict[str, TableSpec] = ALLOWED_TABLES) -> dict:
+    """Build the query/insert/update/delete tools over the table registry, following the ``build_*_tools``
+    convention (name -> tool). Root-agent tools: each opens DB sessions off the factory on the agent
+    context (``runtime.context.session_factory``) at call time, rather than closing over it."""
 
     # The parameter schemas below are deliberately lean — bare types, no per-field descriptions. The model
     # learns the filter DSL and the metric/order_by conventions from each tool's prose description plus the
@@ -371,35 +373,37 @@ def build_database_tools(session_factory, registry: dict[str, TableSpec] = ALLOW
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("query", description=_QUERY_DESC)
-    async def query_tool(table: str, filter: dict | None = None, columns: list[str] | None = None,
-                         order_by: list[str] | None = None, limit: int = DEFAULT_LIMIT,
-                         offset: int = 0) -> str:
-        return await run_query(session_factory, registry, table, filter=filter, columns=columns,
-                               order_by=order_by, limit=limit, offset=offset)
+    async def query_tool(table: str, runtime: ToolRuntime, filter: dict | None = None,
+                         columns: list[str] | None = None, order_by: list[str] | None = None,
+                         limit: int = DEFAULT_LIMIT, offset: int = 0) -> str:
+        return await run_query(runtime.context.session_factory, registry, table, filter=filter,
+                               columns=columns, order_by=order_by, limit=limit, offset=offset)
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("aggregate", description=_AGGREGATE_DESC)
-    async def aggregate_tool(table: str, filter: dict | None = None,
+    async def aggregate_tool(table: str, runtime: ToolRuntime, filter: dict | None = None,
                              group_by: str | list[str] | None = None,
                              metrics: list[str] | None = None) -> str:
-        return await run_aggregate(session_factory, registry, table, filter=filter,
+        return await run_aggregate(runtime.context.session_factory, registry, table, filter=filter,
                                    group_by=group_by, metrics=metrics)
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("insert", description=_INSERT_DESC)
-    async def insert_tool(table: str, values: dict | list[dict]) -> str:
-        return await run_insert(session_factory, registry, table, values=values)
+    async def insert_tool(table: str, values: dict | list[dict], runtime: ToolRuntime) -> str:
+        return await run_insert(runtime.context.session_factory, registry, table, values=values)
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("update", description=_UPDATE_DESC)
-    async def update_tool(table: str, filter: dict, values: dict, confirm: bool = False) -> str:
-        return await run_update(session_factory, registry, table, filter=filter, values=values,
-                                confirm=confirm)
+    async def update_tool(table: str, filter: dict, values: dict, runtime: ToolRuntime,
+                          confirm: bool = False) -> str:
+        return await run_update(runtime.context.session_factory, registry, table, filter=filter,
+                                values=values, confirm=confirm)
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("delete", description=_DELETE_DESC)
-    async def delete_tool(table: str, filter: dict, confirm: bool = False) -> str:
-        return await run_delete(session_factory, registry, table, filter=filter, confirm=confirm)
+    async def delete_tool(table: str, filter: dict, runtime: ToolRuntime, confirm: bool = False) -> str:
+        return await run_delete(runtime.context.session_factory, registry, table, filter=filter,
+                                confirm=confirm)
 
     return {"query": query_tool, "aggregate": aggregate_tool, "insert": insert_tool,
             "update": update_tool, "delete": delete_tool}

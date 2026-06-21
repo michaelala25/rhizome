@@ -12,7 +12,7 @@ session's backlog until the next run begins.
 
 This module is a leaf — stdlib only. ``StateUpdatePayload`` is generic over the target state schema
 ``S`` rather than naming a concrete one, so the input language stays independent of any particular
-agent's state (and the engine package imports nothing from ``state``).
+agent's state.
 """
 
 from dataclasses import dataclass

@@ -1,29 +1,31 @@
-"""Per-mode tool allowlists, rendered into the <system> header injected at mode switches.
+"""Per-mode tool allowlists — prompt content describing which tools each mode permits.
+
+This lives under ``prompts`` rather than ``tools`` because its output is prompt content: the prompt engine
+calls ``render_tool_allowlist`` to build the <system> header injected at a mode switch, the same way it
+pulls the mode guides from here. Keeping it on this side also keeps the engine from importing the tool
+package (and its DB-touching builders) just to render a header.
 
 Every mode shares the same wire-level tool set — nothing is filtered out of the model request, which would
 shuffle the prompt prefix and invalidate the cache. The allowlist is instead a behavioral contract: the
-header block produced here tells the agent which tools the current mode permits, and the system prompt
-instructs it to use only those. Tools may eventually also be gated on state (erroring when called out of
-mode); that enforcement belongs to the tools themselves — ``MODE_ALLOWLISTS`` is the lookup they'd check.
+header block tells the agent which tools the current mode permits, and the system prompt instructs it to
+use only those. Tools may eventually also be gated on state (erroring when called out of mode); that
+enforcement belongs to the tools themselves — ``MODE_ALLOWLISTS`` is the lookup they'd check.
 
 Tool names refer to the root agent's tool set. Groups exist so headers render with a little structure
 instead of one flat list; modes always include or exclude whole groups.
 """
 
 TOOL_GROUPS: dict[str, tuple[str, ...]] = {
-    "Knowledge base (read)": (
-        "list_topics",
-        "list_knowledge_entries",
-        "read_knowledge_entries",
-        "list_flashcards",
-        "read_flashcards",
+    "Database (read)": (
+        "query",
+        "aggregate",
     ),
-    "Knowledge base (write)": (
-        "create_topics",
-        "delete_topics",
+    "Database (write)": (
+        "insert",
+        "update",
+        "delete",
     ),
     "App": (
-        "update_app_state",
         "set_mode",
         "ask_user_input",
     ),
@@ -42,7 +44,6 @@ TOOL_GROUPS: dict[str, tuple[str, ...]] = {
         "flashcard_proposal_accept",
     ),
     "Review sessions": (
-        "review_get_past_sessions",
         "review_show_session_state",
         "review_start_session",
         "review_update_session_state",
@@ -53,9 +54,6 @@ TOOL_GROUPS: dict[str, tuple[str, ...]] = {
     "Guides": (
         "list_guides",
         "read_guides",
-    ),
-    "Resources": (
-        "query_resources",
     ),
     "Web": (
         "web_search",
@@ -69,38 +67,36 @@ TOOL_GROUPS: dict[str, tuple[str, ...]] = {
 
 MODE_TOOL_GROUPS: dict[str, tuple[str, ...]] = {
     "idle": (
-        "Knowledge base (read)",
-        "Knowledge base (write)",
+        "Database (read)",
+        "Database (write)",
         "App",
         "Commit workflow",
         "Guides",
-        "Resources",
         "Web",
         "SQL (last resort)",
     ),
     "learn": (
-        "Knowledge base (read)",
-        "Knowledge base (write)",
+        "Database (read)",
+        "Database (write)",
         "App",
         "Commit workflow",
         "Flashcard proposals",
         "Guides",
-        "Resources",
         "Web",
         "SQL (last resort)",
     ),
     "review": (
-        "Knowledge base (read)",
+        "Database (read)",
         "App",
         "Review sessions",
         "Flashcard proposals",
         "Guides",
-        "Resources",
         "Web",
         "SQL (last resort)",
     ),
 }
-"""Group keys permitted per mode."""
+"""Group keys permitted per mode. Review mode is read-only over the knowledge base — knowledge changes go
+through the flashcard/review workflows, not raw writes."""
 
 MODE_ALLOWLISTS: dict[str, frozenset[str]] = {
     mode: frozenset(tool for group in groups for tool in TOOL_GROUPS[group])

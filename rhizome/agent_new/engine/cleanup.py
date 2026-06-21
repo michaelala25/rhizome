@@ -11,12 +11,15 @@ overview), above ``metadata`` (the tag schema) and below ``state`` and the engin
   ``permanent`` — a settled stub.
 """
 
-from typing import Any, NotRequired, TypedDict
+from typing import Any
 
 from langchain_core.messages import BaseMessage
 
 from rhizome.logs import get_logger
 
+# The request vocabulary (``CleanupRequest``, ``Strategy``, the ``accumulate_cleanups`` reducer) is a leaf
+# in ``base`` — what a requester speaks. This module is the machinery that resolves and applies it.
+from ..base import CleanupRequest, Strategy
 from .metadata import (
     detached_kwargs,
     group_of,
@@ -24,40 +27,10 @@ from .metadata import (
     role_of,
     set_group,
     set_lifetime,
-    Strategy,
     strategy_of,
 )
 
 _logger = get_logger("agent.cleanup")
-
-
-# ========================================================================================================================
-# REQUESTS
-# ========================================================================================================================
-
-
-class CleanupRequest(TypedDict):
-    """A declarative request to reclaim a cleanup ``group``, filed onto ``BaseAgentState.pending_cleanups``
-    by a tool / app hook / the agent's ``cleanup_context``. The engine's cleanup pass resolves it and is
-    the sole emitter of the edits — a requester expresses intent, never the edit itself. A ``TypedDict``
-    (not a dataclass) because it rides the checkpoint, where a dataclass would come back a bare dict."""
-
-    group: str
-    strategy: NotRequired[Strategy]
-    """Request-level override; absent defers to each message's own tag, then the engine default."""
-    reason: NotRequired[str]
-    """Optional hint (e.g. summary guidance) for the strategies that consume one."""
-
-
-def accumulate_cleanups(
-    left: list[CleanupRequest] | None, right: list[CleanupRequest] | None
-) -> list[CleanupRequest]:
-    """Reducer for ``pending_cleanups``: append filed requests (parallel tools compose), with ``None`` as
-    the drain signal the cleanup pass writes once it has consumed them — mirroring the ``None``-clears
-    convention of ``state.merge_typeddict_field``."""
-    if right is None:
-        return []
-    return (left or []) + right
 
 
 # ========================================================================================================================

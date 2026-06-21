@@ -15,6 +15,19 @@ Two families live here:
 Style guide: same as ``system.py``.
 """
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Guide:
+    """A loadable workflow guide: a stable load name, a one-line description (shown by ``list_guides``),
+    and the full content (injected by ``read_guides``)."""
+
+    name: str
+    description: str
+    content: str
+
+
 # ========================================================================================================================
 # MODE GUIDES
 # ========================================================================================================================
@@ -30,9 +43,9 @@ informatively to help them learn. In learn mode, your messages become selectable
 
 Before answering, ground yourself in the knowledge database:
 
-1. Browse the topic tree using `list_topics` to find topics related to the user's question.
-2. If a match exists, use `list_knowledge_entries` then `read_knowledge_entries` to read existing entries
-   so you build on what the user already knows rather than repeating it.
+1. Browse the topic tree with `query` on the `topic` table to find topics related to the user's question.
+2. If a match exists, `query` the `knowledge_entry` table for that topic to read existing entries so you
+   build on what the user already knows rather than repeating it.
 3. If no relevant topic exists, ask the user if they'd like to create one.
 
 IMPORTANT: You must ALWAYS ask the user if they'd like to create a topic, _before_ creating one.
@@ -56,9 +69,8 @@ any direct edits the user made in the widget), then call `commit_proposal_presen
 LEARN_MODE_REMINDER = """\
 You are in **learn** mode. Key points:
 
-- Ground your answers in the knowledge database before responding: `list_topics`, then
-  `list_knowledge_entries` and `read_knowledge_entries` on matching topics, so you build on what the user
-  already knows.
+- Ground your answers in the knowledge database before responding: `query` the `topic` table, then `query`
+  the `knowledge_entry` table on matching topics, so you build on what the user already knows.
 - ALWAYS ask the user before creating a topic.
 - When a commit selection is confirmed, follow the path the system notification names (direct vs
   subagent), and on the direct path load the `knowledge_entries` guide before proposing entries.
@@ -87,7 +99,7 @@ using `review_update_session_state`.
 **IMPORTANT: You MUST call `review_start_session` before any other state-mutating review tool**
 (`review_update_session_state`, `review_record_interaction`, `review_present_flashcards`,
 `review_finish_session`). Those tools will return an error if the session has not been started. The
-read-only tools (`review_get_past_sessions`, `review_show_session_state`) can be used at any time.
+read-only `review_show_session_state` tool can be used at any time.
 
 Manage the review session state through the `review_show_session_state` and `review_update_session_state`
 tools.
@@ -110,9 +122,11 @@ Goal: open a fresh review session before doing anything else stateful.
 
 Goal: resolve what the user wants to review into concrete entry IDs.
 
-1. Use `list_topics` -> `list_knowledge_entries` -> `read_knowledge_entries` to browse and narrow scope.
-2. Use `review_get_past_sessions` to check prior review history on these topics. Read the `final_summary`
-   fields for context on where the user left off and what they struggled with.
+1. Use `query` on the `topic` and `knowledge_entry` tables to browse and narrow scope.
+2. Check prior review history on these topics by `query`-ing the `review_session` table — filter on
+   `ephemeral: false` and the `session_topics` relationship (the in-scope topic ids), order by
+   `-created_at`. Read the `final_summary` fields for context on where the user left off and what they
+   struggled with.
 3. If it is clear from context exactly what the user wants to review, move directly to CONFIGURING.
 
 Examples of when the scope is clear:
@@ -167,9 +181,8 @@ config fields at once or update them individually.
 
 Goal: prepare the question sequence before starting the review.
 
-1. Load all entry content via `read_knowledge_entries` if not already loaded.
-2. If flashcard style: use `list_flashcards` to check for existing flashcards, and `read_flashcards` to
-   inspect their content. Use
+1. Load all entry content by `query`-ing the `knowledge_entry` table if not already loaded.
+2. If flashcard style: `query` the `flashcard` table to check for and inspect existing flashcards. Use
    `review_update_session_state(flashcards=ReviewFlashcardUpdate(action="append", flashcard_ids=[...]))`
    to queue existing flashcard IDs. For entries that need new flashcards, follow the proposal workflow
    below.
@@ -648,3 +661,48 @@ Key implications:
 
 
 DATABASE_SCHEMA_GUIDE = _generate_database_schema_guide()
+
+
+# ========================================================================================================================
+# LOADABLE GUIDE REGISTRY
+# ========================================================================================================================
+# The workflow guides the agent can pull on demand via the ``list_guides`` / ``read_guides`` tools. Mode
+# guides are NOT here — they are injected automatically by the prompt engine on a mode switch, never loaded
+# by name.
+
+LOADABLE_GUIDES: dict[str, Guide] = {
+    g.name: g
+    for g in (
+        Guide(
+            "database_schema",
+            "Full database schema: tables, columns, types, foreign keys, and cascade behavior.",
+            DATABASE_SCHEMA_GUIDE,
+        ),
+        Guide(
+            "knowledge_entries",
+            "How to create well-structured knowledge entries: schema, granularity, good/bad examples.",
+            KNOWLEDGE_ENTRIES_GUIDE,
+        ),
+        Guide(
+            "writing_good_flashcards",
+            "How to craft clear, unambiguous flashcards.",
+            WRITING_GOOD_FLASHCARDS_GUIDE,
+        ),
+        Guide(
+            "flashcard_proposal_workflow",
+            "Step-by-step workflow for proposing, validating, and accepting flashcards.",
+            FLASHCARD_PROPOSAL_WORKFLOW_GUIDE,
+        ),
+        Guide(
+            "conversational_reviews",
+            "How to effectively guide a conversational review session.",
+            CONVERSATIONAL_REVIEWS_GUIDE,
+        ),
+        Guide(
+            "judging_review_answers",
+            "How to effectively judge user responses in a review session.",
+            JUDGING_REVIEW_ANSWERS_GUIDE,
+        ),
+    )
+}
+"""Workflow guides loadable on demand by name (see the guide tools). Mode guides are excluded."""

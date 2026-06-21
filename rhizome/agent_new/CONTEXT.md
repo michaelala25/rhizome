@@ -77,9 +77,13 @@ sessions into a branchable structure. You can use sessions directly without ever
   the live channels and services an agent runs against.
 - **`streaming.py`** — `AgentStreamingContext` (the callback surface a streaming run drives) and
   `RunStateView` (the run-scoped view of state those callbacks see).
-- **`engine/`** — the prompt engine: turns conversation state into the actual model request, plus the
-  input language (`MessagePayload`, `StateUpdatePayload`, `PayloadQueue`) a session feeds it. See
-  _The prompt engine_, below, and `engine/CONTEXT.md`.
+- **`base/`** — the leaf vocabulary the rest of the stack shares: the payload input language
+  (`MessagePayload`, `StateUpdatePayload`, `PayloadQueue`), the cleanup-request types, and the
+  `ConsumedResources` snapshot. It imports nothing else under `agent_new`, so `engine`, `state`, and
+  `tools` can all depend on it without cycles.
+- **`engine/`** — the prompt engine: turns conversation state into the actual model request. The payload
+  input language a session feeds it lives in `base` (and is re-exported from here). See _The prompt
+  engine_, below, and `engine/CONTEXT.md`.
 - **`state.py`** — the graph state schema (`RootAgentState`: messages, mode, verbosity, loaded resources,
   workflow proposal state).
 - **`prompts/`** and **`tools/`** — the system prompt / guides / tool allowlists, and the agent's tools.

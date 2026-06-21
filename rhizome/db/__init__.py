@@ -19,7 +19,13 @@ from .models import (
     Topic,
     TopicResource,
 )
-from .engine import SessionFactoryService, get_engine, get_session_factory, init_db
+from .engine import (
+    ReadOnlySessionFactoryService,
+    SessionFactoryService,
+    get_engine,
+    get_session_factory,
+    init_db,
+)
 
 __all__ = [
     "Base",
@@ -41,6 +47,7 @@ __all__ = [
     "Tag",
     "Topic",
     "TopicResource",
+    "ReadOnlySessionFactoryService",
     "SessionFactoryService",
     "get_engine",
     "get_session_factory",

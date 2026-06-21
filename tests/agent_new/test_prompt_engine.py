@@ -20,7 +20,7 @@ from rhizome.agent_new.engine.base import (
 )
 from rhizome.agent_new.engine.cleanup import mark_reclaimable
 from rhizome.agent_new.engine.metadata import lifetime_of, meta, pin, pin_of, role_of, set_lifetime, set_role
-from rhizome.agent_new.engine.payload import MessagePayload, PayloadQueue, StateUpdatePayload
+from rhizome.agent_new.base import MessagePayload, PayloadQueue, StateUpdatePayload
 from rhizome.agent_new.engine.resources import (
     global_resource_message_id,
     INDEX_RESOURCE_MESSAGE_ID,

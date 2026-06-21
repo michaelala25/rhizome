@@ -21,6 +21,11 @@ from typing import Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
 
+# The reclaim strategy is leaf cleanup vocab (it rides on ``CleanupRequest``); it lives in ``base`` and is
+# re-exported here so the metadata tag accessors below — and existing ``from .metadata import Strategy``
+# call sites — keep working.
+from ..base import Strategy
+
 META_KEY = "rhizome"
 
 Position = Literal["inline", "pinned"]
@@ -38,11 +43,6 @@ Lifetime = Literal["permanent", "semi-permanent"]
 docstring): ``permanent`` (the default when untagged) lives forever; ``semi-permanent`` is eligible for
 later reclamation."""
 
-Strategy = Literal["stub", "stub+store", "summarize", "summarize+store"]
-"""How a reclaimed message's content is replaced — two axes under one name: a *transform* (``stub`` swaps
-a placeholder, ``summarize`` swaps a generated summary) and whether the original is *stored* for retrieval
-(``+store``). Only ``stub`` is built today; the rest name the space. Resolved message > request > engine
-default (a message may declare its own via ``set_strategy``)."""
 
 Role = Literal["user", "agent", "system"]
 """A message's conversational origin — set on the messages a ``MessagePayload`` produces. Its job is to

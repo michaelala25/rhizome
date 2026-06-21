@@ -23,6 +23,7 @@ import sqlite3
 from pathlib import Path
 
 from langchain.tools import tool
+from langgraph.prebuilt.tool_node import ToolRuntime
 from sqlalchemy import LargeBinary, event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -103,13 +104,17 @@ _EXECUTE_SQL_DESC = (
 )
 
 
-def build_sql_tools(read_only_sessions) -> dict:
-    """Build the read-only ``execute_sql`` tool closed over a read-only session factory (see
-    ``read_only_session_factory``)."""
+def build_sql_tools() -> dict:
+    """Build the read-only ``execute_sql`` tool. A root-agent tool: it opens sessions off the read-only
+    session factory on the agent context (``runtime.context.read_only_session_factory``, a dedicated
+    ``mode=ro`` engine — see ``read_only_session_factory``) at call time, rather than closing over it."""
 
     @tool_visibility(ToolVisibility.DEFAULT)
     @tool("execute_sql", description=_EXECUTE_SQL_DESC)
-    async def execute_sql_tool(sql: str) -> str:
+    async def execute_sql_tool(sql: str, runtime: ToolRuntime) -> str:
+        read_only_sessions = getattr(runtime.context, "read_only_session_factory", None)
+        if read_only_sessions is None:
+            return "The SQL escape hatch is unavailable in this conversation."
         try:
             async with read_only_sessions() as session:
                 result = await session.execute(text(sql))
