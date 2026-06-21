@@ -291,3 +291,84 @@ def test_requires_naming_unknown_parameter_raises():
     s.register_descriptor(Database)
     with pytest.raises(ServiceError):
         s.register_descriptor(Repo, requires={"nope": Database})
+
+
+# --------------------------------------------------------------------------- #
+# inject (currying a callable against the scope)
+# --------------------------------------------------------------------------- #
+
+def test_inject_curries_builder_and_calls():
+    s = ServiceAccessor()
+    s.register_descriptor(Database)
+
+    def build(*, db: Database) -> str:
+        return f"built:{type(db).__name__}"
+
+    assert s.inject(build)() == "built:Database"   # all params are services -> trivial ()
+
+
+def test_inject_binds_services_and_leaves_everything_else_open():
+    s = ServiceAccessor()
+    s.register_descriptor(Database)
+
+    def tool(query: str, limit: int, raw, *, db: Database):
+        return (query, limit, raw, type(db).__name__)
+
+    bound = s.inject(tool)                          # only db is a registered service
+    assert bound("q", 5, True) == ("q", 5, True, "Database")
+
+
+def test_inject_leaves_stringized_annotation_open():
+    s = ServiceAccessor()
+    s.register_descriptor(Database)
+
+    def fn(*, c: "Database"):                       # stringized -> not classified -> left open
+        return c
+
+    assert s.inject(fn)(c="explicit") == "explicit"
+
+
+def test_inject_handle_param_is_lazy():
+    s = ServiceAccessor()
+    s.register_descriptor(Database)
+
+    def fn(*, db: Handle[Database]):
+        return db
+
+    handle = s.inject(fn)()
+    assert isinstance(handle, Handle)
+    assert isinstance(handle.get(), Database)
+
+
+def test_inject_accessor_param_receives_scope():
+    s = ServiceAccessor()
+
+    def fn(*, accessor: ServiceAccessor):
+        return accessor
+
+    assert s.inject(fn)() is s
+
+
+def test_inject_resolves_against_the_curried_scope():
+    root = ServiceAccessor()
+    root.register(Marker, "root-value")
+    child = root.child()
+    child.register(Marker, "child-value")
+
+    def fn(*, marker: Marker):
+        return marker
+
+    assert root.inject(fn)() == "root-value"
+    assert child.inject(fn)() == "child-value"      # curry against the child -> child's shadowing value
+
+
+def test_inject_resolves_services_eagerly():
+    s = ServiceAccessor()
+    s.register_descriptor(Database)
+
+    def fn(*, db: Database):
+        return db
+
+    bound = s.inject(fn)
+    assert Database in s._instances                 # resolved at inject() time, before the call
+    assert isinstance(bound(), Database)

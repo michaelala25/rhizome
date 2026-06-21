@@ -36,10 +36,15 @@ keys, or for injecting a defaulted parameter.
 Scope model: a descriptor resolves once per scope that owns it, and the instance is cached there.
 ``.child()`` scopes fall through to the parent for keys they don't register, and a service always
 resolves its own dependencies from the scope it was registered in.
+
+``inject(fn)`` applies the same annotation-driven resolution to an arbitrary callable -- it curries the
+parameters that name a service and leaves the rest open, the basis for building services (all
+parameters resolve) and tools (model arguments stay open) alike.
 """
 
+import functools
 import inspect
-from typing import Any, Generic, Hashable, NamedTuple, Optional, TypeVar, Union, get_args, get_origin
+from typing import Any, Callable, Generic, Hashable, NamedTuple, Optional, TypeVar, Union, get_args, get_origin
 
 T = TypeVar("T")
 
@@ -296,6 +301,48 @@ class ServiceAccessor:
     def handle(self, key: Hashable) -> Handle:
         """A bound handle for deferred resolution from this scope."""
         return Handle(key, self)
+
+    def inject(self, fn: Callable) -> Callable:
+        """
+        Curry a callable against this scope: resolve the parameters whose annotations name a service
+        (a registered key, ``Handle[Key]``, or ``ServiceAccessor``), bind them, and return a callable
+        over the *remaining* parameters.
+
+        Lenient by design (unlike ``register_descriptor``, where every parameter is a dependency): a
+        parameter whose annotation is not a registered service -- a model-facing ``filter: dict``, an
+        unannotated arg, a stringized annotation -- is left open for the caller. That is what lets one
+        mechanism build a service (all parameters resolve, call with ``inject(fn)()``) and a tool (model
+        arguments stay open, ``inject(tool)`` called later with just those).
+
+        Services resolve eagerly, here, against THIS scope -- curry against the scope whose view you
+        want (e.g. a workspace child, to pick up session-scoped overrides).
+        """
+        bound: dict[str, Any] = {}
+        for name, param in inspect.signature(fn).parameters.items():
+            if name == "self":
+                continue
+            if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                continue
+            ann = param.annotation
+            if ann is inspect.Parameter.empty or isinstance(ann, str):
+                continue  # unannotated or stringized -> a caller-provided argument
+            dep = _classify_annotation(ann)
+            if dep.kind is _ACCESSOR:
+                bound[name] = self
+            elif dep.kind is _WEAK:
+                bound[name] = Handle(dep.key, self)
+            elif self._resolvable(dep.key):
+                bound[name] = self._get(dep.key, ())
+            # else: annotation is not a registered service -> leave the parameter open
+        return functools.partial(fn, **bound)
+
+    def _resolvable(self, key: Hashable) -> bool:
+        node: Optional["ServiceAccessor"] = self
+        while node is not None:
+            if key in node._instances or key in node._descriptors:
+                return True
+            node = node._parent
+        return False
 
     # ----- scoping --------------------------------------------------------- #
 
