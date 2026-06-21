@@ -18,6 +18,7 @@ from .relations import (
     get_dependency_chain,
     get_related_entries,
     remove_relation,
+    would_create_cycle,
 )
 from .tags import (
     create_tag,
@@ -74,6 +75,7 @@ from .resources import (
     compute_section_end_offsets,
     create_resource,
     delete_resource,
+    fetch_resource_labels,
     get_chunks,
     get_chunks_for_section,
     get_resource,
@@ -137,6 +139,7 @@ __all__ = [
     "remove_relation",
     "get_related_entries",
     "get_dependency_chain",
+    "would_create_cycle",
     # reviews
     "create_review_session",
     "get_review_session",
@@ -184,6 +187,7 @@ __all__ = [
     "create_resource",
     "delete_resource",
     "compute_section_end_offsets",
+    "fetch_resource_labels",
     "get_chunks",
     "get_chunks_for_section",
     "get_resource",

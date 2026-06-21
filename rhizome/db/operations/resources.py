@@ -8,7 +8,7 @@ from rhizome.logs import get_logger
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from rhizome.db.models import (
     LoadingPreference,
@@ -99,6 +99,45 @@ async def list_resources(session: AsyncSession) -> list[Resource]:
         select(Resource).order_by(Resource.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def fetch_resource_skeleton(
+    session: AsyncSession,
+) -> tuple[list[int], list[tuple[int, int, int | None]]]:
+    """Content-free skeleton of the resource/section hierarchy, for ``ResourceTree``: every resource
+    id, plus an ``(id, resource_id, parent_id)`` triple per section. Column-only selects that never
+    touch the content or chunk tables — milliseconds at any realistic library size."""
+    resource_ids = (await session.execute(select(Resource.id))).scalars().all()
+    section_rows = await session.execute(
+        select(ResourceSection.id, ResourceSection.resource_id, ResourceSection.parent_id)
+    )
+    return list(resource_ids), [tuple(row) for row in section_rows.all()]
+
+
+async def fetch_resource_labels(
+    session: AsyncSession,
+    resource_ids: Iterable[int],
+    section_ids: Iterable[int],
+) -> tuple[dict[int, str], dict[int, str]]:
+    """Names and section titles for the given ids — column-only selects for building listing text
+    without pulling content or chunks. Returns ``(resource_names, section_titles)``; ids that no longer
+    exist are simply absent from the maps, so callers can treat a missing key as "deleted out from
+    under me"."""
+    resource_ids, section_ids = list(resource_ids), list(section_ids)
+
+    names: dict[int, str] = {}
+    if resource_ids:
+        rows = await session.execute(select(Resource.id, Resource.name).where(Resource.id.in_(resource_ids)))
+        names = {rid: name for rid, name in rows.all()}
+
+    titles: dict[int, str] = {}
+    if section_ids:
+        rows = await session.execute(
+            select(ResourceSection.id, ResourceSection.title).where(ResourceSection.id.in_(section_ids))
+        )
+        titles = {sid: title for sid, title in rows.all()}
+
+    return names, titles
 
 
 def _apply_resource_pool_filters(stmt, *, exclude_ids: Iterable[int] | None, search: str | None):
@@ -225,7 +264,12 @@ async def list_resources_for_topic(
     *,
     load_chunks: bool = False,
 ) -> list[Resource]:
-    """List resources directly attached to a topic."""
+    """List resources directly attached to a topic, with sections eagerly loaded.
+
+    ``load_chunks`` additionally eager-loads each resource's chunks and its sections' chunks, with
+    the ``embedding`` blobs deferred — chunk consumers here need offsets/indices, and the embedding
+    payload dominates query time by orders of magnitude (callers that need the vectors go through
+    ``get_resource``). Display callers leave it off and pay only for section rows."""
     stmt = (
         select(Resource)
         .join(TopicResource, TopicResource.resource_id == Resource.id)
@@ -233,10 +277,14 @@ async def list_resources_for_topic(
         .order_by(Resource.name)
     )
     if load_chunks:
-        stmt = stmt.options(selectinload(Resource.chunks))
-    stmt = stmt.options(
-        selectinload(Resource.sections).selectinload(ResourceSection.chunks)
-    )
+        stmt = stmt.options(
+            selectinload(Resource.chunks).options(defer(ResourceChunk.embedding)),
+            selectinload(Resource.sections)
+            .selectinload(ResourceSection.chunks)
+            .options(defer(ResourceChunk.embedding)),
+        )
+    else:
+        stmt = stmt.options(selectinload(Resource.sections))
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

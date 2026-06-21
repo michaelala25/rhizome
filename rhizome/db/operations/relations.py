@@ -13,14 +13,16 @@ class CycleError(Exception):
     """Raised when adding a relation would create a cycle."""
 
 
-async def _would_create_cycle(
+async def would_create_cycle(
     session: AsyncSession,
     source_entry_id: int,
     target_entry_id: int,
 ) -> bool:
     """Check whether adding source→target would create a cycle.
 
-    Walks forward from target; if it can reach source, a cycle exists.
+    Walks forward from target; if it can reach source, a cycle exists. The acyclicity invariant for the
+    entry graph: both ``add_relation`` and the generic insert tool's guard call this single predicate so
+    the rule has one definition.
     """
     result = await session.execute(
         text("""
@@ -52,7 +54,7 @@ async def add_relation(
     # TODO: TOCTOU race — the cycle check and insert are not atomic. Concurrent
     # calls could both pass the check and create a cycle. Mitigate with
     # with_for_update() or a DB-level constraint.
-    if await _would_create_cycle(session, source_entry_id, target_entry_id):
+    if await would_create_cycle(session, source_entry_id, target_entry_id):
         _logger.warning("Cycle detected: %d → %d", source_entry_id, target_entry_id)
         raise CycleError(
             f"Adding {source_entry_id} -> {target_entry_id} would create a cycle"
