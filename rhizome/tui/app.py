@@ -14,6 +14,7 @@ from rhizome.config import get_default_db_path
 from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
+from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.db import SessionFactoryService, get_engine, get_session_factory
 from rhizome.app.sql_session import NotifyingSessionFactory
@@ -94,6 +95,13 @@ class RhizomeApp(App):
         if api_keys.has("voyage"):
             from rhizome.resources.embeddings import EmbeddingService, VoyageEmbedder
             self.services.register(EmbeddingService, VoyageEmbedder(api_keys))
+        # Global command scope. Slash commands split by scope the way options do: the app-root registry
+        # holds the workspace-wide commands (tab management + quit), and each conversation parents a
+        # session registry to it. These handlers are the composition root's to own -- they reach the App
+        # and the active MainScreen, which the conversation VMs deliberately can't.
+        self.commands = CommandRegistry()
+        self.services.register(CommandRegistryService, self.commands)
+        self._register_global_commands()
         self.options.subscribe_on_changed(Options.Theme, self._on_theme_changed)
         self.options.subscribe_on_changed(Options.TabMaxLength, self._on_tab_max_length_changed)
         self.theme = self.options.get(Options.Theme)
@@ -138,6 +146,31 @@ class RhizomeApp(App):
         screen = self.screen
         if isinstance(screen, MainScreen):
             screen.notify_database_committed(event)
+
+    # ------------------------------------------------------------------
+    # Global slash commands (registered at the root service scope)
+    # ------------------------------------------------------------------
+
+    def _register_global_commands(self) -> None:
+        self.commands.register("quit", self.exit, help="Quit the application.")
+        self.commands.register(
+            "new", lambda: self._main_screen_action("new_tab"), help="Open a new chat session tab."
+        )
+        self.commands.register(
+            "close", lambda: self._main_screen_action("close_tab"), help="Close the current chat session tab."
+        )
+        self.commands.register("logs", self._open_logs, help="Open the logs viewer tab.")
+
+    def _main_screen_action(self, name: str) -> None:
+        """Invoke an ``action_*`` on the active MainScreen, if one is mounted."""
+        screen = self.screen
+        if isinstance(screen, MainScreen):
+            getattr(screen, f"action_{name}")()
+
+    def _open_logs(self) -> None:
+        screen = self.screen
+        if isinstance(screen, MainScreen):
+            self.run_worker(screen._add_log_tab())
 
     # ------------------------------------------------------------------
     # Profiling (ctrl+f12 toggles a pyinstrument session)
