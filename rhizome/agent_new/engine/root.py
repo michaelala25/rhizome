@@ -9,11 +9,15 @@ The well-known message ids for resource/index blocks live in ``engine.resources`
 mode-guide id schemes live here, beside the engine that owns them.
 """
 
+import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, SystemMessage
 
+from rhizome.logs import get_logger
 from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
 from .base import ensure_message_id, ingest_payloads, PromptEngine
@@ -39,6 +43,22 @@ from ..prompts import (
 
 if TYPE_CHECKING:
     from ..context import RootAgentContext
+
+
+_logger = get_logger("agent.engine.root")
+
+# TODO(debug-gate): ``prepare`` dumps every outgoing wire request here UNCONDITIONALLY — a bring-up aid for
+# inspecting exactly what reaches the model. Gate it on a debug-mode flag once one is threaded to the engine
+# (the app has a --debug flag; it just isn't plumbed this far yet).
+PROMPT_DUMP_DIR = Path("/tmp/rhizome-prompt-dumps")
+
+
+def _content_text(content: Any) -> str:
+    """Readable rendering of a message's ``content`` — a plain str, or the structured block list that
+    providers use for tool calls / multimodal turns."""
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, default=str, indent=2, ensure_ascii=False)
 
 
 # ========================================================================================================================
@@ -194,23 +214,68 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
             (buckets[anchor] if anchor in buckets else inline).append(m)
 
         if not any(buckets.values()):
-            return request
+            result = request
+        else:
+            # The leading system block stays at the head; head pins sit just after it.
+            cut = 0
+            while cut < len(inline) and isinstance(inline[cut], SystemMessage):
+                cut += 1
+            system, body = inline[:cut], inline[cut:]
 
-        # The leading system block stays at the head; head pins sit just after it.
-        cut = 0
-        while cut < len(inline) and isinstance(inline[cut], SystemMessage):
-            cut += 1
-        system, body = inline[:cut], inline[cut:]
+            # The branch anchor: right after THIS node's marker, or the body head if it has none (the root).
+            split = 0
+            if buckets["branch"] and ctx is not None and ctx.node_id is not None:
+                marker_id = branch_marker_message_id(ctx.node_id)
+                split = next((i + 1 for i, m in enumerate(body) if m.id == marker_id), 0)
 
-        # The branch anchor: right after THIS node's marker, or the body head if it has none (the root).
-        split = 0
-        if buckets["branch"] and ctx is not None and ctx.node_id is not None:
-            marker_id = branch_marker_message_id(ctx.node_id)
-            split = next((i + 1 for i, m in enumerate(body) if m.id == marker_id), 0)
+            result = request.override(messages=[
+                *system, *buckets["head"], *body[:split], *buckets["branch"], *body[split:], *buckets["tail"],
+            ])
 
-        return request.override(messages=[
-            *system, *buckets["head"], *body[:split], *buckets["branch"], *body[split:], *buckets["tail"],
-        ])
+        self._dump_request(result, ctx)   # TODO(debug-gate): unconditional for now — see PROMPT_DUMP_DIR
+        return result
+
+    # ----- debug dump ------------------------------------------------------ #
+
+    def _dump_request(self, request: ModelRequest, ctx: "RootAgentContext | None") -> None:
+        """Write the fully-arranged wire request (system message + messages) to a tmp file, one per call,
+        and log its path — a debugging aid for seeing exactly what reaches the model. A dump failure is
+        swallowed (warned, never raised): it must not disturb a live run."""
+        try:
+            PROMPT_DUMP_DIR.mkdir(parents=True, exist_ok=True)
+            node = ctx.node_id if ctx is not None else None
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            path = PROMPT_DUMP_DIR / f"prepare-{stamp}-node{node}.txt"
+            path.write_text(self._format_request(request, ctx), encoding="utf-8")
+            _logger.info("Prompt dump written: %s", path)
+        except Exception as exc:  # noqa: BLE001 — a debug dump must never break a model call
+            _logger.warning("Prompt dump failed: %s", exc)
+
+    @staticmethod
+    def _format_request(request: ModelRequest, ctx: "RootAgentContext | None") -> str:
+        """Render the outgoing request as readable text: the system message first, then each message with
+        its id / position / lifetime tags and full content (plus tool-call details where present)."""
+        node = ctx.node_id if ctx is not None else None
+        system = request.system_message
+        bar = "=" * 100
+        out = [
+            f"prepare() dump — node={node}  messages={len(request.messages)}",
+            "",
+            bar, "SYSTEM MESSAGE", bar,
+            system.content if isinstance(system, SystemMessage) else "(no system_message on the request)",
+            "",
+            bar, "MESSAGES", bar,
+        ]
+        for i, m in enumerate(request.messages):
+            out.append(
+                f"\n--- [{i}] {type(m).__name__}  id={m.id}  pin={pin_of(m)}  lifetime={lifetime_of(m)} ---"
+            )
+            out.append(_content_text(m.content))
+            if getattr(m, "tool_calls", None):
+                out.append(f"tool_calls: {json.dumps(m.tool_calls, default=str, indent=2)}")
+            if getattr(m, "tool_call_id", None):
+                out.append(f"tool_call_id: {m.tool_call_id}")
+        return "\n".join(out)
 
     # ----- branch marker --------------------------------------------------- #
 
