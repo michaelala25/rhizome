@@ -31,6 +31,22 @@ class FlashcardReviewInterruptModel(FlashcardReviewModel, InterruptModelBase):
         # subscriber catches both.
         self.subscribe(self.Callbacks.OnLifecycle, self._on_lifecycle)
 
+    @classmethod
+    def from_interrupt(cls, value: dict[str, Any], context: Any) -> "FlashcardReviewInterruptModel":
+        """Build the review VM from a ``flashcard_review`` interrupt value plus the run context.
+
+        ``value["cards"]`` already arrives in ``FlashcardData`` shape (the review tool builds it that
+        way), so it threads straight through. The DB ``session_factory`` (for the post-session FSRS
+        commit) and the agent ``runtime`` (the auto-scorer's handle — it mints a ``flashcard_scorer``
+        session per batch) are pulled off the context the stream hands the interrupt.
+        """
+        return cls(
+            cards=value["cards"],
+            session_factory=context.session_factory,
+            auto_score_enabled=value.get("auto_score_enabled", False),
+            agent_runtime=context.runtime,
+        )
+
     def _on_lifecycle(self, state: FlashcardReviewModel.State) -> None:
         if self.resolved:
             return

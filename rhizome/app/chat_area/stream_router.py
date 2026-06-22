@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessageChunk
 
 from rhizome.agent.streaming import AgentStreamingContext, RunStateView
 from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptModel
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
@@ -136,7 +137,9 @@ class ChatAreaStreamRouter(AgentStreamingContext):
         self.pause()
         self._hide_thinking()
         try:
-            return await self._area.present_interrupt(self._build_interrupt_vm(value), cursor=self._cursor)
+            return await self._area.present_interrupt(
+                self._build_interrupt_vm(value, agent_context), cursor=self._cursor
+            )
         finally:
             self._show_thinking()
 
@@ -230,7 +233,7 @@ class ChatAreaStreamRouter(AgentStreamingContext):
         self._current_tool_message.add_tool_call(name, args)
 
     @staticmethod
-    def _build_interrupt_vm(value: Any) -> InterruptModelBase:
+    def _build_interrupt_vm(value: Any, context: Any) -> InterruptModelBase:
         """Translate a graph interrupt-value dict into the matching feed-resident VM. Raises on a
         missing/unknown ``"type"`` — a typo or not-yet-ported interrupt should surface loudly."""
         if not isinstance(value, dict):
@@ -238,6 +241,10 @@ class ChatAreaStreamRouter(AgentStreamingContext):
                 f"Interrupt value must be a dict with a 'type' key, got {type(value).__name__}"
             )
         itype = value.get("type")
+        if itype == "flashcard_review":
+            # The one interrupt that needs the run context: the review widget pulls the agent runtime
+            # (its auto-scorer's handle) and the DB session factory off it.
+            return FlashcardReviewInterruptModel.from_interrupt(value, context)
         factory = _INTERRUPT_VM_FACTORIES.get(itype)
         if factory is None:
             raise ValueError(f"Unknown interrupt type: {itype!r}")

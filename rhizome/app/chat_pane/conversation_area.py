@@ -1813,27 +1813,35 @@ class ConversationAreaModel(ViewModelBase):
                 async def commit(self, *_): return
             def _fake_session_factory(): return _FakeSession()
 
-            # Fake scorer — tweak the mapping to exercise different auto-score outcomes. ID 205 is
-            # intentionally omitted to exercise the failure-fallback path.
+            # Fake scorer runtime — tweak the mapping to exercise different auto-score outcomes. ID 205
+            # is intentionally omitted to exercise the failure-fallback path. Mirrors the AgentRuntime
+            # surface the review widget drives: ``new()`` mints a session whose ``invoke`` returns the
+            # structured response as a plain dict.
             auto_score_results = {101: 3, 102: 1, 103: 2, 204: 4}
 
-            class _FakeScorer:
+            class _FakeScorerSession:
                 def __init__(self, results_by_id: dict[int, int]):
                     self._results_by_id = results_by_id
-                    self.structured_response = None
-                async def ainvoke(self, prompt: str):
+                async def invoke(self, payloads):
                     await asyncio.sleep(1.5)
-                    results = [
-                        SimpleNamespace(flashcard_id=i, score=s, feedback="")
-                        for i, s in self._results_by_id.items()
-                    ]
-                    self.structured_response = SimpleNamespace(results=results)
+                    return SimpleNamespace(structured_response={
+                        "results": [
+                            {"flashcard_id": i, "score": s, "feedback": ""}
+                            for i, s in self._results_by_id.items()
+                        ]
+                    })
+
+            class _FakeRuntime:
+                def __init__(self, results_by_id: dict[int, int]):
+                    self._results_by_id = results_by_id
+                def new(self, key):
+                    return _FakeScorerSession(self._results_by_id)
 
             interrupt = FlashcardReviewInterruptModel(
                 cards=sample_cards,
                 session_factory=_fake_session_factory,
                 auto_score_enabled=True,
-                auto_scorer=_FakeScorer(auto_score_results),
+                agent_runtime=_FakeRuntime(auto_score_results),
             )
             result = await self.present_interrupt(interrupt)
             content = (

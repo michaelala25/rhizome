@@ -161,7 +161,7 @@ async def review(card_data, recording_scheduler):
         cards=card_data,
         session_factory=_fake_session_factory,
         auto_score_enabled=True,
-        auto_scorer=None,
+        agent_runtime=None,
         scheduler=recording_scheduler,
         auto_approve_auto_score=True,
     )
@@ -182,7 +182,7 @@ async def review_require_approval(card_data, recording_scheduler):
         cards=card_data,
         session_factory=_fake_session_factory,
         auto_score_enabled=True,
-        auto_scorer=None,
+        agent_runtime=None,
         scheduler=recording_scheduler,
         auto_approve_auto_score=False,
     )
@@ -194,25 +194,32 @@ async def review_require_approval(card_data, recording_scheduler):
         r._autoscore_task.cancel()
 
 
-class _FakeScorer:
-    """Mimics a StructuredSubagent for tests.
+class _FakeRuntime:
+    """Stands in for the AgentRuntime the auto-scorer runs through.
 
-    Constructed with a dict mapping ``flashcard_id -> rating (1-4)``. On
-    ``ainvoke``, populates ``structured_response`` with matching results for
-    every id in the dict."""
+    Constructed with a dict mapping ``flashcard_id -> rating (1-4)``. Every ``new()`` mints a session
+    whose ``invoke`` returns a structured response — a plain dict, as the real ``AgentSession`` does —
+    scoring each id in the dict. ``invocations`` counts how many batches were scored."""
 
     def __init__(self, results_by_id: dict[int, int]):
         self._results_by_id = results_by_id
-        self.structured_response = None
         self.invocations = 0
 
-    async def ainvoke(self, prompt: str):
-        self.invocations += 1
+    def new(self, key):
+        return _FakeScorerSession(self)
+
+
+class _FakeScorerSession:
+    def __init__(self, runtime: "_FakeRuntime"):
+        self._runtime = runtime
+
+    async def invoke(self, payloads):
+        self._runtime.invocations += 1
         results = [
-            SimpleNamespace(flashcard_id=fc_id, score=score, feedback="")
-            for fc_id, score in self._results_by_id.items()
+            {"flashcard_id": fc_id, "score": score, "feedback": ""}
+            for fc_id, score in self._runtime._results_by_id.items()
         ]
-        self.structured_response = SimpleNamespace(results=results)
+        return SimpleNamespace(structured_response={"results": results})
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +798,7 @@ class TestLearningLadder:
             cards=cards,
             session_factory=_fake_session_factory,
             auto_score_enabled=False,
-            auto_scorer=None,
+            agent_runtime=None,
             scheduler=recording_scheduler,
         )
         try:
@@ -823,7 +830,7 @@ class TestLearningLadder:
             cards=cards,
             session_factory=_fake_session_factory,
             auto_score_enabled=True,
-            auto_scorer=_FakeScorer({1: 3, 2: 3, 3: 3}),
+            agent_runtime=_FakeRuntime({1: 3, 2: 3, 3: 3}),
             scheduler=recording_scheduler,
             auto_approve_auto_score=True,
         )
@@ -871,7 +878,7 @@ class TestLearningLadder:
 
 class TestReviewBatchAutoScore:
     async def test_all_auto_all_good_triggers_batch_and_finishes(self, review):
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3, 3: 3})
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -882,10 +889,10 @@ class TestReviewBatchAutoScore:
             assert c.state == Flashcard.State.SCORED
             assert c.score == Flashcard.Score.GOOD
         assert review.state == FlashcardReviewViewModel.State.DONE
-        assert review._auto_scorer.invocations == 1
+        assert review._agent_runtime.invocations == 1
 
     async def test_batch_again_requeues_to_next_round(self, review):
-        review._auto_scorer = _FakeScorer({1: 3, 2: 1, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 1, 3: 3})
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -901,7 +908,7 @@ class TestReviewBatchAutoScore:
     async def test_manual_override_on_pending_auto(self, review):
         """Before the batch runs, the user can pre-empt a deferred card
         with a manual rating."""
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3})
         review.begin()
         # Defer card 1
         review.current_card.reveal_back()
@@ -923,21 +930,23 @@ class TestReviewBatchAutoScore:
 
         class _StallingScorer:
             def __init__(self):
-                self.structured_response = None
                 self.invocations = 0
 
-            async def ainvoke(self, prompt):
+            def new(self, key):
+                return self
+
+            async def invoke(self, payloads):
                 self.invocations += 1
                 await release.wait()
-                self.structured_response = SimpleNamespace(
-                    results=[
-                        SimpleNamespace(flashcard_id=i, score=s, feedback="")
+                return SimpleNamespace(structured_response={
+                    "results": [
+                        {"flashcard_id": i, "score": s, "feedback": ""}
                         for i, s in original_ainvoke_results.items()
                     ]
-                )
+                })
 
         scorer = _StallingScorer()
-        review._auto_scorer = scorer
+        review._agent_runtime = scorer
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -960,13 +969,13 @@ class TestReviewBatchAutoScore:
         manual rating (REVEALED_NOT_SCORED, back in _remaining,
         auto_scoring_failed=True) rather than looping the batch forever."""
         class _BrokenScorer:
-            def __init__(self):
-                self.structured_response = None
+            def new(self, key):
+                return self
 
-            async def ainvoke(self, prompt):
+            async def invoke(self, payloads):
                 raise RuntimeError("scorer is broken")
 
-        review._auto_scorer = _BrokenScorer()
+        review._agent_runtime = _BrokenScorer()
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -984,7 +993,7 @@ class TestReviewBatchAutoScore:
         """If the scorer drops a single card (no result for that id), that
         card is reverted to REVEALED_NOT_SCORED; the rest score normally."""
         # Scorer only returns results for cards 1 and 3 — card 2 dropped.
-        review._auto_scorer = _FakeScorer({1: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 3: 3})
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -1009,7 +1018,7 @@ class TestReviewBatchAutoScore:
     async def test_out_of_range_score_reverts_card(self, review):
         """A scorer returning 7 for a card should revert it, not try to
         apply an invalid rating."""
-        review._auto_scorer = _FakeScorer({1: 3, 2: 7, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 7, 3: 3})
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -1025,7 +1034,7 @@ class TestReviewBatchAutoScore:
         """After a card's auto-scoring fails, pressing enter on its REVEALED
         state should rate it GOOD rather than re-deferring to auto."""
         # Single-card scenario: card 1 fails, cards 2/3 score OK
-        review._auto_scorer = _FakeScorer({2: 3, 3: 3})  # card 1 missing
+        review._agent_runtime = _FakeRuntime({2: 3, 3: 3})  # card 1 missing
         review.begin()
         for _ in range(3):
             review.current_card.reveal_back()
@@ -1098,7 +1107,7 @@ class TestRegressions:
         """Reported earlier: navigating away from a SCORED card crashed
         because ``deactivate()`` tried to pause an already-stopped timer.
         With the FRONT-only guard, this should be safe."""
-        review._auto_scorer = _FakeScorer({1: 3})
+        review._agent_runtime = _FakeRuntime({1: 3})
         review.begin()
         review.current_card.reveal_back()
         review.score_current_card(Flashcard.Score.AUTO)
@@ -1168,7 +1177,7 @@ class TestRegressions:
         path. AGAIN card 1, score it manually before its due-timer; AUTO
         card 2; GOOD card 3. Without the fix, the post-batch ``_check``
         finds ``_remaining = {1}`` after swap (ghost) and never finishes."""
-        review._auto_scorer = _FakeScorer({2: 3})
+        review._agent_runtime = _FakeRuntime({2: 3})
         review.begin()
         review.current_card.reveal_back()
         review.score_current_card(Flashcard.Score.AGAIN)
@@ -1202,7 +1211,7 @@ class TestRegressions:
         checks. If skipping drained ``_remaining`` while a PENDING_AUTO
         card was deferred, the batch never fired and the session sat
         inert until the user manually overrode the deferred card."""
-        review._auto_scorer = _FakeScorer({1: 3})
+        review._agent_runtime = _FakeRuntime({1: 3})
         review.begin()
         # Defer card 1 to AUTO
         review.current_card.reveal_back()
@@ -1250,26 +1259,28 @@ class TestRegressions:
 
         class _MultiBatchScorer:
             def __init__(self):
-                self.structured_response = None
                 self.invocations = 0
                 self.first_batch_release = asyncio.Event()
 
-            async def ainvoke(self, prompt):
+            def new(self, key):
+                return self
+
+            async def invoke(self, payloads):
                 self.invocations += 1
                 if self.invocations == 1:
                     await self.first_batch_release.wait()
                     results = {2: 3}  # card 2 → GOOD
                 else:
                     results = {1: 3}  # card 1 → GOOD
-                self.structured_response = SimpleNamespace(
-                    results=[
-                        SimpleNamespace(flashcard_id=fc_id, score=s, feedback="")
+                return SimpleNamespace(structured_response={
+                    "results": [
+                        {"flashcard_id": fc_id, "score": s, "feedback": ""}
                         for fc_id, s in results.items()
                     ]
-                )
+                })
 
         scorer = _MultiBatchScorer()
-        review._auto_scorer = scorer
+        review._agent_runtime = scorer
         review.begin()
 
         # AGAIN card 1 → list [2, 3, 1], _next = {1}, cursor on card 2
@@ -1346,7 +1357,7 @@ class TestScoredPendingApproval:
         self, review_require_approval
     ):
         review = review_require_approval
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3, 3: 3})
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
@@ -1365,7 +1376,7 @@ class TestScoredPendingApproval:
         rating; with all three on Review-state cards, the session reaches
         DONE."""
         review = review_require_approval
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3, 3: 3})
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
@@ -1386,7 +1397,7 @@ class TestScoredPendingApproval:
         it should land the card in AWAITING_REVEAL (Relearning) and add
         it to _next_remaining."""
         review = review_require_approval
-        review._auto_scorer = _FakeScorer({1: 1, 2: 3, 3: 3})  # card 1 → AGAIN
+        review._agent_runtime = _FakeRuntime({1: 1, 2: 3, 3: 3})  # card 1 → AGAIN
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
@@ -1412,7 +1423,7 @@ class TestScoredPendingApproval:
         ``_auto_score_discarded`` latched. Stays in _remaining for manual
         rating. No FSRS state change."""
         review = review_require_approval
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3, 3: 3})
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
@@ -1438,7 +1449,7 @@ class TestScoredPendingApproval:
         review = review_require_approval
         # Scorer proposes GOOD for each, but user wants to override card 1
         # with EASY.
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3, 3: 3})
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
@@ -1465,7 +1476,7 @@ class TestScoredPendingApproval:
         score and skips: card → SCORED(SKIPPED), drops out of both
         queues. FSRS state untouched (skip never advances FSRS)."""
         review = review_require_approval
-        review._auto_scorer = _FakeScorer({1: 3, 2: 3, 3: 3})
+        review._agent_runtime = _FakeRuntime({1: 3, 2: 3, 3: 3})
         _drain_to_pending_approval(review)
         await review._autoscore_task
 
@@ -1488,7 +1499,7 @@ class TestScoredPendingApproval:
         """Approve-all (mixed ratings, all graduate from Review) drains
         every card to SCORED and reaches DONE."""
         review = review_require_approval
-        review._auto_scorer = _FakeScorer({1: 2, 2: 3, 3: 4})  # HARD/GOOD/EASY
+        review._agent_runtime = _FakeRuntime({1: 2, 2: 3, 3: 4})  # HARD/GOOD/EASY
         _drain_to_pending_approval(review)
         await review._autoscore_task
 

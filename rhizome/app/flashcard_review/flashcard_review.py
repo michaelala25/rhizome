@@ -207,6 +207,8 @@ from typing import Any
 
 from fsrs import Scheduler, State
 
+from rhizome.agent.base import MessagePayload
+from rhizome.agent.subagents import FLASHCARD_SCORER_KEY
 from rhizome.db.operations.flashcards import commit_fsrs_card
 from rhizome.logs import get_logger
 from rhizome.app.flashcard_review.timer import Timer
@@ -236,7 +238,7 @@ class FlashcardReviewModel(ViewModelBase):
         cards: list[FlashcardData],
         session_factory: Any,
         auto_score_enabled: bool = False,
-        auto_scorer: Any = None,
+        agent_runtime: Any = None,
         scheduler: Scheduler | None = None,
         auto_approve_auto_score: bool = False,
     ):
@@ -250,7 +252,10 @@ class FlashcardReviewModel(ViewModelBase):
         self._current_card_index = 0
 
         self._auto_score_enabled = auto_score_enabled
-        self._auto_scorer = auto_scorer
+        # Handle to the agent runtime: the batch auto-scorer mints a fresh, stateless ``flashcard_scorer``
+        # session off it (``runtime.new``) and invokes it once per batch. ``None`` when the widget runs
+        # without a runtime (e.g. a manual-only review) — auto-score then refuses to run.
+        self._agent_runtime = agent_runtime
         # When True the batch auto-scorer applies its rating immediately (AUTO_ACCEPT
         # mode). When False each rating lands in SCORED_PENDING_APPROVAL awaiting the
         # user's approve/reject decision (REQUIRE_APPROVAL mode). Toggleable mid-session
@@ -999,8 +1004,8 @@ class FlashcardReviewModel(ViewModelBase):
         Uses the stable flashcard id as ``flashcard_id`` in the prompt so results map back unambiguously,
         regardless of return order.
         """
-        if self._auto_scorer is None:
-            raise RuntimeError("auto-score invoked without a configured scorer subagent")
+        if self._agent_runtime is None:
+            raise RuntimeError("auto-score invoked without a configured agent runtime")
 
         prompt_parts = ["Score the following flashcard answers:\n\n"]
         for card in pending_auto_score:
@@ -1017,16 +1022,23 @@ class FlashcardReviewModel(ViewModelBase):
                 prompt_parts.append(f"  Testing notes: {card.testing_notes}\n")
             prompt_parts.append("\n")
 
-        await self._auto_scorer.ainvoke("".join(prompt_parts))
-        parsed = self._auto_scorer.structured_response
-        if parsed is None or not parsed.results:
+        # One-shot scoring run: mint a fresh, stateless scorer session and invoke it with the batched
+        # prompt. The structured response comes back as a plain dict — ``{"results": [{"flashcard_id",
+        # "score", "feedback"}, ...]}`` — parsed off the run's final message by ``AgentSession``.
+        scorer_session = self._agent_runtime.new(FLASHCARD_SCORER_KEY)
+        scorer_result = await scorer_session.invoke(
+            [MessagePayload(data="".join(prompt_parts), role=MessagePayload.Role.USER)]
+        )
+        parsed = scorer_result.structured_response
+        scored = parsed.get("results") if isinstance(parsed, dict) else None
+        if not scored:
             raise RuntimeError("scorer returned no structured result")
 
         results_by_id: dict[int, Any] = {}
-        for r in parsed.results:
+        for r in scored:
             try:
-                results_by_id[int(r.flashcard_id)] = r
-            except (AttributeError, ValueError, TypeError):
+                results_by_id[int(r["flashcard_id"])] = r
+            except (KeyError, TypeError, ValueError):
                 continue
 
         score_map = {
@@ -1052,8 +1064,8 @@ class FlashcardReviewModel(ViewModelBase):
                 continue
 
             try:
-                rating = int(result.score)
-            except (AttributeError, ValueError, TypeError):
+                rating = int(result["score"])
+            except (KeyError, TypeError, ValueError):
                 _fail(card, "Scorer returned non-integer score")
                 continue
             if rating not in score_map:
