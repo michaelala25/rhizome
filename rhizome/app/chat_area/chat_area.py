@@ -33,14 +33,18 @@ from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 from rhizome.app.chat_pane.interrupts.base import CANCELLED
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
-from rhizome.app.commands import CommandError, CommandRegistry, CommandRegistryService, RAW
+from rhizome.app.browser.browser import BrowserModel
+from rhizome.app.commands import CommandError, CommandRegistry, CommandRegistryService, DefaultParser, Flag, RAW
 from rhizome.app.model import ViewModelBase
-from rhizome.app.options import OptionService
+from rhizome.app.options import OptionScope, OptionService
+from rhizome.app.options_editor import OptionsEditorModel
+from rhizome.db import SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 from rhizome.tui.types import Mode, Role
 
 from .branch import BranchPointModel
 from .conversation_graph import ConversationGraph, ConversationItem, ConversationNode, Cursor
+from .demo_commands import register_demo_commands
 from .status import StatusBarModel
 from .stream_router import ChatAreaStreamRouter
 
@@ -69,6 +73,7 @@ class ChatAreaModel(ViewModelBase):
         local_resources_factory: Callable[[], ResourceContextStore] | None = None,
         command_registry: CommandRegistryService | None = None,
         options: OptionService | None = None,
+        session_factory: SessionFactoryService | None = None,
     ) -> None:
         super().__init__()
         self.make_callback_groups({
@@ -82,6 +87,12 @@ class ChatAreaModel(ViewModelBase):
         })
 
         self.runtime = runtime
+
+        # Conversation-global references the commands + status bar read at invocation time: the option
+        # service (model name + /options target) and the DB session factory (/browse + proposal demos).
+        # Both optional — a standalone area runs without them, the dependent commands degrading to a hint.
+        self._options = options
+        self._session_factory = session_factory
 
         # Worker scheduler, late-bound: the graph captures ``self._schedule`` at construction, and
         # the view swaps the underlying callable for Textual's ``run_worker`` at mount.
@@ -127,10 +138,8 @@ class ChatAreaModel(ViewModelBase):
 
         # Status bar — a fixed chat-area element (not a swappable panel). A projection of the
         # checked-out node's live mode/verbosity (its AppContextStore) plus the model name (from
-        # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible
-        # branch; options reference is retained for future use (e.g. /options porting).
-        self._options = options
-        self.status_bar = StatusBarModel(options, self._cursor.node.app_state)
+        # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible branch.
+        self.status_bar = StatusBarModel(self._options, self._cursor.node.app_state)
 
     def _schedule(self, coro: Coroutine[Any, Any, Any]) -> Any:
         return self._scheduler(coro)
@@ -447,6 +456,12 @@ class ChatAreaModel(ViewModelBase):
             self.submit()
         return new
 
+    def set_branch_name(self, name: str, *, cursor: Cursor | None = None) -> None:
+        """Rename the target branch (current cursor's leaf by default). An empty name clears it. The
+        graph emits ``OnNodeRenamed``; the indicator on the parent's feed re-derives the label from it."""
+        target = self._resolve(cursor)
+        self.conversation_graph.rename(target, name.strip() or None)
+
     # ------------------------------------------------------------------
     # Input dispatch
     # ------------------------------------------------------------------
@@ -521,21 +536,59 @@ class ChatAreaModel(ViewModelBase):
         """The conversation's command registry (parented to the workspace/global scope when injected)."""
         return self._commands
 
+    @property
+    def session_factory(self) -> SessionFactoryService | None:
+        """The DB session factory, if one was injected — used by /browse and the proposal demo commands."""
+        return self._session_factory
+
     def _register_commands(self) -> None:
         """Register the conversation-scoped slash commands. Tab / app commands (/quit, /new, ...) live in
-        the global registry this scope inherits from, and /help is built into the registry core. Commands
-        whose VM operations aren't ported yet (/clear, /commit, /options, /resources, /rename-branch) land
-        as their features do."""
+        the global registry this scope inherits from, /help is built into the registry core, and
+        /resources is workspace-scoped. /commit lands with commit mode; /clear's real semantics are still
+        open (see ``_cmd_clear``)."""
         reg = self._commands
         reg.register("idle", lambda: self.set_mode(Mode.IDLE), help="Switch to idle mode.")
         reg.register("learn", lambda: self.set_mode(Mode.LEARN), help="Switch to learn mode.")
         reg.register("review", lambda: self.set_mode(Mode.REVIEW), help="Switch to review mode.")
         reg.register("branch", self._cmd_branch, parser=RAW,
                      help="Fork a new branch; optionally provide a prompt to send.")
+        reg.register("rename-branch", self._cmd_rename_branch, parser=RAW, help="Rename the current branch.")
+        reg.register("browse", self._cmd_browse, help="Open the data browser inline in the feed.")
+        reg.register("options", self._cmd_options, help="Open the options editor inline in the feed.",
+                     parser=DefaultParser(flags=[Flag(
+                         "global", short="-g",
+                         help="Edit global (Root) options instead of this conversation's session options.")]))
+        reg.register("clear", self._cmd_clear, help="Clear the message feed.")
         reg.register("echo", lambda text: text, parser=RAW, help="Echo arguments back as a system message.")
+
+        # Demo / exercise commands (/test-*) live in their own module; see its docstring for the TODO to
+        # debug-gate this registration once a debug flag reaches the chat area.
+        register_demo_commands(self)
 
     async def _cmd_branch(self, rest: str) -> None:
         await self.branch(prompt=rest or None)
+
+    def _cmd_rename_branch(self, name: str) -> None:
+        self.set_branch_name(name)
+
+    def _cmd_browse(self) -> None:
+        if self._session_factory is None:
+            self.hint("/browse is unavailable: no database session in this scope")
+            return
+        self.append_item(BrowserModel(self._session_factory))
+
+    def _cmd_options(self, *, global_: bool) -> None:
+        if self._options is None:
+            self.hint("/options is unavailable: no options service in this scope")
+            return
+        # ``--global`` reaches the Root node; the default targets this conversation's own session options.
+        target = self._options.at_scope(OptionScope.Root) if global_ else self._options
+        self.append_item(OptionsEditorModel(target))
+
+    def _cmd_clear(self) -> None:
+        # TODO(graph): /clear semantics under the conversation graph are unsettled — which branch's feed
+        # counts, whether to cancel in-flight turns, and how to treat work on other branches. No-op + hint.
+        self.hint("/clear isn't wired up under the conversation graph yet")
 
     # ------------------------------------------------------------------
     # Commit mode (stubs)

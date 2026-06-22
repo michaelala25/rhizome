@@ -122,6 +122,7 @@ class WorkspaceModel(OrchestratorModel):
             resource_index=self._resource_index,
             local_resources_factory=self._local_resources_factory,
             options=self._options,
+            session_factory=self._session_factory,
         )
 
     def _build_resource_loader(self, _orch: OrchestratorModel) -> ResourceLoaderModel:

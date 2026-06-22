@@ -14,8 +14,11 @@ from langchain_core.tools import tool
 from langgraph.types import interrupt
 
 from rhizome.agent.state import RootAgentState
+from rhizome.app.browser.browser import BrowserModel
 from rhizome.app.chat_area.branch import BranchPointModel
 from rhizome.app.chat_area.chat_area import ChatAreaModel
+from rhizome.app.options import Options, OptionScope
+from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.agent.engine import MessagePayload
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
@@ -132,6 +135,67 @@ async def test_mode_and_verbosity_write_the_app_state_store():
     assert node.app_state.verbosity == "verbose"
     assert not node.queued                                                 # both are store writes
     assert [e.content for e in entries(node)] == ["Entered learn mode."]   # mode posts a UI-only line
+
+
+# ------------------------------------------------------------------------------------------------
+# Slash commands
+# ------------------------------------------------------------------------------------------------
+
+async def test_rename_branch_command_renames_current_leaf():
+    area = make_area()
+    await area.commands.execute("/rename-branch My Branch")     # RAW parser keeps the space + casing
+    assert area.cursor.node.name == "My Branch"
+
+
+async def test_clear_command_hints_and_leaves_feed_intact():
+    area = make_area()
+    listener = Listener(area)
+    node = area.cursor.node
+    area.append_message("keep me", Role.USER, to_agent=False)
+
+    await area.commands.execute("/clear")
+
+    assert [e.content for e in entries(node) if isinstance(e, ChatMessageModel)] == ["keep me"]
+    assert listener.hints                                       # /clear is a no-op hint for now
+
+
+async def test_options_command_appends_editor_with_options_else_hints():
+    bare = make_area()                                          # no options in scope
+    bare_listener = Listener(bare)
+    await bare.commands.execute("/options")
+    assert bare_listener.hints
+    assert entries(bare.cursor.node) == []
+
+    area = ChatAreaModel(
+        build_runtime(lambda: StreamingEchoModel(), state_schema=RootAgentState),
+        options=Options(OptionScope.Session),
+    )
+    await area.commands.execute("/options")
+    assert isinstance(entries(area.cursor.node)[-1], OptionsEditorModel)
+
+
+async def test_browse_command_appends_browser_with_factory_else_hints():
+    bare = make_area()                                          # no session factory in scope
+    bare_listener = Listener(bare)
+    await bare.commands.execute("/browse")
+    assert bare_listener.hints
+    assert entries(bare.cursor.node) == []
+
+    area = ChatAreaModel(
+        build_runtime(lambda: StreamingEchoModel(), state_schema=RootAgentState),
+        session_factory=object(),                               # Browser ctor doesn't touch the DB
+    )
+    await area.commands.execute("/browse")
+    assert isinstance(entries(area.cursor.node)[-1], BrowserModel)
+
+
+def test_real_and_demo_commands_are_registered():
+    names = {name for name, _ in make_area().commands.rows()}
+    assert {"idle", "learn", "review", "branch", "rename-branch", "browse", "options", "clear",
+            "echo"} <= names
+    assert {"test-interrupt", "test-choices", "test-warning-choices", "test-multiple-choices",
+            "test-sql-confirmation", "test-flashcards", "test-commit-proposal",
+            "test-flashcard-proposal"} <= names
 
 
 @pytest.mark.xfail(
