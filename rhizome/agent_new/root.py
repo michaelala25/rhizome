@@ -37,6 +37,7 @@ from .checkpointer import AgentCheckpointerService
 from .context import RootAgentContext
 from .engine import PromptCompilerMiddleware, RootPromptEngine
 from .factory import AgentFactory
+from .prompts import compose_system_prompt
 from .state import RootAgentState
 from .tools import (
     build_app_tools,
@@ -46,6 +47,7 @@ from .tools import (
     build_guide_tools,
     build_review_tools,
     build_sql_tools,
+    render_schema_reference,
 )
 
 _logger = get_logger("agent.root")
@@ -152,8 +154,16 @@ def build_root_agent(
     # or its TTL never rebuilds the agent; the engine ignores them until that lands.
     engine = RootPromptEngine()
 
+    # The one fixed system prompt + the registry-driven schema reference (the SSOT for table/column names
+    # and the filter DSL). Passed to create_agent so it rides every request as the stable ``system_message``
+    # — never swapped per mode, never floated by the engine, so it anchors the prefix cache.
+    # TODO(debug): thread the app's --debug flag through to here so we can pass compose_system_prompt(
+    # debug=True) and append the debug section; it isn't plumbed to the builder yet.
+    system_prompt = compose_system_prompt(schema_reference=render_schema_reference())
+
     agent = create_agent(
         model=chat_model,
+        system_prompt=system_prompt,
         tools=tools,
         middleware=[ParallelToolCallsMiddleware(parallel_tool_calling), PromptCompilerMiddleware(engine)],
         context_schema=RootAgentContext,
