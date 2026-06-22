@@ -42,6 +42,13 @@ async def list_root_topics(session: AsyncSession) -> list[Topic]:
     return list(result.scalars().all())
 
 
+async def list_all_topics(session: AsyncSession) -> list[Topic]:
+    """Return every topic, flat — for building the whole topic tree in memory (callers group by
+    ``parent_id`` themselves). Column-only access, no relationship loads."""
+    result = await session.execute(select(Topic))
+    return list(result.scalars().all())
+
+
 async def list_children(
     session: AsyncSession,
     parent_id: int,

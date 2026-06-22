@@ -10,9 +10,10 @@ from textual.widgets import TabbedContent, TabPane
 
 from rhizome.app.options import Options
 from rhizome.tui.keybindings import Keybind
-from rhizome.tui.types import ChatMessageData, DatabaseCommitted, Role, UserFeedback
-from rhizome.tui.widgets.chat_pane import ChatPane
+from rhizome.tui.types import DatabaseCommitted, UserFeedback
+from rhizome.tui.widgets.chat_area.chat_area import ChatArea
 from rhizome.tui.widgets.logging_pane import LoggingPane
+from rhizome.tui.widgets.workspace.workspace import Workspace
 
 
 class LogTabPane(TabPane):
@@ -45,23 +46,22 @@ class LogTabPane(TabPane):
 
 
 class ChatTabPane(TabPane):
-    """A TabPane that composes a ChatPane as its content.
+    """A TabPane that composes a Workspace (the conversation stack) as its content.
 
     Stores the full (untruncated) tab name and reactively re-truncates
     the displayed label when ``tab_name_len`` changes.
     """
 
-    def __init__(self, title: str, *, services, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
+    def __init__(self, title: str, *, services, tab_max_length: int = 20, **kwargs) -> None:
         self.full_name: str = title
         self._services = services
         self._tab_max_length: int = tab_max_length
-        self._show_welcome = show_welcome
         super().__init__(self._truncated_label(), **kwargs)
 
     @property
-    def chat_pane(self) -> ChatPane:
-        """Return the mounted chat pane."""
-        return self.query_one(ChatPane)
+    def workspace(self) -> Workspace:
+        """Return the mounted workspace."""
+        return self.query_one(Workspace)
 
     def _truncated_label(self) -> str:
         """Return ``full_name`` truncated to ``_tab_max_length`` characters."""
@@ -81,17 +81,16 @@ class ChatTabPane(TabPane):
         tab_widget.label = self._truncated_label()
 
     def notify_database_committed(self, event: DatabaseCommitted) -> None:
-        """Propagate to the ChatPane."""
-        pane = self.chat_pane
-        if hasattr(pane, "notify_database_committed"):
-            pane.notify_database_committed(event)
+        """No-op for now: the workspace's resource panels don't yet refresh on DB commit. TODO: wire to
+        ``self.workspace.model.resource_loader`` once it grows a refresh entry point, so entries the agent
+        writes mid-conversation surface without reopening the loader."""
 
     @on(UserFeedback)
     def _on_user_feedback(self, event: UserFeedback) -> None:
-        self.chat_pane.append_message(ChatMessageData(role=Role.SYSTEM, content=event.text))
+        self.notify(event.text, severity=event.severity)
 
     def compose(self) -> ComposeResult:
-        yield ChatPane(services=self._services, show_welcome=self._show_welcome)
+        yield Workspace(services=self._services)
 
 
 class MainScreen(Screen):
@@ -118,7 +117,7 @@ class MainScreen(Screen):
         height: 1fr;
         padding: 0;
     }
-    ChatPane {
+    Workspace {
         height: 1fr;
     }
     """
@@ -139,7 +138,6 @@ class MainScreen(Screen):
                 "Session 1",
                 services=self.app.services,  # type: ignore[attr-defined]
                 tab_max_length=max_len,
-                show_welcome=True,
                 id="session-1",
             )
 
@@ -218,11 +216,12 @@ class MainScreen(Screen):
         # doesn't cause TabbedContent to revert the switch.
         new_pane = tabs.get_pane(new_id)
         if isinstance(new_pane, ChatTabPane):
-            chat_pane = new_pane.chat_pane
-            chat_input = chat_pane.query_one("#chat-input")
-            active_widgets = getattr(chat_pane, "_active_widgets", None)
-            if chat_input.disabled and active_widgets:
-                active_widgets[-1].focus()
+            workspace = new_pane.workspace
+            chat_input = workspace.query_one("#chat-input")
+            # When the input is gated (agent busy / interrupt pending), focus the chat area instead — it
+            # owns the cancel binding and hosts any interrupt widgets the user needs to reach.
+            if chat_input.disabled:
+                workspace.query_one(ChatArea).focus()
             else:
                 chat_input.focus()
         elif isinstance(new_pane, LogTabPane):
@@ -239,5 +238,5 @@ class MainScreen(Screen):
         tabs = self.query_one("#tabs", TabbedContent)
         pane = tabs.active_pane
         if isinstance(pane, ChatTabPane):
-            pane.chat_pane.query_one("#chat-input").focus()
+            pane.workspace.query_one("#chat-input").focus()
 

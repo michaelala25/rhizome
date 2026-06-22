@@ -163,6 +163,11 @@ class Keybind(Enum):
     ResourceConfirmEdits  = ("resource.confirm_edits",  "ctrl+enter,ctrl+j")
     ResourceToggleContext = ("resource.toggle_context", "ctrl+enter,ctrl+j")
 
+    # Resource loader — direct load-state toggles on the cursor node (global / local are mutually exclusive)
+    ResourceToggleIndex  = ("resource.toggle_index",  "i")
+    ResourceToggleGlobal = ("resource.toggle_global", "g")
+    ResourceToggleLocal  = ("resource.toggle_local",  "l")
+
     # Chat pane
     ChatCycleMode           = ("chat.cycle_mode",            "shift+tab")
     ChatCycleVerbosity      = ("chat.cycle_verbosity",       "ctrl+b")

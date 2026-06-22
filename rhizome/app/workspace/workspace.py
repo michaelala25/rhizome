@@ -33,6 +33,9 @@ from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.orchestrator import OrchestratorModel
+from rhizome.app.resource_loader import ResourceLoaderModel
+from rhizome.db import SessionFactoryService
+from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceVectorStore
 from rhizome.utils.services import ServiceAccessor
 
 
@@ -64,16 +67,30 @@ class WorkspaceModel(OrchestratorModel):
         self._commands = CommandRegistry(parent=services.try_get(CommandRegistryService))
         self._services.register(CommandRegistryService, self._commands)
 
+        # Resource layer: one ``ResourceTree`` per workspace, shared by the conversation graph's stores
+        # and the loader panel. Construction is side-effect-free — no DB is touched until a refresh, which
+        # the loader's ``load`` drives. The global context store caches built blocks (one instance backs
+        # every branch); per-node local stores are minted uncached by the factory.
+        self._session_factory = self._services.get(SessionFactoryService)
+        self._resource_tree = ResourceTree(self._session_factory)
+        self._resource_context = ResourceContextStore(self._resource_tree, cache=True)
+        self._resource_index = ResourceIndexStore(
+            self._resource_tree, index=ResourceVectorStore(self._session_factory)
+        )
+        self._local_resources_factory = lambda: ResourceContextStore(self._resource_tree)
+
         # Panel descriptors. Registration is cheap (no build); ``bootstrap`` surfaces the initial set. The
-        # status bar (workspace-owned, fed by per-branch contributors), the resource viewer (pending its
-        # resources_new port), and an auxiliary right panel register here too once their VMs land.
+        # status bar (workspace-owned, fed by per-branch contributors) and an auxiliary right panel
+        # register here too once their VMs land.
         self._register_view_model(ChatAreaModel, self._build_chat_area)
+        self._register_view_model(ResourceLoaderModel, self._build_resource_loader)
 
     def bootstrap(self) -> None:
         """Surface the workspace's initial panels — the second construction phase, called by the view at
         mount. Building the chat area mints a runtime session, so this is deliberately not in ``__init__``;
         it is also the seam for mount-time inputs the service scope can't supply (app-level flags, etc.)."""
         self.request_mount(self._get_view_model(ChatAreaModel))
+        self.request_mount(self._get_view_model(ResourceLoaderModel))
 
     # ------------------------------------------------------------------
     # Typed panel accessors
@@ -84,16 +101,41 @@ class WorkspaceModel(OrchestratorModel):
         """The conversation panel — one instance, custody held for the workspace's life."""
         return self._get_view_model(ChatAreaModel)
 
+    @property
+    def resource_loader(self) -> ResourceLoaderModel:
+        """The resource-loader panel — one instance, custody held for the workspace's life."""
+        return self._get_view_model(ResourceLoaderModel)
+
     # ------------------------------------------------------------------
     # Panel descriptors
     # ------------------------------------------------------------------
 
     def _build_chat_area(self, _orch: OrchestratorModel) -> ChatAreaModel:
-        """Build the conversation panel over this workspace's runtime.
-
-        TODO(resources): construct the graph-global ``ResourceContextStore(tree, cache=True)`` + index from
-        this workspace's ``resources_new`` wiring and inject them (see ``ChatAreaModel``'s resource TODO).
-        Left as the defaults (no resources) until that lands — resources are optional.
-        """
+        """Build the conversation panel over this workspace's runtime, wired to the shared resource
+        stores so loads made in the loader panel reach the agent on its next turn."""
         runtime = self._services.get(AgentRuntimeService)
-        return ChatAreaModel(runtime, command_registry=self._commands)
+        return ChatAreaModel(
+            runtime,
+            command_registry=self._commands,
+            resource_context=self._resource_context,
+            resource_index=self._resource_index,
+            local_resources_factory=self._local_resources_factory,
+        )
+
+    def _build_resource_loader(self, _orch: OrchestratorModel) -> ResourceLoaderModel:
+        """Build the loader panel over the shared resource stores. Its local-context axis tracks the
+        conversation's current leaf — seeded from the chat area's cursor here, re-pointed on every move."""
+        chat_area = self.chat_area   # lazily builds the chat area: the loader's local store comes from it
+        loader = ResourceLoaderModel(
+            self._session_factory,
+            self._resource_tree,
+            index=self._resource_index,
+            global_context=self._resource_context,
+            local_context=chat_area.cursor.node.resources,
+        )
+        chat_area.subscribe(chat_area.Callbacks.OnCursorMoved, self._on_chat_cursor_moved)
+        return loader
+
+    def _on_chat_cursor_moved(self, cursor) -> None:
+        """Re-point the loader's local-context channel at the new conversation leaf's node-local store."""
+        self.resource_loader.set_local_context_store(cursor.node.resources)

@@ -140,6 +140,14 @@ async def fetch_resource_labels(
     return names, titles
 
 
+async def fetch_resource_metadata(session: AsyncSession) -> dict[int, tuple[str, int | None]]:
+    """Whole-library resource display metadata: ``id -> (name, estimated_tokens)``. Column-only — no
+    content, chunks, or section rows (the loader takes structure from ``ResourceTree`` and section
+    titles from ``fetch_resource_labels``). Cheap to pull wholesale at any realistic library size."""
+    rows = await session.execute(select(Resource.id, Resource.name, Resource.estimated_tokens))
+    return {rid: (name, tokens) for rid, name, tokens in rows.all()}
+
+
 def _apply_resource_pool_filters(stmt, *, exclude_ids: Iterable[int] | None, search: str | None):
     """Apply the shared (exclude_ids, search) filter to a SELECT on Resource. Shared by the windowed
     and count variants of the linker's pool query so the count matches the window exactly.
@@ -287,6 +295,14 @@ async def list_resources_for_topic(
         stmt = stmt.options(selectinload(Resource.sections))
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def fetch_topic_resource_links(session: AsyncSession) -> list[tuple[int, int]]:
+    """Every topic↔resource link as flat ``(topic_id, resource_id)`` rows — the whole join table.
+    Callers build the in-memory ``resource_id -> {topic_id}`` map that backs the loader's topic
+    filter. Column-only; cheap to pull wholesale."""
+    rows = await session.execute(select(TopicResource.topic_id, TopicResource.resource_id))
+    return [(tid, rid) for tid, rid in rows.all()]
 
 
 # -----------------------------------------------------------------------
