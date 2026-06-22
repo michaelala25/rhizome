@@ -1,12 +1,13 @@
 """ChatArea view — the conversation panel for the rewritten chat stack.
 
 Renders a ``ChatAreaModel``: a ``VerticalScroll`` feed (one widget per feed entry, mounted into per-node
-``DepthWrapper`` rules that draw the branch-depth guides), a ``ChatInput`` bound to ``vm.chat_input``, and
-a ``CommandPalette`` bound to ``vm.command_palette``. Feed-entry widgets are dispatched by runtime type
-through the shared feed-view registry.
+``DepthWrapper`` rules that draw the branch-depth guides), a ``ChatInput`` bound to ``vm.chat_input``, a
+``CommandPalette`` bound to ``vm.command_palette``, and a docked ``StatusBar`` bound to ``vm.status_bar``.
+Feed-entry widgets are dispatched by runtime type through the shared feed-view registry.
 
-The status bar is not here — the workspace owns it. Commit mode, feed-wide navigation, and mode/verbosity
-cycling aren't wired (the VM doesn't expose them yet); they slot in as the VM grows. Branch navigation is
+The status bar is a fixed element of the chat area (not a swappable workspace panel). Mode/verbosity
+cycling (shift+tab / ctrl+b) is wired here — the view owns the cycle order and calls the VM's setters.
+Commit mode and feed-wide navigation aren't wired yet; they slot in as the VM grows. Branch navigation is
 handled by the focused ``BranchPoint`` widgets themselves, not by this view.
 """
 
@@ -16,15 +17,23 @@ from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widget import Widget
 
+from rhizome.agent.app_context import VALID_VERBOSITIES
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.chat_area.conversation_graph import ConversationItem, ConversationNode, Cursor
 from rhizome.tui.keybindings import Keybind
+from rhizome.tui.types import Mode
 from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
 from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
+from rhizome.tui.widgets.chat_area.status import StatusBar
 from rhizome.tui.widgets.view_base import ViewBase
 # Feed dispatch: import the manifest for its registry side effect (see feed_views.py / feed_registry.py).
 from rhizome.tui.widgets.chat_area import feed_views  # noqa: F401
 from rhizome.tui.widgets.chat_pane.feed_registry import view_for
+
+
+# Mode cycle order for shift+tab (idle → learn → review → idle). The view owns this rotation; the VM
+# only records the resulting mode. The verbosity cycle reads its vocabulary from ``VALID_VERBOSITIES``.
+_MODE_CYCLE: tuple[Mode, ...] = (Mode.IDLE, Mode.LEARN, Mode.REVIEW)
 
 
 class DepthWrapper(Vertical):
@@ -43,6 +52,10 @@ class ChatArea(ViewBase[ChatAreaModel]):
         # ctrl+c: copy a selection if there is one (standard terminal behaviour), else cancel the
         # current branch's in-flight run. Not commit-aware yet (no commit mode in the VM).
         Keybind.ChatCancel.as_binding("cancel", "Cancel", show=False),
+        # shift+tab / ctrl+b: cycle the checked-out branch's mode / verbosity. Verbosity is priority so
+        # it fires while the chat input holds focus (ctrl+b would otherwise be a cursor move there).
+        Keybind.ChatCycleMode.as_binding("cycle_mode", "Cycle mode", show=False),
+        Keybind.ChatCycleVerbosity.as_binding("cycle_verbosity", "Cycle verbosity", show=False, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -127,6 +140,7 @@ class ChatArea(ViewBase[ChatAreaModel]):
             yield Vertical(id="message-area-inner")
         yield ChatInput(self._vm.chat_input, id="chat-input")
         yield CommandPalette(self._vm.command_palette, id="command-palette")
+        yield StatusBar(self._vm.status_bar, id="status-bar")
 
     def on_mount(self) -> None:
         # Inject Textual's worker scheduler so the graph spawns run tasks here (the VM late-binds it).
@@ -263,6 +277,18 @@ class ChatArea(ViewBase[ChatAreaModel]):
             return
         if self._vm.agent_busy():
             self._vm.cancel()
+
+    def action_cycle_mode(self) -> None:
+        """shift+tab: advance idle → learn → review → idle. Silent — a quick toggle reflected in the
+        status bar, not a chat-visible event. The VM just records the resulting mode."""
+        nxt = _MODE_CYCLE[(_MODE_CYCLE.index(self._vm.mode) + 1) % len(_MODE_CYCLE)]
+        self._vm.set_mode(nxt, silent=True)
+
+    def action_cycle_verbosity(self) -> None:
+        """ctrl+b: advance through the answer-verbosity vocabulary, wrapping."""
+        cur = self._vm.verbosity
+        idx = VALID_VERBOSITIES.index(cur) if cur in VALID_VERBOSITIES else 0
+        self._vm.set_verbosity(VALID_VERBOSITIES[(idx + 1) % len(VALID_VERBOSITIES)])
 
     # This view isn't focusable itself, so a ``RequestFocus`` from the VM lands here — route it to the
     # message-area scroll container (keystrokes bubble back up so the bindings still fire).

@@ -1,10 +1,10 @@
 """Workspace view — the ``PanelOrchestrator`` half of ``WorkspaceModel``.
 
 Lays out the workspace's panel slots and routes each surfaced panel VM to its slot. Two slots exist
-today: the resource loader (left) and the chat area (center), laid out side by side; the status-bar
-(bottom) and auxiliary (right) slots get created alongside their panel views as they land. Both current
-panels are bound at module import (the ``register_panel`` calls below), so the VMs the model surfaces at
-bootstrap mount into their slots.
+today: the resource loader (left) and the chat area (center), laid out side by side; an auxiliary (right)
+slot gets created alongside its panel view as it lands. Both current panels are bound at module import
+(the ``register_panel`` calls below), so the VMs the model surfaces at bootstrap mount into their slots.
+(The status bar is not a panel — it is docked inside the chat area itself.)
 
 Mounted by ``ChatTabPane`` (one Workspace per chat tab) — it backs the tab's content, with the screen
 reaching the conversation through ``pane.workspace`` (e.g. to focus the chat input on a tab switch).
@@ -58,8 +58,7 @@ class Workspace(PanelOrchestrator[WorkspaceModel]):
         # subscribe + replay still runs; its replay mounts whatever bootstrap surfaces here.
         self.model.bootstrap()
 
-    # TODO(panels): register the remaining panels as their views land, e.g.
-    #   register_panel(StatusBarModel, slot="slot-bottom")(StatusBar)
+    # TODO(panels): register the remaining panels as their views land, e.g. an auxiliary right panel.
 
     def hide_focus_target(self, slot_id: str):
         """Where focus lands when ``slot_id`` empties — the chat area's input. TODO: resolve once the

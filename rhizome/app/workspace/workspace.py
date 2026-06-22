@@ -2,9 +2,10 @@
 
 The workspace is the composition root for the conversation stack: it opens the workspace-scoped service
 container, declares the per-workspace ``AgentRuntime`` there, and owns the panel VMs surfaced within it.
-``ChatAreaModel`` is the always-present center panel; the status bar, resource viewer, and an auxiliary
-right panel are owned here too (stubbed until their VMs are ported). Everything is a panel for now — the
-panel/chrome distinction is deferred.
+``ChatAreaModel`` is the always-present center panel; the resource viewer and an auxiliary right panel are
+owned here too (stubbed until their VMs are ported). The status bar is not a panel — it is a fixed element
+of the chat area, owned by ``ChatAreaModel``. Everything else is a panel for now — the panel/chrome
+distinction is deferred.
 
 Two-phase construction
 ----------------------
@@ -79,9 +80,9 @@ class WorkspaceModel(OrchestratorModel):
         )
         self._local_resources_factory = lambda: ResourceContextStore(self._resource_tree)
 
-        # Panel descriptors. Registration is cheap (no build); ``bootstrap`` surfaces the initial set. The
-        # status bar (workspace-owned, fed by per-branch contributors) and an auxiliary right panel
-        # register here too once their VMs land.
+        # Panel descriptors. Registration is cheap (no build); ``bootstrap`` surfaces the initial set. An
+        # auxiliary right panel registers here too once its VM lands. (The status bar is not a panel — it
+        # lives inside the chat area, owned by ``ChatAreaModel``.)
         self._register_view_model(ChatAreaModel, self._build_chat_area)
         self._register_view_model(ResourceLoaderModel, self._build_resource_loader)
 
@@ -120,6 +121,7 @@ class WorkspaceModel(OrchestratorModel):
             resource_context=self._resource_context,
             resource_index=self._resource_index,
             local_resources_factory=self._local_resources_factory,
+            options=self._options,
         )
 
     def _build_resource_loader(self, _orch: OrchestratorModel) -> ResourceLoaderModel:

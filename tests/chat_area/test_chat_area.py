@@ -16,7 +16,7 @@ from langgraph.types import interrupt
 from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.branch import BranchPointModel
 from rhizome.app.chat_area.chat_area import ChatAreaModel
-from rhizome.agent.engine import MessagePayload, StateUpdatePayload
+from rhizome.agent.engine import MessagePayload
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
@@ -118,23 +118,20 @@ async def test_append_message_dedupes_and_forwards_by_role():
     ]
 
 
-async def test_mode_writes_store_and_verbosity_payload_reaches_branch_state():
+async def test_mode_and_verbosity_write_the_app_state_store():
     area = make_area()
     node = area.cursor.node
 
     area.set_mode(Mode.LEARN)
-    area.set_verbosity("detailed")
+    area.set_verbosity("verbose")
 
-    # Mode is the live SSOT store now — set_mode writes it directly, NOT the payload queue. Verbosity
-    # still travels as a StateUpdatePayload (its store migration is future work), so only it is queued.
+    # Mode and verbosity are both live SSOT settings on the node's AppContextStore now — the setters
+    # write the store directly, never the payload queue. (Verbosity has no prompt-engine consumer yet,
+    # so it does not reach agent state; mode's commit into state is the engine's job at compile time.)
     assert node.app_state.mode == "learn"
-    assert sum(isinstance(p, StateUpdatePayload) for p in node.queued) == 1
-    assert [e.content for e in entries(node)] == ["Entered learn mode."]   # UI-only, not forwarded
-
-    area.append_message("hi", Role.USER)
-    area.submit()
-    await wait_idle(node)
-    assert (await node.agent_state)["verbosity"] == "detailed"
+    assert node.app_state.verbosity == "verbose"
+    assert not node.queued                                                 # both are store writes
+    assert [e.content for e in entries(node)] == ["Entered learn mode."]   # mode posts a UI-only line
 
 
 @pytest.mark.xfail(

@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Coroutine
 
-from rhizome.agent.engine import MessagePayload, StateUpdatePayload
+from rhizome.agent.engine import MessagePayload
 from rhizome.agent.runtime import AgentRuntime
 from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
@@ -35,11 +35,13 @@ from rhizome.app.chat_pane.interrupts.base import CANCELLED
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
 from rhizome.app.commands import CommandError, CommandRegistry, CommandRegistryService, RAW
 from rhizome.app.model import ViewModelBase
+from rhizome.app.options import OptionService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 from rhizome.tui.types import Mode, Role
 
 from .branch import BranchPointModel
 from .conversation_graph import ConversationGraph, ConversationItem, ConversationNode, Cursor
+from .status import StatusBarModel
 from .stream_router import ChatAreaStreamRouter
 
 
@@ -66,6 +68,7 @@ class ChatAreaModel(ViewModelBase):
         resource_index: ResourceIndexStore | None = None,
         local_resources_factory: Callable[[], ResourceContextStore] | None = None,
         command_registry: CommandRegistryService | None = None,
+        options: OptionService | None = None,
     ) -> None:
         super().__init__()
         self.make_callback_groups({
@@ -121,6 +124,13 @@ class ChatAreaModel(ViewModelBase):
         self.command_palette = CommandPaletteModel(self._commands)
         self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
+
+        # Status bar — a fixed chat-area element (not a swappable panel). A projection of the
+        # checked-out node's live mode/verbosity (its AppContextStore) plus the model name (from
+        # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible
+        # branch; options reference is retained for future use (e.g. /options porting).
+        self._options = options
+        self.status_bar = StatusBarModel(options, self._cursor.node.app_state)
 
     def _schedule(self, coro: Coroutine[Any, Any, Any]) -> Any:
         return self._scheduler(coro)
@@ -180,6 +190,7 @@ class ChatAreaModel(ViewModelBase):
         self._cursor = path
         self.conversation_graph.record_visit(path)
         self._sync_branch_indicators()
+        self._sync_status_bar()
         self.emit(self.Callbacks.OnCursorMoved, path)
 
     def descend(self, child: ConversationNode | int) -> None:
@@ -212,6 +223,13 @@ class ChatAreaModel(ViewModelBase):
             for item in node.feed:
                 if isinstance(item.entry, BranchPointModel):
                     item.entry.set_selected_child(selected)
+
+    def _sync_status_bar(self) -> None:
+        """Point the status bar at the current leaf's live settings store, so its mode/verbosity track
+        the checked-out branch. No-op for a node without an app_state (none arise in practice)."""
+        app_state = self._cursor.node.app_state
+        if app_state is not None:
+            self.status_bar.set_app_state(app_state)
 
     # ------------------------------------------------------------------
     # Feed
@@ -275,6 +293,16 @@ class ChatAreaModel(ViewModelBase):
     # Per-branch agent state (mode / verbosity)
     # ------------------------------------------------------------------
 
+    @property
+    def mode(self) -> Mode:
+        """The checked-out branch's active mode — read off its ``AppContextStore`` (the SSOT)."""
+        return Mode(self._cursor.node.app_state.mode)
+
+    @property
+    def verbosity(self) -> str:
+        """The checked-out branch's answer verbosity — read off its ``AppContextStore`` (the SSOT)."""
+        return self._cursor.node.app_state.verbosity
+
     def set_mode(self, mode: Mode, *, cursor: Cursor | None = None, silent: bool = False) -> None:
         """Switch the branch's mode by writing its live ``AppContextStore`` — the single source of truth
         both the user (here) and the agent (the ``set_mode`` tool) write through.
@@ -291,10 +319,11 @@ class ChatAreaModel(ViewModelBase):
             self.append_message(text, Role.SYSTEM, cursor=target, to_agent=False)
 
     def set_verbosity(self, verbosity: str, *, cursor: Cursor | None = None) -> None:
-        """Send an answer-verbosity change into the branch's agent state. Same delivery semantics
-        as ``set_mode``."""
+        """Switch the branch's answer verbosity by writing its live ``AppContextStore`` — the per-branch
+        SSOT the status bar projects, mirroring ``set_mode``. No prompt-engine consumer reads it yet
+        (see ``AppContextStore``), so this is the view-facing setting only for now."""
         target = self._resolve(cursor)
-        self.conversation_graph.send(target, StateUpdatePayload(data={"verbosity": verbosity}), eager=True)
+        self.conversation_graph.node(target).app_state.set_verbosity(verbosity)
 
     # ------------------------------------------------------------------
     # Runs

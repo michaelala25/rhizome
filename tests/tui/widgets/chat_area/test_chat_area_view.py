@@ -7,12 +7,15 @@ branch's feed lands under a depth wrapper while the root feed + indicator stay a
 """
 
 from textual.app import App, ComposeResult
+from textual.widgets import Static
 
+from rhizome.agent.app_context import VALID_VERBOSITIES
 from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.tui.widgets.chat_area.branch import BranchPoint
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea, DepthWrapper
-from rhizome.tui.types import Role
+from rhizome.tui.widgets.chat_area.status import StatusBar
+from rhizome.tui.types import Mode, Role
 
 from tests.agent.fakes import EchoModel, build_runtime
 
@@ -50,3 +53,45 @@ async def test_branch_feed_renders_under_a_depth_wrapper():
         # The branch indicator sits at the root level, not inside the wrapper.
         assert any(isinstance(w, BranchPoint) for w in inner.children)
         assert not any(isinstance(w, BranchPoint) for w in wrappers[0].children)
+
+
+async def test_status_bar_reflects_mode_and_verbosity():
+    """The docked StatusBar repaints from the VM's status_bar projection: a mode/verbosity change on
+    the VM (writing the leaf's AppContextStore) lands in the bar's rendered text."""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await pilot.pause()
+        vm.set_mode(Mode.LEARN)
+        vm.set_verbosity("verbose")
+        await pilot.pause()
+
+        rendered = pilot.app.query_one(StatusBar).query_one(Static).content.plain
+        assert "learn" in rendered
+        assert "verbose" in rendered
+
+
+async def test_cycle_actions_advance_mode_and_verbosity():
+    """The view owns the cycle order; the handlers read current state and call the VM's setters.
+    Mode cycling is silent (no feed message) — the status bar is the only surface that reflects it."""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+
+        assert vm.mode is Mode.IDLE
+        chat.action_cycle_mode()
+        assert vm.mode is Mode.LEARN
+        chat.action_cycle_mode()
+        assert vm.mode is Mode.REVIEW
+        chat.action_cycle_mode()
+        assert vm.mode is Mode.IDLE
+        assert vm.cursor.node.feed == []          # silent: cycling posts nothing to the feed
+
+        # Verbosity advances through the vocabulary, wrapping ("auto" is last → "terse").
+        assert vm.verbosity == "auto"
+        chat.action_cycle_verbosity()
+        assert vm.verbosity == "terse"
+
+        # ctrl+b is a priority binding, so it fires while the chat input holds focus.
+        await pilot.press("ctrl+b")
+        assert vm.verbosity == VALID_VERBOSITIES[VALID_VERBOSITIES.index("terse") + 1]
