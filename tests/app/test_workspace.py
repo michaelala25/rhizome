@@ -5,10 +5,10 @@ mirroring the chat_area tests."""
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from rhizome.agent_new.checkpointer import AgentCheckpointerService, build_checkpointer
-from rhizome.agent_new.context import RootAgentContext
-from rhizome.agent_new.factory import AgentFactory, AgentFactoryService
-from rhizome.agent_new.state import RootAgentState
+from rhizome.agent.checkpointer import AgentCheckpointerService, build_checkpointer
+from rhizome.agent.context import RootAgentContext
+from rhizome.agent.factory import AgentFactory, AgentFactoryService
+from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
@@ -16,7 +16,7 @@ from rhizome.app.workspace.workspace import WorkspaceModel
 from rhizome.db import SessionFactoryService
 from rhizome.utils.services import ServiceAccessor
 
-from tests.agent_new.fakes import EchoModel, make_build
+from tests.agent.fakes import EchoModel, make_build
 
 
 def make_session_factory():

@@ -28,7 +28,7 @@ for the workspace, so its state survives the view being rebuilt or the panel bei
 
 from __future__ import annotations
 
-from rhizome.agent_new.runtime import AgentRuntime, AgentRuntimeService
+from rhizome.agent.runtime import AgentRuntime, AgentRuntimeService
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService

@@ -22,7 +22,7 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from langchain_core.messages import AIMessageChunk
 
-from rhizome.agent_new.streaming import AgentStreamingContext, RunStateView
+from rhizome.agent.streaming import AgentStreamingContext, RunStateView
 from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel

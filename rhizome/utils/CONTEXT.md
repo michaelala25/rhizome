@@ -6,7 +6,7 @@
 > is the source of truth for detail.
 
 Cross-cutting infrastructure with no domain knowledge of its own — the primitives the rest of the app
-is built on. Nothing here imports from `rhizome.app` / `rhizome.agent_new` / `rhizome.db`; the
+is built on. Nothing here imports from `rhizome.app` / `rhizome.agent` / `rhizome.db`; the
 dependency only ever points inward.
 
 
@@ -28,7 +28,7 @@ dependency only ever points inward.
 
 The DI *container* lives here, but the services themselves live with the code that implements them —
 `APIKeyService` in `credentials.py`, `SessionFactoryService` in `db/engine.py`, the agent services in
-`agent_new/`, and so on. To find them all regardless of where they live, grep the header token:
+`agent/`, and so on. To find them all regardless of where they live, grep the header token:
 
 ```
 grep -rn "^# Service:" rhizome/

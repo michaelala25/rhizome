@@ -64,7 +64,7 @@ class SessionFactoryService(Protocol):
 #   Scope : root
 #   Notes : structurally identical to SessionFactoryService, but a distinct name so DI injects a
 #           *different* instance -- one bound to a read-only engine. Used by the SQL escape-hatch tool
-#           (``agent_new.tools.sql``), whose read-only factory is built by ``read_only_session_factory``.
+#           (``agent.tools.sql``), whose read-only factory is built by ``read_only_session_factory``.
 # ==========================================================================================
 
 

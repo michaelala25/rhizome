@@ -21,7 +21,7 @@ from typing import Any, Literal, cast
 from langchain_core.messages import HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
-from rhizome.agent.session import AgentSession, get_agent_kwargs
+from rhizome.agent_legacy.session import AgentSession, get_agent_kwargs
 from rhizome.db import SessionFactoryService, Topic
 from rhizome.utils.services import ServiceAccessor
 from rhizome.utils.workers import WorkerSchedulerBinding, WorkerSchedulerService

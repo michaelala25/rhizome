@@ -16,7 +16,7 @@ from __future__ import annotations
 from rich.text import Text
 from textual.widgets import Static
 
-from rhizome.agent.utils import TokenUsageData
+from rhizome.agent_legacy.utils import TokenUsageData
 
 from rhizome.tui.widgets.view_base import ViewBase
 from rhizome.app.chat_pane.status import StatusBarModel

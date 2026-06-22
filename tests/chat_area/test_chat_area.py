@@ -13,10 +13,10 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 
-from rhizome.agent_new.state import RootAgentState
+from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.branch import BranchPointModel
 from rhizome.app.chat_area.chat_area import ChatAreaModel
-from rhizome.agent_new.engine import MessagePayload, StateUpdatePayload
+from rhizome.agent.engine import MessagePayload, StateUpdatePayload
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
@@ -24,7 +24,7 @@ from rhizome.app.chat_pane.messages.tool import ToolMessageModel
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorModel
 from rhizome.tui.types import Mode, Role
 
-from tests.agent_new.fakes import ai_contents, build_runtime, EchoModel, ToolOnceModel
+from tests.agent.fakes import ai_contents, build_runtime, EchoModel, ToolOnceModel
 
 
 class StreamingEchoModel(EchoModel):

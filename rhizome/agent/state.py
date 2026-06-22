@@ -6,9 +6,13 @@ shape is visible in one place.
 
 from __future__ import annotations
 
-from langchain.agents.middleware.types import AgentState
+from langchain.agents.middleware.types import AgentState as _AgentState
 
 from typing import Annotated, TypedDict
+
+from rhizome.resources_new import ResourceTreeNode
+
+from .base import accumulate_cleanups, CleanupRequest, ConsumedResources
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +43,7 @@ class ReviewConfig(TypedDict):
 class ReviewState(TypedDict):
     """State for an active review session.
 
-    Stored in ``RhizomeAgentState.review``.  ``None`` when no review
+    Stored in ``RootAgentState.review``.  ``None`` when no review
     session is active.  Lazily initialized by the first call to
     ``review_update_session_state``.
     """
@@ -106,7 +110,7 @@ class FlashcardProposalItem(TypedDict):
 class FlashcardProposalState(TypedDict):
     """Consolidated state for the flashcard proposal workflow.
 
-    Stored in ``RhizomeAgentState.flashcard_proposal_state``.
+    Stored in ``RootAgentState.flashcard_proposal_state``.
     """
     items: list[FlashcardProposalItem]
     """The staged flashcard items."""
@@ -124,7 +128,7 @@ class CommitProposalEntry(TypedDict):
 class CommitProposalState(TypedDict):
     """Consolidated state for the commit proposal workflow.
 
-    Stored in ``RhizomeAgentState.commit_proposal_state``.
+    Stored in ``RootAgentState.commit_proposal_state``.
     """
     payload: list[dict]
     """Selected conversation messages for knowledge commit (``{"index", "content"}``)."""
@@ -138,7 +142,18 @@ class CommitProposalState(TypedDict):
     ``commit_invoke_subagent`` to inform the subagent of user changes."""
 
 
-class RhizomeAgentState(AgentState):
+class BaseAgentState(_AgentState):
+    """Framework-level agent state every conversation has, independent of agent kind — today just the
+    message-lifetime request channel. Domain agents extend it (see ``RootAgentState``)."""
+
+    pending_cleanups: Annotated[list[CleanupRequest], accumulate_cleanups]
+    """Declarative cleanup requests (``cleanup.CleanupRequest``) filed by tools / app hooks / the agent's
+    ``cleanup_context``, drained by the engine's cleanup pass each compile — the engine stays the sole
+    emitter of the actual edits. State, not context, so a request raised mid-stream survives a crash.
+    Appended via ``accumulate_cleanups``; the pass writes ``None`` to drain."""
+
+
+class RootAgentState(BaseAgentState):
     """Extended agent state for checkpoint/replay.
 
     All fields use default last-write-wins semantics.  Nullable fields
@@ -149,22 +164,40 @@ class RhizomeAgentState(AgentState):
     """
 
     mode: str
-    """Active session mode: ``"idle"``, ``"learn"``, or ``"review"``.
+    """Active conversation mode: ``"idle"``, ``"learn"``, or ``"review"``. Per-branch state —
+    inherited through ``branch`` via checkpoint copy, divergent across siblings afterward.
 
-    Set via ``next_input`` at the start of each ``stream()`` call from
-    ``ChatPane.session_mode`` (the authoritative source of truth).
-    Updated mid-stream through two paths:
-
-    - **User-initiated** (shift+tab, slash commands): queued via
-      ``AgentModeMiddleware.set_pending_user_mode()`` and applied in
-      ``abefore_model``, which updates this field and injects a
-      ``[System]`` notification so the agent is aware.
-    - **Agent-initiated**: the ``set_mode`` tool returns
-      ``Command(update={"mode": ...})`` directly.
-
-    Determines which system prompt and tool allowlist are active, via
-    ``AgentModeMiddleware.awrap_model_call``.
+    The engine-committed *snapshot* of the mode, NOT its source of truth. The live ``AppContextStore``
+    on the context (``ctx.app_state``) is the SSOT both the user (view) and the agent (the ``set_mode``
+    tool) write through. The prompt engine diffs that store against this field at compile and, on a
+    switch, commits the new value here and narrates it (full guide on first entry, concise reminder on
+    re-entry, tool allowlist). A tool must never write this field directly — a double write would erase
+    the store-vs-state delta the engine reacts to. The system prompt and tool set never change with mode.
     """
+
+    verbosity: str
+    """Answer-verbosity preference for this conversation. Per-branch state, inherited through ``branch``
+    like ``mode``; set by the app via a ``StateUpdatePayload`` and consumed by the prompt engine when
+    shaping ephemeral context."""
+
+    consumed_resource_context: Annotated[ConsumedResources | None, merge_typeddict_field]
+    """Per-channel snapshot of the resource descriptions this thread has consumed into context.
+
+    The stores hold *desired* load state; this field records what THIS thread has actually ingested,
+    so the per-compile delta is simply desired-vs-consumed (see ``prompt_engine.resource_deltas``).
+    Written wholesale by the engine's compile step in the same state update as the content messages
+    it produces — consumption becomes a fact the moment the update lands. Living in state, it
+    inherits through ``branch`` via checkpoint copy, so children diff against their parent's
+    baseline for free. ``None`` until the first consumption."""
+
+    consumed_resource_index: list[ResourceTreeNode] | None
+    """Snapshot of the index load-state this thread's "what's queryable" reminder reflects.
+
+    The index store holds the *desired* set (graph-global); this records what THIS thread's reminder
+    message currently announces, so the per-compile decision is a plain desired-vs-snapshot set
+    comparison (see ``prompt_engine._compile_index``). Written wholesale by compile in the same update
+    as the reminder message; inherits through ``branch`` via checkpoint copy. Default LWW — only the
+    compile step writes it. ``None`` until first use."""
 
     review: Annotated[ReviewState | None, merge_typeddict_field]
     """Review session state machine; ``None`` when no review is active.

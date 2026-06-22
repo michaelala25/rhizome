@@ -18,9 +18,9 @@ from langchain.agents.structured_output import ProviderStrategy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rhizome.agent.builder import build_agent
-from rhizome.agent.subagents import StructuredSubagent
-from rhizome.agent.tools.core import build_core_tools
+from rhizome.agent_legacy.builder import build_agent
+from rhizome.agent_legacy.subagents import StructuredSubagent
+from rhizome.agent_legacy.tools.core import build_core_tools
 from rhizome.db import get_session_factory, init_db
 from rhizome.db.operations import create_entry, create_topic
 

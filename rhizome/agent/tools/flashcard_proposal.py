@@ -1,10 +1,15 @@
 """Flashcard proposal tools — stage, present, and accept flashcard proposals.
 
-These tools are mode-independent: they can be used during learn mode
-(to create flashcards from a learning conversation) or during review mode
-(to propose flashcards as part of a review session).  Proposal state is
-stored in ``RhizomeAgentState.flashcard_proposal_state``, separate from
-``ReviewState``.
+These tools are mode-independent: usable in learn mode (to mint flashcards from a learning conversation) or
+review mode (to propose cards as part of a session). Proposal state lives in
+``RootAgentState.flashcard_proposal_state`` (a ``FlashcardProposalState``), separate from ``ReviewState``.
+
+The optional clarity check (``validate=True``) runs two one-shot subagents in sequence — an *answerer* that
+attempts each question cold, and a *comparator* that judges whether the answerer's response shows the card
+is unambiguous. Both are reached through the live ``AgentRuntime`` on the context
+(``ctx.runtime.new(key).invoke(...)``) under the keys ``flashcard_answerer`` / ``flashcard_comparator``; the
+runtime returns each run's parsed structured output. When no runtime (or no such subagent) is available,
+validation degrades gracefully — the proposal still stages, with an explanatory note.
 """
 
 from __future__ import annotations
@@ -18,16 +23,23 @@ from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
-from rhizome.agent.state import FlashcardProposalItem, FlashcardProposalState
-from rhizome.agent.tools.visibility import ToolVisibility, tool_visibility
 from rhizome.db.operations import create_flashcard
 from rhizome.logs import get_logger
 
+from ..base import MessagePayload
+from ..state import FlashcardProposalItem, FlashcardProposalState
+from .visibility import ToolVisibility, tool_visibility
+
 _logger = get_logger("agent.flashcard_proposal_tools")
+
+# Runtime keys for the validation subagents. The agent kinds themselves are registered elsewhere (the
+# subagent factory); these tools only reach them by key through the runtime.
+ANSWERER_KEY = "flashcard_answerer"
+COMPARATOR_KEY = "flashcard_comparator"
 
 
 # ---------------------------------------------------------------------------
-# Validation helper
+# Validation pipeline
 # ---------------------------------------------------------------------------
 
 class _ValidationResult:
@@ -65,43 +77,46 @@ class _ValidationResult:
         return d
 
 
-async def _validate_flashcards(
-    items: list[FlashcardProposalItem],
-    answerer,
-    comparator,
-) -> _ValidationResult:
-    """Run the answerer → comparator validation pipeline on *items*.
+async def _run_structured_subagent(agent_runtime, key: str, prompt: str) -> Any | None:
+    """Run a one-shot subagent under ``key`` and return its parsed structured response (typically a dict),
+    or ``None`` if the run produced nothing parseable. Raises ``KeyError`` if the kind isn't registered."""
+    session = agent_runtime.new(key)
+    result = await session.invoke([MessagePayload(data=prompt, role=MessagePayload.Role.USER)])
+    return result.structured_response
 
-    Returns a ``_ValidationResult`` with per-card pass/fail and feedback.
-    On subagent failure, ``result.error`` is set and card-level results
-    may be empty.
+
+async def _validate_flashcards(items: list[FlashcardProposalItem], agent_runtime) -> _ValidationResult:
+    """Run the answerer → comparator validation pipeline on *items* via the runtime's validation subagents.
+
+    Returns a ``_ValidationResult`` with per-card pass/fail and feedback. On a missing runtime/subagent or a
+    subagent failure, ``result.error`` is set and card-level results may be empty.
     """
-    # Step 1: Build question list for the answerer
-    questions_payload = [
-        {"index": i, "question": fc["question_text"]}
-        for i, fc in enumerate(items)
-    ]
+    if agent_runtime is None:
+        return _ValidationResult(error="Validation is unavailable in this conversation.", total=len(items))
 
+    # Step 1: answerer attempts each question cold.
+    questions_payload = [{"index": i, "question": fc["question_text"]} for i, fc in enumerate(items)]
     answerer_input = (
         "Answer each of the following flashcard questions:\n\n"
         + "\n".join(f"{q['index']}. {q['question']}" for q in questions_payload)
     )
 
     _logger.debug("Invoking answerer subagent with %d question(s)", len(questions_payload))
-    _, answerer_response, _ = await answerer.ainvoke(answerer_input)
-
-    if answerer.structured_response is None:
+    try:
+        answerer_data = await _run_structured_subagent(agent_runtime, ANSWERER_KEY, answerer_input)
+    except KeyError:
         return _ValidationResult(
-            error="Answerer subagent failed to produce structured output.",
-            total=len(items),
+            error=f"Validation subagent {ANSWERER_KEY!r} is not registered.", total=len(items)
         )
 
+    if not isinstance(answerer_data, dict) or "answers" not in answerer_data:
+        return _ValidationResult(error="Answerer subagent failed to produce structured output.", total=len(items))
+
     answerer_answers: dict[int, str] = {
-        a.question_index: a.answer
-        for a in answerer.structured_response.answers
+        a["question_index"]: a["answer"] for a in answerer_data["answers"]
     }
 
-    # Step 2: Build comparison payload
+    # Step 2: comparator judges clarity given expected vs. test-taker answers.
     comparison_items = [
         {
             "index": i,
@@ -112,7 +127,6 @@ async def _validate_flashcards(
         }
         for i, fc in enumerate(items)
     ]
-
     comparator_input = (
         "Evaluate the following flashcards for clarity and unambiguity:\n\n"
         + "\n---\n".join(
@@ -126,35 +140,35 @@ async def _validate_flashcards(
     )
 
     _logger.debug("Invoking comparator subagent with %d card(s)", len(comparison_items))
-    _, comparator_response, _ = await comparator.ainvoke(comparator_input)
-
-    if comparator.structured_response is None:
+    try:
+        comparator_data = await _run_structured_subagent(agent_runtime, COMPARATOR_KEY, comparator_input)
+    except KeyError:
         return _ValidationResult(
-            error="Comparator subagent failed to produce structured output.",
-            total=len(items),
+            error=f"Validation subagent {COMPARATOR_KEY!r} is not registered.", total=len(items)
         )
 
-    # Step 3: Build result summary
-    results = []
+    if not isinstance(comparator_data, dict) or "results" not in comparator_data:
+        return _ValidationResult(error="Comparator subagent failed to produce structured output.", total=len(items))
+
+    # Step 3: build result summary.
+    results: list[dict[str, Any]] = []
     all_passed = True
-    for card_result in comparator.structured_response.results:
-        idx = card_result.question_index
+    for card_result in comparator_data["results"]:
+        idx = card_result["question_index"]
         fc = items[idx] if idx < len(items) else None
-        result_entry: dict[str, Any] = {
+        results.append({
             "question_index": idx,
             "question": fc["question_text"] if fc else "(unknown)",
             "expected_answer": fc["answer_text"] if fc else "(unknown)",
             "test_taker_answer": answerer_answers.get(idx, "(no answer)"),
-            "passed": card_result.passed,
-            "feedback": card_result.feedback,
-        }
-        results.append(result_entry)
-        if not card_result.passed:
+            "passed": card_result["passed"],
+            "feedback": card_result["feedback"],
+        })
+        if not card_result["passed"]:
             all_passed = False
 
     passed_count = sum(1 for r in results if r["passed"])
     failed_count = len(results) - passed_count
-
     _logger.info("Flashcard validation: %d/%d passed", passed_count, len(results))
 
     return _ValidationResult(
@@ -165,6 +179,10 @@ async def _validate_flashcards(
         results=results,
     )
 
+
+# ---------------------------------------------------------------------------
+# Input schemas
+# ---------------------------------------------------------------------------
 
 class FlashcardInput(BaseModel):
     """Input schema for creating a single flashcard."""
@@ -193,22 +211,18 @@ def _build_flashcard_diff(
     returned: list[dict],
     originals_by_id: dict[int, FlashcardProposalItem],
 ) -> list[str]:
-    """Compare original proposal items against widget-returned cards.
-
-    Returns a list of human-readable lines describing exclusions and edits.
-    """
+    """Compare original proposal items against widget-returned cards. Returns human-readable lines
+    describing exclusions and edits."""
     returned_ids = {r["id"] for r in returned}
     original_ids = {fc["id"] for fc in original}
 
     parts: list[str] = []
 
-    # Exclusions
     excluded_ids = sorted(original_ids - returned_ids)
     if excluded_ids:
         labels = [f"card {cid}" for cid in excluded_ids]
         parts.append(f"Excluded by user: {', '.join(labels)}")
 
-    # Per-card edits
     for returned_card in returned:
         card_id = returned_card["id"]
         orig = originals_by_id[card_id]
@@ -232,21 +246,12 @@ def _build_flashcard_diff(
 # Tool builder
 # ---------------------------------------------------------------------------
 
-def build_flashcard_proposal_tools(
-    session_factory,
-    answerer=None,
-    comparator=None,
-) -> dict[str, Any]:
-    """Build flashcard proposal tools with session_factory closed over.
+def build_flashcard_proposal_tools() -> dict:
+    """Build the flashcard proposal tools (name -> tool). Root-agent tools: they pull their DB session
+    factory and the ``AgentRuntime`` (for the clarity-check subagents) off the agent context at call time,
+    rather than closing over them."""
 
-    Parameters
-    ----------
-    answerer, comparator:
-        Optional ``StructuredSubagent`` instances for flashcard validation.
-        Required if the ``validate`` flag on ``flashcard_proposal_create``
-        or ``flashcard_proposal_edit`` is to be used.
-    """
-
+    @tool_visibility(ToolVisibility.LOW)
     @tool("flashcard_proposal_create", description=(
         "Stage flashcards for user review without writing to the database. "
         "Stores the proposal in agent state. Call flashcard_proposal_present "
@@ -255,7 +260,6 @@ def build_flashcard_proposal_tools(
         "Set validate=True to run an automated clarity check before presenting "
         "to the user (required on first call; optional on subsequent re-stages)."
     ))
-    @tool_visibility(ToolVisibility.LOW)
     async def create_flashcard_proposal_tool(
         flashcards: list[FlashcardInput],
         runtime: ToolRuntime,
@@ -286,16 +290,8 @@ def build_flashcard_proposal_tools(
             })
 
         # --- Inline validation ---
-        if answerer is None or comparator is None:
-            return Command(update={
-                "flashcard_proposal_state": proposal_state,
-                "messages": [ToolMessage(
-                    content="Error: validation subagents not configured. Stage without validate=True.",
-                    tool_call_id=runtime.tool_call_id,
-                )],
-            })
-
-        vr = await _validate_flashcards(items, answerer, comparator)
+        agent_runtime = getattr(runtime.context, "runtime", None)
+        vr = await _validate_flashcards(items, agent_runtime)
 
         if vr.error:
             return Command(update={
@@ -308,15 +304,13 @@ def build_flashcard_proposal_tools(
 
         if vr.all_passed:
             msg = (
-                f"Flashcard proposal staged and validated: "
-                f"all {vr.total} card(s) are clear and unambiguous. "
-                f"Proceed with flashcard_proposal_present."
+                f"Flashcard proposal staged and validated: all {vr.total} card(s) are clear and "
+                f"unambiguous. Proceed with flashcard_proposal_present."
             )
         else:
             msg = (
-                f"Flashcard proposal staged. Validation: "
-                f"{vr.passed}/{vr.total} passed, {vr.failed} failed. "
-                f"Review the feedback, revise failed cards with "
+                f"Flashcard proposal staged. Validation: {vr.passed}/{vr.total} passed, {vr.failed} "
+                f"failed. Review the feedback, revise failed cards with "
                 f"flashcard_proposal_edit(edits=..., validate=True)."
             )
 
@@ -328,6 +322,7 @@ def build_flashcard_proposal_tools(
             )],
         })
 
+    @tool_visibility(ToolVisibility.LOW)
     @tool("flashcard_proposal_present", description=(
         "Display the staged flashcard proposal to the user for review. "
         "The user can approve, request edits, reset, or cancel. "
@@ -336,10 +331,7 @@ def build_flashcard_proposal_tools(
         "flashcard_proposal_edit to make targeted changes (preserving any "
         "direct edits the user made), then present again."
     ))
-    @tool_visibility(ToolVisibility.LOW)
-    async def present_flashcard_proposal_tool(
-        runtime: ToolRuntime,
-    ) -> Command:
+    async def present_flashcard_proposal_tool(runtime: ToolRuntime) -> Command:
         fp_state: FlashcardProposalState | None = runtime.state.get("flashcard_proposal_state")
 
         if not fp_state or not fp_state.get("items"):
@@ -364,10 +356,7 @@ def build_flashcard_proposal_tools(
             for fc in proposal
         ]
 
-        result = interrupt({
-            "type": "flashcard_proposal",
-            "flashcards": interrupt_flashcards,
-        })
+        result = interrupt({"type": "flashcard_proposal", "flashcards": interrupt_flashcards})
 
         choice = result["choice"]
         returned_cards = result.get("flashcards", [])
@@ -387,7 +376,6 @@ def build_flashcard_proposal_tools(
                 testing_notes=returned.get("testing_notes"),
             ))
 
-        # Build diff summary
         diff_parts = _build_flashcard_diff(proposal, returned_cards, originals_by_id)
 
         if choice == "Approve":
@@ -416,12 +404,15 @@ def build_flashcard_proposal_tools(
             })
 
         else:  # Cancel
-            msg = "User cancelled the flashcard proposal."
             return Command(update={
                 "flashcard_proposal_state": None,
-                "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
+                "messages": [ToolMessage(
+                    content="User cancelled the flashcard proposal.",
+                    tool_call_id=runtime.tool_call_id,
+                )],
             })
 
+    @tool_visibility(ToolVisibility.LOW)
     @tool("flashcard_proposal_edit", description=(
         "Make targeted edits to the current flashcard proposal without overwriting it. "
         "Supports in-place edits (partial field updates by stable ID), deletions (by ID), "
@@ -431,7 +422,6 @@ def build_flashcard_proposal_tools(
         "edited and added cards (unchanged cards are not re-validated). "
         "Call flashcard_proposal_present afterwards to show the revised proposal to the user."
     ))
-    @tool_visibility(ToolVisibility.LOW)
     async def edit_flashcard_proposal_tool(
         runtime: ToolRuntime,
         edits: list[FlashcardEdit] | None = None,
@@ -495,29 +485,15 @@ def build_flashcard_proposal_tools(
 
         # 4. Optional validation of only touched cards
         if validate and touched_ids:
-            if answerer is None or comparator is None:
-                return Command(update={
-                    "flashcard_proposal_state": updated_state,
-                    "messages": [ToolMessage(
-                        content=(
-                            f"Flashcard proposal updated ({len(items)} card(s)): {edit_summary}. "
-                            f"Error: validation subagents not configured."
-                        ),
-                        tool_call_id=runtime.tool_call_id,
-                    )],
-                })
-
             items_to_validate = [item for item in items if item["id"] in touched_ids]
-            vr = await _validate_flashcards(items_to_validate, answerer, comparator)
+            agent_runtime = getattr(runtime.context, "runtime", None)
+            vr = await _validate_flashcards(items_to_validate, agent_runtime)
 
             if vr.error:
                 return Command(update={
                     "flashcard_proposal_state": updated_state,
                     "messages": [ToolMessage(
-                        content=json.dumps({
-                            "edit_summary": edit_summary,
-                            "error": vr.error,
-                        }, indent=2),
+                        content=json.dumps({"edit_summary": edit_summary, "error": vr.error}, indent=2),
                         tool_call_id=runtime.tool_call_id,
                     )],
                 })
@@ -536,9 +512,8 @@ def build_flashcard_proposal_tools(
             else:
                 msg = (
                     f"Flashcard proposal updated ({len(items)} card(s)): {edit_summary}. "
-                    f"Validation: {vr.passed}/{vr.total} edited/added card(s) passed, "
-                    f"{vr.failed} failed. Review the feedback and revise with "
-                    f"flashcard_proposal_edit(edits=..., validate=True)."
+                    f"Validation: {vr.passed}/{vr.total} edited/added card(s) passed, {vr.failed} failed. "
+                    f"Review the feedback and revise with flashcard_proposal_edit(edits=..., validate=True)."
                 )
 
             return Command(update={
@@ -555,15 +530,13 @@ def build_flashcard_proposal_tools(
             "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
         })
 
+    @tool_visibility(ToolVisibility.LOW)
     @tool("flashcard_proposal_accept", description=(
         "Write the approved flashcard proposal to the database. "
         "Call this after the user has approved via flashcard_proposal_present. "
         "Returns the created flashcard IDs."
     ))
-    @tool_visibility(ToolVisibility.LOW)
-    async def accept_flashcard_proposal_tool(
-        runtime: ToolRuntime,
-    ) -> Command:
+    async def accept_flashcard_proposal_tool(runtime: ToolRuntime) -> Command:
         fp_state: FlashcardProposalState | None = runtime.state.get("flashcard_proposal_state")
 
         if not fp_state or not fp_state.get("items"):
@@ -576,12 +549,12 @@ def build_flashcard_proposal_tools(
 
         proposal = fp_state["items"]
 
-        # Use review session ID if one is active, otherwise None
+        # Use the review session ID if one is active, otherwise None.
         review_state = runtime.state.get("review")
         session_id = review_state["session_id"] if review_state else None
 
         new_ids: list[int] = []
-        async with session_factory() as session:
+        async with runtime.context.session_factory() as session:
             for fc_item in proposal:
                 fc = await create_flashcard(
                     session,

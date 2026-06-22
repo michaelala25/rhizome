@@ -137,7 +137,7 @@ class ResourceViewerModel(ViewModelBase):
         # path for callers that never create resources.
         from langchain.chat_models import init_chat_model
 
-        from rhizome.agent.config import get_api_key
+        from rhizome.agent_legacy.config import get_api_key
         from rhizome.resources.auto_metadata import generate_resource_metadata
         from rhizome.resources.ingest import extract_text_from_file, ingest_resource
 

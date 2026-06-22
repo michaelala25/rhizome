@@ -14,7 +14,7 @@ Textual reactives.
 from __future__ import annotations
 
 
-from rhizome.agent.utils import TokenUsageData
+from rhizome.agent_legacy.utils import TokenUsageData
 
 from rhizome.app.model import ViewModelBase
 

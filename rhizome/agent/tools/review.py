@@ -1,8 +1,13 @@
 """Review-mode tools for review sessions.
 
-Each tool creates its own DB session via a closure over ``session_factory``,
-matching the pattern in other tool modules.  Tools that mutate ReviewState
-return ``Command(update={"review": ...})``.
+Each tool opens its own DB session from the factory on the agent context
+(``runtime.context.session_factory``). Tools that mutate the review state machine return
+``Command(update={"review": ...})`` — a PARTIAL ``ReviewState`` dict (only the keys the call changed),
+composed by the ``merge_typeddict_field`` reducer on ``RootAgentState.review`` so parallel calls touching
+disjoint keys don't clobber each other.
+
+Flashcard auto-scoring lives inside the ``FlashcardReview`` widget, so no scorer subagent is constructed
+here; these tools are pure DB-ops + interrupts.
 """
 
 from __future__ import annotations
@@ -16,22 +21,14 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
-from rhizome.agent.state import ReviewConfig, ReviewScope, ReviewState
-from rhizome.agent.tools.visibility import ToolVisibility, tool_visibility
-from rhizome.db.models import (
-    KnowledgeEntry,
-    ReviewSessionEntry,
-    ReviewSessionTopic,
-)
+from rhizome.db.models import KnowledgeEntry, ReviewSessionEntry, ReviewSessionTopic
 from rhizome.db.operations import (
     add_review_interaction,
     commit_fsrs_card,
     complete_review_session,
     create_review_session,
-    get_flashcard_entry_ids,
     get_flashcards_by_ids,
     get_interaction_stats,
-    get_sessions_by_topics,
     to_fsrs_card,
     update_session_ephemeral,
     update_session_instructions,
@@ -40,8 +37,10 @@ from rhizome.db.operations import (
 )
 from rhizome.logs import get_logger
 
-_logger = get_logger("agent.review_tools")
+from ..state import ReviewConfig, ReviewScope, ReviewState
+from .visibility import ToolVisibility, tool_visibility
 
+_logger = get_logger("agent.review_tools")
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +48,7 @@ _logger = get_logger("agent.review_tools")
 # ---------------------------------------------------------------------------
 
 class ReviewConfigUpdate(BaseModel):
-    """Partial update to review configuration.  Only provided fields are applied."""
+    """Partial update to review configuration. Only provided fields are applied."""
     style: str | None = Field(default=None, description="Review style: 'flashcard', 'conversation', or 'mixed'")
     critique_timing: str | None = Field(default=None, description="When to deliver critique: 'during' or 'after'")
     ephemeral: bool | None = Field(default=None, description="If true, session is not persisted for long-term tracking")
@@ -82,9 +81,7 @@ def _empty_review_state(session_id: int) -> ReviewState:
     )
 
 
-_NOT_INITIALIZED_MSG = (
-    "Error: no active review session. Call review_start_session first."
-)
+_NOT_INITIALIZED_MSG = "Error: no active review session. Call review_start_session first."
 
 
 def _require_review_state(runtime: ToolRuntime) -> ReviewState | None:
@@ -95,29 +92,19 @@ def _require_review_state(runtime: ToolRuntime) -> ReviewState | None:
 def _not_initialized_command(tool_call_id: str) -> Command:
     """Build the error Command for tools called before review_start_session."""
     return Command(update={
-        "messages": [ToolMessage(
-            content=_NOT_INITIALIZED_MSG,
-            tool_call_id=tool_call_id,
-        )],
+        "messages": [ToolMessage(content=_NOT_INITIALIZED_MSG, tool_call_id=tool_call_id)],
     })
 
 
-async def _update_scope_in_db(
-    session_factory,
-    session_id: int,
-    topic_ids: list[int],
-    entry_ids: list[int],
-) -> None:
+async def _update_scope_in_db(session_factory, session_id: int, topic_ids: list[int], entry_ids: list[int]) -> None:
     """Replace the scope junction rows for a review session."""
     async with session_factory() as session:
-        # Clear existing
         await session.execute(
             delete(ReviewSessionTopic).where(ReviewSessionTopic.session_id == session_id)
         )
         await session.execute(
             delete(ReviewSessionEntry).where(ReviewSessionEntry.session_id == session_id)
         )
-        # Insert new
         for tid in topic_ids:
             session.add(ReviewSessionTopic(session_id=session_id, topic_id=tid))
         for eid in entry_ids:
@@ -129,55 +116,23 @@ async def _update_scope_in_db(
 # Tool builder
 # ---------------------------------------------------------------------------
 
-def build_review_tools(session_factory) -> dict:
-    """Build all review-mode tool functions with session_factory closed over.
+def build_review_tools() -> dict:
+    """Build the review-mode tools (name -> tool). Root-agent tools: each pulls its DB session factory off
+    the agent context (``runtime.context.session_factory``) at call time, rather than closing over it.
 
-    Flashcard auto-scoring is handled inside ``FlashcardReview`` (the TUI
-    widget), so the scorer subagent is no longer constructed or passed in
-    here."""
-
-    # -------------------------------------------------------------------
-    # review_get_past_sessions
-    # -------------------------------------------------------------------
-
-    @tool_visibility(ToolVisibility.LOW)
-    @tool("review_get_past_sessions", description=(
-        "Get past review sessions overlapping the given topic IDs. "
-        "Returns session date, scope summary, and final_summary text. "
-        "Excludes ephemeral sessions. Ranked by topic overlap (IoU), limited to 5."
-    ))
-    async def review_get_past_sessions_tool(topic_ids: list[int]) -> str:
-        async with session_factory() as session:
-            sessions = await get_sessions_by_topics(session, topic_ids)
-
-        if not sessions:
-            return "No prior review sessions found for these topics."
-
-        lines: list[str] = []
-        for rs in sessions:
-            parts = [f"Session #{rs.id}"]
-            parts.append(f"Date: {rs.created_at.strftime('%Y-%m-%d %H:%M')}")
-            if rs.completed_at:
-                parts.append("Status: completed")
-            else:
-                parts.append("Status: incomplete")
-            if rs.final_summary:
-                parts.append(f"Summary:\n{rs.final_summary}")
-            else:
-                parts.append("Summary: (none)")
-            lines.append("\n".join(parts))
-
-        return "\n\n---\n\n".join(lines)
+    Reading prior review history is not a tool here — the agent queries the ``review_session`` table
+    directly (filter on ``ephemeral`` and the ``session_topics`` relationship; order by ``created_at``).
+    """
 
     # -------------------------------------------------------------------
     # review_show_session_state
     # -------------------------------------------------------------------
 
+    @tool_visibility(ToolVisibility.LOW)
     @tool("review_show_session_state", description=(
         "Dump the current review session state as a readable summary. "
         "Shows session ID, scope, config, queue size, coverage, and interaction count."
     ))
-    @tool_visibility(ToolVisibility.LOW)
     async def review_show_session_state_tool(runtime: ToolRuntime) -> str:
         review_state: ReviewState | None = runtime.state.get("review")
         if review_state is None:
@@ -186,9 +141,7 @@ def build_review_tools(session_factory) -> dict:
         total_entries = len(review_state["entry_coverage"])
         touched = sum(1 for c in review_state["entry_coverage"].values() if c > 0)
 
-        lines = [
-            f"Session ID: {review_state['session_id']}",
-        ]
+        lines = [f"Session ID: {review_state['session_id']}"]
 
         scope = review_state.get("scope")
         if scope:
@@ -198,17 +151,15 @@ def build_review_tools(session_factory) -> dict:
 
         config = review_state.get("config")
         if config:
-            # Config is built up incrementally via review_update_session_state,
-            # so any subset of keys may be present. Render only what's set.
+            # Config is built up incrementally via review_update_session_state, so any subset of keys may
+            # be present. Render only what's set.
             shown = {
                 "style": config.get("style"),
                 "timing": config.get("critique_timing"),
                 "ephemeral": config.get("ephemeral"),
             }
             parts = [f"{k}={v}" for k, v in shown.items() if v is not None]
-            lines.append(
-                f"Config: {', '.join(parts)}" if parts else "Config: (set, no fields)"
-            )
+            lines.append(f"Config: {', '.join(parts)}" if parts else "Config: (set, no fields)")
         else:
             lines.append("Config: (not set)")
 
@@ -236,6 +187,7 @@ def build_review_tools(session_factory) -> dict:
         "review_finish_session or review_update_session_state(clear=True) first."
     ))
     async def review_start_session_tool(runtime: ToolRuntime) -> Command:
+        session_factory = runtime.context.session_factory
         if runtime.state.get("review") is not None:
             return Command(update={
                 "messages": [ToolMessage(
@@ -248,9 +200,7 @@ def build_review_tools(session_factory) -> dict:
             })
 
         async with session_factory() as session:
-            review_session = await create_review_session(
-                session, topic_ids=[], entry_ids=[],
-            )
+            review_session = await create_review_session(session, topic_ids=[], entry_ids=[])
             await session.commit()
             session_id = review_session.id
 
@@ -279,20 +229,20 @@ def build_review_tools(session_factory) -> dict:
     async def review_update_session_state_tool(
         runtime: ToolRuntime,
         scope: list[int] | None = None,
-        # NB: parameter must NOT be named ``config`` — ``StructuredTool._arun``
-        # has a keyword-only ``config: RunnableConfig`` slot that silently
-        # absorbs any kwarg of that name, so the tool body would receive None.
+        # NB: parameter must NOT be named ``config`` — ``StructuredTool._arun`` has a keyword-only
+        # ``config: RunnableConfig`` slot that silently absorbs any kwarg of that name, so the tool body
+        # would receive None.
         config_update: ReviewConfigUpdate | None = None,
         flashcards: ReviewFlashcardUpdate | None = None,
         plan: str | None = None,
         clear: bool = False,
     ) -> Command:
+        session_factory = runtime.context.session_factory
         # -- Clear --
         if clear:
-            msg = "Review state cleared."
             return Command(update={
                 "review": None,
-                "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
+                "messages": [ToolMessage(content="Review state cleared.", tool_call_id=runtime.tool_call_id)],
             })
 
         review_state = _require_review_state(runtime)
@@ -300,9 +250,8 @@ def build_review_tools(session_factory) -> dict:
             return _not_initialized_command(runtime.tool_call_id)
 
         session_id = review_state["session_id"]
-        # Returned as the right-hand side of merge_review_state — must be a
-        # PARTIAL dict containing only keys this call modified, so concurrent
-        # updates touching other keys aren't clobbered.
+        # Returned as the right-hand side of merge_review_state — must be a PARTIAL dict containing only
+        # keys this call modified, so concurrent updates touching other keys aren't clobbered.
         partial: dict = {}
         results: list[str] = []
 
@@ -311,9 +260,7 @@ def build_review_tools(session_factory) -> dict:
             entry_ids = list(scope)
             async with session_factory() as session:
                 result = await session.execute(
-                    select(KnowledgeEntry.topic_id)
-                    .where(KnowledgeEntry.id.in_(entry_ids))
-                    .distinct()
+                    select(KnowledgeEntry.topic_id).where(KnowledgeEntry.id.in_(entry_ids)).distinct()
                 )
                 topic_ids = list(result.scalars().all())
 
@@ -383,9 +330,7 @@ def build_review_tools(session_factory) -> dict:
             results.append("No updates applied.")
 
         msg = " ".join(results)
-        update: dict = {
-            "messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)],
-        }
+        update: dict = {"messages": [ToolMessage(content=msg, tool_call_id=runtime.tool_call_id)]}
         if partial:
             update["review"] = partial
         return Command(update=update)
@@ -406,6 +351,7 @@ def build_review_tools(session_factory) -> dict:
         runtime: ToolRuntime,
         summary: str | None = None,
     ) -> Command:
+        session_factory = runtime.context.session_factory
         review_state = _require_review_state(runtime)
         if review_state is None:
             return _not_initialized_command(runtime.tool_call_id)
@@ -431,14 +377,12 @@ def build_review_tools(session_factory) -> dict:
         for eid in entry_ids:
             new_coverage[eid] = new_coverage.get(eid, 0) + 1
 
-        # Build tool message
         total_entries = len(new_coverage)
         touched = sum(1 for c in new_coverage.values() if c > 0)
         untouched_ids = [eid for eid, c in new_coverage.items() if c == 0]
 
         parts = [f"Recorded #{position} (score: {score}/4)."]
         parts.append(f"Coverage: {touched}/{total_entries} entries touched.")
-
         if untouched_ids:
             parts.append(f"Untouched: {untouched_ids}.")
         else:
@@ -485,6 +429,7 @@ def build_review_tools(session_factory) -> dict:
         runtime: ToolRuntime,
         flashcard_ids: list[int] | None = None,
     ) -> Command:
+        session_factory = runtime.context.session_factory
         review_state = _require_review_state(runtime)
         if review_state is None:
             return _not_initialized_command(runtime.tool_call_id)
@@ -518,11 +463,9 @@ def build_review_tools(session_factory) -> dict:
 
         flashcard_map = {fc.id: fc for fc in flashcards}
 
-        # Build card data for the widget. ``fsrs_card`` carries the
-        # session-start FSRS state into the widget, which then mutates a
-        # private copy in memory. The widget never persists those
-        # mutations itself — see the result-handling block below for the
-        # commit-on-non-ephemeral path.
+        # Build card data for the widget. ``fsrs_card`` carries the session-start FSRS state into the
+        # widget, which mutates a private copy in memory. The widget never persists those mutations
+        # itself — see the result-handling block below for the commit-on-non-ephemeral path.
         card_data = [
             {
                 "id": fc.id,
@@ -551,9 +494,8 @@ def build_review_tools(session_factory) -> dict:
         skipped_ids: list[int] = []
         auto_pending_ids: list[int] = []
         untouched_ids: list[int] = []
-        # Flag is orthogonal to the score outcome — a flagged card may also
-        # appear in any of the buckets above. Collected separately so the
-        # agent sees it as a distinct call to action.
+        # Flag is orthogonal to the score outcome — a flagged card may also appear in any bucket above.
+        # Collected separately so the agent sees it as a distinct call to action.
         flagged_ids: list[int] = []
         user_answers: dict[int, str] = {}
 
@@ -561,9 +503,8 @@ def build_review_tools(session_factory) -> dict:
             if fc_id in new_queue:
                 new_queue.remove(fc_id)
 
-        # Ephemeral sessions are not persisted — skip FSRS writes and
-        # interaction records. ``config`` may be None if the user never
-        # called review_update_session_state.
+        # Ephemeral sessions are not persisted — skip FSRS writes and interaction records. ``config`` may
+        # be None if the user never called review_update_session_state.
         config = review_state.get("config") or {}
         ephemeral = bool(config.get("ephemeral", False))
 
@@ -581,12 +522,9 @@ def build_review_tools(session_factory) -> dict:
             if card_result.get("flagged"):
                 flagged_ids.append(fc_id)
 
-            # FSRS state lives in the widget's in-memory snapshot and
-            # arrives back here as ``fsrs_card``. The widget never wrote
-            # it to the DB; we do that here, but only for non-ephemeral
-            # sessions. Cards with no rating change (untouched, skipped
-            # from FRONT) carry their initial state, so committing is a
-            # no-op equivalent.
+            # FSRS state lives in the widget's in-memory snapshot and arrives back here as ``fsrs_card``.
+            # The widget never wrote it to the DB; we do that here, but only for non-ephemeral sessions.
+            # Cards with no rating change carry their initial state, so committing is a no-op equivalent.
             fsrs_card = card_result.get("fsrs_card")
             if not ephemeral and fsrs_card is not None:
                 async with session_factory() as session:
@@ -612,11 +550,9 @@ def build_review_tools(session_factory) -> dict:
                 scored_ids.append(fc_id)
                 _drop_from_queue(fc_id)
             elif label == "again":
-                # Widget cycled the card in-session and applied
-                # Rating.Again to the in-memory FSRS state (now committed
-                # above for non-ephemeral). Reaching the tool with an
-                # AGAIN label means the in-widget requeue was interrupted
-                # — leave the card in the queue, no interaction recorded.
+                # Widget cycled the card in-session and applied Rating.Again to the in-memory FSRS state
+                # (committed above for non-ephemeral). Reaching the tool with an AGAIN label means the
+                # in-widget requeue was interrupted — leave the card in the queue, no interaction recorded.
                 again_ids.append(fc_id)
             elif label == "skipped":
                 skipped_ids.append(fc_id)
@@ -624,8 +560,8 @@ def build_review_tools(session_factory) -> dict:
                 # Cancelled mid-auto-score batch — no rating finalized.
                 auto_pending_ids.append(fc_id)
             else:
-                # label is None — card never reached a terminal score
-                # (cancelled while still on FRONT or REVEALED_NOT_SCORED).
+                # label is None — card never reached a terminal score (cancelled while still on FRONT or
+                # REVEALED_NOT_SCORED).
                 untouched_ids.append(fc_id)
 
         # Partial review-state update — only the keys this call mutates.
@@ -638,30 +574,25 @@ def build_review_tools(session_factory) -> dict:
         # Build summary message
         parts: list[str] = []
         completed = result.get("completed", False)
-        parts.append(
-            "Flashcard session complete." if completed else "Flashcard session cancelled."
-        )
+        parts.append("Flashcard session complete." if completed else "Flashcard session cancelled.")
 
         if scored_ids:
             parts.append(f"{len(scored_ids)} card(s) scored and recorded: {scored_ids}.")
         if again_ids:
-            parts.append(
-                f"{len(again_ids)} card(s) ended on AGAIN (left in queue, FSRS updated): {again_ids}."
-            )
+            parts.append(f"{len(again_ids)} card(s) ended on AGAIN (left in queue, FSRS updated): {again_ids}.")
         if skipped_ids:
             parts.append(f"{len(skipped_ids)} card(s) skipped (left in queue): {skipped_ids}.")
         if auto_pending_ids:
             parts.append(
-                f"{len(auto_pending_ids)} card(s) pending auto-score at cancel "
-                f"(left in queue): {auto_pending_ids}."
+                f"{len(auto_pending_ids)} card(s) pending auto-score at cancel (left in queue): {auto_pending_ids}."
             )
         if untouched_ids:
             parts.append(f"{len(untouched_ids)} card(s) untouched (left in queue): {untouched_ids}.")
 
         if flagged_ids:
             parts.append(
-                f"\nUser flagged the following card(s), potentially to request "
-                f"changes or take another look: {flagged_ids}."
+                f"\nUser flagged the following card(s), potentially to request changes or take another "
+                f"look: {flagged_ids}."
             )
 
         if user_answers:
@@ -698,6 +629,7 @@ def build_review_tools(session_factory) -> dict:
         runtime: ToolRuntime,
         agent_summary: str | None = None,
     ) -> Command:
+        session_factory = runtime.context.session_factory
         review_state = _require_review_state(runtime)
         if review_state is None:
             return _not_initialized_command(runtime.tool_call_id)
@@ -712,9 +644,7 @@ def build_review_tools(session_factory) -> dict:
 
         # Build final summary
         summary_parts: list[str] = []
-
-        # Stats section
-        avg_score = stats['average_score']
+        avg_score = stats["average_score"]
         summary_parts.append(f"Total interactions: {stats['total']}")
         summary_parts.append(f"Scored interactions: {stats['scored']}")
         summary_parts.append(f"Average score: {avg_score}/4" if avg_score is not None else "Average score: N/A")
@@ -725,7 +655,6 @@ def build_review_tools(session_factory) -> dict:
                 avg = round(entry_stats["total_score"] / entry_stats["scored"], 2) if entry_stats["scored"] > 0 else "N/A"
                 summary_parts.append(f"  Entry [{eid}]: {entry_stats['count']} interactions, avg score: {avg}")
 
-        # Agent observations
         if agent_summary:
             summary_parts.append(f"\nAgent observations:\n{agent_summary}")
 
@@ -762,7 +691,6 @@ def build_review_tools(session_factory) -> dict:
         })
 
     return {
-        "review_get_past_sessions": review_get_past_sessions_tool,
         "review_show_session_state": review_show_session_state_tool,
         "review_start_session": review_start_session_tool,
         "review_update_session_state": review_update_session_state_tool,

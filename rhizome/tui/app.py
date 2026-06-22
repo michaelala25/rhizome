@@ -10,9 +10,9 @@ from textual.binding import Binding
 
 import rhizome.tui.graphics as graphics
 
-from rhizome.agent_new.checkpointer import AgentCheckpointerService, build_checkpointer
-from rhizome.agent_new.factory import AgentFactoryService
-from rhizome.agent_new.root import build_agent_factory
+from rhizome.agent.checkpointer import AgentCheckpointerService, build_checkpointer
+from rhizome.agent.factory import AgentFactoryService
+from rhizome.agent.root import build_agent_factory
 from rhizome.config import get_default_db_path
 from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger

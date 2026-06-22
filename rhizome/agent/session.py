@@ -1,437 +1,290 @@
-"""Agent session: owns the LangGraph agent and message queue."""
+"""Agent session: a conversation handle over the runtime.
+
+An ``AgentSession`` drives one conversation thread. It owns the durable bits a thread needs — its context
+instance (the live payload queue, resource stores, hooks) and its thread id — while the *agent* and
+*engine* are resolved fresh from the runtime on every ``acquire``. The split buys us:
+
+- Automatic rebuilds: provider/model changes invalidate the runtime's cached graph, the next ``acquire``
+  rebuilds it, and the shared checkpointer keeps this thread's history meaningful across the swap. The
+  session's context (and its queue) ride through untouched.
+- Subagent unification: a persistent conversation with any registered agent is just a session the runtime
+  owns; tools emit ``session.thread_id`` and resume later via ``runtime.get(key, thread_id)``.
+
+Sessions are created and owned by the runtime — ``AgentRuntime.new`` builds the context, wires the queue
+onto it, and constructs the session. Input flows as payloads, not messages: ``send()`` queues
+``AgentPayload`` objects, and the agent's own ``PromptCompilerMiddleware`` ingests them at each model call
+(see ``prompt_engine.py``). Payloads stage through two stops:
+
+- the backlog — payloads posted while idle; moved into the live queue when a run starts;
+- the live queue — ``context.pending``, drained by the engine each model call. ``send(..., eager=True)``
+  during a run posts here directly, so the payload is consumed at the next model call of the *current*
+  run — provided the run consumes live (streams do by default, invokes don't; see ``consume_live``).
+"""
 
 import asyncio
 import json
-import uuid
-from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, TYPE_CHECKING
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from rhizome.config import get_log_dir
-
-from rhizome.agent.builder import build_root_agent
-from rhizome.agent.context import AgentContext
-from rhizome.agent.middleware.agent_mode import AgentModeMiddleware, SYSTEM_PROMPT_MESSAGE_ID
-from rhizome.agent.modes import MODE_REGISTRY
-from rhizome.agent.tools.app import build_app_tools
-from rhizome.agent.tools.core import build_core_tools
-from rhizome.agent.tools.flashcard_proposal import build_flashcard_proposal_tools
-from rhizome.agent.tools.guide import build_guide_tools
-from rhizome.agent.tools.resources import build_resource_tools
-from rhizome.agent.tools.review import build_review_tools
-from rhizome.agent.tools.sql import build_sql_tools
-from rhizome.agent.utils import TokenUsageData, compute_chat_model_max_tokens
-
-from rhizome.agent.subagents.commit import build_commit_subagent, build_commit_subagent_tools
-from rhizome.agent.subagents.flashcard_validator import (
-    build_answerer_subagent,
-    build_comparator_subagent,
-    build_scorer_subagent,
-)
-
 from rhizome.logs import get_logger
-from rhizome.resources import ResourceManager
-from rhizome.app.options import Options
+
+# AgentPayload et al. are re-exported here: payload types are part of the session's public API (callers
+# construct them for send()). They live in the leaf ``base`` package — the agent stack's input vocabulary —
+# and the engine re-exports them too, so this import resolves either way.
+from .engine import AgentPayload, MessagePayload, PayloadQueue, StateUpdatePayload  # noqa: F401
+from .engine import PromptEngine
+from .streaming import AgentStreamingContext, RunStateView
+
+if TYPE_CHECKING:
+    from .runtime import AgentRuntime
+
+_logger = get_logger("agent.session")
 
 
-def _merge_resource_messages_into_queue(
-    queued: list[BaseMessage],
-    resource_messages: list[BaseMessage],
-) -> list[BaseMessage]:
-    """Splice context-stuffing messages into ``queued`` at the right position.
-
-    We place them immediately **before** the last ``HumanMessage`` whose
-    content does **not** start with ``"[System]"`` — i.e. immediately
-    before the user's current turn.  This keeps the CS content adjacent
-    to the user's input while ensuring it lands after the SystemMessage
-    (system prompt) on the very first turn.
-
-    RemoveMessages and HumanMessages are treated identically here: the
-    ``add_messages`` reducer handles removals by id regardless of
-    position, so we just insert them at the same spot.
-
-    Falls back to appending at the end if ``queued`` has no non-``[System]``
-    HumanMessage (e.g. only system-prompt or settings-injection messages).
+@dataclass(frozen=True)
+class AgentInstance:
+    """A run-ready bundle for one (agent, thread): the runtime's current template parts plus this
+    session's own context and config. Transient — assembled fresh by ``AgentSession.acquire`` each call,
+    so an option-driven rebuild is picked up on the next run; never stored.
     """
-    if not resource_messages:
-        return queued
 
-    insert_at = len(queued)
-    for i in range(len(queued) - 1, -1, -1):
-        msg = queued[i]
-        if isinstance(msg, HumanMessage):
-            content = msg.content if isinstance(msg.content, str) else ""
-            if not content.startswith("[System]"):
-                insert_at = i
-                break
+    agent: CompiledStateGraph
+    engine: PromptEngine
+    context: Any
+    config: RunnableConfig
 
-    return queued[:insert_at] + resource_messages + queued[insert_at:]
+    @property
+    def thread_id(self) -> str:
+        return self.config["configurable"]["thread_id"]
 
 
-def get_agent_kwargs(options: Options) -> dict[str, Any]:
-    """Build provider-specific kwargs from the current options."""
-    provider = options.get(Options.Agent.Provider)
+@dataclass(frozen=True)
+class InvokeResult:
+    """What a one-shot run produced.
 
-    kwargs: dict[str, Any] = {}
-    kwargs["parallel_tool_calling"] = options.get(Options.Agent.ParallelToolCalling) == "enabled"
-    kwargs["temperature"] = options.get(Options.Agent.Temperature)
-    kwargs["answer_verbosity"] = options.get(Options.Agent.AnswerVerbosity)
-    kwargs["planning_verbosity"] = options.get(Options.Agent.PlanningVerbosity)
+    Invocation, unlike streaming, naturally *returns* rather than handling events as they arise — so
+    instead of a callback context, ``invoke`` hands back the pieces tool-side callers actually consume.
+    """
 
-    if provider == "anthropic":
-        kwargs["prompt_cache"] = options.get(Options.Agent.Anthropic.PromptCache) == "enabled"
-        kwargs["prompt_cache_ttl"] = options.get(Options.Agent.Anthropic.PromptCacheTTL)
-        kwargs["web_tools"] = options.get(Options.Agent.Anthropic.WebTools) == "enabled"
+    thread_id: str
+    """The thread this run executed on — emit it (e.g. in a tool message) to continue the conversation."""
 
-    return kwargs
+    response: AIMessage | None
+    """The final AI message of the run, or ``None`` if the run produced no AI message."""
 
+    state: dict[str, Any]
+    """Full final state values, for callers needing more than the response (proposal state, etc.)."""
 
-def _extract_middleware[T](middleware_list: list, cls: type[T]) -> T:
-    """Find and return the first middleware instance of the given type."""
-    for mw in middleware_list:
-        if isinstance(mw, cls):
-            return mw
-    raise RuntimeError(f"Expected {cls.__name__} in middleware list but not found")
+    structured_response: Any | None
+    """Parsed structured output, if any — see ``AgentSession._extract_structured_response``."""
 
 
 class AgentSession:
-    """Encapsulates a single conversation's agent graph and message queue.
+    """A conversation handle: send/stream/invoke over one (agent, thread) the runtime owns.
 
-    Messages are queued via ``add_human_message`` / ``add_system_notification``
-    and drained into the graph on each ``stream()`` call.  The graph's
-    checkpointer (``InMemorySaver``) maintains the full conversation history;
-    this class never passes the full history itself.
+    Construct sessions through ``AgentRuntime.new`` and fetch them through ``AgentRuntime.get`` — the
+    runtime builds the context (wiring the live ``PayloadQueue`` onto ``context.pending``) before calling
+    this constructor. The session reads its queue straight off the context, so the queue it posts into and
+    the queue the engine drains are guaranteed to be one and the same object — no second copy to keep in
+    sync.
     """
 
-    def __init__(
-            self,
-            session_factory,
-            *,
-            chat_pane=None,
-            resource_manager: ResourceManager | None = None,
-            provider: str = "anthropic",
-            model_name: str | None = None,
-            agent_kwargs: dict[str, Any] | None = None,
-            on_token_usage_changed: Callable[["AgentSession"], Any] | None = None,
-            on_rebuild_agent: Callable[[str, str], Any] | None = None,
-            thread_id: str | None = None,
-            debug: bool = False,
-        ):
-        self._session_factory = session_factory
-        self._chat_pane = chat_pane
-        self._resource_manager = resource_manager
-        self._provider = provider
-        self._model_name = model_name
-        self._agent_kwargs = agent_kwargs or {}
-        self.thread_id = thread_id or str(uuid.uuid4())
-        self._debug = debug
-        self._dump_dir: Path | None = None
-        if debug:
-            log_dir = get_log_dir()
-            # Find the next sequential index for agent-stream directories.
-            max_idx = 0
-            for p in log_dir.glob("agent-stream-*"):
-                try:
-                    max_idx = max(max_idx, int(p.name.split("-")[-1]))
-                except ValueError:
-                    pass
-            self._dump_dir = log_dir / f"agent-stream-{max_idx + 1}"
-            self._dump_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, runtime: "AgentRuntime", key: Any, thread_id: str, context: Any) -> None:
+        self._runtime = runtime
+        self._key = key
+        self._thread_id = thread_id
+        self._context = context
+        self._queue = context.pending   # single source of the live queue — see the class docstring
+        self._config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
 
-        # Flashcard subagents live on the session so they can be rebuilt if
-        # options change. The answerer/comparator are passed directly into the
-        # flashcard-proposal tools (tool-level invocation). The scorer is no
-        # longer wired into review tools — FlashcardReview pulls it off
-        # AgentContext at interrupt time and runs scoring inside the widget.
-        self._answerer_subagent = build_answerer_subagent(**dict(self._agent_kwargs))
-        self._comparator_subagent = build_comparator_subagent(**dict(self._agent_kwargs))
-        self._scorer_subagent = build_scorer_subagent(**dict(self._agent_kwargs))
+        self._backlog: list[AgentPayload] = []
+        self._busy = False
+        self._consume_live = True   # per-run; set by _begin_run
 
-        # Build all tool groups (each closed over session_factory and/or chat_pane).
-        self._tools: list = [
-            *build_core_tools(session_factory).values(),
-            *build_app_tools(session_factory, chat_pane).values(),
-            *build_review_tools(session_factory).values(),
-            *build_flashcard_proposal_tools(
-                session_factory, self._answerer_subagent, self._comparator_subagent
-            ).values(),
-            *build_sql_tools(session_factory).values(),
-            *build_guide_tools().values(),
-            *build_resource_tools(session_factory, self._resource_manager).values(),
-        ]
+    # -------------------------------------------------------------
+    # Introspection
+    # -------------------------------------------------------------
 
-        # Build the commit subagent and add its tools to the root agent's tool list.
-        self._commit_subagent = build_commit_subagent(
-            session_factory, chat_pane, **dict(self._agent_kwargs)
-        )
-        self._tools.extend(
-            build_commit_subagent_tools(session_factory, chat_pane, self._commit_subagent)
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
+    @property
+    def queued(self) -> list[AgentPayload]:
+        """Payloads waiting for the next run (excludes eager payloads already in the live queue)."""
+        return list(self._backlog)
+
+    def acquire(self) -> AgentInstance:
+        """Assemble a run-ready ``AgentInstance``: the runtime's current agent + engine for this key plus
+        this session's own context and config. One fresh bundle per call, so a rebuilt graph/engine is
+        picked up on the next run."""
+        return AgentInstance(
+            self._runtime._get_agent(self._key),
+            self._runtime._get_prompt_engine(self._key),
+            self._context,
+            self._config,
         )
 
-        self._model, self._agent, middleware = build_root_agent(
-            self._tools, self._provider, self._model_name,
-            debug=debug,
-            **self._agent_kwargs,
-        )
-        self._mode_middleware = _extract_middleware(middleware, AgentModeMiddleware)
+    @property
+    def agent(self) -> CompiledStateGraph:
+        return self.acquire().agent
 
-        self._session_logger = get_logger("agent.session")
-        self._session_logger.info("Session created (provider=%s, model=%s)", provider, model_name)
+    @property
+    def agent_context(self) -> Any:
+        return self._context
 
-        # Message queue: messages added here are drained into the graph on the
-        # next stream() call.  The system prompt is seeded here so it appears
-        # in the graph state (for debugging / log dumps).  AgentModeMiddleware
-        # keeps it in sync with the active mode on every model call.
-        idle_mode = MODE_REGISTRY["idle"](debug=debug)
-        self._message_queue: list[BaseMessage] = [
-            SystemMessage(content=idle_mode.system_prompt, id=SYSTEM_PROMPT_MESSAGE_ID)
-        ]
+    @property
+    async def agent_state(self) -> dict[str, Any]:
+        """This thread's current checkpointed state values (``{}`` when the thread is empty). Async —
+        the only state read, matching the async checkpointer; ``stream``/``invoke`` set the precedent."""
+        acq = self.acquire()
+        return dict((await acq.agent.aget_state(acq.config)).values or {})
 
-        self._token_usage = TokenUsageData()
-        self._token_usage.max_tokens = compute_chat_model_max_tokens(self._model)
-        self.on_token_usage_changed = on_token_usage_changed
-        self.on_rebuild_agent = on_rebuild_agent
+    async def seed_state(self, values: dict[str, Any]) -> None:
+        """Overwrite this thread's checkpoint with ``values``, attributed as graph input.
 
-        # User settings injection — persistent messages queued when settings change.
-        self._last_injected_settings: dict[str, Any] | None = None
-
-        # Pending commit payload — set by the TUI before starting a commit stream.
-        self._pending_commit_payload: list[dict] | None = None
-
-
-    def rebuild_agent(self, provider: str, model_name: str, agent_kwargs: dict[str, Any] | None = None) -> None:
-        """Rebuild the agent graph with the given provider and model.
-
-        The previous graph's message history is preserved by draining it
-        into the message queue so the next ``stream()`` call seeds the
-        new graph with the full conversation.
+        ``as_node="__start__"`` attributes the write as input; without it a second update on a thread
+        that already has a checkpoint raises ``InvalidUpdateError("Ambiguous update")`` — langgraph
+        cannot infer attribution. Intended for seeding a fresh thread (the graph's branch/merge), not
+        for editing a live conversation.
         """
-        old_model = self._model_name or "(default)"
-        self._session_logger.info("Agent rebuilt: %s → %s", old_model, model_name)
+        acq = self.acquire()
+        await acq.agent.aupdate_state(acq.config, values, as_node="__start__")
 
-        # Snapshot the full conversation from the old graph and prepend it
-        # to the message queue (ahead of any already-queued messages).
-        prior_messages = self._get_graph_messages()
-        if prior_messages:
-            pending = self._message_queue
-            self._message_queue = prior_messages + pending
+    def update_context(self, **overrides: Any) -> None:
+        """Replace fields on this session's context, taking effect on the *next* run.
 
-        self._provider = provider
-        self._model_name = model_name
-        if agent_kwargs is not None:
-            self._agent_kwargs = agent_kwargs
-        self._model, self._agent, middleware = build_root_agent(
-            self._tools, provider, model_name,
-            debug=self._debug,
-            **self._agent_kwargs,
-        )
-        self._mode_middleware = _extract_middleware(middleware, AgentModeMiddleware)
-        self._token_usage.max_tokens = compute_chat_model_max_tokens(self._model)
-        if self.on_rebuild_agent is not None:
-            self.on_rebuild_agent(old_model, model_name)
-
-    def fork(self) -> "AgentSession":
-        """Build a fresh session seeded with this one's full message history.
-
-        Use case: a conversation branch wants to start from this session's exact point in time but
-        proceed independently. The fork inherits the same configuration (model, provider,
-        agent_kwargs, callbacks, debug) but gets its own ``thread_id`` so its checkpointer slot
-        is independent — no shared graph state, no shared message queue, no shared subagents.
-
-        Seeding is the same snapshot/reseed mechanic ``rebuild_agent`` uses internally: the parent's
-        ``_get_graph_messages()`` plus anything still pending in its outbound queue are prepended to
-        the new session's queue. The fork's own ``SystemMessage`` (added at construction with
-        ``SYSTEM_PROMPT_MESSAGE_ID``) sits at the tail of the prepended block; on the new session's
-        first ``stream()`` drain, ``add_messages`` dedupes by id so the fork's system prompt is the
-        one that ends up active in the new graph — content carries forward, identity stays fresh.
-
-        Including the queue in the snapshot matters: messages already queued on the parent but not
-        yet drained (e.g. a fan-out from a user mode change) would otherwise be lost in the fork.
-        The fork sees the same context the parent would see on *its* next stream.
+        Deliberately distinct from invocation (there is no ``context_override`` on stream/invoke):
+        langgraph captures the context at dispatch, so a mid-run edit would not apply and could
+        desynchronize the in-flight run from its checkpoint. Framework fields (``pending``, ``runtime``)
+        are off-limits — rebinding the queue would orphan the engine's drain handle.
         """
-        new_session = AgentSession(
-            self._session_factory,
-            chat_pane=self._chat_pane,
-            resource_manager=self._resource_manager,
-            provider=self._provider,
-            model_name=self._model_name,
-            agent_kwargs=dict(self._agent_kwargs),
-            on_token_usage_changed=self.on_token_usage_changed,
-            on_rebuild_agent=self.on_rebuild_agent,
-            debug=self._debug,
-        )
-        seed = self._get_graph_messages() + list(self._message_queue)
-        if seed:
-            new_session._message_queue = seed + new_session._message_queue
-        return new_session
+        if self._busy:
+            raise RuntimeError("cannot update context while a run is in flight")
+        if "pending" in overrides or "runtime" in overrides:
+            raise ValueError("'pending' and 'runtime' are framework-owned and cannot be overridden")
+        self._context = replace(self._context, **overrides)
+        self._queue = self._context.pending
 
-    def on_options_post_update(self, options: Options) -> None:
-        """Called on an options ``OnBatchUpdated``; rebuilds agent if provider/model/kwargs changed."""
-        provider = options.get(Options.Agent.Provider)
-        model_name = options.get(Options.Agent.Model)
-        new_kwargs = get_agent_kwargs(options)
+    # -------------------------------------------------------------
+    # Input
+    # -------------------------------------------------------------
 
-        if provider != self._provider or model_name != self._model_name or new_kwargs != self._agent_kwargs:
-            self.rebuild_agent(provider, model_name, agent_kwargs=new_kwargs)
+    def send(self, payload: AgentPayload, eager: bool = False) -> None:
+        """Queue a payload for the agent.
 
-    def set_commit_payload(self, payload: list[dict]) -> None:
-        """Store a commit payload to be injected into state on the next stream() call."""
-        self._pending_commit_payload = payload
-
-    async def set_pending_user_mode(self, mode_name: str) -> None:
-        """Queue a user-initiated mode change to be applied on the next model call.
-
-        Called by ``ChatPane._set_mode()`` for user-initiated mode changes
-        (shift+tab, slash commands).  The pending mode is consumed by
-        ``AgentModeMiddleware.abefore_model`` which updates graph state and
-        injects a notification message.
-
-        Agent-initiated mode changes (the ``set_mode`` tool) do NOT go
-        through this path — they update graph state directly via
-        ``Command(update={"mode": ...})``.
+        With ``eager=True`` during an active run that consumes live (see ``stream``/``invoke``), the
+        payload posts straight to the live queue and is consumed at the current run's next model call;
+        otherwise it waits in the backlog for the next ``stream()``/``invoke()``.
         """
-        await self._mode_middleware.set_pending_user_mode(mode_name)
+        if eager and self._busy and self._consume_live:
+            self._queue.post(payload)
+        else:
+            self._backlog.append(payload)
 
-    def add_human_message(self, text: str) -> None:
-        self._message_queue.append(HumanMessage(content=text))
+    # -------------------------------------------------------------
+    # Runs
+    # -------------------------------------------------------------
 
-    def add_ai_message(self, text: str) -> None:
-        """Queue a synthetic AI message into the conversation history."""
-        self._message_queue.append(AIMessage(content=text))
+    def _merged_config(self, override: RunnableConfig | None) -> RunnableConfig:
+        """Shallow-merge a caller override onto this session's config (``configurable`` one level deep).
 
-    def add_system_notification(self, text: str) -> None:
-        # Remark: certain providers only allow a single SystemPrompt at the beginning of the conversation, so we represent these
-        # as human messages with a [System] prefix.
-        self._message_queue.append(HumanMessage(content=f"[System] {text}"))
+        The session owns thread identity: an override carrying ``thread_id`` is rejected, because
+        retargeting the thread would run this session's context (and its live queue) against another
+        thread's checkpointed state — a silent, severe mismatch.
+        """
+        if not override:
+            return self._config
+        over_cfg = override.get("configurable", {})
+        if "thread_id" in over_cfg:
+            raise ValueError(
+                "runnable_config_override may not set 'thread_id' — the AgentSession owns thread identity"
+            )
+        merged: RunnableConfig = {**self._config, **override}
+        merged["configurable"] = {**self._config["configurable"], **over_cfg}
+        return merged
 
-    def _drain_queue(self) -> list[BaseMessage]:
-        """Return all queued messages and clear the queue."""
-        messages = list(self._message_queue)
-        self._message_queue.clear()
-        return messages
+    def _begin_run(
+        self,
+        payloads: list[AgentPayload] | None,
+        runnable_config_override: RunnableConfig | None,
+        *,
+        consume_live: bool,
+    ) -> tuple[AgentInstance, RunnableConfig]:
+        if self._busy:
+            raise RuntimeError("AgentSession already has a run in flight")
+        self._consume_live = consume_live
 
-    def _get_graph_messages(self) -> list[BaseMessage]:
-        """Read the full message history from the graph's checkpointed state."""
-        config = {"configurable": {"thread_id": self.thread_id}}
-        try:
-            state = self._agent.get_state(config)
-            return list(state.values.get("messages", []))
-        except Exception:
-            return []
+        acq = self.acquire()
+        config = self._merged_config(runnable_config_override)
+
+        # The backlog becomes visible to the engine, followed by any payloads handed directly to this
+        # run: from here on, everything reaches the agent through the live queue via the engine's
+        # compile step.
+        self._queue.post_all(self._backlog)
+        self._backlog.clear()
+        if payloads:
+            self._queue.post_all(payloads)
+
+        return acq, config
 
     async def stream(
         self,
-        *,
-        mode: str = "idle",
-        on_message: Callable[[str, Any], Awaitable[None]] | None = None,
-        on_update: Callable[[str, Any], Awaitable[None]] | None = None,
-        on_interrupt: Callable[[Any, AgentContext], Awaitable[Any]] | None = None,
-        post_chunk_handler: Callable[[], Any] | None = None,
-        cursor: Any = None,
+        stream_context: AgentStreamingContext,
+        payloads: list[AgentPayload] | None = None,
+        runnable_config_override: RunnableConfig | None = None,
+        consume_live: bool = True,
     ) -> None:
-        """Stream agent output using callbacks, with interrupt/resume support.
+        """Run the agent, feeding stream events through ``stream_context``.
 
-        Token usage is tracked automatically: ``total_tokens`` is updated from
-        ``usage_metadata`` on message chunks, and ``overhead_tokens`` is computed
-        after the stream completes.  The ``on_token_usage_changed`` callback fires
-        whenever these values change.
+        ``payloads`` is a convenience for "queue these and run": they are ingested after anything
+        already in the backlog, exactly as if each had been ``send()``-ed beforehand.
 
-        Callbacks:
-            on_message(kind, payload) — called for each ``"messages"`` chunk
-            on_update(kind, payload) — called for each ``"updates"`` chunk
-            on_interrupt(interrupt_value, context) — called when the graph interrupts;
-                must return the resume value to continue the graph
-            post_chunk_handler() — called after every chunk (e.g. for scrolling)
+        The loop restarts ``astream`` for two reasons: an interrupt (resumed with the handler's
+        ``Command``), or eager payloads that landed after the run's final model call (re-entered so the
+        engine can ingest them before the run is considered complete).
+
+        ``consume_live`` controls whether eager sends are admitted into this run mid-flight; pass
+        ``False`` to defer everything posted during the run to the next one.
+
+        ``runnable_config_override`` is shallow-merged onto the run config; it may not change
+        ``thread_id`` (the session owns thread identity — see ``_merged_config``).
         """
-        self._session_logger.debug("Stream started (mode=%s)", mode)
-        config = {"configurable": {"thread_id": self.thread_id}}
+        acq, config = self._begin_run(payloads, runnable_config_override, consume_live=consume_live)
 
-        # Drain queued messages — only these (not the full history) are sent to
-        # the graph.  The checkpointer restores previous state and the
-        # add_messages reducer appends these new messages.
-        queued = self._drain_queue()
+        # The run's live state view: seeded from the checkpoint here, folded forward from every
+        # updates event below, handed to the context's during-stream hooks. Updates from the first
+        # compile (queued mode changes, etc.) reach the view before the model's output streams.
+        state_view = RunStateView((await acq.agent.aget_state(config)).values or {})
 
-        # Consume resource state changes since the last stream(): the manager
-        # returns HumanMessages for new or replaced context-stuffed content
-        # and RemoveMessages for resources that lost all CS entries.  Splice
-        # them in just before the user's current turn (see the helper for
-        # the exact rule and the first-turn SystemMessage ordering).
-        if self._resource_manager is not None:
-            resource_messages = await self._resource_manager.consume()
-            queued = _merge_resource_messages_into_queue(queued, resource_messages)
+        # Input is empty on purpose — payloads travel through the live queue and are folded into state
+        # by the engine's compile step at the first model call.
+        next_input: dict[str, Any] | Command = {"messages": []}
 
-        # Build the initial state input.  Only include state fields when we
-        # actually have new values — omitted keys are left untouched in the
-        # checkpoint, so nullable state (commit_proposal_state,
-        # flashcard_proposal_state, review, etc.) persists until explicitly
-        # cleared by a tool.
-        next_input: dict | Command = {"messages": queued, "mode": mode}
-
-        # Drain pending commit payload (set by ChatPane.confirm_commit_selection).
-        if self._pending_commit_payload is not None:
-            from rhizome.agent.state import CommitProposalState
-            next_input["commit_proposal_state"] = CommitProposalState(
-                payload=self._pending_commit_payload,
-                proposal=[],
-                proposal_diff=None,
-            )
-            self._pending_commit_payload = None
-
-        # Reset any pending user mode changes from the last invocation of .stream(). The graph state is provided
-        # with the mode fresh at every invocation of .stream(), and the chat pane mode always takes priority. The
-        # pending user mode changes are just so that user-initiated mode changes can be propagated to the agent
-        # state _during_ execution (before the next invocation of the model).
-        await self._mode_middleware.clear_pending_user_mode()
-
+        self._busy = True
         try:
-            user_settings = {
-                "answer_verbosity": self._agent_kwargs.get("answer_verbosity", "auto"),
-                "planning_verbosity": self._agent_kwargs.get("planning_verbosity", "low"),
-            }
-
-            # Inject a persistent settings message when settings change.
-            if user_settings != self._last_injected_settings:
-                if user_settings:
-                    payload = json.dumps(user_settings, indent=2)
-                    queued.append(HumanMessage(
-                        content=f"[System] Respond with these user settings:\n```json\n{payload}\n```"
-                    ))
-                self._last_injected_settings = dict(user_settings)
-
-            context = AgentContext(
-                user_settings=user_settings,
-                conversation_cursor=cursor,
-                answerer_subagent=self._answerer_subagent,
-                comparator_subagent=self._comparator_subagent,
-                scorer_subagent=self._scorer_subagent,
-                commit_subagent=self._commit_subagent,
-                session_factory=self._session_factory,
-            )
-
             while True:
                 interrupted = False
 
-                async for update in self._agent.astream(
+                async for kind, payload in acq.agent.astream(
                     next_input,
                     config=config,
-                    context=context,
+                    context=acq.context,
                     stream_mode=["updates", "messages"],
                 ):
-                    kind, payload = update
-
                     if kind == "updates":
+                        state_view.fold(payload)
 
-                        # Check for interrupt
-                        if (
-                            on_interrupt and \
-                            "__interrupt__" in payload and \
-                            payload["__interrupt__"]
-                        ):
+                        if payload.get("__interrupt__"):
                             interrupt_value = payload["__interrupt__"]
 
                             # Extract the value from the interrupt info
@@ -439,208 +292,165 @@ class AgentSession:
                                 interrupt_value = interrupt_value[0]
                             value = getattr(interrupt_value, "value", interrupt_value)
 
-                            # Pass to interrupt handler
-                            resume = await on_interrupt(value, context)
-
-                            # Construct the Command break, restarting the stream with
-                            # Command(resume) as the next input.
-                            if isinstance(resume, Command):
-                                next_input = resume
-                            else:
-                                next_input = Command(resume=resume)
+                            # Pass to the interrupt handler; its result resumes the stream.
+                            resume = await stream_context.on_interrupt(value, acq.context, state_view)
+                            next_input = resume if isinstance(resume, Command) else Command(resume=resume)
                             interrupted = True
                             break
 
-                        # Pass to update handler
-                        if on_update:
-                            await on_update(kind, payload)
+                        await stream_context.on_update(payload, state_view)
 
                     elif kind == "messages":
-                        chunk, _metadata = payload
+                        # TODO: usage-metadata extraction — likely an AgentStreamingContext concern now.
+                        await stream_context.on_message(payload, state_view)
 
-                        # Extract token/cache usage metadata and notify a
-                        # token usage update.
-                        self._extract_usage_metadata(chunk)
-
-                        # Pass to message handler
-                        if on_message:
-                            await on_message(kind, payload)
-
-                    if post_chunk_handler:
-                        result = post_chunk_handler()
-                        if result is not None and hasattr(result, "__await__"):
-                            await result
-
-                if not interrupted:
-                    # astream completed without interrupt → done
-                    break
-                # otherwise loop continues with Command(resume=...) as next_input
+                if interrupted:
+                    continue
+                if self._queue:
+                    # Eager payloads arrived after the final model call — re-enter so the engine
+                    # ingests them as part of this run.
+                    next_input = {"messages": []}
+                    continue
+                break
 
         except asyncio.CancelledError:
-            self._patch_orphaned_tool_calls("Tool call cancelled by user.")
+            await self._repair(acq, config, "Tool call cancelled by user.")
+            await stream_context.on_cancelled()
             raise
+
         except Exception as exc:
-            self._patch_orphaned_tool_calls(
-                f"An error has occurred during the stream request: {type(exc).__name__}"
-            )
-            self._session_logger.exception("Stream error: %s", exc, exc_info=exc, stack_info=True)
+            await self._repair(acq, config, f"An error occurred during the stream request: {type(exc).__name__}")
+            _logger.exception("Stream error: %s", exc)
+            await stream_context.on_exception(exc)
             raise
+
         else:
-            self._session_logger.debug(
-                f"Stream complete (tokens={self._token_usage.total_tokens}, "
-                f"cache_read={self._token_usage.cache_read_tokens}, "
-                f"cache_create={self._token_usage.cache_creation_tokens})"
-            )
+            state = await acq.agent.aget_state(config)
+            structured = self._extract_structured_response(state.values)
+            if structured is not None:
+                await stream_context.on_structured_response(structured)
+
         finally:
-            self._notify_token_usage()
-            self._dump_graph_state()
+            self._busy = False
+            await stream_context.on_complete(state_view)
 
-    def _extract_usage_metadata(self, chunk):
-        if not (hasattr(chunk, "usage_metadata") and chunk.usage_metadata):
-            return
+    async def invoke(
+        self,
+        payloads: list[AgentPayload] | None = None,
+        runnable_config_override: RunnableConfig | None = None,
+        consume_live: bool = False,
+    ) -> InvokeResult:
+        """One-shot run: invoke with the payloads you want, get an ``InvokeResult`` back.
 
-        if chunk.usage_metadata.get("total_tokens"):
-            self._token_usage.total_tokens = chunk.usage_metadata["total_tokens"]
+        ``payloads`` are ingested after anything already in the backlog, exactly as if each had been
+        ``send()``-ed beforehand — for invocation this is the natural calling shape
+        (``await session.invoke([MessagePayload(...)])``).
 
-        details = chunk.usage_metadata.get("input_token_details", {})
-        cache_read = details.get("cache_read")
-        cache_create = details.get("cache_creation")
+        By default an invoke run does NOT consume eager payloads mid-run: one-shot invocations are
+        typically subagent calls where a mid-flight send belongs to the *next* turn, so eager posts wait
+        in the backlog. Pass ``consume_live=True`` for stream-like live delivery.
 
-        if not cache_read and not cache_create:
-            resp_meta = getattr(chunk, "response_metadata", {})
-            usage = resp_meta.get("usage", {})
-            cache_read = usage.get("cache_read_input_tokens")
-            cache_create = usage.get("cache_creation_input_tokens")
-
-        if cache_read or cache_create:
-            self._token_usage.cache_read_tokens = cache_read
-            self._token_usage.cache_creation_tokens = cache_create
-
-        self._notify_token_usage()
-
-    def _dump_graph_state(self) -> None:
-        """Dump the full graph message state to a timestamped JSON file."""
-        if self._dump_dir is None:
-            return
-        try:
-            messages = self._get_graph_messages()
-            parts: list[str] = []
-            for i, msg in enumerate(messages):
-                if hasattr(msg, "model_dump"):
-                    body = json.dumps(msg.model_dump(), indent=2, default=str)
-                elif hasattr(msg, "dict"):
-                    body = json.dumps(msg.dict(), indent=2, default=str)
-                else:
-                    body = repr(msg)
-                header = f"{'=' * 60}\n  [{i}] {type(msg).__name__}\n{'=' * 60}"
-                parts.append(f"{header}\n{type(msg).__name__}({body})")
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%f")
-            path = self._dump_dir / f"{ts}.txt"
-            path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
-            self._session_logger.debug("Graph state dumped to %s", path)
-        except Exception as exc:
-            self._session_logger.warning("Failed to dump graph state: %s", exc)
-
-    def _patch_orphaned_tool_calls(self, message: str) -> None:
-        """Inject synthetic ToolMessages for any tool_use blocks without results.
-
-        When a stream is interrupted mid-tool-call, the AIMessage with
-        ``tool_use`` content may already be in the graph state but the
-        corresponding ``ToolMessage`` was never appended.  The Anthropic
-        API rejects conversations where a ``tool_use`` has no matching
-        ``tool_result``, so we scan the graph state and queue patches.
+        TODO: interrupts raised during ``ainvoke`` currently have no handler — invoke is for agents
+        that don't interrupt. Revisit if that stops being true.
         """
-        graph_messages = self._get_graph_messages()
+        acq, config = self._begin_run(payloads, runnable_config_override, consume_live=consume_live)
 
-        # Collect tool_call IDs that already have a ToolMessage.
-        answered: set[str] = set()
-        for msg in graph_messages:
-            if isinstance(msg, ToolMessage) and msg.tool_call_id:
-                answered.add(msg.tool_call_id)
+        self._busy = True
+        try:
+            state = await acq.agent.ainvoke({"messages": []}, config=config, context=acq.context)
 
-        # Walk backwards to find the most recent AIMessage with tool calls.
-        orphaned_ids: list[str] = []
-        for msg in reversed(graph_messages):
-            if isinstance(msg, AIMessage) and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if tc["id"] not in answered:
-                        orphaned_ids.append(tc["id"])
-                break  # only patch the most recent AIMessage
+        except asyncio.CancelledError:
+            await self._repair(acq, config, "Tool call cancelled by user.")
+            raise
 
-        if not orphaned_ids:
-            return
+        except Exception as exc:
+            await self._repair(acq, config, f"An error occurred during the invoke request: {type(exc).__name__}")
+            _logger.exception("Invoke error: %s", exc)
+            raise
 
-        self._session_logger.info(
-            "Patching %d orphaned tool call(s): %s",
-            len(orphaned_ids), orphaned_ids,
+        finally:
+            self._busy = False
+
+        messages = state.get("messages", [])
+        response = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+
+        return InvokeResult(
+            thread_id=config["configurable"]["thread_id"],
+            response=response,
+            state=state,
+            structured_response=self._extract_structured_response(state),
         )
-        for tc_id in orphaned_ids:
-            self._message_queue.append(ToolMessage(
-                content=message,
-                tool_call_id=tc_id,
-            ))
 
-    def _notify_token_usage(self) -> None:
-        self._compute_overhead_tokens()
-        if self.on_token_usage_changed is not None:
-            # Callback receives the firing session so the consumer (chat-pane VM) can route only
-            # the updates that came from the *currently-displayed* branch to the status bar —
-            # concurrent turns on background branches would otherwise overwrite the visible
-            # token count.
-            self.on_token_usage_changed(self)
+    # -------------------------------------------------------------
+    # Structured responses
+    # -------------------------------------------------------------
 
-    def _compute_overhead_tokens(self) -> None:
-        """Estimate overhead tokens (system prompt + tool messages) from graph state."""
-        graph_messages = self._get_graph_messages()
+    @staticmethod
+    def _extract_structured_response(state_values: dict[str, Any]) -> Any | None:
+        """Extract a structured response from a run's final state, if one exists.
 
-        system_msgs = [m for m in graph_messages if self._is_system_message(m)]
-        tool_msgs = [m for m in graph_messages if self._is_tool_message(m)]
+        Remark: langchain documents structured output arriving under a "structured_response" key in the
+        final state [1]; in practice we have not been able to replicate this — even with
+        ProviderStrategy, the structured response arrives as a JSON string in the final AIMessage's
+        content. So: try the documented path first, then fall back to parsing the final message.
 
-        system_overhead = count_tokens_approximately(system_msgs)
-        tool_overhead = count_tokens_approximately(tool_msgs)
+        [1] - https://docs.langchain.com/oss/python/langchain/structured-output
 
-        self._token_usage.breakdown[TokenUsageData.BreakdownCategory.SYSTEM] = system_overhead
-        self._token_usage.breakdown[TokenUsageData.BreakdownCategory.TOOL_MESSAGES] = tool_overhead
+        Returns the raw parsed object (typically a dict) — instantiating an actual schema is the
+        caller's concern, since the session doesn't know the agent's response format. Returns ``None``
+        when nothing parses; for ordinary prose agents that is the normal case, so parse failures log
+        at debug, not warning. (Corollary: a prose response that happens to be valid JSON is reported
+        as structured — acceptable, since only structured-agent consumers read this field.)
+        """
+        structured = state_values.get("structured_response")
+        if structured is not None:
+            return structured
 
-    def _is_system_message(self, msg) -> bool:
-        if isinstance(msg, SystemMessage):
-            return True
+        messages = state_values.get("messages", [])
+        response = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+        if response is None:
+            return None
 
-        if isinstance(msg, HumanMessage):
-            content = msg.content
+        # Failsafes for the different content formats langchain hands back, ported from the original
+        # StructuredSubagent.postinvoke_hook.
+        content = response.content
+        if isinstance(content, list):
+            if not content:
+                return None
+            content = content[-1]
+
+        try:
+            if isinstance(content, dict):
+                return json.loads(content["text"]) if content.get("type") == "text" else content
             if isinstance(content, str):
-                if content.startswith("[System]"):
-                    return True
-            elif isinstance(content, (list, tuple)):
-                if len(content) != 1:
-                    # TODO: might need to refactor the way we grab system messages for token counts
-                    # to account for this?
-                    return False
-                content = content[0]
-                if isinstance(content, str) and content.startswith("[System]"):
-                    return True
-                if (
-                    isinstance(content, dict) and
-                    content.get("type") == "text" and
-                    content.get("text", "").startswith("[System]")
-                ):
-                    return True
+                return json.loads(content)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            _logger.debug("Final message content is not structured output")
 
-        return False
+        return None
 
-    def _is_tool_message(self, msg) -> bool:
-        return isinstance(msg, ToolMessage)
+    # -------------------------------------------------------------
+    # Repair
+    # -------------------------------------------------------------
 
-    @property
-    def model(self):
-        return self._model
+    async def _repair(self, acq: AgentInstance, config: RunnableConfig, reason: str) -> None:
+        """Patch orphaned tool calls left in the checkpoint by a broken run.
 
-    @property
-    def message_history(self) -> list[BaseMessage]:
-        """Full conversation history from the graph's checkpointed state."""
-        return self._get_graph_messages()
-
-    @property
-    def token_usage(self) -> TokenUsageData:
-        return self._token_usage
-
+        The contract being protected is Anthropic's, not langgraph's: the API rejects a conversation
+        whose ``tool_use`` has no adjacent ``tool_result``; langgraph itself tolerates the tear.
+        Correctness is already guaranteed by the engine — every compile begins with an idempotent
+        repair pass whose patches land adjacent to the dangling tool call, because runs start with
+        empty input and everything enters state through that one update. Repairing eagerly here is
+        *hygiene*: it keeps the checkpoint clean for everything that reads state between runs —
+        branching off this conversation, history displays, token counting, state dumps.
+        """
+        try:
+            state = await acq.agent.aget_state(config)
+            patches = acq.engine.repair(state.values.get("messages", []), reason=reason)
+            if patches:
+                _logger.info("Patching %d orphaned tool call(s)", len(patches))
+                # as_node="__start__": input-attributed, same as the graph's state seeding — sidesteps
+                # InvalidUpdateError("Ambiguous update") on checkpoints with murky attribution.
+                await acq.agent.aupdate_state(config, {"messages": patches}, as_node="__start__")
+        except Exception:
+            _logger.exception("Failed to repair conversation history after a broken run")

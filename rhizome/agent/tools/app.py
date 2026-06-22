@@ -1,13 +1,24 @@
-"""App control tools — mode switching, tab renaming, topic selection, user input."""
+"""App-facing interaction tools.
+
+- ``ask_user_input`` pauses the run on a LangGraph ``interrupt`` to put one or more multiple-choice
+  questions in front of the user, then resumes with their selection. The interrupt value's ``type``
+  (``"choices"`` for a single question, ``"multiple_choice"`` for several) is the key the chat layer's
+  stream router uses to build the matching feed widget (see ``rhizome/app/chat_area/stream_router``);
+  whatever that widget resolves with is what ``interrupt()`` returns here.
+
+- ``set_mode`` switches the active conversation mode. It writes the live ``AppContextStore`` on the
+  context (``ctx.app_state``) rather than returning a state update: that store is the single source of
+  truth both the user and the agent write through, and the prompt engine commits the change into
+  ``RootAgentState["mode"]`` at the next compile (see ``rhizome/agent/app_context.py``).
+"""
 
 from langchain.tools import tool
-from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
-from langgraph.types import Command, interrupt
+from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
-from rhizome.agent.tools.visibility import ToolVisibility, tool_visibility
-from rhizome.tui.types import Mode
+from ..app_context import VALID_MODES
+from .visibility import ToolVisibility, tool_visibility
 
 
 class Question(BaseModel):
@@ -18,107 +29,47 @@ class Question(BaseModel):
     options: list[str] = Field(description="List of option strings to choose from")
 
 
-def build_app_tools(session_factory, chat_pane=None) -> dict:
-    """Build app control tools with session_factory and chat_pane closed over."""
+_ASK_USER_INPUT_DESC = (
+    "Present one or more multiple-choice questions to the user and wait for their selections. Use this "
+    "when you need the user to choose between options before proceeding.\n\n"
+    "Each question has a short tab name (1-2 words), a full prompt, and a list of options. A single "
+    "question shows a simple choice widget; multiple questions are presented as a tabbed widget where the "
+    "user answers each in turn."
+)
 
-    @tool("update_app_state", description=(
-        "Update one or more pieces of app state in a single call. All parameters "
-        "are optional — only provided values are applied.\n\n"
-        "- tab_name: Rename the active chat session tab. Keep it short — around "
-        "20 characters, 2-3 words.\n"
-        "- current_branch_name: Rename the current conversation branch (i.e. the "
-        "branch this turn was launched from). Short and descriptive — a few words, "
-        "around 40 characters max.\n"
-        "- hint_higher_verbosity: Hint to the user that a higher verbosity setting "
-        "may be needed. Use ONLY in 'terse' verbosity mode."
-    ))
+_SET_MODE_DESC = (
+    "Set the active session mode. Accepted values: 'idle', 'learn', 'review'. The switch takes effect "
+    "from your next step; you do not need to repeat it."
+)
+
+
+def build_app_tools() -> dict:
+    """Build the app-facing interaction tools (name -> tool), following the ``build_*_tools`` convention."""
+
     @tool_visibility(ToolVisibility.LOW)
-    async def update_app_state_tool(
-        runtime: ToolRuntime,
-        tab_name: str | None = None,
-        current_branch_name: str | None = None,
-        hint_higher_verbosity: bool = False,
-    ) -> str:
-        if chat_pane is None:
-            return "Chat pane not available."
-
-        results: list[str] = []
-
-        if tab_name is not None:
-            await chat_pane.set_tab_name(tab_name)
-            results.append(f"Tab renamed to: {tab_name}")
-
-        if current_branch_name is not None:
-            # ``conversation_cursor`` is pinned at turn start by ``AgentSession.stream``;
-            # forward it explicitly so mid-turn navigation doesn't redirect the rename to
-            # whichever branch the user happens to be looking at.
-            cursor = getattr(runtime.context, "conversation_cursor", None)
-            chat_pane.set_branch_name(current_branch_name, cursor=cursor)
-            results.append(f"Branch renamed to: {current_branch_name}")
-
-        if hint_higher_verbosity:
-            chat_pane.hint_higher_verbosity()
-            results.append("Higher verbosity hint sent.")
-
-        if not results:
-            return "No updates requested."
-
-        return " ".join(results)
-
-    @tool("set_mode", description="Set the active session mode. Accepted values: 'idle', 'learn', 'review'.")
-    @tool_visibility(ToolVisibility.LOW)
-    async def set_mode_tool(mode: str, runtime: ToolRuntime) -> str | Command:
-        try:
-            target = Mode(mode)
-        except ValueError:
-            return f"Invalid mode '{mode}'. Must be one of: idle, learn, review."
-        if chat_pane is not None:
-            await chat_pane.set_mode(target, silent=True, source="agent")
-        return Command(update={
-            "mode": target.value,
-            "messages": [ToolMessage(
-                content=f"Mode is now: {target.value}",
-                tool_call_id=runtime.tool_call_id,
-            )],
-        })
-
-    # -----------------------------------------------------------------------
-    # User input (interrupt-based)
-    # -----------------------------------------------------------------------
-
-    @tool("ask_user_input", description=(
-        "Present one or more multiple-choice questions to the user and wait for "
-        "their selections. Use this when you need the user to choose between "
-        "options before proceeding.\n\n"
-        "Each question has a short tab name (1-2 words), a full prompt, and a "
-        "list of options. If only one question is provided, a simple choice "
-        "widget is shown. Multiple questions are presented as a tabbed widget "
-        "where the user answers each in turn."
-    ))
-    @tool_visibility(ToolVisibility.LOW)
-    async def ask_user_input_tool(
-        questions: list[Question],
-    ) -> str:
+    @tool("ask_user_input", description=_ASK_USER_INPUT_DESC)
+    async def ask_user_input_tool(questions: list[Question]) -> str:
         if len(questions) == 1:
             q = questions[0]
-            result = interrupt({
-                "type": "choices",
-                "message": q.prompt,
-                "options": q.options,
-            })
+            result = interrupt({"type": "choices", "message": q.prompt, "options": q.options})
             return f"User selected: {result}"
-        else:
-            qs = [q.model_dump() for q in questions]
-            result = interrupt({
-                "type": "multiple_choice",
-                "questions": qs,
-            })
-            # result is dict[str, str] mapping question names to answers
-            lines = [f"{name}: {answer}" for name, answer in result.items()]
-            return "User selections:\n" + "\n".join(lines)
 
-    return {
-        "update_app_state": update_app_state_tool,
-        "set_mode": set_mode_tool,
-        "ask_user_input": ask_user_input_tool,
-    }
+        result = interrupt({"type": "multiple_choice", "questions": [q.model_dump() for q in questions]})
+        # ``result`` maps each question's name to the chosen answer.
+        lines = [f"{name}: {answer}" for name, answer in result.items()]
+        return "User selections:\n" + "\n".join(lines)
+
+    @tool_visibility(ToolVisibility.LOW)
+    @tool("set_mode", description=_SET_MODE_DESC)
+    async def set_mode_tool(mode: str, runtime: ToolRuntime) -> str:
+        # The agent expresses the switch by writing the live store; the prompt engine commits it into
+        # RootAgentState at the next compile and reacts (mode guide/header). No Command — see module docstring.
+        store = getattr(runtime.context, "app_state", None)
+        if store is None:
+            return "Mode control is unavailable in this conversation."
+        if mode not in VALID_MODES:
+            return f"Invalid mode {mode!r}. Must be one of: {', '.join(VALID_MODES)}."
+        store.set_mode(mode)
+        return f"Mode is now: {mode}."
+
+    return {"ask_user_input": ask_user_input_tool, "set_mode": set_mode_tool}

@@ -1,185 +1,135 @@
-"""General-purpose SQL tool for database exploration and modification.
+"""Read-only SQL escape hatch: ``execute_sql`` over the full database, for reads the structured tools
+can't express (multi-table joins, grouping beyond ``aggregate``, or tables ``query`` doesn't expose).
 
-This is a last-resort tool — the agent should always prefer native tools
-(list_topics, list_knowledge_entries, read_knowledge_entries, etc.) for standard operations.
-Schema introspection is handled by the ``database_schema`` guide.
+Gating is belt-and-suspenders, and deliberately *not* string-based — keyword sniffing on the statement is
+trivially outwitted (``WITH x AS (...) INSERT ...`` starts with ``WITH``). Both layers are structural:
+
+1. **mode=ro engine** — the database file is opened read-only at the OS level, so writes are impossible by
+   construction even if layer 2 has a bug.
+2. **SQLite authorizer** — registered per connection, it is invoked by SQLite's *parser* during statement
+   compilation and votes on every semantic action (read a column, insert, run a pragma, attach a db, ...).
+   We allow a closed set of read actions and DENY everything else, so writes/pragmas/ATTACH are rejected at
+   prepare time (nothing partially executes). It also returns ``SQLITE_IGNORE`` for binary-blob columns,
+   substituting NULL — keeping 23MB embedding dumps out of the agent's context window.
+
+The aiosqlite wiring has one sharp edge: ``aiosqlite.Connection.set_authorizer`` is a *coroutine* (it
+marshals into aiosqlite's worker thread), so calling it from a sync ``connect`` listener silently no-ops.
+We reach the underlying stdlib ``sqlite3.Connection`` and call its sync ``set_authorizer`` instead — and let
+an attribute miss raise rather than swallow it, so we never run believing the authorizer is installed when
+it isn't.
 """
 
-from __future__ import annotations
-
-import re
+import sqlite3
+from pathlib import Path
 
 from langchain.tools import tool
-from langgraph.types import interrupt
-from sqlalchemy import text
+from langgraph.prebuilt.tool_node import ToolRuntime
+from sqlalchemy import LargeBinary, event, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from rhizome.agent.tools.visibility import ToolVisibility, tool_visibility
-from rhizome.logs import get_logger
+from rhizome.db.models import Base
 
-_logger = get_logger("agent.sql_tools")
+from .visibility import ToolVisibility, tool_visibility
 
-_READ_KEYWORDS = frozenset({"SELECT", "PRAGMA", "EXPLAIN", "WITH"})
-_WRITE_KEYWORDS = frozenset({"INSERT", "UPDATE", "DELETE"})
+ROW_CAP = 200
 
-
-def _first_keyword(sql: str) -> str:
-    """Extract the first SQL keyword (uppercased) from a statement."""
-    stripped = sql.strip()
-    # Skip leading comments
-    while stripped.startswith("--") or stripped.startswith("/*"):
-        if stripped.startswith("--"):
-            newline = stripped.find("\n")
-            stripped = stripped[newline + 1:].strip() if newline != -1 else ""
-        elif stripped.startswith("/*"):
-            end = stripped.find("*/")
-            stripped = stripped[end + 2:].strip() if end != -1 else ""
-    match = re.match(r"[A-Za-z]+", stripped)
-    return match.group(0).upper() if match else ""
+# Action codes the agent may perform; every other code (INSERT/UPDATE/DELETE, PRAGMA, ATTACH, CREATE, ...)
+# is denied. SELECT = the statement; READ = each (table, column) access; FUNCTION = lower()/count()/...;
+# RECURSIVE = WITH RECURSIVE; TRANSACTION = the driver's implicit BEGIN.
+_ALLOWED_ACTIONS = frozenset({
+    sqlite3.SQLITE_SELECT,
+    sqlite3.SQLITE_READ,
+    sqlite3.SQLITE_FUNCTION,
+    sqlite3.SQLITE_RECURSIVE,
+    sqlite3.SQLITE_TRANSACTION,
+})
 
 
-def _preview_delete(sql: str) -> str | None:
-    """Rewrite a DELETE statement to a SELECT for preview."""
-    pattern = re.compile(r"DELETE\s+FROM\b", re.IGNORECASE)
-    match = pattern.match(sql.strip())
-    if not match:
-        return None
-    rewritten = pattern.sub("SELECT * FROM", sql.strip(), count=1)
-    rewritten = rewritten.rstrip("; \t\n")
-    # Append LIMIT if not already present
-    if not re.search(r"\bLIMIT\b", rewritten, re.IGNORECASE):
-        rewritten += " LIMIT 50"
-    return rewritten
-
-
-def _preview_update(sql: str) -> str | None:
-    """Rewrite an UPDATE statement to a SELECT for preview."""
-    # Pattern: UPDATE <table> SET ... [WHERE ...]
-    match = re.match(
-        r"UPDATE\s+(\S+)\s+SET\s+.+?(WHERE\s+.+)?$",
-        sql.strip(),
-        re.IGNORECASE | re.DOTALL,
+def _redacted_columns() -> frozenset[tuple[str, str]]:
+    """``(table, column)`` pairs blanked to NULL on read — every binary blob in the schema (embeddings,
+    source bytes). Derived from the models, so a new ``LargeBinary`` column is redacted automatically."""
+    return frozenset(
+        (table.name, col.name)
+        for table in Base.metadata.tables.values()
+        for col in table.columns
+        if isinstance(col.type, LargeBinary)
     )
-    if not match:
-        return None
-    table = match.group(1)
-    where = match.group(2) or ""
-    rewritten = f"SELECT * FROM {table} {where}".strip().rstrip("; \t\n")
-    if not re.search(r"\bLIMIT\b", rewritten, re.IGNORECASE):
-        rewritten += " LIMIT 50"
-    return rewritten
+
+
+def _make_authorizer(redacted: frozenset[tuple[str, str]]):
+    def authorize(action, arg1, arg2, db_name, trigger):
+        if action == sqlite3.SQLITE_READ and (arg1, arg2) in redacted:
+            return sqlite3.SQLITE_IGNORE
+        return sqlite3.SQLITE_OK if action in _ALLOWED_ACTIONS else sqlite3.SQLITE_DENY
+    return authorize
+
+
+def make_read_only_engine(db_path: str | Path) -> AsyncEngine:
+    """A dedicated read-only engine for the SQL escape hatch: the file opened ``mode=ro`` with the
+    authorizer installed on every connection. No ``foreign_keys`` pragma — there are no writes to enforce
+    against, and the authorizer would deny the pragma anyway."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///file:{db_path}?mode=ro&uri=true")
+    authorizer = _make_authorizer(_redacted_columns())
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _install_authorizer(dbapi_connection, _record):
+        # The raw stdlib sqlite3.Connection behind aiosqlite's async wrapper; its set_authorizer is sync.
+        dbapi_connection.driver_connection._connection.set_authorizer(authorizer)
+
+    return engine
+
+
+def read_only_session_factory(db_path: str | Path) -> async_sessionmaker:
+    """Session factory bound to a fresh read-only engine — the dependency ``build_sql_tools`` closes over."""
+    return async_sessionmaker(make_read_only_engine(db_path), expire_on_commit=False)
 
 
 def _format_rows(columns: list[str], rows: list[list]) -> str:
-    """Format rows as a pipe-delimited table."""
+    """Pipe-delimited table."""
     if not columns:
         return "(no columns)"
-    lines = [" | ".join(str(c) for c in columns)]
-    lines.append("-+-".join("-" * max(len(str(c)), 3) for c in columns))
-    for row in rows:
-        lines.append(" | ".join(str(v) for v in row))
-    return "\n".join(lines)
+    header = " | ".join(columns)
+    rule = "-+-".join("-" * max(len(c), 3) for c in columns)
+    body = "\n".join(" | ".join("null" if v is None else str(v) for v in row) for row in rows)
+    return "\n".join([header, rule, body]) if body else f"{header}\n{rule}\n(no rows)"
 
 
-def build_sql_tools(session_factory) -> dict:
-    """Build SQL exploration/modification tools closed over session_factory.
+_EXECUTE_SQL_DESC = (
+    "Run a read-only SQL query against the full database and return the rows. A last-resort escape hatch "
+    "for reads the structured tools can't express — multi-table joins, grouping beyond `aggregate`, or "
+    "tables `query` doesn't expose. Prefer `query`/`aggregate` for everyday access. Strictly read-only: "
+    "INSERT/UPDATE/DELETE, PRAGMA, ATTACH and DDL are rejected by the database — do writes through "
+    "insert/update/delete. Binary columns (e.g. embeddings) read back as NULL. Capped at "
+    f"{ROW_CAP} rows. Consult the database_schema reference for table and column names."
+)
 
-    Returns a dict of tool-name -> tool-function, following the
-    ``build_review_tools`` pattern.
-    """
 
-    @tool("execute_sql", description=(
-        "Execute a SQL statement and return the results. "
-        "By default, only read-only statements (SELECT, PRAGMA, EXPLAIN, WITH) "
-        "are allowed. Set read_only=False to allow modifications (INSERT, UPDATE, "
-        "DELETE) — these require explicit user approval via a confirmation dialog. "
-        "Returns up to 200 rows for read queries. "
-        "IMPORTANT: Load the 'database_schema' guide first if you are unsure of "
-        "table names, column names, or data types. "
-        "This is a last-resort tool — prefer native tools (list_topics, "
-        "list_knowledge_entries, read_knowledge_entries, create_topics, "
-        "delete_topics, etc.) for standard operations."
-    ))
+def build_sql_tools() -> dict:
+    """Build the read-only ``execute_sql`` tool. A root-agent tool: it opens sessions off the read-only
+    session factory on the agent context (``runtime.context.read_only_session_factory``, a dedicated
+    ``mode=ro`` engine — see ``read_only_session_factory``) at call time, rather than closing over it."""
+
     @tool_visibility(ToolVisibility.DEFAULT)
-    async def execute_sql_tool(sql: str, read_only: bool = True) -> str:
-        keyword = _first_keyword(sql)
-
-        if read_only:
-            if keyword not in _READ_KEYWORDS:
-                return (
-                    f"Rejected: first keyword '{keyword}' is not allowed in read-only mode. "
-                    f"Only {', '.join(sorted(_READ_KEYWORDS))} are permitted. "
-                    f"Set read_only=False to run modifications."
-                )
-            try:
-                async with session_factory() as session:
-                    result = await session.execute(text(sql))
-                    columns = list(result.keys()) if result.returns_rows else []
-                    if not columns:
-                        return "(query returned no columns)"
-                    rows = [list(row) for row in result.fetchmany(201)]
-                    truncated = len(rows) > 200
-                    if truncated:
-                        rows = rows[:200]
-                    output = _format_rows(columns, rows)
-                    if truncated:
-                        output += "\n... (results truncated at 200 rows)"
-                    return output
-            except Exception as exc:
-                return f"SQL error: {exc}"
-
-        # -- Modification path (read_only=False) --
-        if keyword not in _WRITE_KEYWORDS:
-            return (
-                f"Rejected: first keyword '{keyword}' is not allowed. "
-                f"Only {', '.join(sorted(_WRITE_KEYWORDS))} are permitted for modifications. "
-                f"Use read_only=True (default) for SELECT/PRAGMA/EXPLAIN."
-            )
-
-        # Build preview for UPDATE/DELETE
-        preview_columns: list[str] = []
-        preview_rows: list[list] = []
-        row_count: int | None = None
-
-        if keyword in ("UPDATE", "DELETE"):
-            rewrite_fn = _preview_delete if keyword == "DELETE" else _preview_update
-            preview_sql = rewrite_fn(sql)
-            if preview_sql:
-                try:
-                    async with session_factory() as session:
-                        count_result = await session.execute(text(preview_sql))
-                        all_rows = count_result.fetchall()
-                        row_count = len(all_rows)
-                        preview_columns = list(count_result.keys()) if count_result.returns_rows else []
-                        preview_rows = [list(r) for r in all_rows[:50]]
-                except Exception as exc:
-                    _logger.warning("Preview query failed: %s", exc)
-                    preview_columns = []
-                    preview_rows = []
-                    row_count = None
-
-        # Interrupt for user confirmation
-        result = interrupt({
-            "type": "sql_confirmation",
-            "sql": sql,
-            "preview": {
-                "columns": preview_columns,
-                "rows": preview_rows,
-            },
-            "row_count": row_count,
-        })
-
-        if result != "Approve":
-            return f"User denied SQL modification: {result}"
-
+    @tool("execute_sql", description=_EXECUTE_SQL_DESC)
+    async def execute_sql_tool(sql: str, runtime: ToolRuntime) -> str:
+        read_only_sessions = getattr(runtime.context, "read_only_session_factory", None)
+        if read_only_sessions is None:
+            return "The SQL escape hatch is unavailable in this conversation."
         try:
-            async with session_factory() as session:
-                exec_result = await session.execute(text(sql))
-                rowcount = exec_result.rowcount
-                await session.commit()
-            return f"SQL executed successfully. Rows affected: {rowcount}"
+            async with read_only_sessions() as session:
+                result = await session.execute(text(sql))
+                if not result.returns_rows:
+                    return "(statement returned no rows)"
+                columns = list(result.keys())
+                rows = [list(r) for r in result.fetchmany(ROW_CAP + 1)]
+                truncated = len(rows) > ROW_CAP
+                out = _format_rows(columns, rows[:ROW_CAP])
+                return out + (f"\n... (truncated at {ROW_CAP} rows)" if truncated else "")
         except Exception as exc:
+            msg = str(exc)
+            if "not authorized" in msg or "readonly" in msg.lower():
+                return (f"SQL error: {exc}\n"
+                        f"(execute_sql is read-only — use the insert/update/delete tools for writes.)")
             return f"SQL error: {exc}"
 
-    return {
-        "execute_sql": execute_sql_tool,
-    }
+    return {"execute_sql": execute_sql_tool}

@@ -69,14 +69,14 @@ User settings are injected as persistent `[System]`-prefixed `HumanMessage`s, qu
 
 | Area | File |
 |------|------|
-| Session and streaming | `rhizome/agent/session.py` |
-| Agent graph construction | `rhizome/agent/builder.py` |
-| Mode system | `rhizome/agent/modes.py` |
-| Tool definitions | `rhizome/agent/tools.py` |
-| Review-mode tools | `rhizome/agent/review_tools.py` |
-| Commit workflow | `rhizome/agent/commit.py` |
-| Subagent framework | `rhizome/agent/subagent.py` |
-| Middleware | `rhizome/agent/middleware/` |
+| Session and streaming | `rhizome/agent_legacy/session.py` |
+| Agent graph construction | `rhizome/agent_legacy/builder.py` |
+| Mode system | `rhizome/agent_legacy/modes.py` |
+| Tool definitions | `rhizome/agent_legacy/tools.py` |
+| Review-mode tools | `rhizome/agent_legacy/review_tools.py` |
+| Commit workflow | `rhizome/agent_legacy/commit.py` |
+| Subagent framework | `rhizome/agent_legacy/subagent.py` |
+| Middleware | `rhizome/agent_legacy/middleware/` |
 | Chat orchestration | `rhizome/tui/widgets/chat_pane.py` |
 | Stream display | `rhizome/tui/widgets/agent_message_harness.py` |
 | Interrupt widgets | `rhizome/tui/widgets/interrupt.py`, `choices.py`, `multiple_choices.py`, `warning.py` |

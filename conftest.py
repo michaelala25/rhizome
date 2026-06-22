@@ -13,7 +13,7 @@ Key presence alone is deliberately not enough. The two failure modes are distinc
 
 Run them with::
 
-    uv run pytest tests/agent_new/live --live
+    uv run pytest tests/agent/live --live
 """
 
 import os

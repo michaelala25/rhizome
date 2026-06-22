@@ -1,16 +1,16 @@
 """ConversationGraph: feed identity & events, frozen-feed rules, and last-visited navigation.
 
 Topology/agent-state semantics (branch seeding, freeze rules, thread isolation) are covered by
-tests/agent_new/test_graph.py; here we exercise the conversation layer on top, with plain strings
+tests/agent/test_graph.py; here we exercise the conversation layer on top, with plain strings
 standing in for feed entries.
 """
 
 import pytest
 
-from rhizome.agent_new.graph import Cursor
+from rhizome.agent.graph import Cursor
 from rhizome.app.chat_area.conversation_graph import ConversationGraph
 
-from tests.agent_new.fakes import ai_contents, build_runtime, EchoModel, run_turn
+from tests.agent.fakes import ai_contents, build_runtime, EchoModel, run_turn
 
 
 def make_graph() -> ConversationGraph[str]:

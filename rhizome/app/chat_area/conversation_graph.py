@@ -25,10 +25,10 @@ import asyncio
 from dataclasses import dataclass
 from typing import Callable
 
-from rhizome.agent_new.app_context import AppContextStore
-from rhizome.agent_new.graph import AgentGraph, AgentNode, Cursor, WorkerScheduler
-from rhizome.agent_new.runtime import AgentRuntime
-from rhizome.agent_new.session import AgentSession
+from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.graph import AgentGraph, AgentNode, Cursor, WorkerScheduler
+from rhizome.agent.runtime import AgentRuntime
+from rhizome.agent.session import AgentSession
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 from rhizome.utils.data_structures import Path
 

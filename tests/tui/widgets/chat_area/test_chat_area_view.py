@@ -8,13 +8,13 @@ branch's feed lands under a depth wrapper while the root feed + indicator stay a
 
 from textual.app import App, ComposeResult
 
-from rhizome.agent_new.state import RootAgentState
+from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.tui.widgets.chat_area.branch import BranchPoint
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea, DepthWrapper
 from rhizome.tui.types import Role
 
-from tests.agent_new.fakes import EchoModel, build_runtime
+from tests.agent.fakes import EchoModel, build_runtime
 
 
 class _Harness(App):

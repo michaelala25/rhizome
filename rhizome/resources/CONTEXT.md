@@ -17,6 +17,6 @@ The manager rebuild path is pure offset math: each LOADED entry becomes an inter
 ## Relationship to Other Modules
 
 - **`rhizome/db/`** — This package does NOT handle persistence. Database models (`Resource`, `ResourceSection`, `ResourceChunk`) and operations live in `rhizome/db/`.
-- **`rhizome/agent/tools/`** — Agent tools call into this package to trigger section detection. This package has no dependency on the agent layer.
+- **`rhizome/agent_legacy/tools/`** — Agent tools call into this package to trigger section detection. This package has no dependency on the agent layer.
 - **`rhizome/tui/widgets/`** — `ResourceLoader` holds the authoritative MDL state and pushes snapshots to `ResourceManager.set_state()` on every user toggle. This package has no dependency on the TUI layer.
-- **`rhizome/agent/session.py`** — `AgentSession` holds a `ResourceManager` reference and calls `consume()` at the start of each `stream()` invocation.
+- **`rhizome/agent_legacy/session.py`** — `AgentSession` holds a `ResourceManager` reference and calls `consume()` at the start of each `stream()` invocation.
