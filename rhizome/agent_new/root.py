@@ -39,6 +39,7 @@ from .engine import PromptCompilerMiddleware, RootPromptEngine
 from .factory import AgentFactory
 from .prompts import compose_system_prompt
 from .state import RootAgentState
+from .subagents import register_subagents
 from .tools import (
     build_app_tools,
     build_commit_tools,
@@ -175,11 +176,13 @@ def build_root_agent(
 
 def build_agent_factory() -> AgentFactory:
     """Descriptor for the app-global ``AgentFactoryService`` — a fresh ``AgentFactory`` with every agent
-    kind registered on it. The single place that answers "which agents exist"; subagent declarations join
-    here as they land. Registered once at app composition (``rhizome/tui/app.py``), so the per-workspace
-    ``AgentRuntime`` injects this one populated registry and builds from its declarations."""
+    kind registered on it. The single place that answers "which agents exist". Registered once at app
+    composition (``rhizome/tui/app.py``), so the per-workspace ``AgentRuntime`` injects this one populated
+    registry and builds from its declarations: the root conversation agent here, the subagents (commit,
+    flashcard validators/scorer) via ``register_subagents``."""
     factory = AgentFactory()
     factory.register(
         "root", build=build_root_agent, context_schema=RootAgentContext, state_schema=RootAgentState
     )
+    register_subagents(factory)
     return factory
