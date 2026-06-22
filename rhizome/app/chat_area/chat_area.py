@@ -98,11 +98,6 @@ class ChatAreaModel(ViewModelBase):
         # the view swaps the underlying callable for Textual's ``run_worker`` at mount.
         self._scheduler: Callable[[Coroutine[Any, Any, Any]], Any] = asyncio.create_task
 
-        # TODO(resources): when the composition root that builds this model is wired up, construct the
-        # graph-global ``resource_context`` store with ``ResourceContextStore(tree, cache=True)`` — it is
-        # the single instance shared by every branch, so its content cache collapses the per-branch DB
-        # reads a freshly loaded resource would otherwise trigger. Per-node local stores (minted by
-        # ``local_resources_factory``) keep the default, uncached: each is used once.
         self.conversation_graph: ConversationGraph = ConversationGraph(
             runtime,
             self._schedule,
