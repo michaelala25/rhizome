@@ -17,6 +17,7 @@ survive only while this VM is held strongly — which it is, by the ``ChatAreaMo
 from __future__ import annotations
 
 from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.engine import UsageReport
 from rhizome.app.model import ViewModelBase
 from rhizome.app.options import OptionService, Options
 
@@ -36,6 +37,11 @@ class StatusBarModel(ViewModelBase):
         self.mode: str = "idle"
         self.verbosity: str = "auto"
         self.model_name: str = options.get(Options.Agent.Model) if options is not None else ""
+
+        # Latest usage report for the checked-out branch. Pushed live by the stream router during a run on
+        # the visible branch, and re-read from the leaf node's cache on every cursor move. The view paints
+        # it on line 3 of the bar (context fill + per-category breakdown + cache split).
+        self.usage_report: UsageReport | None = None
 
         # Model name reacts to Provider/Model edits. Subscribed once — the options service is
         # conversation-global, unlike the per-branch app_state below.
@@ -75,6 +81,12 @@ class StatusBarModel(ViewModelBase):
 
     def _on_verbosity_changed(self, _old: str, new: str) -> None:
         self.verbosity = new
+        self.emit(self.Callbacks.OnDirty)
+
+    def set_usage_report(self, report: UsageReport | None) -> None:
+        """Store the checked-out branch's usage report and repaint. Called by the stream router as a run
+        progresses on the visible branch, and by the chat area on every cursor move."""
+        self.usage_report = report
         self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------

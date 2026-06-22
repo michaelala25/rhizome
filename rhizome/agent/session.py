@@ -139,6 +139,13 @@ class AgentSession:
         return self.acquire().agent
 
     @property
+    def engine(self) -> PromptEngine:
+        """This session's current prompt engine, resolved fresh from the runtime (like ``agent``). Exposed
+        so a consumer can account this thread's token usage off its state — ``engine.report(state_values)``
+        — without the session having to own the report itself."""
+        return self.acquire().engine
+
+    @property
     def agent_context(self) -> Any:
         return self._context
 

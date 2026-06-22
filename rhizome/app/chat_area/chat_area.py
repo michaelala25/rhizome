@@ -229,11 +229,14 @@ class ChatAreaModel(ViewModelBase):
                     item.entry.set_selected_child(selected)
 
     def _sync_status_bar(self) -> None:
-        """Point the status bar at the current leaf's live settings store, so its mode/verbosity track
-        the checked-out branch. No-op for a node without an app_state (none arise in practice)."""
-        app_state = self._cursor.node.app_state
-        if app_state is not None:
-            self.status_bar.set_app_state(app_state)
+        """Point the status bar at the current leaf: its live settings store (mode/verbosity) and that
+        branch's cached usage report, so both track the checked-out branch. The report is read from the
+        node's cache (the stream router keeps it current), so this stays synchronous — no state re-fetch.
+        No-op for a node without an app_state (none arise in practice)."""
+        node = self._cursor.node
+        if node.app_state is not None:
+            self.status_bar.set_app_state(node.app_state)
+        self.status_bar.set_usage_report(node.usage_report)
 
     # ------------------------------------------------------------------
     # Feed

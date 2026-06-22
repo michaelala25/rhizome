@@ -1,8 +1,16 @@
-"""StatusBar view — renders the conversation's mode, verbosity, and model from a ``StatusBarModel``.
+"""StatusBar view — renders mode, verbosity, model, and live token usage from a ``StatusBarModel``.
 
-A fixed two-line strip docked at the bottom of the chat area. Line 1 carries the active mode (left) and
-the model name (right); line 2 carries the answer verbosity. Every value is a projection the VM owns — the
-view just paints it and repaints on the VM's ``OnDirty`` (wired by ``ViewBase``).
+A strip docked at the bottom of the chat area. Two lines until the branch has a usage report, three once
+it does:
+
+- line 1 — active mode (left), model name (right)
+- line 2 — answer verbosity (left), context-window fill (right)
+- line 3 — the prompt's token breakdown by category (left), cache read/write split (right)
+
+Every value is a projection the VM owns (``StatusBarModel``); the view paints it and repaints on the VM's
+``OnDirty``. The usage report (``UsageReport``) carries the provider's ground-truth totals plus a
+normalized per-segment estimate; this view rolls the engine's fine-grained segment kinds up into a handful
+of display buckets — see ``_BUCKETS``.
 """
 
 from __future__ import annotations
@@ -10,12 +18,14 @@ from __future__ import annotations
 from rich.text import Text
 from textual.widgets import Static
 
+from rhizome.agent.engine import UsageReport
 from rhizome.app.chat_area.status import StatusBarModel
 from rhizome.tui.widgets.view_base import ViewBase
 
 
 _LABEL = "rgb(140,140,140)"
 _MODEL = "rgb(90,90,90)"
+_DIM = "rgb(100,100,100)"
 
 _MODE_COLORS: dict[str, str] = {
     "learn": "rgb(110,140,240)",
@@ -28,6 +38,38 @@ _VERBOSITY_COLORS: dict[str, str] = {
     "verbose": "rgb(90,210,190)",
     "auto": "rgb(255,80,255)",
 }
+
+# The prompt breakdown the bar shows, ordered fixed-overhead-first then by what grows as you work: the
+# fixed framing (system prompt + tool-definition schemas + guides/markers — a constant the user can't act
+# on, so the schemas fold in here rather than earning their own line), then stuffed resource context, then
+# live tool round-trips, then the plain conversation turns. Each bucket rolls up several of the engine's
+# segment kinds (see ``PromptEngine._message_kind`` / ``RootPromptEngine._message_kind``); any kind not
+# claimed here lands in a trailing "other" bucket.
+_BUCKETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("system",    "rgb(120,120,120)", ("system", "tools", "system_notice", "guide", "branch_marker")),
+    ("resources", "rgb(110,140,240)", ("global_resource", "local_resource", "resource_index")),
+    ("tools",     "rgb(220,160,80)",  ("tool_use", "tool_result")),
+    ("chat",      "rgb(140,190,140)", ("user", "agent")),
+)
+_OTHER = ("other", _DIM)
+
+# Display order (bucket label -> color) and the inverse kind -> bucket map, both built once at import.
+_DISPLAY: tuple[tuple[str, str], ...] = tuple((label, color) for label, color, _ in _BUCKETS) + (_OTHER,)
+_KIND_TO_BUCKET: dict[str, str] = {kind: label for label, _, kinds in _BUCKETS for kind in kinds}
+
+
+def _fmt(n: int) -> str:
+    """Compact token count: ``8.4k`` past a thousand, the bare number below it."""
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def _context_color(pct: float) -> str:
+    """Calm under half-full, amber as the window fills, red near the ceiling."""
+    if pct >= 85:
+        return "rgb(230,90,90)"
+    if pct >= 60:
+        return "rgb(220,160,80)"
+    return "rgb(120,180,120)"
 
 
 class StatusBar(ViewBase[StatusBarModel]):
@@ -50,7 +92,7 @@ class StatusBar(ViewBase[StatusBarModel]):
         self.mount(self._static)
 
     def on_resize(self, event) -> None:
-        # Right-alignment of the model name depends on the bar's pixel width.
+        # Right-alignment of the model name / usage figures depends on the bar's pixel width.
         self._refresh()
 
     def _refresh(self) -> None:
@@ -80,9 +122,74 @@ class StatusBar(ViewBase[StatusBarModel]):
             model_text.append(vm.model_name, style=_MODEL)
         self._right_align(mode_line, model_text)
 
-        # -- line 2: verbosity (left) --
+        # -- line 2: verbosity (left), context-window fill (right) --
         verbosity_line = Text()
         verbosity_line.append("verbosity: ", style=_LABEL)
         verbosity_line.append(vm.verbosity, style=_VERBOSITY_COLORS.get(vm.verbosity, ""))
+        self._right_align(verbosity_line, self._context_text(vm.usage_report))
 
-        return Text.assemble(mode_line, "\n", verbosity_line)
+        lines: list[Text] = [mode_line, verbosity_line]
+
+        # -- line 3: prompt breakdown (left), cache split (right) -- only once a model call has landed --
+        report = vm.usage_report
+        if report is not None and report.usage is not None:
+            breakdown_line = self._breakdown_text(report)
+            self._right_align(breakdown_line, self._cache_text(report))
+            lines.append(breakdown_line)
+
+        parts: list[Text | str] = []
+        for i, line in enumerate(lines):
+            if i:
+                parts.append("\n")
+            parts.append(line)
+        return Text.assemble(*parts)
+
+    def _context_text(self, report: UsageReport | None) -> Text:
+        """Right of line 2: how full the context window is. Empty before the thread's first model call;
+        falls back to the raw prompt size when the model profile yields no window ceiling."""
+        text = Text()
+        if report is None or report.usage is None:
+            return text
+
+        input_tokens = report.usage.input_tokens
+        pct = report.usage_percent
+        if pct is not None:
+            text.append("context: ", style=_LABEL)
+            text.append(f"{pct:.1f}%", style=_context_color(pct))
+            text.append(f"  ({input_tokens:,} / {report.max_input_tokens:,})", style=_DIM)
+        else:
+            text.append("prompt: ", style=_LABEL)
+            text.append(f"{input_tokens:,} tokens", style=_MODEL)
+        return text
+
+    def _breakdown_text(self, report: UsageReport) -> Text:
+        """Left of line 3: the prompt's estimated composition, segment kinds rolled into display buckets and
+        shown in prompt order. Buckets with no tokens are dropped."""
+        totals: dict[str, int] = {}
+        for kind, tokens in report.by_kind().items():
+            bucket = _KIND_TO_BUCKET.get(kind, _OTHER[0])
+            totals[bucket] = totals.get(bucket, 0) + tokens
+
+        text = Text()
+        for label, color in _DISPLAY:
+            tokens = totals.get(label, 0)
+            if not tokens:
+                continue
+            if text.plain:
+                text.append(" · ", style=_DIM)
+            text.append(f"{label} ", style=_DIM)
+            text.append(_fmt(tokens), style=color)
+        return text
+
+    def _cache_text(self, report: UsageReport) -> Text:
+        """Right of line 3: the cache read/write split of this prompt's input — read is cheap, new is
+        premium. Empty when the prompt neither hit nor wrote the cache (a cold first call on the thread)."""
+        usage = report.usage
+        text = Text()
+        if not usage.cache_read_tokens and not usage.cache_creation_tokens:
+            return text
+        text.append("cache: ", style=_LABEL)
+        text.append(f"{_fmt(usage.cache_read_tokens)} read", style="rgb(120,180,120)")
+        text.append(" · ", style=_DIM)
+        text.append(f"{_fmt(usage.cache_creation_tokens)} new", style="rgb(220,160,80)")
+        return text

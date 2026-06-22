@@ -19,7 +19,7 @@ from rhizome.app.chat_area.branch import BranchPointModel
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.options import Options, OptionScope
 from rhizome.app.options_editor import OptionsEditorModel
-from rhizome.agent.engine import MessagePayload
+from rhizome.agent.engine import MessagePayload, UsageReport
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
@@ -242,6 +242,45 @@ async def test_submit_streams_into_the_feed():
     agent_msg = entries(node)[1]
     assert agent_msg.body.startswith("echo:hello") and not agent_msg.streaming
     assert listener.busy == [(node, True), (node, False)]
+
+
+async def test_usage_report_caches_on_the_node_and_drives_the_visible_status_bar():
+    area = make_area()
+    node = area.cursor.node
+
+    area.append_message("hello", Role.USER)
+    area.submit()
+    await wait_idle(node)
+
+    report = node.usage_report
+    assert report is not None                              # the router cached it on the node
+    assert area.status_bar.usage_report is report          # the visible branch drives the shared bar
+    assert any(s.kind == "user" for s in report.segments)  # the breakdown covers the conversation
+
+
+async def test_branch_inherits_usage_report_and_cursor_change_tracks_the_leaf():
+    area = make_area()
+    graph = area.conversation_graph
+    root = graph.root
+
+    area.append_message("hello", Role.USER)
+    area.submit()
+    await wait_idle(root)
+    root_report = root.usage_report
+    assert root_report is not None
+
+    alt = (await area.branch(name="alt")).node
+    assert alt.usage_report is root_report                 # derive carried it across the branch
+    assert area.status_bar.usage_report is root_report     # cursor moved to alt → bar re-synced
+
+    # Diverge alt's cache, then navigate root <-> alt: the bar tracks whichever leaf is checked out.
+    sentinel = UsageReport(usage=None, max_input_tokens=None, segments=())
+    alt.usage_report = sentinel
+
+    area.set_cursor(graph.root_cursor())
+    assert area.status_bar.usage_report is root_report
+    area.set_cursor(alt)
+    assert area.status_bar.usage_report is sentinel
 
 
 async def test_tool_calls_route_into_tool_lists():

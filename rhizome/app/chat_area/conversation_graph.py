@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.engine import UsageReport
 from rhizome.agent.graph import AgentGraph, AgentNode, Cursor, WorkerScheduler
 from rhizome.agent.runtime import AgentRuntime
 from rhizome.agent.session import AgentSession
@@ -91,6 +92,12 @@ class ConversationNode[E](AgentNode):
         # point instead of stopping at the immediate child. Node-level on purpose: under merges,
         # every lineage through a node shares the same memory.
 
+        self.usage_report: UsageReport | None = None
+        # Latest token-usage report for this branch — display state, like ``feed``. The stream router
+        # refreshes it as the conversation runs; the status bar reads it on cursor change. Inherited on
+        # branch (``derive``): the child's seeded state matches the parent's, so the parent's report is
+        # accurate until the child diverges.
+
     @property
     def resources(self) -> ResourceContextStore | None:
         """The node-local context store (never reassigned — see the class docstring)."""
@@ -122,6 +129,10 @@ class ConversationNode[E](AgentNode):
             self._resources.copy_from(parent.resources)
         if self._app_state is not None and parent.app_state is not None:
             self._app_state.copy_from(parent.app_state)
+
+        # The child's seeded checkpoint matches the parent's, so the parent's usage report describes it
+        # accurately until it diverges — carry it so a freshly-branched node shows usage before its first run.
+        self.usage_report = parent.usage_report
 
 
 class ConversationGraph[E](AgentGraph[ConversationNode[E]]):

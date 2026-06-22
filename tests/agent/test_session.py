@@ -235,13 +235,16 @@ async def test_concurrent_runs_same_key_are_isolated():
 # RunStateView
 # ------------------------------------------------------------------------------------------------
 
-async def test_run_state_view_folds_scalars_excludes_messages():
+async def test_run_state_view_folds_scalars_and_messages():
     s = _echo_session(state_schema=RootAgentState)
     # The StateUpdatePayload's mode lands in the first compile update; the view folds it before completion.
     ctx = await drive(s, state_update(mode="learn"), user("hi"))
     view = ctx.last_state
     assert view.get("mode") == "learn"
-    assert "messages" not in view                    # messages are deliberately excluded from the view
+    # messages are folded through add_messages (the checkpoint's own reducer): the user turn and the
+    # echo response are both present in the view by completion, so engine.report(view.values) can run.
+    contents = [m.content for m in view.values["messages"]]
+    assert "hi" in contents and any("echo:hi" in c for c in contents)
 
 
 # ------------------------------------------------------------------------------------------------

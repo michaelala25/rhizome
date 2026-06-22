@@ -129,6 +129,8 @@ class ChatAreaStreamRouter(AgentStreamingContext):
                     if name and name != "code_execution":
                         self.route_tool_call(name, block.get("input") or {})
 
+        self._refresh_usage(state)
+
     async def on_interrupt(self, value: Any, agent_context: Any, state: RunStateView) -> Any:
         """Seal the open segment, surface the interrupt through the chat area, and resume the stream
         with whatever it resolves to. The thinking indicator hides for the wait and returns after —
@@ -158,7 +160,22 @@ class ChatAreaStreamRouter(AgentStreamingContext):
         """Always fires (success, cancel, or error) — the single teardown point. The busy-flip
         event is not ours: the agent node fires it at the worker pinpoint, right after this."""
         self._refresh_mode(state)
+        self._refresh_usage(state)
         self.close()
+
+    def _refresh_usage(self, state: RunStateView) -> None:
+        """Recompute this branch's token-usage report from the run's evolving state and cache it on the
+        node. Computed once per ``updates`` event — the cadence the prefix total actually changes on, so
+        no need to recompute per token chunk.
+
+        Only the *visible* branch drives the shared status bar: a background turn updates its own node's
+        cache without clobbering the bar the user is looking at; a later cursor move re-reads that cache
+        (see ``ChatAreaModel._sync_status_bar``)."""
+        node = self._graph.node(self._cursor)
+        report = node.session.engine.report(state.values)
+        node.usage_report = report
+        if self._area.cursor == self._cursor:
+            self._area.status_bar.set_usage_report(report)
 
     def _refresh_mode(self, state: RunStateView) -> None:
         """Track the run's mode as state evolves, so segments opened after a mid-run mode change
