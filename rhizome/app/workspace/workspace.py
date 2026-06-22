@@ -2,10 +2,10 @@
 
 The workspace is the composition root for the conversation stack: it opens the workspace-scoped service
 container, declares the per-workspace ``AgentRuntime`` there, and owns the panel VMs surfaced within it.
-``ChatAreaModel`` is the always-present center panel; the resource viewer and an auxiliary right panel are
-owned here too (stubbed until their VMs are ported). The status bar is not a panel — it is a fixed element
-of the chat area, owned by ``ChatAreaModel``. Everything else is a panel for now — the panel/chrome
-distinction is deferred.
+``ChatAreaModel`` is the always-present center panel; the resource loader is an on-demand panel (opened
+via ``/resources``), and an auxiliary right panel is owned here too (stubbed until its VM lands). The
+status bar is not a panel — it is a fixed element of the chat area, owned by ``ChatAreaModel``. Everything
+else is a panel for now — the panel/chrome distinction is deferred.
 
 Two-phase construction
 ----------------------
@@ -64,9 +64,12 @@ class WorkspaceModel(OrchestratorModel):
         # Workspace command registry: parented to the app-global registry (resolved from the parent scope),
         # registered as the workspace-scope CommandRegistryService, and injected into the chat area, which
         # registers its conversation commands on it. App / tab commands live in the global registry this
-        # one inherits from; workspace-level commands (/resources, /rename) register here as they port.
+        # one inherits from; workspace-level commands register here. ``/resources`` is one — it toggles a
+        # workspace panel, so it belongs on the orchestrator, not the conversation.
         self._commands = CommandRegistry(parent=services.try_get(CommandRegistryService))
         self._services.register(CommandRegistryService, self._commands)
+        self._commands.register("resources", lambda: self.toggle(ResourceLoaderModel),
+                                help="Toggle the resource loader panel.")
 
         # Resource layer: one ``ResourceTree`` per workspace, shared by the conversation graph's stores
         # and the loader panel. Construction is side-effect-free — no DB is touched until a refresh, which
@@ -89,9 +92,11 @@ class WorkspaceModel(OrchestratorModel):
     def bootstrap(self) -> None:
         """Surface the workspace's initial panels — the second construction phase, called by the view at
         mount. Building the chat area mints a runtime session, so this is deliberately not in ``__init__``;
-        it is also the seam for mount-time inputs the service scope can't supply (app-level flags, etc.)."""
+        it is also the seam for mount-time inputs the service scope can't supply (app-level flags, etc.).
+
+        Only the chat area surfaces here. The resource loader is opened on demand via ``/resources``
+        (``toggle``); custody persists once built, so toggling it shut and back open keeps its state."""
         self.request_mount(self._get_view_model(ChatAreaModel))
-        self.request_mount(self._get_view_model(ResourceLoaderModel))
 
     # ------------------------------------------------------------------
     # Typed panel accessors

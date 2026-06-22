@@ -12,6 +12,7 @@ from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
+from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.app.workspace.workspace import WorkspaceModel
 from rhizome.db import SessionFactoryService
 from rhizome.utils.services import ServiceAccessor
@@ -46,16 +47,31 @@ def make_root_accessor(session_factory=None) -> ServiceAccessor:
     return accessor
 
 
-def test_workspace_bootstrap_surfaces_its_panels():
+def test_workspace_bootstrap_surfaces_only_the_chat_area():
     ws = WorkspaceModel(make_root_accessor())
     assert ws.surfaced_view_models() == ()               # construction is cheap: nothing surfaced yet
 
     ws.bootstrap()
     chat = ws.chat_area
     assert isinstance(chat, ChatAreaModel)
-    # bootstrap surfaces both the center (chat) and left (loader) panels.
-    assert set(ws.surfaced_view_models()) == {chat, ws.resource_loader}
+    # bootstrap surfaces only the chat area; the resource loader opens on demand via /resources.
+    assert ws.surfaced_view_models() == (chat,)
     assert ws.chat_area is chat                            # custody: one cached instance
+
+
+async def test_resources_command_toggles_the_loader_panel():
+    ws = WorkspaceModel(make_root_accessor())
+    ws.bootstrap()
+    chat = ws.chat_area
+    assert ws.surfaced_view_models() == (chat,)           # loader not surfaced at start
+
+    # /resources is registered on the workspace registry; the chat area's scope reaches it via the
+    # parent chain, and the handler toggles the loader panel through the orchestrator.
+    await chat.commands.execute("/resources")
+    assert set(ws.surfaced_view_models()) == {chat, ws.resource_loader}
+
+    await chat.commands.execute("/resources")             # toggle closed again
+    assert ws.surfaced_view_models() == (chat,)
 
 
 async def test_resource_stores_shared_and_local_follows_cursor():

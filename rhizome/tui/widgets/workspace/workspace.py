@@ -1,10 +1,11 @@
 """Workspace view — the ``PanelOrchestrator`` half of ``WorkspaceModel``.
 
 Lays out the workspace's panel slots and routes each surfaced panel VM to its slot. Two slots exist
-today: the resource loader (left) and the chat area (center), laid out side by side; an auxiliary (right)
-slot gets created alongside its panel view as it lands. Both current panels are bound at module import
-(the ``register_panel`` calls below), so the VMs the model surfaces at bootstrap mount into their slots.
-(The status bar is not a panel — it is docked inside the chat area itself.)
+today: the chat area (center, always present) and the resource loader (left, opened on demand via
+``/resources``); an auxiliary (right) slot gets created alongside its panel view as it lands. Both panels
+are bound at module import (the ``register_panel`` calls below). slot-left collapses to zero width while
+empty (``_sync_slot_visibility``), so the closed resource loader reserves no space. (The status bar is not
+a panel — it is docked inside the chat area itself.)
 
 Mounted by ``ChatTabPane`` (one Workspace per chat tab) — it backs the tab's content, with the screen
 reaching the conversation through ``pane.workspace`` (e.g. to focus the chat input on a tab switch).
@@ -14,8 +15,10 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal
+from textual.css.query import NoMatches
 
 from rhizome.app.chat_area.chat_area import ChatAreaModel
+from rhizome.app.model import ViewModelBase
 from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.app.workspace.workspace import WorkspaceModel
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea
@@ -42,10 +45,12 @@ class Workspace(PanelOrchestrator[WorkspaceModel]):
         super().__init__(WorkspaceModel(services), **kwargs)
 
     def compose(self) -> ComposeResult:
-        # Left (resource loader) + center (chat area) side by side. The bottom / right slots are created
-        # with their panel views as they land, to avoid an empty docked container reserving dead space.
+        # Center (chat area) + left (resource loader) side by side. slot-left starts collapsed: the
+        # resource loader opens on demand, and an empty slot reserves no width (see _sync_slot_visibility).
+        # The right slot is created with its panel view as it lands, to avoid an empty docked container.
         left = PanelSlot(id="slot-left")
         center = PanelSlot(id="slot-center")
+        left.display = False
         self.register_slot("slot-left", left)
         self.register_slot("slot-center", center)
         with Horizontal(classes="ws-body"):
@@ -60,7 +65,27 @@ class Workspace(PanelOrchestrator[WorkspaceModel]):
 
     # TODO(panels): register the remaining panels as their views land, e.g. an auxiliary right panel.
 
+    def _on_request_mount(self, vm: ViewModelBase) -> None:
+        super()._on_request_mount(vm)
+        self._sync_slot_visibility()
+
+    def _on_request_unmount(self, vm: ViewModelBase) -> None:
+        super()._on_request_unmount(vm)
+        self._sync_slot_visibility()
+
+    def _sync_slot_visibility(self) -> None:
+        """Collapse any empty slot so it reserves no space. Driven off ``PanelSlot.current`` after every
+        mount/unmount — slot-left (the on-demand resource loader) toggles; slot-center always holds the
+        chat area, so it stays shown."""
+        for slot in self._slots.values():
+            slot.display = slot.current is not None
+
     def hide_focus_target(self, slot_id: str):
-        """Where focus lands when ``slot_id`` empties — the chat area's input. TODO: resolve once the
-        chat-area panel view exposes its input for focusing."""
-        return None
+        """When a side slot empties, hand focus back to the chat area's input."""
+        center = self._slots.get("slot-center")
+        if center is None or center.current is None:
+            return None
+        try:
+            return center.current.query_one("#chat-input")
+        except NoMatches:
+            return None
