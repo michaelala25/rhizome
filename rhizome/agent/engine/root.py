@@ -9,19 +9,16 @@ The well-known message ids for resource/index blocks live in ``engine.resources`
 mode-guide id schemes live here, beside the engine that owns them.
 """
 
-import json
-from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, SystemMessage
 
-from rhizome.logs import get_logger
 from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
 from .base import ensure_message_id, ingest_payloads, PromptEngine
 from .cleanup import promote
+from .dump import dump_report, dump_request
 from .metadata import lifetime_of, pin, Pin, pin_of
 from .resources import (
     block_builder,
@@ -29,6 +26,9 @@ from .resources import (
     group_by_resource,
     index_block,
     INDEX_RESOURCE_MESSAGE_ID,
+    is_global_resource_message,
+    is_index_resource_message,
+    is_local_resource_message,
     local_resource_message_id,
     owning_resource_id,
     resource_deltas,
@@ -43,22 +43,6 @@ from ..prompts import (
 
 if TYPE_CHECKING:
     from ..context import RootAgentContext
-
-
-_logger = get_logger("agent.engine.root")
-
-# TODO(debug-gate): ``prepare`` dumps every outgoing wire request here UNCONDITIONALLY — a bring-up aid for
-# inspecting exactly what reaches the model. Gate it on a debug-mode flag once one is threaded to the engine
-# (the app has a --debug flag; it just isn't plumbed this far yet).
-PROMPT_DUMP_DIR = Path("/tmp/rhizome-prompt-dumps")
-
-
-def _content_text(content: Any) -> str:
-    """Readable rendering of a message's ``content`` — a plain str, or the structured block list that
-    providers use for tool calls / multimodal turns."""
-    if isinstance(content, str):
-        return content
-    return json.dumps(content, default=str, indent=2, ensure_ascii=False)
 
 
 # ========================================================================================================================
@@ -232,50 +216,34 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
                 *system, *buckets["head"], *body[:split], *buckets["branch"], *body[split:], *buckets["tail"],
             ])
 
-        self._dump_request(result, ctx)   # TODO(debug-gate): unconditional for now — see PROMPT_DUMP_DIR
+        # TODO(debug-gate): both dumps fire UNCONDITIONALLY for now — see engine.dump.PROMPT_DUMP_DIR. The
+        # report is computed over the request's own messages, so its provider total comes from the latest
+        # prior AIMessage — anchored one model call behind (the current-vs-last-call drift engine.usage
+        # documents), harmless for an inspection dump.
+        node = ctx.node_id if ctx is not None else None
+        dump_request(result, node)
+        dump_report(self.report({"messages": result.messages}), node)
         return result
 
-    # ----- debug dump ------------------------------------------------------ #
+    # ----- usage classification -------------------------------------------- #
 
-    def _dump_request(self, request: ModelRequest, ctx: "RootAgentContext | None") -> None:
-        """Write the fully-arranged wire request (system message + messages) to a tmp file, one per call,
-        and log its path — a debugging aid for seeing exactly what reaches the model. A dump failure is
-        swallowed (warned, never raised): it must not disturb a live run."""
-        try:
-            PROMPT_DUMP_DIR.mkdir(parents=True, exist_ok=True)
-            node = ctx.node_id if ctx is not None else None
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            path = PROMPT_DUMP_DIR / f"prepare-{stamp}-node{node}.txt"
-            path.write_text(self._format_request(request, ctx), encoding="utf-8")
-            _logger.info("Prompt dump written: %s", path)
-        except Exception as exc:  # noqa: BLE001 — a debug dump must never break a model call
-            _logger.warning("Prompt dump failed: %s", exc)
-
-    @staticmethod
-    def _format_request(request: ModelRequest, ctx: "RootAgentContext | None") -> str:
-        """Render the outgoing request as readable text: the system message first, then each message with
-        its id / position / lifetime tags and full content (plus tool-call details where present)."""
-        node = ctx.node_id if ctx is not None else None
-        system = request.system_message
-        bar = "=" * 100
-        out = [
-            f"prepare() dump — node={node}  messages={len(request.messages)}",
-            "",
-            bar, "SYSTEM MESSAGE", bar,
-            system.content if isinstance(system, SystemMessage) else "(no system_message on the request)",
-            "",
-            bar, "MESSAGES", bar,
-        ]
-        for i, m in enumerate(request.messages):
-            out.append(
-                f"\n--- [{i}] {type(m).__name__}  id={m.id}  pin={pin_of(m)}  lifetime={lifetime_of(m)} ---"
-            )
-            out.append(_content_text(m.content))
-            if getattr(m, "tool_calls", None):
-                out.append(f"tool_calls: {json.dumps(m.tool_calls, default=str, indent=2)}")
-            if getattr(m, "tool_call_id", None):
-                out.append(f"tool_call_id: {m.tool_call_id}")
-        return "\n".join(out)
+    def _message_kind(self, message: BaseMessage) -> str:
+        """Refine the generic classification (see ``PromptEngine._message_kind``) by recognizing the root
+        engine's own well-known message ids, so the usage breakdown distinguishes the global vs local
+        resource-context channels, the vector-index reminder, mode guides, and branch markers from ordinary
+        conversation."""
+        if is_index_resource_message(message):
+            return "resource_index"
+        if is_global_resource_message(message):
+            return "global_resource"
+        if is_local_resource_message(message):
+            return "local_resource"
+        mid = message.id or ""
+        if mid.startswith(MODE_GUIDE_PREFIX):
+            return "guide"
+        if mid.startswith(BRANCH_MARKER_PREFIX):
+            return "branch_marker"
+        return super()._message_kind(message)
 
     # ----- branch marker --------------------------------------------------- #
 

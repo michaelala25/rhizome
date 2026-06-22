@@ -301,7 +301,10 @@ class AgentSession:
                         await stream_context.on_update(payload, state_view)
 
                     elif kind == "messages":
-                        # TODO: usage-metadata extraction — likely an AgentStreamingContext concern now.
+                        # No usage extraction here: provider usage rides on each AIMessage in the
+                        # checkpoint, so it is derived on demand via the engine's `report` (see
+                        # engine.usage), not scraped off the stream — a live consumer refreshes from its
+                        # own `on_update`, which fires at the per-model-call boundary the prefix moves on.
                         await stream_context.on_message(payload, state_view)
 
                 if interrupted:

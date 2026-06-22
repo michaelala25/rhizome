@@ -21,12 +21,25 @@ from ..base import (
 from .base import PromptCompilerMiddleware, PromptEngine
 from .cleanup import apply_cleanup, mark_reclaimable, promote
 from .root import RootPromptEngine
+from .usage import (
+    compute_chat_model_max_tokens,
+    provider_usage,
+    ProviderUsage,
+    UsageReport,
+    UsageSegment,
+)
 
 __all__ = [
     # engines + middleware
     "PromptEngine",
     "PromptCompilerMiddleware",
     "RootPromptEngine",
+    # token-usage accounting (engine.report returns a UsageReport; the app consumes it)
+    "UsageReport",
+    "UsageSegment",
+    "ProviderUsage",
+    "provider_usage",
+    "compute_chat_model_max_tokens",
     # input vocabulary (defined in ``base``, re-exported here)
     "AgentPayload",
     "MessagePayload",

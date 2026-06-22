@@ -52,6 +52,7 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
 )
 
@@ -59,7 +60,19 @@ from rhizome.logs import get_logger
 
 from ..base import AgentPayload, MessagePayload, StateUpdatePayload, Strategy
 from .cleanup import apply_cleanup, mark_reclaimable
-from .metadata import lifetime_of, set_role
+from .metadata import lifetime_of, role_of, set_role
+from .usage import (
+    estimate_message_tokens,
+    estimate_system_tokens,
+    estimate_tool_tokens,
+    normalize,
+    countable,
+    provider_usage,
+    tool_kind,
+    ProviderUsage,
+    UsageReport,
+    UsageSegment,
+)
 
 if TYPE_CHECKING:
     from ..context import BaseAgentContext
@@ -202,16 +215,30 @@ class PromptEngine[C]:
         reclaim_tools: frozenset[str] = frozenset(),
         reclaim_threshold: int = 0,
         expire_after: int | None = None,
+        *,
+        system_prompt: str | None = None,
+        tools: list | None = None,
+        max_input_tokens: int | None = None,
     ) -> None:
         """Reclamation policy, inert by default and wired to options at build time eventually.
         ``reclaim_tools`` / ``reclaim_threshold`` configure the auto-tagger (identification): the tool
         names whose results auto-tag ``semi-permanent`` once their content passes ``reclaim_threshold``
         (content length — a stand-in for a token count). ``expire_after`` is the auto-compact gate: the
         number of genuine user turns after which a semi-permanent message auto-reclaims, or ``None`` to
-        leave auto-expiry off (explicit ``cleanup_context`` requests are honored regardless)."""
+        leave auto-expiry off (explicit ``cleanup_context`` requests are honored regardless).
+
+        ``system_prompt`` / ``tools`` / ``max_input_tokens`` are the build-time constants ``report`` needs
+        for token accounting: the system block and tool-definition sizes (fixed for the agent's lifetime —
+        the engine rebuilds when they change, so counting once here is correct) and the model's context
+        window. All optional: an engine built without them still reports per-message usage, just with no
+        system/tools slice and no window percentage."""
         self._reclaim_tools = reclaim_tools
         self._reclaim_threshold = reclaim_threshold
         self._expire_after = expire_after
+
+        self._system_tokens = estimate_system_tokens(system_prompt)
+        self._tool_tokens = estimate_tool_tokens(tools)
+        self._max_input_tokens = max_input_tokens
 
     async def compile(self, state: dict[str, Any], ctx: "C | None") -> dict[str, Any] | None:
         """Build the persistent state update applied ahead of the next model call."""
@@ -251,6 +278,56 @@ class PromptEngine[C]:
         Override to customize patch wording per agent kind.
         """
         return patch_orphaned_tool_calls(messages, reason=reason or self.DEFAULT_REPAIR_REASON)
+
+    # ----- usage accounting ------------------------------------------------ #
+
+    def report(self, state_values: dict[str, Any]) -> UsageReport:
+        """Account this thread's token usage from its checkpointed state — the provider ground truth plus a
+        normalized per-message breakdown of the current prompt (see ``engine.usage``). Pure and synchronous:
+        the caller fetches state (the engine doesn't own the thread) and hands the values in, e.g.
+        ``engine.report(await session.agent_state)``.
+
+        The breakdown is normalized to the provider's reported ``input_tokens``, so it folds in the
+        system-prompt and tool-definition cost and agrees with the headline. Before the thread's first model
+        response there is no ground truth to normalize against, so the segments carry raw estimates."""
+        messages = state_values.get("messages", [])
+        usage: ProviderUsage | None = provider_usage(messages)
+        segments = self._raw_segments(messages)
+        target = usage.input_tokens if usage is not None else None
+        return UsageReport(usage, self._max_input_tokens, tuple(normalize(segments, target)))
+
+    def _raw_segments(self, messages: list[BaseMessage]) -> list[UsageSegment]:
+        """The current prompt's slices with raw (un-normalized) estimates: the synthetic system and
+        tool-definition blocks first (the fixed prefix), then one slice per real message."""
+        segments: list[UsageSegment] = []
+        if self._system_tokens:
+            segments.append(UsageSegment("system", self._system_tokens))
+        if self._tool_tokens:
+            segments.append(UsageSegment("tools", self._tool_tokens))
+        segments.extend(self._message_segment(m) for m in countable(messages))
+        return segments
+
+    def _message_segment(self, message: BaseMessage) -> UsageSegment:
+        """One message's usage slice: its estimated size, tagged by id and a kind. ``_message_kind`` is the
+        classification seam a richer engine overrides to recognize its own message ids."""
+        return UsageSegment(self._message_kind(message), estimate_message_tokens(message), message_id=message.id)
+
+    def _message_kind(self, message: BaseMessage) -> str:
+        """Generic message classification by type and role tag. A tool round-trip splits into ``tool_use``
+        (the model's invocation, carried on an ``AIMessage``) and ``tool_result`` (a ``ToolMessage``) — see
+        ``tool_kind``; a plain ``AIMessage`` is ``agent``; and a ``HumanMessage`` is a genuine ``user`` turn
+        unless it is an injected ``<system>`` message (role-tagged at construction — branch markers, mode
+        notices), which is a ``system_notice``."""
+        tk = tool_kind(message)
+        if tk is not None:
+            return f"tool_{tk}"        # tool_use | tool_result
+        if isinstance(message, AIMessage):
+            return "agent"
+        if isinstance(message, SystemMessage):
+            return "system"
+        if isinstance(message, HumanMessage):
+            return "system_notice" if role_of(message) == "system" else "user"
+        return "other"
 
     # ----- message lifetime ------------------------------------------------ #
 

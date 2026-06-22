@@ -44,7 +44,7 @@ from rhizome.db import SessionFactoryService
 
 from .checkpointer import AgentCheckpointerService
 from .context import BaseAgentContext
-from .engine import PromptCompilerMiddleware, PromptEngine
+from .engine import compute_chat_model_max_tokens, PromptCompilerMiddleware, PromptEngine
 from .factory import AgentFactory
 from .prompts import KNOWLEDGE_ENTRIES_GUIDE
 from .state import BaseAgentState, CommitProposalEntry
@@ -188,7 +188,9 @@ def _build_structured_subagent(
     consuming tool/widget reads — so no ``response_format`` is needed. The base ``PromptEngine`` does only
     history repair and payload ingestion; the system prompt rides every request via ``create_agent``.
     """
-    engine = PromptEngine()
+    engine = PromptEngine(
+        system_prompt=system_prompt, max_input_tokens=compute_chat_model_max_tokens(model)
+    )
     agent = create_agent(
         model=model,
         system_prompt=system_prompt,
@@ -405,7 +407,9 @@ def build_commit_subagent(
 
     system_prompt = f"{COMMIT_SYSTEM_PROMPT}\n\n{render_schema_reference()}"
 
-    engine = PromptEngine()
+    engine = PromptEngine(
+        system_prompt=system_prompt, tools=tools, max_input_tokens=compute_chat_model_max_tokens(model)
+    )
     agent = create_agent(
         model=model,
         system_prompt=system_prompt,

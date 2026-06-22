@@ -35,7 +35,7 @@ from rhizome.logs import get_logger
 
 from .checkpointer import AgentCheckpointerService
 from .context import RootAgentContext
-from .engine import PromptCompilerMiddleware, RootPromptEngine
+from .engine import compute_chat_model_max_tokens, PromptCompilerMiddleware, RootPromptEngine
 from .factory import AgentFactory
 from .prompts import compose_system_prompt
 from .state import RootAgentState
@@ -149,18 +149,26 @@ def build_root_agent(
     if provider == "anthropic" and web_tools == "enabled":
         tools.extend(_WEB_TOOLS)
 
-    # TODO(cache): thread `provider`, `prompt_cache`, and `prompt_cache_ttl` into RootPromptEngine so its
-    # `prepare` can place Anthropic cache-control breakpoints — gated on the provider (OpenAI can't take
-    # them) and on the live toggle / TTL. They are injected here now as live OptionRefs so flipping cache
-    # or its TTL never rebuilds the agent; the engine ignores them until that lands.
-    engine = RootPromptEngine()
-
     # The one fixed system prompt + the registry-driven schema reference (the SSOT for table/column names
     # and the filter DSL). Passed to create_agent so it rides every request as the stable ``system_message``
     # — never swapped per mode, never floated by the engine, so it anchors the prefix cache.
     # TODO(debug): thread the app's --debug flag through to here so we can pass compose_system_prompt(
     # debug=True) and append the debug section; it isn't plumbed to the builder yet.
     system_prompt = compose_system_prompt(schema_reference=render_schema_reference())
+
+    # TODO(cache): thread `provider`, `prompt_cache`, and `prompt_cache_ttl` into RootPromptEngine so its
+    # `prepare` can place Anthropic cache-control breakpoints — gated on the provider (OpenAI can't take
+    # them) and on the live toggle / TTL. They are injected here now as live OptionRefs so flipping cache
+    # or its TTL never rebuilds the agent; the engine ignores them until that lands.
+    #
+    # The system prompt, tool set, and context window are the build-time constants the engine's `report`
+    # needs for token accounting (see engine.usage) — fixed for this build, recomputed whenever a snapshot
+    # option rebuilds the agent.
+    engine = RootPromptEngine(
+        system_prompt=system_prompt,
+        tools=tools,
+        max_input_tokens=compute_chat_model_max_tokens(chat_model),
+    )
 
     agent = create_agent(
         model=chat_model,
