@@ -1345,9 +1345,13 @@ class ConversationAreaModel(ViewModelBase):
         # just the current leaf's feed. Multi-branch commit (selecting across *all* branches per
         # the original spec) is a follow-up; for now this matches pre-branch behavior of "every
         # learn-mode message in this conversation".
+        # Thinking summaries are AgentMessageModels too, but never committable answers — exclude them.
+        # (When commit is ported to chat_area, that path must carry the same `not entry.thinking` gate.)
         selectable = [
             item.entry for item in self.visible_feed
-            if isinstance(item.entry, AgentMessageModel) and item.entry.mode == Mode.LEARN
+            if isinstance(item.entry, AgentMessageModel)
+            and item.entry.mode == Mode.LEARN
+            and not item.entry.thinking
         ]
         if not selectable:
             self.append_message(

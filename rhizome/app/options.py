@@ -717,6 +717,23 @@ class Options(CallbackHost, metaclass=OptionsMeta):
                 help="Enable Anthropic server-side web_search and web_fetch tools",
             )
 
+            AdaptiveThinking = ToggleOptionSpec(
+                name="adaptive_thinking",
+                scope=OptionScope.Session,
+                default="enabled",
+                help=(
+                    "Let Claude decide when and how much to reason (Anthropic adaptive thinking). "
+                    "Reasoning summaries stream into the chat area."
+                ),
+            )
+            Effort = ChoicesOptionSpec(
+                name="effort",
+                scope=OptionScope.Session,
+                default="high",
+                help="Reasoning depth / token spend for the model. Not supported on Haiku models.",
+                choices=["low", "medium", "high", "max"],
+            )
+
     class Subagents(OptionNamespace):
         name = "subagents"
 

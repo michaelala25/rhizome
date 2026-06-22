@@ -82,15 +82,26 @@ class ChatAreaStreamRouter(AgentStreamingContext):
     # ------------------------------------------------------------------
 
     async def on_message(self, payload: Any, state: RunStateView) -> None:
-        """Extract text deltas from ``AIMessageChunk`` payloads into the open chat segment.
-        Non-text chunks (``input_json_delta`` etc.) are ignored so they don't open a segment."""
+        """Extract text and adaptive-thinking summary deltas from ``AIMessageChunk`` payloads. Other
+        non-text chunks (``input_json_delta`` etc.) are ignored so they don't open a chat segment."""
         self._refresh_mode(state)
         chunk, _meta = payload
         if not isinstance(chunk, AIMessageChunk):
             return
-        if not chunk.text:
-            return
-        self.route_chunk(chunk.text)
+
+        # Adaptive-thinking summaries stream as content blocks, not ``chunk.text``: each is a
+        # {"type": "thinking", "thinking": <delta>, "index": N} dict. signature_delta blocks reuse the
+        # same type but carry only "signature" (no display text), so they fall through the `if`. Drained
+        # before the answer text below since Anthropic emits thinking ahead of the output for each turn.
+        if isinstance(chunk.content, list):
+            for block in chunk.content:
+                if isinstance(block, dict) and block.get("type") == "thinking":
+                    summary = block.get("thinking")
+                    if summary:
+                        self.route_thinking(summary)
+
+        if chunk.text:
+            self.route_chunk(chunk.text)
 
     async def on_update(self, payload: dict, state: RunStateView) -> None:
         """Route tool calls from update payloads into the open tool list.
@@ -218,14 +229,19 @@ class ChatAreaStreamRouter(AgentStreamingContext):
     # Routing primitives (also drivable by synthetic test commands)
     # ------------------------------------------------------------------
 
-    def route_chunk(self, text: str) -> None:
-        """Route a streamed text delta into the open chat segment, opening a fresh one (and closing
-        any open tool list) if needed."""
+    def route_chunk(self, text: str, *, thinking: bool = False) -> None:
+        """Route a streamed delta into the open chat segment, opening a fresh one (and closing any open
+        tool list) if needed. ``thinking`` picks an adaptive-thinking summary segment over an answer
+        segment; a change of kind seals the open segment and opens a new one. Anthropic streams thinking
+        and answer deltas in contiguous runs, so the kind only flips at a true segment boundary."""
         if self._current_tool_message is not None:
             self._current_tool_message = None
 
-        if self._current_agent_message is None or not self._current_agent_message.streaming:
-            vm = AgentMessageModel(mode=self._mode)
+        cur = self._current_agent_message
+        if cur is None or not cur.streaming or cur.thinking != thinking:
+            if cur is not None and cur.streaming:
+                cur.close()  # seal the outgoing segment on a thinking <-> answer switch
+            vm = AgentMessageModel(mode=self._mode, thinking=thinking)
             self._current_agent_message = vm
             self._graph.append(self._cursor, vm)
             self._repin_thinking()
@@ -248,6 +264,11 @@ class ChatAreaStreamRouter(AgentStreamingContext):
             self._had_output = True
 
         self._current_tool_message.add_tool_call(name, args)
+
+    def route_thinking(self, summary: str) -> None:
+        """Route a streamed adaptive-thinking summary delta — same segment machinery as ``route_chunk``,
+        flagged ``thinking`` so the view dims it and commit selection excludes it."""
+        self.route_chunk(summary, thinking=True)
 
     @staticmethod
     def _build_interrupt_vm(value: Any, context: Any) -> InterruptModelBase:

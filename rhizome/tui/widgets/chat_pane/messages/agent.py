@@ -89,6 +89,9 @@ class AgentMessage(ViewBase[AgentMessageModel]):
         width: 1fr;
         color: rgb(204, 204, 204);
     }}
+    AgentMessage.--thinking .agent-body {{
+        color: rgb(120, 120, 120);
+    }}
     """
 
     _TICK_MS = 40
@@ -104,13 +107,20 @@ class AgentMessage(ViewBase[AgentMessageModel]):
         self._drain_task: asyncio.Task[None] | None = None
         self._wakeup: asyncio.Event = asyncio.Event()
 
-        if vm.mode == Mode.LEARN:
+        if vm.thinking:
+            # A thinking summary: dimmed (the `--thinking` CSS rule), and never wears the commit-mode
+            # border since it isn't a committable answer.
+            self.add_class("--thinking")
+        elif vm.mode == Mode.LEARN:
             self.add_class("learn-mode")
         elif vm.mode == Mode.REVIEW:
             self.add_class("review-mode")
 
     def compose(self) -> ComposeResult:
-        prefix = f"[bold rgb(200, 100, 200)]agent:[/bold rgb(200, 100, 200)] "
+        if self._vm.thinking:
+            prefix = "[rgb(120, 120, 120)]thinking:[/rgb(120, 120, 120)] "
+        else:
+            prefix = f"[bold rgb(200, 100, 200)]agent:[/bold rgb(200, 100, 200)] "
         with Horizontal(classes="msg-header"):
             yield Static("□", classes="commit-checkbox")
             yield Static(prefix, classes="msg-prefix")

@@ -4,9 +4,9 @@
 ``checkpointer`` and the ``APIKeyService``, and binds the agent's option dependencies. The split between
 snapshot and live options is the whole point of the two binding shapes (see ``factory`` for the contract):
 
-- ``provider`` / ``model`` / ``temperature`` / ``web_tools`` are ``Annotated[T, spec]`` snapshots — they
-  shape the model and tool set, so a change to any of them rebuilds the agent (they form its invalidation
-  set).
+- ``provider`` / ``model`` / ``temperature`` / ``adaptive_thinking`` / ``effort`` / ``web_tools`` are
+  ``Annotated[T, spec]`` snapshots — they shape the model and tool set, so a change to any of them rebuilds
+  the agent (they form its invalidation set).
 - ``parallel_tool_calling`` / ``prompt_cache`` / ``prompt_cache_ttl`` are ``Annotated[OptionRef[T], spec]``
   live handles — behavioral knobs read fresh, so flipping them never rebuilds. Parallel-tool calling is
   honored per model call by ``ParallelToolCallsMiddleware``; the cache knobs are wired but inert for now
@@ -105,6 +105,12 @@ def _supports_temperature(provider: str, model: str) -> bool:
     return not (match is not None and (int(match.group(1)), int(match.group(2))) >= (4, 7))
 
 
+def _supports_effort(provider: str, model: str) -> bool:
+    """Whether Anthropic's ``effort`` parameter is accepted. Anthropic-only, and the Haiku tier (plus
+    Sonnet 4.5 and earlier) errors on it, so the builder omits it there."""
+    return provider == "anthropic" and "haiku" not in model
+
+
 def _root_tools() -> list:
     """The root agent's full tool surface, flattened from the per-domain builders. Each tool reaches its DB
     session / runtime off the agent context at call time, so the builders need no wiring here."""
@@ -122,15 +128,20 @@ def _root_tools() -> list:
 
 def build_root_agent(
     *,
+    # Services (injected by service accessor)
     checkpointer: AgentCheckpointerService,
-    api_keys: APIKeyService,
-    provider: Annotated[str, Options.Agent.Provider],
-    model: Annotated[str, Options.Agent.Model],
-    temperature: Annotated[float, Options.Agent.Temperature],
-    web_tools: Annotated[str, Options.Agent.Anthropic.WebTools],
+    api_keys:     APIKeyService,
+    # Options (injected by OptionService, bound by runtime, changes propagate to agent instance cache invalidation)
+    provider:              Annotated[str,   Options.Agent.Provider],
+    model:                 Annotated[str,   Options.Agent.Model],
+    temperature:           Annotated[float, Options.Agent.Temperature],
+    adaptive_thinking:     Annotated[str,   Options.Agent.Anthropic.AdaptiveThinking],
+    effort:                Annotated[str,   Options.Agent.Anthropic.Effort],
+    # Option refs (injected by OptionService, changes do NOT cause agent instance cache invalidation)
+    web_tools:             Annotated[str,   Options.Agent.Anthropic.WebTools],
     parallel_tool_calling: Annotated[OptionRef[str], Options.Agent.ParallelToolCalling],
-    prompt_cache: Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCache],
-    prompt_cache_ttl: Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCacheTTL],
+    prompt_cache:          Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCache],
+    prompt_cache_ttl:      Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCacheTTL],
 ) -> tuple[CompiledStateGraph, RootPromptEngine]:
     """Build the root conversation agent and its prompt engine, returning ``(agent, engine)``.
 
@@ -140,7 +151,21 @@ def build_root_agent(
     """
     _logger.info("Building root agent (provider=%s, model=%s)", provider, model)
 
-    model_kwargs = {"temperature": temperature} if _supports_temperature(provider, model) else {}
+    # Anthropic thinking/effort are construction-time model settings, hence snapshot options: a change
+    # rebuilds the agent. `thinking={"type": "adaptive"}` lets Claude decide when/how much to reason, and
+    # `display: "summarized"` streams reasoning summaries (the chat area's stream router renders them).
+    # `effort` is the depth/spend dial, gated like temperature since Haiku (and older Sonnet) reject it.
+    model_kwargs: dict = {}
+    adaptive = provider == "anthropic" and adaptive_thinking == "enabled"
+    if adaptive:
+        model_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
+    if _supports_effort(provider, model):
+        model_kwargs["effort"] = effort
+    # Drop temperature whenever thinking is on: extended thinking required it unset and adaptive is assumed
+    # the same, so this is defensive (and already a no-op on 4.7+, which rejects temperature outright).
+    if _supports_temperature(provider, model) and not adaptive:
+        model_kwargs["temperature"] = temperature
+
     chat_model = init_chat_model(
         model, model_provider=provider, api_key=api_keys.require(provider), **model_kwargs
     )

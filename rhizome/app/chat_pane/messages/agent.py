@@ -27,14 +27,19 @@ from rhizome.app.model import ViewModelBase
 
 
 class AgentMessageModel(ViewModelBase):
-    """A single contiguous run of agent text. Append-only ``body``; ``streaming`` flips on close."""
+    """A single contiguous run of agent text — an answer segment, or (when ``thinking``) an
+    adaptive-thinking summary. Append-only ``body``; ``streaming`` flips on close."""
 
-    def __init__(self, *, mode: Mode = Mode.IDLE) -> None:
+    def __init__(self, *, mode: Mode = Mode.IDLE, thinking: bool = False) -> None:
         super().__init__()
         self.body: str = ""
         self.streaming: bool = True
         self.cancelled: bool = False
         self.mode: Mode = mode
+
+        # A thinking segment carries an adaptive-thinking summary rather than the answer. The view
+        # renders it dimmed and borderless; commit selection excludes it (not a committable answer).
+        self.thinking: bool = thinking
 
         # Commit-mode decoration. Set by the chat-pane VM while in COMMIT state; the view paints
         # borders + a checkbox in the header off these flags.
