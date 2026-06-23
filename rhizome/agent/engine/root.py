@@ -17,7 +17,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, Sy
 from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
 from .base import ensure_message_id, ingest_payloads, PromptEngine
-from .cache import allocate, Breakpoint, cache_control, OptionReader
+from .cache import allocate, Breakpoint, cache_control, CacheControl, OptionReader
 from .cleanup import promote
 from .dump import dump_report, dump_request
 from .metadata import lifetime_of, pin, Pin, pin_of
@@ -138,6 +138,10 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         5. semi_perm — before the first semi-permanent message, so reclamation reprices only from there
            (STUB; dormant until anything tags semi-permanent).
 
+    Each placed breakpoint carries its own TTL, set by ``prompt_cache_ttl``: an explicit ``5m`` / ``1h``
+    applies uniformly, while ``dynamic`` puts 5m on the volatile ``before_tail`` floor (rewritten every
+    turn) and 1h on the stable prefix anchors (written rarely, read every turn) — see ``_breakpoint_ttls``.
+
     The index reminder is (roadmap) a *derived* message: ``compile`` still calls ``resource_index.consume()``
     (a real advance of the live store), but the "what's queryable" block is rendered in ``prepare`` from the
     current loaded set (memoized) and pinned to the tail — no ``consumed_resource_index`` snapshot, no
@@ -149,8 +153,6 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         - the tool allowlist for the new mode, in the same block
 
     Open questions / ideas:
-        - uniform vs. per-breakpoint TTL: a longer (1h) write on the stable head/branch prefixes and 5m on
-          the volatile tail, rather than one TTL across all breakpoints (a single ``prompt_cache_ttl`` knob)
         - budget-pressure reclamation (oldest-first, only when over a token budget) as the trigger,
           beyond the fixed user-message-count expiry of the first cut
         - the summary strategy: a stateless summarizer subagent plus a stash the agent re-hydrates by key
@@ -256,22 +258,36 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
     def _place_breakpoints(self, request: ModelRequest, ctx: "RootAgentContext | None") -> ModelRequest:
         """Place the cache-control breakpoints over the laid-out request — view-only, annotating COPIES so
         the shared state messages are never touched. Gated on the provider supporting breakpoints and the
-        live ``prompt_cache`` toggle; the live ``prompt_cache_ttl`` sets the TTL. The candidate list IS the
-        priority order and ``allocate``'s budget IS the cap (see the class docstring). Returns the request
-        unchanged when caching is off or nothing landed, so request identity is preserved."""
+        live ``prompt_cache`` toggle; the live ``prompt_cache_ttl`` sets the TTL per position (see
+        ``_breakpoint_ttls``). The candidate list IS the priority order and ``allocate``'s budget IS the cap
+        (see the class docstring). Returns the request unchanged when caching is off or nothing landed, so
+        request identity is preserved."""
         if not (self._cache_supported and self._prompt_cache is not None
                 and self._prompt_cache.get() == "enabled"):
             return request
         ttl = self._prompt_cache_ttl.get() if self._prompt_cache_ttl is not None else "5m"
+        tail_cc, stable_cc = self._breakpoint_ttls(ttl)
         candidates = [
-            Breakpoint("before_tail", self._bp_before_tail),
-            Breakpoint("head", self._bp_head),
-            Breakpoint("branch_leaf", lambda msgs: self._bp_branch_leaf(msgs, ctx)),
-            Breakpoint("branch_up", lambda msgs: self._bp_branch_up(msgs, ctx)),
-            Breakpoint("semi_perm", self._bp_semi_perm),
+            Breakpoint("before_tail", self._bp_before_tail, tail_cc),
+            Breakpoint("head", self._bp_head, stable_cc),
+            Breakpoint("branch_leaf", lambda msgs: self._bp_branch_leaf(msgs, ctx), stable_cc),
+            Breakpoint("branch_up", lambda msgs: self._bp_branch_up(msgs, ctx), stable_cc),
+            Breakpoint("semi_perm", self._bp_semi_perm, stable_cc),
         ]
-        messages = allocate(request.messages, candidates, cache_control(ttl))
+        messages = allocate(request.messages, candidates)
         return request if messages is request.messages else request.override(messages=messages)
+
+    @staticmethod
+    def _breakpoint_ttls(option: str) -> tuple[CacheControl, CacheControl]:
+        """The ``(tail, stable-prefix)`` cache-control descriptors for a ``prompt_cache_ttl`` value. An
+        explicit ``5m`` / ``1h`` applies uniformly; ``dynamic`` splits them — 5m on the volatile
+        ``before_tail`` floor (rewritten every turn, so the cheaper 1.25x write is right) and 1h on the
+        stable prefix anchors (written rarely, read every turn, so the 2x write amortizes and survives
+        idle gaps)."""
+        if option == "dynamic":
+            return cache_control("5m"), cache_control("1h")
+        cc = cache_control(option)
+        return cc, cc
 
     @staticmethod
     def _bp_before_tail(messages: list[BaseMessage]) -> BaseMessage | None:

@@ -705,9 +705,12 @@ class Options(CallbackHost, metaclass=OptionsMeta):
             PromptCacheTTL = ChoicesOptionSpec(
                 name="prompt_cache_ttl",
                 scope=OptionScope.Session,
-                default="5m",
-                help="TTL for Anthropic prompt cache (if enabled)",
-                choices=["5m", "1h"],
+                default="dynamic",
+                help=(
+                    "TTL for Anthropic prompt-cache breakpoints (when caching is on). '5m'/'1h' apply "
+                    "uniformly; 'dynamic' uses 1h on the stable prefix anchors and 5m on the volatile tail."
+                ),
+                choices=["5m", "1h", "dynamic"],
             )
 
             WebTools = ToggleOptionSpec(

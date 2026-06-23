@@ -113,32 +113,42 @@ def test_apply_cache_control_preserves_lifetime_metadata():
 
 def _targets(indices):
     """A breakpoint per index that resolves to ``messages[i]`` (late-binding avoided via a default arg)."""
-    return [Breakpoint(str(i), lambda ms, i=i: ms[i]) for i in indices]
+    return [Breakpoint(str(i), lambda ms, i=i: ms[i], cache_control("5m")) for i in indices]
 
 
 def test_allocate_drops_the_lowest_priority_over_budget():
     msgs = [HumanMessage(content=str(i), id=str(i)) for i in range(5)]
     # Five DISTINCT candidates, budget 4 -> the last (lowest priority) is dropped.
-    out = allocate(msgs, _targets([0, 1, 2, 3, 4]), cache_control("5m"), budget=4)
+    out = allocate(msgs, _targets([0, 1, 2, 3, 4]), budget=4)
     assert [i for i, m in enumerate(out) if cache_control_of(m)] == [0, 1, 2, 3]
 
 
 def test_allocate_dedupes_and_frees_the_slot_for_a_lower_candidate():
     msgs = [HumanMessage(content=str(i), id=str(i)) for i in range(5)]
     # a->4, b->2, c->2 (collision, skipped), d->0, e->1: the collision doesn't spend budget, so e fits.
-    out = allocate(msgs, _targets([4, 2, 2, 0, 1]), cache_control("5m"), budget=4)
+    out = allocate(msgs, _targets([4, 2, 2, 0, 1]), budget=4)
     assert [i for i, m in enumerate(out) if cache_control_of(m)] == [0, 1, 2, 4]
+
+
+def test_allocate_each_candidate_stamps_its_own_ttl():
+    msgs = [HumanMessage(content=str(i), id=str(i)) for i in range(2)]
+    candidates = [
+        Breakpoint("a", lambda ms: ms[0], cache_control("1h")),
+        Breakpoint("b", lambda ms: ms[1], cache_control("5m")),
+    ]
+    out = allocate(msgs, candidates)
+    assert ttls(out) == {"0": "1h", "1": "5m"}
 
 
 def test_allocate_skips_non_applicable_and_preserves_identity_when_empty():
     msgs = [HumanMessage(content="a", id="a")]
-    same = allocate(msgs, [Breakpoint("none", lambda ms: None)], cache_control("5m"))
+    same = allocate(msgs, [Breakpoint("none", lambda ms: None, cache_control("5m"))])
     assert same is msgs                                                 # nothing placed -> same object
 
 
 def test_allocate_never_exceeds_max_breakpoints():
     msgs = [HumanMessage(content=str(i), id=str(i)) for i in range(6)]
-    out = allocate(msgs, _targets(range(6)), cache_control("5m"))       # default budget = MAX_BREAKPOINTS
+    out = allocate(msgs, _targets(range(6)))                            # default budget = MAX_BREAKPOINTS
     assert sum(1 for m in out if cache_control_of(m)) == MAX_BREAKPOINTS == 4
 
 
@@ -230,6 +240,16 @@ async def test_prepare_honors_the_live_ttl():
     body = [g, HumanMessage(content="leaf", id="leaf")]
     assert set(ttls((await cached_engine(ttl="5m").prepare(Req(list(body)), None)).messages).values()) == {"5m"}
     assert set(ttls((await cached_engine(ttl="1h").prepare(Req(list(body)), None)).messages).values()) == {"1h"}
+
+
+async def test_prepare_dynamic_ttl_splits_the_floor_from_the_prefix():
+    engine = cached_engine(ttl="dynamic")
+    g = pin(HumanMessage(content="G", id=global_resource_message_id(1)), "head")
+    marker = HumanMessage(content="<system>branched</system>", id=branch_marker_message_id(5))
+    request = Req([g, HumanMessage(content="inh", id="inh"), marker, HumanMessage(content="leaf", id="leaf")])
+    out = await engine.prepare(request, RootAgentContext(node_id=5))
+    # Stable prefix anchors (head, branch_leaf) get 1h; the volatile before_tail floor gets 5m.
+    assert ttls(out.messages) == {global_resource_message_id(1): "1h", "inh": "1h", "leaf": "5m"}
 
 
 # ------------------------------------------------------------------------------------------------

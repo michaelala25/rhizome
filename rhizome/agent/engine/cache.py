@@ -8,13 +8,15 @@ Two pieces:
 - **``apply_cache_control``** — return a COPY of a message carrying a ``cache_control`` breakpoint on its
   last content block (a plain ``str`` body is wrapped into a one-block text list). Copy, never mutate:
   ``prepare`` is view-only and the message objects are shared with checkpointed state.
-- **``allocate``** — walk an ordered list of breakpoint CANDIDATES, spending a fixed budget. Anthropic
-  caps a request at four ``cache_control`` breakpoints, and reads the *longest* cached prefix among the
-  breakpoints that still match — so the design question is purely *which boundaries earn the scarce
-  slots*. Here, **priority IS list order and the budget IS the integer**: the allocator places candidates
-  top-to-bottom until the budget runs out, so the lowest-priority candidate is the one dropped when more
-  apply than fit. A candidate that does not apply resolves to ``None``; two candidates resolving onto the
-  same message place a single breakpoint (dedupe).
+- **``allocate``** — walk an ordered list of breakpoint CANDIDATES, each stamping its OWN ``cache_control``,
+  spending a fixed budget. Anthropic caps a request at four ``cache_control`` breakpoints, and reads the
+  *longest* cached prefix among the breakpoints that still match — so the design question is purely *which
+  boundaries earn the scarce slots*. Here, **priority IS list order and the budget IS the integer**: the
+  allocator places candidates top-to-bottom until the budget runs out, so the lowest-priority candidate is
+  the one dropped when more apply than fit. A candidate that does not apply resolves to ``None``; two
+  candidates resolving onto the same message place a single breakpoint (dedupe). Because the descriptor
+  rides on the candidate, one pass can mix TTLs — a long-lived TTL on a stable prefix anchor, a short one
+  on the volatile tail.
 
 The one mechanic worth holding in mind: Anthropic caches the prefix UP TO AND INCLUDING the block a
 breakpoint sits on. So a candidate that wants a prefix to end *before* some message targets the message
@@ -92,19 +94,22 @@ def apply_cache_control(message: BaseMessage, cc: CacheControl) -> BaseMessage |
 
 @dataclass(frozen=True)
 class Breakpoint:
-    """One breakpoint candidate: a ``name`` (for dumps / docs) and a ``resolve`` that returns the message
-    it wants the breakpoint placed ON, or ``None`` when it does not apply to this request. The candidate's
-    PRIORITY is its position in the list handed to ``allocate`` — higher means placed first, and last to be
-    dropped under budget pressure never (it is dropped first)."""
+    """One breakpoint candidate: a ``name`` (for dumps / docs), a ``resolve`` that returns the message it
+    wants the breakpoint placed ON (or ``None`` when it does not apply to this request), and the
+    ``cache_control`` descriptor to stamp there. PRIORITY is the candidate's position in the list handed to
+    ``allocate`` — higher means placed first, and dropped last under budget pressure. Carrying the
+    descriptor per candidate is what lets one ``allocate`` pass mix TTLs across positions."""
 
     name: str
     resolve: Callable[[list[BaseMessage]], BaseMessage | None]
+    cache_control: CacheControl
 
 
 def allocate(
-    messages: list[BaseMessage], candidates: list[Breakpoint], cc: CacheControl, budget: int = MAX_BREAKPOINTS
+    messages: list[BaseMessage], candidates: list[Breakpoint], budget: int = MAX_BREAKPOINTS
 ) -> list[BaseMessage]:
-    """Place up to ``budget`` cache breakpoints on ``messages``, walking ``candidates`` in priority order.
+    """Place up to ``budget`` cache breakpoints on ``messages``, walking ``candidates`` in priority order,
+    each stamping its own ``cache_control``.
 
     Skips a candidate that does not resolve, that resolves onto a message already carrying a breakpoint
     (dedupe — the higher-priority placement wins and the slot is not spent twice), or whose target has no
@@ -121,7 +126,7 @@ def allocate(
         index = by_identity.get(id(target))
         if index is None or index in placed:
             continue
-        annotated = apply_cache_control(target, cc)
+        annotated = apply_cache_control(target, candidate.cache_control)
         if annotated is not None:
             placed[index] = annotated
 

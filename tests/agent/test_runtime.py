@@ -116,7 +116,7 @@ def test_live_optionref_change_does_not_rebuild_but_reads_fresh():
 
     register(h.runtime, "root", build)
     agent = h.runtime.new("root").acquire().agent
-    assert calls["n"] == 1 and captured["ttl"].get() == "5m"
+    assert calls["n"] == 1 and captured["ttl"].get() == "dynamic"
 
     h.options.set(Options.Agent.Anthropic.PromptCacheTTL, "1h")   # live ref -> no rebuild
     assert h.runtime.new("root").acquire().agent is agent
