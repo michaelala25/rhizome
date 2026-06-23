@@ -123,10 +123,6 @@ class ChatPaneConversationNode(ConversationNode[FeedItem]):
     last_visited_child: NodeId | None = None
 
 
-_DEFAULT_HINT = "Type a message or /command ..."
-_INTERRUPT_HINT = "Resolve the prompt above to continue..."
-
-
 class ConversationAreaModel(ViewModelBase):
 
     # Slash commands that must wait for the agent to be idle. Anything not in this set is allowed to
@@ -220,7 +216,7 @@ class ConversationAreaModel(ViewModelBase):
         # Input sub-VM owns buffer/enabled/hint/history + holds the shared palette so the input view
         # never reaches into the pane to filter, navigate, or decide tab-completion vs submit. The pane
         # subscribes to ``submitted`` to dispatch chat-vs-slash + agent-busy gating.
-        self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
+        self.chat_input = ChatInputModel(self.command_palette)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
         # Status-bar sub-VM. Projection of mode (from this VM), token_usage + model_name
@@ -1212,9 +1208,9 @@ class ConversationAreaModel(ViewModelBase):
           items (whose owning node is the indicator's ``parent_node_id``) and push their new
           ``selected_child`` (the path element immediately *after* that node, or ``None`` when
           the indicator's parent is the cursor's leaf). The setter is equality-guarded.
-        - **Chat input + status bar.** Derive ``chat_input.enabled`` / ``chat_input.hint`` from
-          the current branch's ``pending_interrupt``, and push the current branch's session
-          token usage to the status bar. See :meth:`_sync_chat_input_to_cursor`.
+        - **Chat input + status bar.** Derive the input ``State`` (which drives enabled-ness and the
+          placeholder hint) from the current branch's ``pending_interrupt``, and push the current
+          branch's session token usage to the status bar. See :meth:`_sync_chat_input_to_cursor`.
 
         Called before ``feed_replaced`` is emitted so any indicator widgets the view is about to
         mount read up-to-date VM state during ``compose``.
@@ -1238,18 +1234,16 @@ class ConversationAreaModel(ViewModelBase):
     def _sync_chat_input_to_cursor(self) -> None:
         """Derive chat-input enabled/hint from the current branch's pending interrupt.
 
-        Skipped in COMMIT mode — commit owns its own chat-input semantics (hint = COMMIT_HINT
-        with its own enabled lifecycle), and the state machine forbids commit + interrupt
+        Skipped in COMMIT mode — commit owns its own chat-input semantics (the input sits in
+        ``State.COMMIT`` with its own lifecycle), and the state machine forbids commit + interrupt
         coexistence.
         """
         if self.state != ConversationAreaModel.State.CONVERSATION:
             return
         if self._node(self._cursor.head).pending_interrupt is not None:
-            self.chat_input.set_enabled(False)
-            self.chat_input.set_hint(_INTERRUPT_HINT)
+            self.chat_input.set_state(ChatInputModel.State.DISABLED_PENDING_INTERRUPT)
         else:
-            self.chat_input.set_enabled(True)
-            self.chat_input.set_hint(_DEFAULT_HINT)
+            self.chat_input.set_state(ChatInputModel.State.CHAT)
 
     # ------------------------------------------------------------------
     # Input dispatch
@@ -1331,8 +1325,6 @@ class ConversationAreaModel(ViewModelBase):
     # doesn't yet build/forward the payload to the agent — that wiring (and the routing decision
     # between direct/subagent paths) lands in a follow-up.
 
-    _COMMIT_HINT = "Type instructions for the commit (Enter to submit, may be empty)..."
-
     def enter_commit_mode(self) -> None:
         """Snapshot learn-mode agent messages, decorate them as the selectable set, and transition to
         COMMIT. If no learn-mode agent messages exist, append a system message and stay in
@@ -1367,7 +1359,6 @@ class ConversationAreaModel(ViewModelBase):
             vm.set_cursor(i == 0)
 
         self.state = ConversationAreaModel.State.COMMIT
-        self.chat_input.set_hint(self._COMMIT_HINT)
         self.chat_input.set_state(ChatInputModel.State.COMMIT)
         # Move focus off the input so up/down/enter drive the cursor rather than the input's
         # history nav / submit. The view's focus subscription routes this to the message-area
@@ -1547,7 +1538,6 @@ class ConversationAreaModel(ViewModelBase):
         self._commit_cursor = 0
 
         self.chat_input.set_state(ChatInputModel.State.CHAT)
-        self.chat_input.reset_hint()
         self.chat_input.request_focus()
         self.emit(self.Callbacks.OnDirty)
 

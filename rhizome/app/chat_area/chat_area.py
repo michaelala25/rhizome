@@ -51,9 +51,6 @@ from .status import StatusBarModel
 from .stream_router import ChatAreaStreamRouter
 
 
-_DEFAULT_HINT = "Type a message or /command ..."
-
-
 class ChatAreaModel(ViewModelBase):
 
     class Callbacks(ViewModelBase.Callbacks):
@@ -131,7 +128,7 @@ class ChatAreaModel(ViewModelBase):
         self._commands: CommandRegistryService = command_registry if command_registry is not None else CommandRegistry()
         self._register_commands()
         self.command_palette = CommandPaletteModel(self._commands)
-        self.chat_input = ChatInputModel(self.command_palette, default_hint=_DEFAULT_HINT)
+        self.chat_input = ChatInputModel(self.command_palette)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
         # Status bar — a fixed chat-area element (not a swappable panel). A projection of the
@@ -197,6 +194,7 @@ class ChatAreaModel(ViewModelBase):
         self.conversation_graph.record_visit(path)
         self._sync_branch_indicators()
         self._sync_status_bar()
+        self._sync_chat_input()
         self.emit(self.Callbacks.OnCursorMoved, path)
 
     def descend(self, child: ConversationNode | int) -> None:
@@ -239,6 +237,15 @@ class ChatAreaModel(ViewModelBase):
         if node.app_state is not None:
             self.status_bar.set_app_state(node.app_state)
         self.status_bar.set_usage_report(node.usage_report)
+
+    def _sync_chat_input(self) -> None:
+        """Enable/disable the chat input area after a cursor change, depending on whether a pending interrupt
+        is active in the current branch."""
+        node = self._cursor.node
+        if node.pending_interrupt is None:
+            self.chat_input.set_state(ChatInputModel.State.CHAT)
+        else:
+            self.chat_input.set_state(ChatInputModel.State.DISABLED_PENDING_INTERRUPT)
 
     # ------------------------------------------------------------------
     # Feed
@@ -393,6 +400,13 @@ class ChatAreaModel(ViewModelBase):
 
         node.pending_interrupt = vm
         self.conversation_graph.append(target, vm)
+
+        # Disable chat input if the branch where the interrupt was appended is the current branch.
+        # An interrupt in a non-current branch will disable the chat input (for that branch) on cursor
+        # motions into it. 
+        if target.node == self._cursor.node:
+            self.chat_input.set_state(ChatInputModel.State.DISABLED_PENDING_INTERRUPT)
+
         self.emit(self.Callbacks.OnInterruptChanged, node)
 
         try:
@@ -400,6 +414,10 @@ class ChatAreaModel(ViewModelBase):
             return None if result is CANCELLED else result
         finally:
             node.pending_interrupt = None
+            # Re-enable chat input area (again, if we're current branch)
+            if target.node == self._cursor.node:
+                self.chat_input.set_state(ChatInputModel.State.CHAT)
+
             self.emit(self.Callbacks.OnInterruptChanged, node)
 
     # ------------------------------------------------------------------

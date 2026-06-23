@@ -7,12 +7,18 @@ Feed-entry widgets are dispatched by runtime type through the shared feed-view r
 
 The status bar is a fixed element of the chat area (not a swappable workspace panel). Mode/verbosity
 cycling (shift+tab / ctrl+b) is wired here — the view owns the cycle order and calls the VM's setters.
-Commit mode and feed-wide navigation aren't wired yet; they slot in as the VM grows. Branch navigation is
-handled by the focused ``BranchPoint`` widgets themselves, not by this view.
+Commit mode isn't wired yet; it slots in as the VM grows. Branch navigation is handled by the focused
+``BranchPoint`` widgets themselves, not by this view.
+
+Focus: ChatArea is a ``FocusOrchestrationMixin`` over its navigable feed items plus the chat input.
+``on_focus`` (and so any external ``focus()`` — mount, tab switch) delegates inward to ``focus_first``,
+landing on the chat input when enabled or the pending interrupt otherwise; ctrl+up/down step through the
+graph (see ``_get_focus_graph``).
 """
 
 from __future__ import annotations
 
+from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widget import Widget
@@ -25,6 +31,7 @@ from rhizome.tui.types import Mode
 from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
 from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
 from rhizome.tui.widgets.chat_area.status import StatusBar
+from rhizome.tui.widgets.shared.focus_orchestration import Direction, FocusGraph, FocusOrchestrationMixin
 from rhizome.tui.widgets.view_base import ViewBase
 # Feed dispatch: import the manifest for its registry side effect (see feed_views.py / feed_registry.py).
 from rhizome.tui.widgets.chat_area import feed_views  # noqa: F401
@@ -46,7 +53,12 @@ class DepthWrapper(Vertical):
     """
 
 
-class ChatArea(ViewBase[ChatAreaModel]):
+class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
+
+    # Focusable so external ``focus()`` (mount, tab switch, vm RequestFocus) lands here and the mixin's
+    # ``on_focus`` delegates inward to ``focus_first``. Set explicitly: ``ViewBase``'s own (Widget-default)
+    # ``can_focus`` would otherwise win MRO over the mixin's default.
+    can_focus = True
 
     BINDINGS = [
         # ctrl+c: copy a selection if there is one (standard terminal behaviour), else cancel the
@@ -56,6 +68,10 @@ class ChatArea(ViewBase[ChatAreaModel]):
         # it fires while the chat input holds focus (ctrl+b would otherwise be a cursor move there).
         Keybind.ChatCycleMode.as_binding("cycle_mode", "Cycle mode", show=False),
         Keybind.ChatCycleVerbosity.as_binding("cycle_verbosity", "Cycle verbosity", show=False, priority=True),
+        # ctrl+up / ctrl+down: step focus across navigable feed items and the chat input (the focus
+        # graph built in ``_get_focus_graph``). Not priority — they bubble up from the focused input.
+        Keybind.ChatNavUp.  as_binding("focus_neighbour('up')",   show=False),
+        Keybind.ChatNavDown.as_binding("focus_neighbour('down')", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -147,7 +163,9 @@ class ChatArea(ViewBase[ChatAreaModel]):
         self._vm.set_worker_scheduler(self.run_worker)
         # Render whatever the VM already holds visible (the workspace may have built it before mount).
         self._reconcile(self._vm.cursor)
-        self.query_one("#chat-input", ChatInput).focus()
+        # Route initial focus once the inner widgets exist (focus_first → chat input if enabled, else the
+        # pending interrupt). After-refresh because compose's children aren't mounted yet here.
+        self.call_after_refresh(self.focus_first)
 
     # ------------------------------------------------------------------
     # Feed rendering helpers
@@ -159,11 +177,17 @@ class ChatArea(ViewBase[ChatAreaModel]):
     def _segments(self, cursor: Cursor) -> list[tuple[ConversationNode, list[ConversationItem]]]:
         return self._vm.conversation_graph.feed_segments(cursor)
 
-    def _build_entry_widget(self, entry) -> Widget:
-        view_cls = view_for(entry)
+    @staticmethod
+    def _feed_node_id(item_id: int) -> str:
+        """Widget id (and focus-graph node id) for a feed item — item ids are globally unique."""
+        return f"feed-item-{item_id}"
+
+    def _build_entry_widget(self, item: ConversationItem) -> Widget:
+        view_cls = view_for(item.entry)
         if view_cls is None:
-            raise TypeError(f"No view registered for feed entry type: {type(entry).__name__}")
-        return view_cls(entry)
+            raise TypeError(f"No view registered for feed entry type: {type(item.entry).__name__}")
+        # The id lets the focus graph resolve this item by ``query_one`` (see ``_get_focus_graph``).
+        return view_cls(item.entry, id=self._feed_node_id(item.id))
 
     def _container_for_node(self, node_id: int, cursor: Cursor) -> Widget:
         """The widget owning ``node_id``'s feed entries. Depth-0 (root) lives in ``#message-area-inner``;
@@ -189,7 +213,7 @@ class ChatArea(ViewBase[ChatAreaModel]):
         must mount *above* the deeper wrapper holding their subtree — otherwise they'd land beneath their
         own subtree's rule. On the leaf there's no deeper wrapper, so the plain append is correct.
         """
-        widget = self._build_entry_widget(item.entry)
+        widget = self._build_entry_widget(item)
         container = self._container_for_node(node_id, cursor)
         idx = node_ids.index(node_id)
         deeper = self._depth_wrappers.get(node_ids[idx + 1]) if idx + 1 < len(node_ids) else None
@@ -230,7 +254,6 @@ class ChatArea(ViewBase[ChatAreaModel]):
 
     def _on_cursor_moved(self, cursor: Cursor) -> None:
         self._reconcile(cursor)
-        self._vm.chat_input.set_enabled(cursor.node.pending_interrupt is None)
 
     def _reconcile(self, cursor: Cursor) -> None:
         """Diff mounted widgets + wrappers against the visible feed for ``cursor``.
@@ -260,8 +283,14 @@ class ChatArea(ViewBase[ChatAreaModel]):
     def _on_interrupt_changed(self, node: ConversationNode) -> None:
         # Input is locked while an interrupt is pending on the *visible* branch; off-path interrupts
         # don't touch it (a cursor move re-derives the lockout in _on_cursor_moved).
-        if node is self._vm.cursor.node:
-            self._vm.chat_input.set_enabled(node.pending_interrupt is None)
+        if node is not self._vm.cursor.node:
+            return
+        resolved = node.pending_interrupt is None
+        if resolved:
+            # Interrupt cleared on the visible branch: return focus to the input (the now-inert interrupt
+            # widget would otherwise keep it). This is the *only* place an enable refocuses — branch
+            # navigation re-enables run through _on_cursor_moved and deliberately leave focus put.
+            self.focus_first()
 
     def _on_hint(self, msg: str) -> None:
         self.app.notify(msg)
@@ -290,8 +319,52 @@ class ChatArea(ViewBase[ChatAreaModel]):
         idx = VALID_VERBOSITIES.index(cur) if cur in VALID_VERBOSITIES else 0
         self._vm.set_verbosity(VALID_VERBOSITIES[(idx + 1) % len(VALID_VERBOSITIES)])
 
-    # This view isn't focusable itself, so a ``RequestFocus`` from the VM lands here — route it to the
-    # message-area scroll container (keystrokes bubble back up so the bindings still fire).
-    def focus(self, scroll_visible: bool = True) -> "ChatArea":
-        self.query_one("#message-area", VerticalScroll).focus(scroll_visible=scroll_visible)
-        return self
+    def action_focus_neighbour(self, direction: Direction) -> None:
+        if self.focus_neighbour(direction) is None:
+            raise SkipAction()
+
+    # ------------------------------------------------------------------
+    # Focus orchestration (FocusOrchestrationMixin seams)
+    # ------------------------------------------------------------------
+
+    def _navigable_node_ids(self) -> list[str]:
+        """Mounted, navigable feed items in visible (top→bottom) order, as focus-graph node ids."""
+        ids: list[str] = []
+        for _node, items in self._segments(self._vm.cursor):
+            for item in items:
+                if item.entry.is_navigable and item.id in self._mounted:
+                    ids.append(self._feed_node_id(item.id))
+        return ids
+
+    def _get_focus_graph(self) -> FocusGraph:
+        """Vertical chain over the navigable feed items, anchored at the chat input below them.
+
+        From a feed item: up steps to the previous (clamps at the top — no up edge on the first), down
+        steps to the next or, past the last, lands on the chat input. From the input: ctrl+up enters the
+        feed at the bottom-most item, ctrl+down at the top-most.
+
+        ``source`` (where external ``focus()`` lands, via ``focus_first``) is the chat input when it's
+        enabled, else the message area — when gated by a pending interrupt, focus rests on the feed
+        scroll container rather than the disabled input.
+        """
+        nav = self._navigable_node_ids()
+        edges: dict[str, dict[Direction, str]] = {}
+        for i, node_id in enumerate(nav):
+            edge: dict[Direction, str] = {}
+            if i > 0:
+                edge["up"] = nav[i - 1]
+            edge["down"] = nav[i + 1] if i + 1 < len(nav) else "chat-input"
+            edges[node_id] = edge
+        edges["chat-input"] = {"up": nav[-1], "down": nav[0]} if nav else {}
+
+        if self._vm.chat_input.enabled:
+            source = "chat-input"
+        else:
+            source = "message-area"
+        return FocusGraph(source=source, edges=edges)
+
+    def _is_node_available(self, node_id: str) -> bool:
+        # Don't route focus to the input while it's gated (a pending interrupt owns input).
+        if node_id == "chat-input":
+            return self._vm.chat_input.enabled
+        return True

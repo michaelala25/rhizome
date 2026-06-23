@@ -12,6 +12,7 @@ from textual.widgets import Static
 from rhizome.agent.app_context import VALID_VERBOSITIES
 from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
+from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.tui.widgets.chat_area.branch import BranchPoint
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea, DepthWrapper
 from rhizome.tui.widgets.chat_area.status import StatusBar
@@ -95,3 +96,95 @@ async def test_cycle_actions_advance_mode_and_verbosity():
         # ctrl+b is a priority binding, so it fires while the chat input holds focus.
         await pilot.press("ctrl+b")
         assert vm.verbosity == VALID_VERBOSITIES[VALID_VERBOSITIES.index("terse") + 1]
+
+
+async def test_initial_focus_lands_on_the_chat_input():
+    """On mount the chat area routes focus to its input (enabled — no pending interrupt)."""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+        assert pilot.app.focused is chat.query_one("#chat-input")
+
+
+async def test_external_focus_on_the_container_delegates_to_the_input():
+    """A bare ``focus()`` on the ChatArea (what the PanelOrchestrator does after mount, and a tab
+    switch does) delegates inward via on_focus → focus_first, landing on the input."""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+        pilot.app.set_focus(None)
+        await pilot.pause()
+        chat.focus()
+        await pilot.pause()
+        assert pilot.app.focused is chat.query_one("#chat-input")
+
+
+async def test_ctrl_up_down_step_between_input_and_navigable_feed_items():
+    """ctrl+up enters the feed from the input at the bottom-most navigable; ctrl+down past the feed
+    returns to the input. (A branch seeds one navigable BranchPoint indicator in the root feed.)"""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await vm.branch(name="alt")          # appends a navigable BranchPoint into the root feed
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+
+        nav_ids = chat._navigable_node_ids()
+        assert len(nav_ids) == 1             # the branch indicator
+        branch_widget = chat.query_one(f"#{nav_ids[0]}")
+        chat_input = chat.query_one("#chat-input")
+
+        chat_input.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+up")
+        assert pilot.app.focused is branch_widget
+
+        await pilot.press("ctrl+down")
+        assert pilot.app.focused is chat_input
+
+
+async def test_branch_navigation_keeps_focus_on_the_indicator():
+    """Switching the active branch from a focused BranchPoint keeps focus on the indicator, even when
+    the swap re-enables the chat input (it was gated, as a pending interrupt on the source branch would)."""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await vm.branch(name="alt")
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+        bp = chat.query_one(f"#{chat._navigable_node_ids()[0]}")
+
+        vm.chat_input.set_state(ChatInputModel.State.DISABLED_PENDING_INTERRUPT)  # source branch gated
+        await pilot.pause()
+        bp.focus()
+        await pilot.pause()
+        assert pilot.app.focused is bp
+
+        bp.action_sibling_left()             # swap to 'main' → input re-enables
+        await pilot.pause()
+        assert vm.chat_input.enabled         # the swap did re-enable the input...
+        assert pilot.app.focused is bp       # ...but focus stayed on the indicator
+
+
+async def test_interrupt_resolution_returns_focus_to_the_input():
+    """When a pending interrupt clears on the visible branch, focus returns to the chat input (the
+    one enable that *does* refocus, unlike branch navigation)."""
+    vm = make_vm()
+    async with _Harness(vm).run_test() as pilot:
+        await vm.branch(name="alt")
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+        node = vm.cursor.node
+        bp = chat.query_one(f"#{chat._navigable_node_ids()[0]}")
+
+        node.pending_interrupt = object()                    # interrupt appears on the visible branch
+        vm.emit(vm.Callbacks.OnInterruptChanged, node)
+        await pilot.pause()
+        bp.focus()
+        await pilot.pause()
+        assert pilot.app.focused is bp
+
+        node.pending_interrupt = None                        # ...then resolves
+        vm.emit(vm.Callbacks.OnInterruptChanged, node)
+        await pilot.pause()
+        assert pilot.app.focused is chat.query_one("#chat-input")

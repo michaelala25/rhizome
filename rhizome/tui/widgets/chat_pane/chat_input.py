@@ -1,12 +1,12 @@
 """Chat input — sub-VM + view used by the MVVM chat pane.
 
-The input owns the visible buffer, the disabled/hint reconciliation, and the per-session history ring. It
-holds a reference to the shared ``CommandPaletteModel`` (constructed by the pane) so that buffer mutations
-can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
-typed text is a complete command — no widget-tree walks, no parent mediation.
+The view maps the VM's coarse ``State`` to the visible placeholder hint (display is a view concern; hint
+*state* lives on the VM). It holds a reference to the shared ``CommandPaletteModel`` so that buffer
+mutations can update palette filtering and so that Enter-on-visible-palette can ask the palette directly
+whether the typed text is a complete command — no widget-tree walks, no parent mediation.
 
-The pane subscribes to the input's ``SUBMITTED`` callback group to learn when to dispatch text (chat vs slash
-vs agent-busy gating all stays on the pane). The pane also flips ``enabled`` / ``hint`` during interrupts.
+The pane subscribes to the input's ``SUBMITTED`` callback group to learn when to dispatch text (chat vs
+slash vs agent-busy gating all stays on the pane). Owners flip the VM ``State`` during interrupts.
 """
 
 from __future__ import annotations
@@ -21,6 +21,16 @@ from textual.widgets import TextArea
 from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 
+
+# Placeholder hints, inferred from the VM's coarse input state. The blurred cue below is a purely
+# view-side overlay shown whenever an enabled input is unfocused; ``_refresh`` owns the choice between
+# the two, so it stays correct even across transitions that fire no Blur/Focus event.
+_STATE_HINTS = {
+    ChatInputModel.State.CHAT: "Type a message or /command ...",
+    ChatInputModel.State.COMMIT: "Type instructions for the commit (Enter to submit, may be empty)...",
+    ChatInputModel.State.DISABLED: "",
+    ChatInputModel.State.DISABLED_PENDING_INTERRUPT: "Resolve the prompt above to continue...",
+}
 
 _BLURRED_HINT = "ctrl+l to return to the chat area"
 
@@ -41,9 +51,6 @@ class ChatInput(TextArea):
         super().__init__(show_line_numbers=False, tab_behavior="focus", id=id)
         self._vm = vm
         self._last_escape: float = 0.0
-        # Track previous enabled state to detect disabled→enabled transitions (e.g. interrupt resolved) and
-        # refocus the input.
-        self._prev_enabled: bool = vm.enabled
 
     def on_mount(self) -> None:
         self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
@@ -59,16 +66,16 @@ class ChatInput(TextArea):
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        if self.placeholder != self._vm.hint:
-            self.placeholder = self._vm.hint
+        # _refresh is the sole owner of the placeholder: an enabled-but-unfocused input shows the blurred
+        # "ctrl+l to return" cue, everything else shows its state hint. Routing the focus cue through here
+        # (rather than only on blur/focus) keeps it correct across focusless transitions too — e.g. swapping
+        # to an unblocked branch re-enables the input while it sits unfocused, with no Blur to react to.
+        hint = _BLURRED_HINT if (self._vm.enabled and not self.has_focus) else _STATE_HINTS[self._vm.state]
+        if self.placeholder != hint:
+            self.placeholder = hint
 
         if self.disabled != (not self._vm.enabled):
             self.disabled = not self._vm.enabled
-
-        # Refocus on a disabled→enabled transition (e.g. interrupt resolved).
-        if self._vm.enabled and not self._prev_enabled:
-            self.focus()
-        self._prev_enabled = self._vm.enabled
 
         if self.text != self._vm.buffer:
             self.text = self._vm.buffer
@@ -93,12 +100,11 @@ class ChatInput(TextArea):
         self._vm.set_buffer(event.text_area.text)
 
     def on_focus(self, event: Focus) -> None:
-        # Restore the active hint on focus (the blur hook may have swapped in the "ctrl+l to return" cue).
-        self.placeholder = self._vm.hint
+        # has_focus isn't yet updated inside the handler — defer to let _refresh read the settled state.
+        self.call_after_refresh(self._refresh)
 
     def on_blur(self, event: Blur) -> None:
-        if not self.disabled:
-            self.placeholder = _BLURRED_HINT
+        self.call_after_refresh(self._refresh)
 
     def _on_key(self, event) -> None:
         palette_visible = self._vm.palette.visible

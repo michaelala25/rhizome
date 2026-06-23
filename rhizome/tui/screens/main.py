@@ -225,18 +225,12 @@ class MainScreen(Screen):
         idx = ids.index(tabs.active)
         new_id = ids[(idx + delta) % len(ids)]
         tabs.active = new_id
-        # Focus the new pane's chat input so the old pane's focused widget
-        # doesn't cause TabbedContent to revert the switch.
+        # Focus into the new pane so the old pane's focused widget doesn't cause TabbedContent to revert
+        # the switch. The ChatArea routes focus itself (on_focus → chat input if enabled, else the pending
+        # interrupt), so we just hand focus to it.
         new_pane = tabs.get_pane(new_id)
         if isinstance(new_pane, ChatTabPane):
-            workspace = new_pane.workspace
-            chat_input = workspace.query_one("#chat-input")
-            # When the input is gated (agent busy / interrupt pending), focus the chat area instead — it
-            # owns the cancel binding and hosts any interrupt widgets the user needs to reach.
-            if chat_input.disabled:
-                workspace.query_one(ChatArea).focus()
-            else:
-                chat_input.focus()
+            new_pane.workspace.query_one(ChatArea).focus()
         elif isinstance(new_pane, LogTabPane):
             new_pane.query_one("#log-output").focus()
 

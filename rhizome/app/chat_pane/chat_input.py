@@ -1,12 +1,14 @@
 """Chat input — sub-VM + view used by the MVVM chat pane.
 
-The input owns the visible buffer, the disabled/hint reconciliation, and the per-session history ring. It
-holds a reference to the shared ``CommandPaletteModel`` (constructed by the pane) so that buffer mutations
-can update palette filtering and so that Enter-on-visible-palette can ask the palette directly whether the
-typed text is a complete command — no widget-tree walks, no parent mediation.
+The input owns the visible buffer, the coarse input ``State`` (which drives enabled-ness and the
+placeholder hint), and the per-session history ring. It holds a reference to the shared
+``CommandPaletteModel`` (constructed by the pane) so that buffer mutations can update palette filtering and
+so that Enter-on-visible-palette can ask the palette directly whether the typed text is a complete
+command — no widget-tree walks, no parent mediation.
 
-The pane subscribes to the input's ``Callbacks.OnSubmitted`` group to learn when to dispatch text (chat vs slash
-vs agent-busy gating all stays on the pane). The pane also flips ``enabled`` / ``hint`` during interrupts.
+The pane subscribes to the input's ``Callbacks.OnSubmitted`` group to learn when to dispatch text (chat vs
+slash vs agent-busy gating all stays on the pane). Owners drive ``set_state`` to gate the surface — e.g.
+disabling it while a branch interrupt is pending.
 """
 
 from __future__ import annotations
@@ -21,29 +23,32 @@ from rhizome.app.model import ViewModelBase
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 
 
-_BLURRED_HINT = "ctrl+l to return to the chat area"
-
-
 class ChatInputModel(ViewModelBase):
 
     class Callbacks(ViewModelBase.Callbacks):
         OnSubmitted = "OnSubmitted"
 
     class State(Enum):
-        """Coarse input-VM state, managed by the parent pane to stay in lockstep with its own state.
+        """Coarse input-VM state, set by owners via ``set_state``. A single value drives three things —
+        submit/history behavior, whether the surface is enabled (see the ``enabled`` property), and the
+        placeholder hint (mapped view-side).
 
-        - ``CHAT``: default. ``submit`` no-ops on empty buffers; up/down navigate command history.
-        - ``COMMIT``: ``submit`` fires on empty buffers (so Enter submits the commit with no
-          additional instructions); up/down skip history nav and fall through to the underlying
-          TextArea cursor movement instead.
+        - ``CHAT``: default, enabled. ``submit`` no-ops on empty buffers; up/down navigate command history.
+        - ``COMMIT``: enabled. ``submit`` fires on empty buffers (so Enter submits the commit with no
+          additional instructions); up/down skip history nav and fall through to the underlying TextArea
+          cursor movement instead.
+        - ``DISABLED``: disabled — a generic "input unavailable" state.
+        - ``DISABLED_PENDING_INTERRUPT``: disabled because a prompt on the current branch must be resolved
+          first.
 
-        The input doesn't know *why* it's in COMMIT — it just follows the rules. The pane VM toggles
-        via ``set_state`` from its own ``enter_commit_mode`` / exit paths.
+        The input doesn't know *why* it's in a given state — it just follows the rules.
         """
         CHAT = "chat"
         COMMIT = "commit"
+        DISABLED = "disabled"
+        DISABLED_PENDING_INTERRUPT = "disabled_pending_interrupt"
 
-    def __init__(self, palette: CommandPaletteModel, *, default_hint: str = "") -> None:
+    def __init__(self, palette: CommandPaletteModel) -> None:
         super().__init__()
 
         self.make_callback_groups({self.Callbacks.OnSubmitted: str})
@@ -52,9 +57,6 @@ class ChatInputModel(ViewModelBase):
 
         self.state: ChatInputModel.State = ChatInputModel.State.CHAT
         self.buffer: str = ""
-        self.enabled: bool = True
-        self.default_hint: str = default_hint
-        self.hint: str = default_hint
 
         # Per-session history ring. ``index == -1`` means "not currently navigating history" (the live buffer
         # is the user's working draft). On entry into history, the live buffer is preserved in ``_draft`` so
@@ -70,6 +72,12 @@ class ChatInputModel(ViewModelBase):
     @property
     def palette(self) -> CommandPaletteModel:
         return self._palette
+
+    @property
+    def enabled(self) -> bool:
+        """Inferred from state: the two ``DISABLED_*`` states gray out the surface; ``CHAT``/``COMMIT``
+        are live."""
+        return self.state not in (self.State.DISABLED, self.State.DISABLED_PENDING_INTERRUPT)
 
     @property
     def shell_mode(self) -> bool:
@@ -98,29 +106,15 @@ class ChatInputModel(ViewModelBase):
         if self.state == state:
             return
         self.state = state
-        
-        # Reconcile the palette with the new state: hide on entering COMMIT, re-filter against the
-        # current buffer on returning to CHAT.
-        if state == ChatInputModel.State.COMMIT:
-            self._palette.update_for_input("")
-        else:
+
+        # Reconcile the palette with the new state: only CHAT re-filters against the live buffer. Every
+        # other state hides it — COMMIT free-text and a disabled surface both have no business surfacing
+        # slash-command matches.
+        if state == ChatInputModel.State.CHAT:
             self._palette.update_for_input(self.buffer)
+        else:
+            self._palette.update_for_input("")
         self.emit(self.Callbacks.OnDirty)
-
-    def set_enabled(self, enabled: bool) -> None:
-        if self.enabled == enabled:
-            return
-        self.enabled = enabled
-        self.emit(self.Callbacks.OnDirty)
-
-    def set_hint(self, hint: str) -> None:
-        if self.hint == hint:
-            return
-        self.hint = hint
-        self.emit(self.Callbacks.OnDirty)
-
-    def reset_hint(self) -> None:
-        self.set_hint(self.default_hint)
 
     # ------------------------------------------------------------------
     # Submission
