@@ -17,6 +17,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, Sy
 from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
 from .base import ensure_message_id, ingest_payloads, PromptEngine
+from .cache import allocate, Breakpoint, cache_control, OptionReader
 from .cleanup import promote
 from .dump import dump_report, dump_request
 from .metadata import lifetime_of, pin, Pin, pin_of
@@ -98,40 +99,47 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
 
     ``compile`` persists the durable facts — resource context messages and their consumed snapshot, the
     vector-index reminder and its snapshot, branch markers — and ``prepare`` arranges the floating blocks
-    for each request. Implemented today: global and local resource context, the index reminder, branch
-    markers, and modes. The rest of the target layout — the ``pinned``/``inline`` position scheme, cache
-    breakpoints, the index rendered as a derived message, and semi-permanent reclamation (whose machinery
-    lives on ``PromptEngine``) — is the roadmap below.
+    for each request and places the Anthropic cache-control breakpoints over the result. Implemented:
+    global and local resource context, the index reminder, branch markers, modes, and breakpoint
+    placement. Still roadmap: the index rendered as a derived message, and semi-permanent reclamation
+    (whose machinery lives on ``PromptEngine``).
 
     Target prompt layout (positions assigned by tag, arranged per-request by ``prepare``):
 
-        [system prompt]          <- fixed; never swapped per agent mode
-        [global resources]       <- pin: head
-        <breakpoint>             <- after head, only past a size threshold
-        [prompt segment]         <- branch points along the lineage (graph topology)
-        <breakpoint>             <- at the last branch point before the leaf
-        [local resources]        <- pin: branch (this node's segment boundary)
+        [system prompt]              rides on request.system_message; not cached on its own (~10k, cheap)
+        [global resources]           pin: head
+        ── breakpoint: head ──       only when global resources exist (protect the large pinned block)
+        [inherited segments]         lineage, partitioned by one branch marker per ancestor node
+        ── breakpoint: branch_up ──  ancestor fork points (STUB — deferred)
+        ── breakpoint: branch_leaf ─ IMMEDIATELY BEFORE the leaf marker (the line below)
+        [leaf branch marker]         node-specific id + content -> kept OUT of the cross-branch prefix
+        [local resources]            pin: branch (this node's boundary, after the marker)
         [leaf segment]
-        <breakpoint>             <- before the first semi-permanent message
-        [semi-permanent span]    <- first semi-perm message .. just before the first tail pin
-        <breakpoint>             <- before the tail (always)
-        [tail / pin: tail]       <- derived ephemerals: the index reminder, the reclaimable-context
-                                    status message, volatile reminders
+        ── breakpoint: semi_perm ──  before the first semi-permanent message (STUB — reclamation story)
+        [semi-permanent span]
+        ── breakpoint: before_tail ─ always (the floor; excludes the volatile tail)
+        [tail / pin: tail]           derived ephemerals: index reminder, status, volatile reminders
 
-    The semi-permanent span is a *positional* region, not a relocation — messages stay in conversation
-    order; the span simply runs from the first semi-permanent message to the first tail pin. Because
-    cleanup promotes a reclaimed message to ``permanent``, the span's start advances as reclamation
-    proceeds, so the breakpoint before it and the cache boundary are one and the same moving line.
+    Breakpoint priority & budget — a heuristic for user intent, made legible in the code by ``prepare``'s
+    ordered candidate list and ``cache.allocate``'s integer budget. Anthropic caps a request at four
+    breakpoints and reads the longest still-matching cached prefix, so the whole question is *which
+    boundaries earn the scarce slots*. Candidates are tried in this priority order, highest first, until
+    the budget runs out (the lowest applicable one is the first dropped):
 
-    Breakpoint placement keys on the pin anchor, not on pinned-ness:
-        - before the tail — always (the volatile end; cheapest suffix to reprice)
-        - at branch points — highest value (keeps prefixes warm when swapping between branches)
-        - after global (head) resources — only past a size threshold
-        - before the semi-permanent span — stable prefix across reclamation (typically only the leaf
-          reprices)
+        1. before_tail — always; the floor. The settled conversation grows behind it; only the volatile
+           ephemeral tail reprices each turn.
+        2. head — only when global resources exist; sits AFTER them, so a large pinned article is the thing
+           protected. System+tools are not worth an isolated slot — they ride into the next boundary down.
+        3. branch_leaf — the message immediately before THIS node's branch marker. The marker is
+           node-specific, so it must stay OUT of any cross-branch prefix; ending the prefix just before it
+           is what stays byte-identical across siblings and survives local-resource churn (local resources
+           float to AFTER the marker, so they fall under before_tail, not here).
+        4. branch_up — ancestor fork points higher in the lineage (STUB).
+        5. semi_perm — before the first semi-permanent message, so reclamation reprices only from there
+           (STUB; dormant until anything tags semi-permanent).
 
-    The index reminder is a *derived* message: ``compile`` still calls ``resource_index.consume()`` (a
-    real advance of the live store), but the "what's queryable" block is rendered in ``prepare`` from the
+    The index reminder is (roadmap) a *derived* message: ``compile`` still calls ``resource_index.consume()``
+    (a real advance of the live store), but the "what's queryable" block is rendered in ``prepare`` from the
     current loaded set (memoized) and pinned to the tail — no ``consumed_resource_index`` snapshot, no
     stable-id replace, no special-case float. The reclaimable-context status message (the agent's window
     onto what it can free: each group, its size, and turns-until-auto-clean) is derived the same way.
@@ -141,12 +149,28 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         - the tool allowlist for the new mode, in the same block
 
     Open questions / ideas:
+        - uniform vs. per-breakpoint TTL: a longer (1h) write on the stable head/branch prefixes and 5m on
+          the volatile tail, rather than one TTL across all breakpoints (a single ``prompt_cache_ttl`` knob)
         - budget-pressure reclamation (oldest-first, only when over a token budget) as the trigger,
           beyond the fixed user-message-count expiry of the first cut
         - the summary strategy: a stateless summarizer subagent plus a stash the agent re-hydrates by key
         - auto-hydrate: periodic no-op requests just to keep prefixes warm (build on top, later)
         - prefix-cache canary: checksum prefixes after ``prepare``; alert when a stable prefix shifts
     """
+
+    def __init__(self, *args, cache_supported: bool = False,
+                 prompt_cache: OptionReader | None = None,
+                 prompt_cache_ttl: OptionReader | None = None, **kwargs) -> None:
+        """Adds prompt-cache configuration to the base engine; all other arguments forward to
+        ``PromptEngine``. ``cache_supported`` is the provider gate, baked at build time (the runtime
+        rebuilds the engine on a provider change, so a snapshot bool is correct — Anthropic places
+        breakpoints, other providers cannot). ``prompt_cache`` / ``prompt_cache_ttl`` are live option
+        handles read fresh on each ``prepare``, so flipping the toggle or TTL takes effect without a
+        rebuild."""
+        super().__init__(*args, **kwargs)
+        self._cache_supported = cache_supported
+        self._prompt_cache = prompt_cache
+        self._prompt_cache_ttl = prompt_cache_ttl
 
     async def compile(self, state: dict[str, Any], ctx: "RootAgentContext | None") -> dict[str, Any] | None:
         update: dict[str, Any] = {}
@@ -220,10 +244,82 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         # report is computed over the request's own messages, so its provider total comes from the latest
         # prior AIMessage — anchored one model call behind (the current-vs-last-call drift engine.usage
         # documents), harmless for an inspection dump.
+        result = self._place_breakpoints(result, ctx)
+
         node = ctx.node_id if ctx is not None else None
         dump_request(result, node)
         dump_report(self.report({"messages": result.messages}), node)
         return result
+
+    # ----- cache breakpoints ----------------------------------------------- #
+
+    def _place_breakpoints(self, request: ModelRequest, ctx: "RootAgentContext | None") -> ModelRequest:
+        """Place the cache-control breakpoints over the laid-out request — view-only, annotating COPIES so
+        the shared state messages are never touched. Gated on the provider supporting breakpoints and the
+        live ``prompt_cache`` toggle; the live ``prompt_cache_ttl`` sets the TTL. The candidate list IS the
+        priority order and ``allocate``'s budget IS the cap (see the class docstring). Returns the request
+        unchanged when caching is off or nothing landed, so request identity is preserved."""
+        if not (self._cache_supported and self._prompt_cache is not None
+                and self._prompt_cache.get() == "enabled"):
+            return request
+        ttl = self._prompt_cache_ttl.get() if self._prompt_cache_ttl is not None else "5m"
+        candidates = [
+            Breakpoint("before_tail", self._bp_before_tail),
+            Breakpoint("head", self._bp_head),
+            Breakpoint("branch_leaf", lambda msgs: self._bp_branch_leaf(msgs, ctx)),
+            Breakpoint("branch_up", lambda msgs: self._bp_branch_up(msgs, ctx)),
+            Breakpoint("semi_perm", self._bp_semi_perm),
+        ]
+        messages = allocate(request.messages, candidates, cache_control(ttl))
+        return request if messages is request.messages else request.override(messages=messages)
+
+    @staticmethod
+    def _bp_before_tail(messages: list[BaseMessage]) -> BaseMessage | None:
+        """The floor (always tried first): the last message NOT floated to the tail, so the breakpoint
+        falls just before the volatile ephemeral tail and only the tail reprices each turn."""
+        return next((m for m in reversed(messages)
+                     if pin_of(m) != "tail" and not isinstance(m, SystemMessage)), None)
+
+    @staticmethod
+    def _bp_head(messages: list[BaseMessage]) -> BaseMessage | None:
+        """The head boundary, only when global resources exist: the last head-pinned message, so the
+        breakpoint caches tools + system + the (large) global block as one stable, graph-wide prefix.
+        ``None`` with no global resources — system+tools alone aren't worth an isolated slot."""
+        return next((m for m in reversed(messages) if pin_of(m) == "head"), None)
+
+    @staticmethod
+    def _bp_branch_leaf(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> BaseMessage | None:
+        """The cross-branch stable boundary: the message IMMEDIATELY BEFORE this node's branch marker. The
+        marker is node-specific (id + parent name), so ending the cached prefix just before it keeps that
+        prefix byte-identical across sibling branches and unaffected by local-resource churn (local
+        resources float to AFTER the marker, landing under before_tail). ``None`` for the root / a
+        graph-less session (no marker), or when nothing precedes the marker.
+
+        TODO(local-inline): assumes local resources are pushed to the branch leaf (after the marker). A
+        future toggle could place them inline instead, trading prefix stability under churn for breakpoints
+        at more branch points in the lineage."""
+        if ctx is None or ctx.node_id is None:
+            return None
+        marker_id = branch_marker_message_id(ctx.node_id)
+        index = next((i for i, m in enumerate(messages) if m.id == marker_id), None)
+        if index is None or index == 0:
+            return None
+        prev = messages[index - 1]
+        return None if isinstance(prev, SystemMessage) else prev
+
+    @staticmethod
+    def _bp_branch_up(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> BaseMessage | None:
+        """TODO(branch-up): ancestor fork points higher in the lineage (cross-sibling warmth of the shared
+        mid-lineage). Needs an ancestor-selection heuristic for when only ~1 slot remains; deferred, so it
+        resolves to ``None`` and the slot falls to the next candidate."""
+        return None
+
+    @staticmethod
+    def _bp_semi_perm(messages: list[BaseMessage]) -> BaseMessage | None:
+        """TODO(semi-perm): the message before the first semi-permanent one, so reclamation reprices only
+        from there. Reserved slot — dormant until message reclamation lands (separate story); nothing tags
+        semi-permanent yet, so it resolves to ``None``."""
+        return None
 
     # ----- usage classification -------------------------------------------- #
 

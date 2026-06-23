@@ -17,6 +17,7 @@ from langchain_core.messages import SystemMessage
 
 from rhizome.logs import get_logger
 
+from .cache import cache_control_of
 from .metadata import lifetime_of, pin_of
 from .usage import UsageReport
 
@@ -53,7 +54,12 @@ def format_request(request: ModelRequest, node: int | None = None) -> str:
         bar, "MESSAGES", bar,
     ]
     for i, m in enumerate(request.messages):
-        out.append(f"\n--- [{i}] {type(m).__name__}  id={m.id}  pin={pin_of(m)}  lifetime={lifetime_of(m)} ---")
+        cc = cache_control_of(m)
+        cache = cc.get("ttl", "ephemeral") if cc else "-"
+        out.append(
+            f"\n--- [{i}] {type(m).__name__}  id={m.id}  pin={pin_of(m)}  "
+            f"lifetime={lifetime_of(m)}  cache={cache} ---"
+        )
         out.append(content_text(m.content))
         if getattr(m, "tool_calls", None):
             out.append(f"tool_calls: {json.dumps(m.tool_calls, default=str, indent=2)}")

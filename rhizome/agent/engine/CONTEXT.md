@@ -29,7 +29,12 @@ step's output may persist in the checkpoint.
   `PromptCompilerMiddleware` shim, and the reusable compile primitives (id minting, payload ingestion,
   orphan repair). The base engine is a minimal *working* engine; richer engines override `compile`/`prepare`.
 - **`root.py`** — `RootPromptEngine`, the root conversation agent's engine: resource context, the
-  vector-index reminder, branch markers, and modes. Holds the branch-marker and mode-guide id schemes.
+  vector-index reminder, branch markers, modes, and the cache-breakpoint placement *policy* (which laid-out
+  message is the head / branch / tail boundary). Holds the branch-marker and mode-guide id schemes.
+- **`cache.py`** — the cache-breakpoint *mechanism* `RootPromptEngine.prepare` drives: the `cache_control`
+  descriptors, `apply_cache_control` (mark a COPY of a message — `prepare` is view-only), and `allocate`
+  over an ordered `Breakpoint` candidate list, where priority IS list order and the budget IS the integer
+  (Anthropic caps a request at four). Engine-agnostic; the policy lives on the engine.
 - **`resources.py`** — the resource-context helpers `RootPromptEngine` drives: `ConsumedResources` (the
   per-thread consumed snapshot), `resource_deltas`, the well-known message-id scheme for resource/index
   blocks, and the tree-grouping / block-building helpers.

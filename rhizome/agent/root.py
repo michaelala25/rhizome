@@ -9,8 +9,8 @@ snapshot and live options is the whole point of the two binding shapes (see ``fa
   the agent (they form its invalidation set).
 - ``parallel_tool_calling`` / ``prompt_cache`` / ``prompt_cache_ttl`` are ``Annotated[OptionRef[T], spec]``
   live handles — behavioral knobs read fresh, so flipping them never rebuilds. Parallel-tool calling is
-  honored per model call by ``ParallelToolCallsMiddleware``; the cache knobs are wired but inert for now
-  (see the TODO at engine construction).
+  honored per model call by ``ParallelToolCallsMiddleware``; the cache knobs flow to ``RootPromptEngine``,
+  which reads them each ``prepare`` to place (and TTL) its Anthropic cache-control breakpoints.
 
 The builder returns ``(agent, engine)``. To register the declaration on a factory::
 
@@ -181,18 +181,21 @@ def build_root_agent(
     # debug=True) and append the debug section; it isn't plumbed to the builder yet.
     system_prompt = compose_system_prompt(schema_reference=render_schema_reference())
 
-    # TODO(cache): thread `provider`, `prompt_cache`, and `prompt_cache_ttl` into RootPromptEngine so its
-    # `prepare` can place Anthropic cache-control breakpoints — gated on the provider (OpenAI can't take
-    # them) and on the live toggle / TTL. They are injected here now as live OptionRefs so flipping cache
-    # or its TTL never rebuilds the agent; the engine ignores them until that lands.
-    #
     # The system prompt, tool set, and context window are the build-time constants the engine's `report`
     # needs for token accounting (see engine.usage) — fixed for this build, recomputed whenever a snapshot
     # option rebuilds the agent.
+    #
+    # Cache-control breakpoints: `cache_supported` gates on the provider — a snapshot, since Anthropic
+    # places breakpoints and other providers cannot, and a provider change already rebuilds the engine.
+    # `prompt_cache` / `prompt_cache_ttl` ride in as the live OptionRefs the engine reads each `prepare`,
+    # so flipping the toggle or its TTL takes effect on the next turn without a rebuild.
     engine = RootPromptEngine(
         system_prompt=system_prompt,
         tools=tools,
         max_input_tokens=compute_chat_model_max_tokens(chat_model),
+        cache_supported=(provider == "anthropic"),
+        prompt_cache=prompt_cache,
+        prompt_cache_ttl=prompt_cache_ttl,
     )
 
     agent = create_agent(
