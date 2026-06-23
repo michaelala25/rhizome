@@ -146,8 +146,6 @@ class Keybind(Enum):
 
     # Chat interrupts — extras beyond the shared cursor/confirm/cancel (multi-question prompts)
     InterruptSubmit       = ("interrupt.submit",        "ctrl+j")
-    InterruptPrevQuestion = ("interrupt.prev_question", "ctrl+left")
-    InterruptNextQuestion = ("interrupt.next_question", "ctrl+right")
 
     # Options editor
     OptionsApply   = ("options.apply",   "ctrl+a")
