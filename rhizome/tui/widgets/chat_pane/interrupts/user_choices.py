@@ -21,6 +21,10 @@ from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.tui.widgets.chat_pane.feed_registry import register_feed_view
 
 
+_GREEN = "rgb(100,200,100)"
+_DIM = "rgb(100,100,100)"
+
+
 @register_feed_view(UserChoicesModel)
 class UserChoices(NavigableFeedItemViewBase[UserChoicesModel]):
     """Multi-Static projection of ``UserChoicesModel``: prompt header, numbered options with cursor
