@@ -3,7 +3,7 @@
 A strip docked at the bottom of the chat area. Two lines until the branch has a usage report, three once
 it does:
 
-- line 1 — active mode (left), model name (right)
+- line 1 — active mode (left), model name + the active provider's knobs (right)
 - line 2 — answer verbosity (left), context-window fill (right)
 - line 3 — the prompt's token breakdown by category (left), cache read/write split (right)
 
@@ -30,6 +30,13 @@ _DIM = "rgb(100,100,100)"
 _MODE_COLORS: dict[str, str] = {
     "learn": "rgb(110,140,240)",
     "review": "rgb(170,90,220)",
+}
+
+_EFFORT_COLORS: dict[str, str] = {
+    "low": "rgb(120,120,120)",
+    "medium": "rgb(220,160,80)",
+    "high": "rgb(90,210,190)",
+    "max": "rgb(255,80,255)",
 }
 
 _VERBOSITY_COLORS: dict[str, str] = {
@@ -120,6 +127,7 @@ class StatusBar(ViewBase[StatusBarModel]):
         model_text = Text()
         if vm.model_name:
             model_text.append(vm.model_name, style=_MODEL)
+            self._append_provider_knobs(model_text, vm)
         self._right_align(mode_line, model_text)
 
         # -- line 2: verbosity (left), context-window fill (right) --
@@ -143,6 +151,26 @@ class StatusBar(ViewBase[StatusBarModel]):
                 parts.append("\n")
             parts.append(line)
         return Text.assemble(*parts)
+
+    def _append_provider_knobs(self, model_text: Text, vm: StatusBarModel) -> None:
+        """Append the active provider's knobs after the model name as ``(thinking · high)``. Each reads as
+        ``None`` when it doesn't apply to the current provider, in which case its segment is dropped; if
+        none apply, no parens are drawn at all."""
+        knobs: list[tuple[str, str]] = []
+        if vm.adaptive_thinking is not None:
+            knobs.append(("thinking", "rgb(90,210,190)") if vm.adaptive_thinking else ("no thinking", _DIM))
+        # Effort only matters while thinking is on — hide it once thinking is off.
+        if vm.effort is not None and vm.adaptive_thinking:
+            knobs.append((vm.effort, _EFFORT_COLORS.get(vm.effort, _MODEL)))
+        if not knobs:
+            return
+
+        model_text.append(" (", style=_DIM)
+        for i, (label, color) in enumerate(knobs):
+            if i:
+                model_text.append(" · ", style=_DIM)
+            model_text.append(label, style=color)
+        model_text.append(")", style=_DIM)
 
     def _context_text(self, report: UsageReport | None) -> Text:
         """Right of line 2: how full the context window is. Empty before the thread's first model call;
