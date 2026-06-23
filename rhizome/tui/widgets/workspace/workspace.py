@@ -41,8 +41,8 @@ class Workspace(PanelOrchestrator[WorkspaceModel]):
     Workspace #slot-center { width: 1fr; height: 1fr; }
     """
 
-    def __init__(self, *, services: ServiceAccessor, **kwargs) -> None:
-        super().__init__(WorkspaceModel(services), **kwargs)
+    def __init__(self, *, services: ServiceAccessor, show_welcome: bool = False, **kwargs) -> None:
+        super().__init__(WorkspaceModel(services, show_welcome=show_welcome), **kwargs)
 
     def compose(self) -> ComposeResult:
         # Center (chat area) + left (resource loader) side by side. slot-left starts collapsed: the

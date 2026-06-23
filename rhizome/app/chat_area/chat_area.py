@@ -32,11 +32,13 @@ from rhizome.agent.runtime import AgentRuntime
 from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
 from rhizome.app.chat_pane.interrupts.base import CANCELLED
+from rhizome.app.chat_pane.messages.shell import ShellCommandModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
+from rhizome.app.chat_pane.welcome_message import WelcomeMessageModel
 from rhizome.app.browser.browser import BrowserModel
 from rhizome.app.commands import CommandError, CommandRegistry, CommandRegistryService, DefaultParser, Flag, RAW
 from rhizome.app.model import ViewModelBase
-from rhizome.app.options import OptionScope, OptionService
+from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.db import SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
@@ -74,6 +76,7 @@ class ChatAreaModel(ViewModelBase):
         command_registry: CommandRegistryService | None = None,
         options: OptionService | None = None,
         session_factory: SessionFactoryService | None = None,
+        show_welcome: bool = False,
     ) -> None:
         super().__init__()
         self.make_callback_groups({
@@ -136,19 +139,18 @@ class ChatAreaModel(ViewModelBase):
         # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible branch.
         self.status_bar = StatusBarModel(self._options, self._cursor.node.app_state)
 
+        # Seed the root feed with the welcome banner when the composition root opts in (the workspace
+        # does; a standalone area stays empty). The greeting name comes from options when present.
+        if show_welcome:
+            user_name = self._options.get(Options.UserName) if self._options is not None else None
+            self.append_item(WelcomeMessageModel(user_name=user_name or None))
+
     def _schedule(self, coro: Coroutine[Any, Any, Any]) -> Any:
         return self._scheduler(coro)
 
     def set_worker_scheduler(self, scheduler: Callable[[Coroutine[Any, Any, Any]], Any]) -> None:
         """Swap the worker scheduler (the view injects Textual's ``run_worker`` on mount)."""
         self._scheduler = scheduler
-
-    def bootstrap(self) -> None:
-        """Register the root agent (and its subagents) on the runtime.
-
-        TODO: agent descriptors for the rewritten stack are in flux — until they land, the runtime
-        is expected to arrive with its agents already registered (tests register fakes).
-        """
 
     # ------------------------------------------------------------------
     # Graph event pass-through
@@ -504,9 +506,12 @@ class ChatAreaModel(ViewModelBase):
         self.submit()
 
     def submit_shell_command(self, command: str) -> None:
-        """Run a ``!`` shell command as a feed-resident widget. TODO: port ShellCommandModel; until
-        then this hints rather than running — the dispatch path is wired, the executor is not."""
-        self.hint("shell commands aren't wired up in the chat area yet")
+        """Run a ``!`` shell command as a feed-resident widget: append a ``ShellCommandModel`` and kick
+        off its ``execute`` coroutine on the worker scheduler. Side-channel to the conversation — not
+        gated by ``agent_busy`` and never forwarded to the agent."""
+        vm = ShellCommandModel(command)
+        self.append_item(vm)
+        self._schedule(vm.execute())
 
     def submit_slash_command(self, line: str) -> None:
         """Dispatch a ``/`` command through the registry (async, so it schedules). Help/echo results and

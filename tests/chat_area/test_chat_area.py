@@ -22,9 +22,11 @@ from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.agent.engine import MessagePayload, UsageReport
 from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
 from rhizome.app.chat_pane.messages.agent import AgentMessageModel
+from rhizome.app.chat_pane.messages.shell import ShellCommandModel
 from rhizome.app.chat_pane.messages.static import ChatMessageModel
 from rhizome.app.chat_pane.messages.tool import ToolMessageModel
 from rhizome.app.chat_pane.thinking import ThinkingIndicatorModel
+from rhizome.app.chat_pane.welcome_message import WelcomeMessageModel
 from rhizome.tui.types import Mode, Role
 
 from tests.agent.fakes import ai_contents, build_runtime, EchoModel, ToolOnceModel
@@ -135,6 +137,18 @@ async def test_mode_and_verbosity_write_the_app_state_store():
     assert node.app_state.verbosity == "verbose"
     assert not node.queued                                                 # both are store writes
     assert [e.content for e in entries(node)] == ["Entered learn mode."]   # mode posts a UI-only line
+
+
+async def test_welcome_banner_seeds_the_root_feed_only_when_requested():
+    assert entries(make_area().cursor.node) == []                          # off by default
+
+    area = ChatAreaModel(
+        build_runtime(lambda: StreamingEchoModel(), state_schema=RootAgentState),
+        options=Options(OptionScope.Session),
+        show_welcome=True,
+    )
+    welcomes = [e for e in entries(area.cursor.node) if isinstance(e, WelcomeMessageModel)]
+    assert len(welcomes) == 1
 
 
 # ------------------------------------------------------------------------------------------------
@@ -497,16 +511,22 @@ async def test_empty_submission_does_nothing():
     assert entries(area.cursor.node) == []
 
 
-async def test_shell_submission_routes_to_the_shell_stub_with_a_hint():
+async def test_shell_submission_appends_a_shell_command_and_runs_it():
     area = make_area()
-    listener = Listener(area)
+    node = area.cursor.node
 
-    area.chat_input.set_buffer("!ls -la")
+    area.chat_input.set_buffer("!echo hello")
     area.chat_input.submit()
 
     assert area.chat_input.buffer == ""             # accepted (side-channel command)
-    assert listener.hints and "shell" in listener.hints[-1]
-    assert not area.agent_busy()                    # no agent run
+    assert not area.agent_busy()                    # no agent run — shell is side-channel
+
+    shells = [e for e in entries(node) if isinstance(e, ShellCommandModel)]
+    assert len(shells) == 1 and shells[0].command == "echo hello"
+
+    # The executor was scheduled on the worker (asyncio.create_task in tests); let it finish.
+    await wait_for(lambda: shells[0].finished_at is not None)
+    assert shells[0].returncode == 0 and "hello" in shells[0].joined_output
 
 
 async def test_slash_command_dispatches_through_the_registry():

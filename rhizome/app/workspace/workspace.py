@@ -42,8 +42,12 @@ from rhizome.utils.services import ServiceAccessor
 
 class WorkspaceModel(OrchestratorModel):
 
-    def __init__(self, services: ServiceAccessor) -> None:
+    def __init__(self, services: ServiceAccessor, *, show_welcome: bool = False) -> None:
         super().__init__()
+
+        # Whether the chat area seeds a welcome banner. Set only for the app's first tab — new tabs open
+        # clean. Threaded down to ``ChatAreaModel`` in ``_build_chat_area``.
+        self._show_welcome = show_welcome
 
         # Workspace-scoped service container. App-global services fall through to root; the pieces below
         # shadow at this scope.
@@ -128,6 +132,7 @@ class WorkspaceModel(OrchestratorModel):
             local_resources_factory=self._local_resources_factory,
             options=self._options,
             session_factory=self._session_factory,
+            show_welcome=self._show_welcome,
         )
 
     def _build_resource_loader(self, _orch: OrchestratorModel) -> ResourceLoaderModel:

@@ -52,10 +52,11 @@ class ChatTabPane(TabPane):
     the displayed label when ``tab_name_len`` changes.
     """
 
-    def __init__(self, title: str, *, services, tab_max_length: int = 20, **kwargs) -> None:
+    def __init__(self, title: str, *, services, tab_max_length: int = 20, show_welcome: bool = False, **kwargs) -> None:
         self.full_name: str = title
         self._services = services
         self._tab_max_length: int = tab_max_length
+        self._show_welcome = show_welcome
         super().__init__(self._truncated_label(), **kwargs)
 
     @property
@@ -95,7 +96,7 @@ class ChatTabPane(TabPane):
         self.notify(event.text, severity=event.severity)
 
     def compose(self) -> ComposeResult:
-        yield Workspace(services=self._services)
+        yield Workspace(services=self._services, show_welcome=self._show_welcome)
 
 
 class MainScreen(Screen):
@@ -143,6 +144,7 @@ class MainScreen(Screen):
                 "Session 1",
                 services=self.app.services,  # type: ignore[attr-defined]
                 tab_max_length=max_len,
+                show_welcome=True,            # only the app's first tab greets; new tabs open clean
                 id="session-1",
             )
 
