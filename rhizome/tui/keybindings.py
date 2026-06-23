@@ -107,6 +107,7 @@ class Keybind(Enum):
     # Browser — tab switching, plus the entries tab and topics panel within it
     BrowserNextTab = ("browser.next_tab", "ctrl+right")
     BrowserPrevTab = ("browser.prev_tab", "ctrl+left")
+    BrowserDismiss = ("browser.dismiss", "ctrl+c")
 
     BrowserDelete      = ("browser.tab.delete",       "d")
     BrowserSort        = ("browser.tab.sort",         "s")

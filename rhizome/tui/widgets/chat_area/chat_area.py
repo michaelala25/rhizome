@@ -18,6 +18,7 @@ graph (see ``_get_focus_graph``).
 
 from __future__ import annotations
 
+from textual import on
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
@@ -30,6 +31,8 @@ from rhizome.tui.keybindings import Keybind
 from rhizome.tui.types import Mode
 from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
 from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
+from rhizome.tui.widgets.options_editor import OptionsEditor
+from rhizome.tui.widgets.browser import Browser
 from rhizome.tui.widgets.chat_area.status import StatusBar
 from rhizome.tui.widgets.shared.focus_orchestration import Direction, FocusGraph, FocusOrchestrationMixin
 from rhizome.tui.widgets.view_base import ViewBase
@@ -243,6 +246,24 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         widget = self._mounted.pop(item.id, None)
         if widget is not None:
             widget.remove()
+
+    @on(OptionsEditor.Dismissed)
+    def _on_options_editor_dismissed(self, event: OptionsEditor.Dismissed) -> None:
+        self._dismiss_feed_widget(event.control)
+
+    @on(Browser.Dismissed)
+    def _on_browser_dismissed(self, event: Browser.Dismissed) -> None:
+        self._dismiss_feed_widget(event.control)
+
+    def _dismiss_feed_widget(self, widget: Widget) -> None:
+        """Drop a self-dismissing feed widget and return focus to the input — dismissal means
+        "done with this side-task, back to typing." Removal flows through the VM (``remove_item``
+        → ``OnFeedRemoved`` → ``_on_feed_remove`` unmounts the widget)."""
+        for fid, mounted in self._mounted.items():
+            if mounted is widget:
+                self._vm.remove_item(fid)
+                self.focus_first()
+                return
 
     def _on_feed_clear(self, node: ConversationNode) -> None:
         cursor = self._vm.cursor

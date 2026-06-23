@@ -16,6 +16,7 @@ from rich.text import Text
 from textual.actions import SkipAction
 from textual.containers import Vertical
 from textual.events import DescendantBlur, DescendantFocus
+from textual.message import Message
 from textual.widgets import ContentSwitcher, Static
 
 from rhizome.logs import get_logger
@@ -49,6 +50,18 @@ class Browser(NavigableFeedItemViewBase[BrowserModel], FocusOrchestrationMixin):
     ``await self._vm.start()`` runs from ``on_mount`` after Textual finishes mounting children — by
     then every child widget is subscribed to its VM's ``dirty`` and will repaint on first arrival.
     """
+
+    class Dismissed(Message):
+        """Public-surface dismiss request — the feed host catches this and drops the feed entry.
+        Posted by the ``ctrl+c`` binding via ``action_dismiss``."""
+
+        def __init__(self, browser: "Browser") -> None:
+            super().__init__()
+            self.browser = browser
+
+        @property
+        def control(self) -> "Browser":
+            return self.browser
 
     # Height is pinned to 40 because inside the chat-tab ``VerticalScroll`` feed, ``1fr`` resolves
     # to 0 (the scroll container derives content height from children, so a child asking for
@@ -84,6 +97,7 @@ class Browser(NavigableFeedItemViewBase[BrowserModel], FocusOrchestrationMixin):
     BINDINGS = [
         Keybind.BrowserNextTab.as_binding("next_tab", show=False),
         Keybind.BrowserPrevTab.as_binding("prev_tab", show=False),
+        Keybind.BrowserDismiss.as_binding("dismiss", show=False),
         # Cross-region fall-through only — fires when the focused region's own alt+arrow action
         # raised SkipAction (i.e., the step had no in-graph target). Up/down have no cross-region
         # meaning, so they're left for the regions alone.
@@ -185,6 +199,10 @@ class Browser(NavigableFeedItemViewBase[BrowserModel], FocusOrchestrationMixin):
 
     def action_prev_tab(self) -> None:
         self._vm.prev_tab()
+
+    def action_dismiss(self) -> None:
+        # Feed host catches ``Browser.Dismissed`` and drops the feed entry — the only removal path.
+        self.post_message(self.Dismissed(self))
 
     # ------------------------------------------------------------------
     # Cross-region focus graph — two nodes (panel, active tab), two edges (panel ↔ tab)
