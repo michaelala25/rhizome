@@ -592,9 +592,25 @@ class ChatAreaModel(ViewModelBase):
     def _cmd_rename_branch(self, name: str) -> None:
         self.set_branch_name(name)
 
+    def _find_visible_entry(self, predicate: Callable[[Any], bool]) -> Any | None:
+        """First feed entry along the current cursor path (root→leaf) satisfying ``predicate``.
+
+        The path back to root is exactly the visible feed, so this covers an entry mounted on any
+        ancestor branch, not just the checked-out leaf. Commands for singleton widgets use it to
+        focus an already-open instance instead of stacking a duplicate.
+        """
+        for item in self.conversation_graph.visible_feed(self._cursor):
+            if predicate(item.entry):
+                return item.entry
+        return None
+
     def _cmd_browse(self) -> None:
         if self._session_factory is None:
             self.hint("/browse is unavailable: no database session in this scope")
+            return
+        existing = self._find_visible_entry(lambda e: isinstance(e, BrowserModel))
+        if existing is not None:
+            existing.request_focus()
             return
         self.append_item(BrowserModel(self._session_factory))
 
@@ -604,6 +620,14 @@ class ChatAreaModel(ViewModelBase):
             return
         # ``--global`` reaches the Root node; the default targets this conversation's own session options.
         target = self._options.at_scope(OptionScope.Root) if global_ else self._options
+        # Reuse an open editor for *this same scope* — root and session are distinct target objects, so
+        # an identity match keeps the global and local editors from colliding.
+        existing = self._find_visible_entry(
+            lambda e: isinstance(e, OptionsEditorModel) and e.target is target
+        )
+        if existing is not None:
+            existing.request_focus()
+            return
         self.append_item(OptionsEditorModel(target))
 
     def _cmd_clear(self) -> None:
