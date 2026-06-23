@@ -93,11 +93,26 @@ class NavigableViewBase[T: ViewModelBase](ViewBase[T]):
         mouse_over = self.app.mouse_over if self.screen else None
         hover_inside = mouse_over is not None and (mouse_over is self or self in mouse_over.ancestors_with_self)
         if focus_inside:
-            self.styles.border = ("solid", "rgb(90, 140, 200)")
+            self.border_style("focus")
         elif hover_inside:
-            self.styles.border = ("solid", "rgb(120, 120, 120)")
+            self.border_style("hover")
         else:
-            self.styles.border = ("solid", "rgb(60, 60, 60)")
+            self.border_style("blur")
+
+    # Border colours for the three interaction states. Subclasses that override ``border_style``
+    # (e.g. to draw only the top/bottom edges) can reuse these so the palette stays consistent.
+    BORDER_COLORS = {
+        "focus": "rgb(90,140,200)",
+        "hover": "rgb(120,120,120)",
+        "blur":  "rgb(60,60,60)",
+    }
+
+    def border_style(self, state: str) -> None:
+        """Apply the border treatment for the given interaction state (``"focus"`` / ``"hover"`` /
+        ``"blur"``) via inline ``styles.border``. The seam ``_sync_border`` dispatches through:
+        subclasses override this to draw a different border shape while inheriting the focus / hover /
+        blur detection."""
+        self.styles.border = ("solid", self.BORDER_COLORS[state])
 
 
 class NavigableFeedItemViewBase[T: ViewModelBase](NavigableViewBase[T]):

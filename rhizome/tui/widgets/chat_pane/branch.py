@@ -98,8 +98,8 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointModel]):
     ]
 
     # Override the navigable-base border so only the top/bottom edges draw — the bare horizontal
-    # rules span the full chat-area width, matching the pre-MVVM banner look. Hover/focus colour
-    # swaps mirror the base's three-tier palette.
+    # rules span the full chat-area width, matching the pre-MVVM banner look. The hover/focus colour
+    # swaps are driven by ``border_style`` (inline styles); CSS here only ships the resting look.
     DEFAULT_CSS = """
     BranchPoint {
         border: none;
@@ -109,21 +109,6 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointModel]):
         padding: 0 1;
         margin: 1 0;
         color: rgb(180, 180, 180);
-    }
-    BranchPoint:hover {
-        border-left: none;
-        border-right: none;
-        border-top: solid rgb(120, 120, 120);
-        border-bottom: solid rgb(120, 120, 120);
-    }
-    BranchPoint:focus, BranchPoint:focus-within {
-        border-left: none;
-        border-right: none;
-        border-top: solid rgb(90, 140, 200);
-        border-bottom: solid rgb(90, 140, 200);
-    }
-    BranchPoint:focus {
-        color: rgb(220, 220, 220);
     }
     BranchPoint Horizontal {
         height: auto;
@@ -249,12 +234,24 @@ class BranchPoint(NavigableFeedItemViewBase[BranchPointModel]):
     # Action handlers (forward to the VM)
     # ------------------------------------------------------------------
 
+    def border_style(self, state: str) -> None:
+        # Draw only the top/bottom edges so the indicator reads as two horizontal rules spanning the
+        # full width, rather than a box. Left/right are pinned to ``none`` so the base's full-border
+        # default never leaks back in on a focus/hover transition.
+        color = self.BORDER_COLORS[state]
+        self.styles.border_left = None
+        self.styles.border_right = None
+        self.styles.border_top = ("solid", color)
+        self.styles.border_bottom = ("solid", color)
+        self.styles.color = "rgb(220,220,220)" if state == "focus" else "rgb(180,180,180)"
+
     def on_focus(self, event: Focus) -> None:
-        # If focus lands back on the indicator while a rename is active (e.g. the user tabbed away
-        # and back), forward it straight to the editor — otherwise the editor stays unreachable
-        # from keyboard until the user clicks it.
-        super().on_focus(event)
+        # Textual dispatches ``on_focus`` to every class in the MRO, so the base's border sync still
+        # fires automatically — no ``super()`` call (it would double-fire the handler).
         if self._renaming and self._rename_editor is not None:
+            # If focus lands back on the indicator while a rename is active (e.g. the user tabbed
+            # away and back), forward it straight to the editor — otherwise the editor stays
+            # unreachable from keyboard until the user clicks it.
             self._rename_editor.focus()
 
     # All four navigation actions no-op while a rename is in progress. ``TextArea`` doesn't bind
