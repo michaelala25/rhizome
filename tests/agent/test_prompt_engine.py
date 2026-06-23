@@ -39,6 +39,17 @@ from .fakes import ai_contents, drive, EchoModel, make_build, make_runtime, regi
 MARKER = "[ephemeral-marker]"
 
 
+class _Ref:
+    """Minimal ``OptionRef`` stand-in: ``get()`` returns a fixed value (here, the local-resource placement
+    a prepare test wants to exercise)."""
+
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def get(self) -> str:
+        return self._value
+
+
 def _tool_call(call_id: str) -> AIMessage:
     return AIMessage(content="", tool_calls=[{"name": "t", "args": {}, "id": call_id}])
 
@@ -348,7 +359,7 @@ async def test_compile_global_coverage_suppresses_local(resource_db):
 
 
 async def test_prepare_positions_local_after_branch_marker():
-    engine = RootPromptEngine()
+    engine = RootPromptEngine(local_resource_placement=_Ref("leaf"))   # exercises leaf-float placement
     g = pin(HumanMessage(content="G", id=global_resource_message_id(1)), "head")
     marker = HumanMessage(content="<system>branched</system>", id=branch_marker_message_id(5))  # inline anchor
     loc = pin(HumanMessage(content="L", id=local_resource_message_id(2)), "branch")
@@ -368,7 +379,7 @@ async def test_prepare_positions_local_after_branch_marker():
 
 
 async def test_prepare_positions_local_after_globals_for_root():
-    engine = RootPromptEngine()
+    engine = RootPromptEngine(local_resource_placement=_Ref("leaf"))   # exercises leaf-float placement
     g = pin(HumanMessage(content="G", id=global_resource_message_id(1)), "head")
     loc = pin(HumanMessage(content="L", id=local_resource_message_id(2)), "branch")
     request = _Request([SystemMessage(content="sys"), HumanMessage(content="conv"), g, loc])

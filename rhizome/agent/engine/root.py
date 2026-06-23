@@ -163,17 +163,19 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
 
     def __init__(self, *args, cache_supported: bool = False,
                  prompt_cache: OptionReader | None = None,
-                 prompt_cache_ttl: OptionReader | None = None, **kwargs) -> None:
-        """Adds prompt-cache configuration to the base engine; all other arguments forward to
+                 prompt_cache_ttl: OptionReader | None = None,
+                 local_resource_placement: OptionReader | None = None, **kwargs) -> None:
+        """Adds prompt-cache and layout configuration to the base engine; all other arguments forward to
         ``PromptEngine``. ``cache_supported`` is the provider gate, baked at build time (the runtime
         rebuilds the engine on a provider change, so a snapshot bool is correct — Anthropic places
-        breakpoints, other providers cannot). ``prompt_cache`` / ``prompt_cache_ttl`` are live option
-        handles read fresh on each ``prepare``, so flipping the toggle or TTL takes effect without a
-        rebuild."""
+        breakpoints, other providers cannot). ``prompt_cache`` / ``prompt_cache_ttl`` /
+        ``local_resource_placement`` are live option handles read fresh on each ``prepare``, so flipping the
+        cache toggle, its TTL, or where local resources sit takes effect without a rebuild."""
         super().__init__(*args, **kwargs)
         self._cache_supported = cache_supported
         self._prompt_cache = prompt_cache
         self._prompt_cache_ttl = prompt_cache_ttl
+        self._local_resource_placement = local_resource_placement
 
     async def compile(self, state: dict[str, Any], ctx: "RootAgentContext | None") -> dict[str, Any] | None:
         update: dict[str, Any] = {}
@@ -212,16 +214,25 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
 
         - ``head`` — just after the leading system block: a stable graph-wide prefix;
         - ``branch`` — the start of THIS node's segment, right after its branch marker (or, for a node
-          with no marker — the root — the body head);
+          with no marker — the root — the body head); honored only under the ``leaf`` ``LocalResourcePlacement``.
+          Under ``inline`` (the default) the branch pin is ignored here, so local resources keep their
+          load-point position — see the option's help for the cache trade-off;
         - ``tail`` — the very end (the volatile region a breakpoint will sit before); a change there
           invalidates only the cheapest suffix, never the prefix up to the leaf.
 
         Floating keeps the prefix up to the leaf stable for the cache no matter where a block was loaded.
         Returns the request untouched when nothing is pinned."""
+        # `inline` (the system default) keeps local resources at their load point; `leaf` floats them to the
+        # branch boundary, so only a `leaf` placement pulls their `branch` pin into the float below. A
+        # ref-less engine (no option wired — tests) falls back to the system default.
+        ref = self._local_resource_placement
+        float_branch = (ref.get() if ref is not None else "inline") == "leaf"
         buckets: dict[Pin, list[BaseMessage]] = {"head": [], "branch": [], "tail": []}
         inline: list[BaseMessage] = []
         for m in request.messages:
             anchor = pin_of(m)
+            if anchor == "branch" and not float_branch:
+                anchor = None
             (buckets[anchor] if anchor in buckets else inline).append(m)
 
         if not any(buckets.values()):
@@ -318,13 +329,13 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
     def _bp_branch_leaf(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> BaseMessage | None:
         """The cross-branch stable boundary: the message IMMEDIATELY BEFORE this node's branch marker. The
         marker is node-specific (id + parent name), so ending the cached prefix just before it keeps that
-        prefix byte-identical across sibling branches and unaffected by local-resource churn (local
-        resources float to AFTER the marker, landing under before_tail). ``None`` for the root / a
-        graph-less session (no marker), or when nothing precedes the marker.
+        prefix byte-identical across sibling branches. ``None`` for the root / a graph-less session (no
+        marker), or when nothing precedes the marker.
 
-        TODO(local-inline): assumes local resources are pushed to the branch leaf (after the marker). A
-        future toggle could place them inline instead, trading prefix stability under churn for breakpoints
-        at more branch points in the lineage."""
+        Local resources interact with this cut via ``LocalResourcePlacement``: under ``leaf`` they float to
+        AFTER the marker, so they sit below this prefix and churn never touches it; under ``inline`` (the
+        default) an INHERITED resource stays in its ancestor segment — inside this prefix, cached across
+        branch switches, at the cost of breaking the prefix when that resource churns."""
         if ctx is None or ctx.node_id is None:
             return None
         marker_id = branch_marker_message_id(ctx.node_id)

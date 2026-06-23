@@ -300,6 +300,37 @@ async def test_prepare_never_mutates_the_state_messages():
 
 
 # ------------------------------------------------------------------------------------------------
+# Root prepare: local-resource placement (leaf floats to the boundary; inline keeps the load point)
+# ------------------------------------------------------------------------------------------------
+
+def _local_placement_messages():
+    return [
+        HumanMessage(content="<m>", id=branch_marker_message_id(5)),
+        HumanMessage(content="u1", id="u1"),
+        pin(HumanMessage(content="L", id=local_resource_message_id(2)), "branch"),   # loaded mid-conversation
+        HumanMessage(content="u2", id="u2"),
+    ]
+
+
+async def test_local_resource_placement_leaf_floats_to_the_branch_boundary():
+    engine = RootPromptEngine(local_resource_placement=Ref("leaf"))
+    out = await engine.prepare(Req(_local_placement_messages()), RootAgentContext(node_id=5))
+    assert [m.content for m in out.messages] == ["<m>", "L", "u1", "u2"]            # floated after the marker
+
+
+async def test_local_resource_placement_inline_keeps_the_load_point():
+    engine = RootPromptEngine(local_resource_placement=Ref("inline"))
+    out = await engine.prepare(Req(_local_placement_messages()), RootAgentContext(node_id=5))
+    assert [m.content for m in out.messages] == ["<m>", "u1", "L", "u2"]            # stays where it loaded
+
+
+async def test_local_resource_placement_defaults_to_inline():
+    # No placement ref (a ref-less engine) -> the system default, inline: resources keep their load point.
+    out = await RootPromptEngine().prepare(Req(_local_placement_messages()), RootAgentContext(node_id=5))
+    assert [m.content for m in out.messages] == ["<m>", "u1", "L", "u2"]
+
+
+# ------------------------------------------------------------------------------------------------
 # Debug dump surfaces the breakpoint
 # ------------------------------------------------------------------------------------------------
 

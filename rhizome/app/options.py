@@ -692,6 +692,19 @@ class Options(CallbackHost, metaclass=OptionsMeta):
             ),
         )
 
+        LocalResourcePlacement = ChoicesOptionSpec(
+            name="local_resource_placement",
+            scope=OptionScope.Session,
+            default="inline",
+            help=(
+                "Where a branch's local resources sit in the prompt. 'leaf' clusters them at the branch "
+                "boundary — unloading stays isolated, but they re-price when you switch branches. 'inline' "
+                "keeps them at their load point — cached across branch switches, but unloading an inherited "
+                "resource invalidates more of the prefix."
+            ),
+            choices=["leaf", "inline"],
+        )
+
         class Anthropic(OptionNamespace):
             name = "anthropic"
             description = "Only used when agent.provider is anthropic."

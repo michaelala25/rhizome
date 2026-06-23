@@ -7,10 +7,11 @@ snapshot and live options is the whole point of the two binding shapes (see ``fa
 - ``provider`` / ``model`` / ``temperature`` / ``adaptive_thinking`` / ``effort`` / ``web_tools`` are
   ``Annotated[T, spec]`` snapshots — they shape the model and tool set, so a change to any of them rebuilds
   the agent (they form its invalidation set).
-- ``parallel_tool_calling`` / ``prompt_cache`` / ``prompt_cache_ttl`` are ``Annotated[OptionRef[T], spec]``
-  live handles — behavioral knobs read fresh, so flipping them never rebuilds. Parallel-tool calling is
-  honored per model call by ``ParallelToolCallsMiddleware``; the cache knobs flow to ``RootPromptEngine``,
-  which reads them each ``prepare`` to place (and TTL) its Anthropic cache-control breakpoints.
+- ``parallel_tool_calling`` / ``prompt_cache`` / ``prompt_cache_ttl`` / ``local_resource_placement`` are
+  ``Annotated[OptionRef[T], spec]`` live handles — behavioral knobs read fresh, so flipping them never
+  rebuilds. Parallel-tool calling is honored per model call by ``ParallelToolCallsMiddleware``; the cache
+  knobs and the placement knob flow to ``RootPromptEngine``, which reads them each ``prepare`` to place
+  (and TTL) its Anthropic cache-control breakpoints and to lay out local resources.
 
 The builder returns ``(agent, engine)``. To register the declaration on a factory::
 
@@ -139,9 +140,10 @@ def build_root_agent(
     effort:                Annotated[str,   Options.Agent.Anthropic.Effort],
     # Option refs (injected by OptionService, changes do NOT cause agent instance cache invalidation)
     web_tools:             Annotated[str,   Options.Agent.Anthropic.WebTools],
-    parallel_tool_calling: Annotated[OptionRef[str], Options.Agent.ParallelToolCalling],
-    prompt_cache:          Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCache],
-    prompt_cache_ttl:      Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCacheTTL],
+    parallel_tool_calling:    Annotated[OptionRef[str], Options.Agent.ParallelToolCalling],
+    prompt_cache:             Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCache],
+    prompt_cache_ttl:         Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCacheTTL],
+    local_resource_placement: Annotated[OptionRef[str], Options.Agent.LocalResourcePlacement],
 ) -> tuple[CompiledStateGraph, RootPromptEngine]:
     """Build the root conversation agent and its prompt engine, returning ``(agent, engine)``.
 
@@ -187,8 +189,10 @@ def build_root_agent(
     #
     # Cache-control breakpoints: `cache_supported` gates on the provider — a snapshot, since Anthropic
     # places breakpoints and other providers cannot, and a provider change already rebuilds the engine.
-    # `prompt_cache` / `prompt_cache_ttl` ride in as the live OptionRefs the engine reads each `prepare`,
-    # so flipping the toggle or its TTL takes effect on the next turn without a rebuild.
+    # `prompt_cache` / `prompt_cache_ttl` / `local_resource_placement` ride in as the live OptionRefs the
+    # engine reads each `prepare`, so flipping the cache toggle, its TTL, or the placement takes effect on
+    # the next turn without a rebuild. Placement is a layout knob (honored for every provider), not gated
+    # on `cache_supported`.
     engine = RootPromptEngine(
         system_prompt=system_prompt,
         tools=tools,
@@ -196,6 +200,7 @@ def build_root_agent(
         cache_supported=(provider == "anthropic"),
         prompt_cache=prompt_cache,
         prompt_cache_ttl=prompt_cache_ttl,
+        local_resource_placement=local_resource_placement,
     )
 
     agent = create_agent(
