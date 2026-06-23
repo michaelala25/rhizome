@@ -52,11 +52,11 @@ def choices_tool() -> str:
     return f"picked:{answer}"
 
 
-def make_area(model_factory=None, tools=()) -> ChatAreaModel:
+def make_area(model_factory=None, tools=(), debug=False) -> ChatAreaModel:
     runtime = build_runtime(
         model_factory or (lambda: StreamingEchoModel()), tools=tools, state_schema=RootAgentState
     )
-    return ChatAreaModel(runtime)
+    return ChatAreaModel(runtime, debug=debug)
 
 
 async def wait_idle(node, timeout: float = 10.0) -> None:
@@ -203,13 +203,19 @@ async def test_browse_command_appends_browser_with_factory_else_hints():
     assert isinstance(entries(area.cursor.node)[-1], BrowserModel)
 
 
-def test_real_and_demo_commands_are_registered():
+def test_real_commands_always_registered_demo_commands_gated_on_debug():
+    real = {"idle", "learn", "review", "branch", "rename-branch", "browse", "options", "clear", "echo"}
+    demo = {"test-interrupt", "test-choices", "test-warning-choices", "test-multiple-choices",
+            "test-sql-confirmation", "test-flashcards", "test-commit-proposal", "test-flashcard-proposal"}
+
+    # Demo /test-* commands register only under the app's --debug flag.
     names = {name for name, _ in make_area().commands.rows()}
-    assert {"idle", "learn", "review", "branch", "rename-branch", "browse", "options", "clear",
-            "echo"} <= names
-    assert {"test-interrupt", "test-choices", "test-warning-choices", "test-multiple-choices",
-            "test-sql-confirmation", "test-flashcards", "test-commit-proposal",
-            "test-flashcard-proposal"} <= names
+    assert real <= names
+    assert not (demo & names)
+
+    debug_names = {name for name, _ in make_area(debug=True).commands.rows()}
+    assert real <= debug_names
+    assert demo <= debug_names
 
 
 @pytest.mark.xfail(

@@ -35,6 +35,7 @@ from rhizome.app.commands import CommandRegistry, CommandRegistryService
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.orchestrator import OrchestratorModel
 from rhizome.app.resource_loader import ResourceLoaderModel
+from rhizome.config import AppConfigService
 from rhizome.db import SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceVectorStore
 from rhizome.utils.services import ServiceAccessor
@@ -124,6 +125,7 @@ class WorkspaceModel(OrchestratorModel):
         """Build the conversation panel over this workspace's runtime, wired to the shared resource
         stores so loads made in the loader panel reach the agent on its next turn."""
         runtime = self._services.get(AgentRuntimeService)
+        app_config = self._services.try_get(AppConfigService)
         return ChatAreaModel(
             runtime,
             command_registry=self._commands,
@@ -133,6 +135,7 @@ class WorkspaceModel(OrchestratorModel):
             options=self._options,
             session_factory=self._session_factory,
             show_welcome=self._show_welcome,
+            debug=app_config.debug if app_config is not None else False,
         )
 
     def _build_resource_loader(self, _orch: OrchestratorModel) -> ResourceLoaderModel:

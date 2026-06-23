@@ -5,9 +5,8 @@ for the feed's interrupt routing and the proposal/review surfaces, with no agent
 rather than in ``ChatAreaModel`` so the core VM stays free of demo scaffolding; ``register_demo_commands``
 attaches them to an area's command registry.
 
-TODO(debug-gate): these should only be registered when the app runs with debug logging on. That flag
-isn't threaded to the chat area yet (the runtime/workspace carry it) — register unconditionally until it
-is, then gate the ``register_demo_commands`` call.
+``ChatAreaModel`` calls ``register_demo_commands`` only under the app's --debug flag (threaded in from
+``AppConfigService`` via the workspace), so these stay out of a normal run.
 """
 
 from __future__ import annotations

@@ -74,6 +74,7 @@ class ChatAreaModel(ViewModelBase):
         options: OptionService | None = None,
         session_factory: SessionFactoryService | None = None,
         show_welcome: bool = False,
+        debug: bool = False,
     ) -> None:
         super().__init__()
         self.make_callback_groups({
@@ -93,6 +94,7 @@ class ChatAreaModel(ViewModelBase):
         # Both optional — a standalone area runs without them, the dependent commands degrading to a hint.
         self._options = options
         self._session_factory = session_factory
+        self._debug = debug
 
         # Worker scheduler, late-bound: the graph captures ``self._schedule`` at construction, and
         # the view swaps the underlying callable for Textual's ``run_worker`` at mount.
@@ -582,9 +584,10 @@ class ChatAreaModel(ViewModelBase):
         reg.register("clear", self._cmd_clear, help="Clear the message feed.")
         reg.register("echo", lambda text: text, parser=RAW, help="Echo arguments back as a system message.")
 
-        # Demo / exercise commands (/test-*) live in their own module; see its docstring for the TODO to
-        # debug-gate this registration once a debug flag reaches the chat area.
-        register_demo_commands(self)
+        # Demo / exercise commands (/test-*) — registered only under the app's --debug flag (off otherwise,
+        # including for a standalone area). See the module docstring.
+        if self._debug:
+            register_demo_commands(self)
 
     async def _cmd_branch(self, rest: str) -> None:
         await self.branch(prompt=rest or None)

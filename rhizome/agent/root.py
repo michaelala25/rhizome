@@ -31,6 +31,7 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph.state import CompiledStateGraph
 
 from rhizome.app.options import OptionRef, Options
+from rhizome.config import AppConfigService
 from rhizome.credentials import APIKeyService
 from rhizome.logs import get_logger
 
@@ -132,6 +133,7 @@ def build_root_agent(
     # Services (injected by service accessor)
     checkpointer: AgentCheckpointerService,
     api_keys:     APIKeyService,
+    app_config:   AppConfigService,
     # Options (injected by OptionService, bound by runtime, changes propagate to agent instance cache invalidation)
     provider:              Annotated[str,   Options.Agent.Provider],
     model:                 Annotated[str,   Options.Agent.Model],
@@ -179,9 +181,9 @@ def build_root_agent(
     # The one fixed system prompt + the registry-driven schema reference (the SSOT for table/column names
     # and the filter DSL). Passed to create_agent so it rides every request as the stable ``system_message``
     # — never swapped per mode, never floated by the engine, so it anchors the prefix cache.
-    # TODO(debug): thread the app's --debug flag through to here so we can pass compose_system_prompt(
-    # debug=True) and append the debug section; it isn't plumbed to the builder yet.
-    system_prompt = compose_system_prompt(schema_reference=render_schema_reference())
+    system_prompt = compose_system_prompt(
+        debug=app_config.debug, schema_reference=render_schema_reference()
+    )
 
     # The system prompt, tool set, and context window are the build-time constants the engine's `report`
     # needs for token accounting (see engine.usage) — fixed for this build, recomputed whenever a snapshot
@@ -201,6 +203,7 @@ def build_root_agent(
         prompt_cache=prompt_cache,
         prompt_cache_ttl=prompt_cache_ttl,
         local_resource_placement=local_resource_placement,
+        debug=app_config.debug,
     )
 
     agent = create_agent(

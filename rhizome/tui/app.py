@@ -13,7 +13,7 @@ import rhizome.tui.graphics as graphics
 from rhizome.agent.checkpointer import AgentCheckpointerService, build_checkpointer
 from rhizome.agent.factory import AgentFactoryService
 from rhizome.agent.root import build_agent_factory
-from rhizome.config import get_default_db_path
+from rhizome.config import AppConfig, AppConfigService, get_default_db_path
 from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
@@ -67,6 +67,7 @@ class RhizomeApp(App):
     ) -> None:
         super().__init__()
         self.debug_logging = debug
+        self.app_config = AppConfig(debug=debug)
         self._profiler = None  # type: ignore[assignment]
         engine = get_engine(db_path or get_default_db_path())
         # Root service container. App-scoped dependencies are registered here and threaded down the
@@ -95,6 +96,9 @@ class RhizomeApp(App):
         # off the startup path unless a key is present.
         api_keys = CredentialsAPIKeyService()
         self.services.register(APIKeyService, api_keys)
+        # Launch-time process config (the --debug flag, today). Immutable for the run; consumers take it
+        # as a declared dependency rather than reaching for an ambient global.
+        self.services.register(AppConfigService, self.app_config)
         if api_keys.has("voyage"):
             from rhizome.resources.embeddings import EmbeddingService, VoyageEmbedder
             self.services.register(EmbeddingService, VoyageEmbedder(api_keys))

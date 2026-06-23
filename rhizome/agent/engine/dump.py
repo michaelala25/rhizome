@@ -23,9 +23,9 @@ from .usage import UsageReport
 
 _logger = get_logger("agent.engine.dump")
 
-# TODO(debug-gate): the dump_* helpers write UNCONDITIONALLY — a bring-up aid for inspecting what reaches the
-# model and how the prefix budget breaks down. Gate them on a debug-mode flag once one is threaded to the
-# engine (the app has a --debug flag; it just isn't plumbed this far yet).
+# The dump_* helpers themselves write unconditionally — gating is the caller's job. RootPromptEngine.prepare
+# calls them only under its ``debug`` flag (the app's --debug, threaded via AppConfigService), so these stay
+# a pure inspection aid: what reaches the model and how the prefix budget breaks down.
 PROMPT_DUMP_DIR = Path("/tmp/rhizome-prompt-dumps")
 
 

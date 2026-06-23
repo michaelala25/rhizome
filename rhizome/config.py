@@ -2,7 +2,9 @@
 
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import platformdirs
 
@@ -44,3 +46,30 @@ def get_log_dir() -> Path:
 def get_options_path() -> Path:
     """Return the path to the global options JSONC file."""
     return get_config_dir() / "options.jsonc"
+
+
+# ==========================================================================================
+# Service: AppConfigService
+#   Shape : protocol + first-party impl (AppConfig, below)
+#   Scope : root (one instance, fixed at launch)
+# ==========================================================================================
+
+
+class AppConfigService(Protocol):
+    """Injected, read-only carrier for launch-time process configuration.
+
+    These are the values fixed once at startup (from argv / the environment) and immutable for the
+    process lifetime — distinct from ``OptionService``, which holds user-tweakable, persisted settings.
+    Consumers depend on this so a launch flag reaches them as a declared dependency rather than an
+    ambient global. The home for ``--debug`` and any future launch flags.
+    """
+
+    @property
+    def debug(self) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AppConfig(AppConfigService):
+    """Production ``AppConfigService``: a frozen snapshot of the launch flags, built once from argv."""
+
+    debug: bool = False

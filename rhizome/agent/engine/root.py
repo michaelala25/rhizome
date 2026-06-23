@@ -164,18 +164,21 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
     def __init__(self, *args, cache_supported: bool = False,
                  prompt_cache: OptionReader | None = None,
                  prompt_cache_ttl: OptionReader | None = None,
-                 local_resource_placement: OptionReader | None = None, **kwargs) -> None:
+                 local_resource_placement: OptionReader | None = None,
+                 debug: bool = False, **kwargs) -> None:
         """Adds prompt-cache and layout configuration to the base engine; all other arguments forward to
         ``PromptEngine``. ``cache_supported`` is the provider gate, baked at build time (the runtime
         rebuilds the engine on a provider change, so a snapshot bool is correct — Anthropic places
         breakpoints, other providers cannot). ``prompt_cache`` / ``prompt_cache_ttl`` /
         ``local_resource_placement`` are live option handles read fresh on each ``prepare``, so flipping the
-        cache toggle, its TTL, or where local resources sit takes effect without a rebuild."""
+        cache toggle, its TTL, or where local resources sit takes effect without a rebuild. ``debug`` is the
+        launch flag that gates the per-``prepare`` prompt/usage dumps (off by default)."""
         super().__init__(*args, **kwargs)
         self._cache_supported = cache_supported
         self._prompt_cache = prompt_cache
         self._prompt_cache_ttl = prompt_cache_ttl
         self._local_resource_placement = local_resource_placement
+        self._debug = debug
 
     async def compile(self, state: dict[str, Any], ctx: "RootAgentContext | None") -> dict[str, Any] | None:
         update: dict[str, Any] = {}
@@ -254,15 +257,16 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
                 *system, *buckets["head"], *body[:split], *buckets["branch"], *body[split:], *buckets["tail"],
             ])
 
-        # TODO(debug-gate): both dumps fire UNCONDITIONALLY for now — see engine.dump.PROMPT_DUMP_DIR. The
-        # report is computed over the request's own messages, so its provider total comes from the latest
-        # prior AIMessage — anchored one model call behind (the current-vs-last-call drift engine.usage
-        # documents), harmless for an inspection dump.
         result = self._place_breakpoints(result, ctx)
 
-        node = ctx.node_id if ctx is not None else None
-        dump_request(result, node)
-        dump_report(self.report({"messages": result.messages}), node)
+        # In debug mode, dump the wire request + a usage report per prepare (see engine.dump.PROMPT_DUMP_DIR).
+        # The report is computed over the request's own messages, so its provider total comes from the latest
+        # prior AIMessage — anchored one model call behind (the current-vs-last-call drift engine.usage
+        # documents), harmless for an inspection dump.
+        if self._debug:
+            node = ctx.node_id if ctx is not None else None
+            dump_request(result, node)
+            dump_report(self.report({"messages": result.messages}), node)
         return result
 
     # ----- cache breakpoints ----------------------------------------------- #
