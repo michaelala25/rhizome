@@ -15,9 +15,11 @@ The kinds:
 - ``flashcard_scorer`` — review auto-scoring. Toolless, one-shot, structured-JSON output. Its consumer (the
   ``FlashcardReview`` widget) is not yet wired to the runtime, but the kind is registered so it can be.
 
-The structured kinds emit a strict JSON object as their final message; ``AgentSession`` parses it into a
-dict (``InvokeResult.structured_response``), which is what the consuming tool/widget reads — so they need no
-``response_format``, just the strict-JSON system prompt plus the session's content parsing.
+The structured kinds bind a ``response_format`` (``ProviderStrategy(Schema)``) so their parsed output lands
+under the run's "structured_response" state key; ``AgentSession`` normalizes that to a dict
+(``InvokeResult.structured_response``), which is what the consuming tool/widget reads. The strict-JSON system
+prompts are kept too — they describe the shape in plain language and serve as a fallback for any provider
+whose structured-output binding is weaker.
 
 All four switch only on ``Options.Agent.Provider`` (a snapshot — a provider change rebuilds them) and pick a
 sensible per-role model default; there is no per-subagent model option. Only the Anthropic provider is wired
@@ -31,12 +33,14 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ProviderStrategy
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain_core.messages import ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command
+from pydantic import BaseModel, Field
 
 from rhizome.app.options import Options
 from rhizome.credentials import APIKeyService
@@ -82,7 +86,39 @@ def _make_model(provider: str, api_keys: APIKeyService, models: dict[str, str], 
 # FLASHCARD VALIDATION / SCORING SUBAGENTS
 # ========================================================================================================================
 # Toolless, one-shot, structured-JSON agents. Each carries the base ``PromptEngine`` (history repair +
-# payload ingestion, no request shaping) over the framework-only ``BaseAgentContext`` / ``BaseAgentState``.
+# payload ingestion, no request shaping) over the framework-only ``BaseAgentContext`` / ``BaseAgentState``,
+# and binds a ``response_format`` so the provider returns its output in the documented structured-response
+# slot rather than as prose. The schemas mirror the JSON shapes the system prompts describe; consumers read
+# the dict ``AgentSession`` normalizes them into.
+
+
+class AnswererCardResponse(BaseModel):
+    question_index: int = Field(description="Zero-based index of the flashcard in the proposal")
+    answer: str = Field(description="Best answer to the question — a single term or one short paragraph")
+
+
+class AnswererResponse(BaseModel):
+    answers: list[AnswererCardResponse]
+
+
+class ComparatorCardResult(BaseModel):
+    question_index: int = Field(description="Zero-based index of the flashcard in the proposal")
+    passed: bool = Field(description="True if the test-taker's answer shows the flashcard is clear")
+    feedback: str = Field(description="Explanation of the verdict — if failed, concrete improvements")
+
+
+class ComparatorResponse(BaseModel):
+    results: list[ComparatorCardResult]
+
+
+class ScorerCardResult(BaseModel):
+    flashcard_id: int = Field(description="The flashcard ID being scored")
+    score: int = Field(description="Score 1-4: 1=again, 2=hard, 3=good, 4=easy")
+    feedback: str = Field(description="Brief explanation of the score")
+
+
+class ScorerResponse(BaseModel):
+    results: list[ScorerCardResult]
 
 ANSWERER_SYSTEM_PROMPT = """\
 You are a flashcard answering agent. You will be given a set of flashcard questions.
@@ -180,13 +216,14 @@ Respond ONLY with a JSON object in this exact format — no additional text:
 
 
 def _build_structured_subagent(
-    checkpointer, model, system_prompt: str,
+    checkpointer, model, system_prompt: str, response_format: type[BaseModel],
 ) -> tuple[CompiledStateGraph, PromptEngine]:
-    """Build a toolless, one-shot subagent that emits a strict JSON object as its final message.
+    """Build a toolless, one-shot subagent whose output is bound to ``response_format``.
 
-    ``AgentSession`` parses that message into ``InvokeResult.structured_response`` (a dict), which the
-    consuming tool/widget reads — so no ``response_format`` is needed. The base ``PromptEngine`` does only
-    history repair and payload ingestion; the system prompt rides every request via ``create_agent``.
+    ``ProviderStrategy(response_format)`` makes the provider emit the parsed object under the run's
+    "structured_response" state key; ``AgentSession`` normalizes it to a dict, which the consuming
+    tool/widget reads. The system prompt still rides every request via ``create_agent`` (it describes the
+    shape and acts as a fallback). The base ``PromptEngine`` does only history repair and payload ingestion.
     """
     engine = PromptEngine(
         system_prompt=system_prompt, max_input_tokens=compute_chat_model_max_tokens(model)
@@ -195,6 +232,7 @@ def _build_structured_subagent(
         model=model,
         system_prompt=system_prompt,
         tools=[],
+        response_format=ProviderStrategy(response_format),
         middleware=[PromptCompilerMiddleware(engine)],
         context_schema=BaseAgentContext,
         state_schema=BaseAgentState,
@@ -211,7 +249,7 @@ def build_flashcard_answerer(
 ) -> tuple[CompiledStateGraph, PromptEngine]:
     """Answerer: attempts each flashcard question cold (no context). Fast tier, temp 0 for determinism."""
     model = _make_model(provider, api_keys, _FAST_MODELS, temperature=0.0)
-    return _build_structured_subagent(checkpointer, model, ANSWERER_SYSTEM_PROMPT)
+    return _build_structured_subagent(checkpointer, model, ANSWERER_SYSTEM_PROMPT, AnswererResponse)
 
 
 def build_flashcard_comparator(
@@ -223,7 +261,7 @@ def build_flashcard_comparator(
     """Comparator: judges whether the answerer's cold answer shows each card is unambiguous. Balanced tier
     (the judgment call is subtler than answering), temp 0."""
     model = _make_model(provider, api_keys, _BALANCED_MODELS, temperature=0.0)
-    return _build_structured_subagent(checkpointer, model, COMPARATOR_SYSTEM_PROMPT)
+    return _build_structured_subagent(checkpointer, model, COMPARATOR_SYSTEM_PROMPT, ComparatorResponse)
 
 
 def build_flashcard_scorer(
@@ -238,7 +276,7 @@ def build_flashcard_scorer(
     user messages, so it benefits from an Anthropic prompt-cache breakpoint on the prefix — wire that in once
     the engine's cache-breakpoint policy lands (see the TODO in ``root.build_root_agent``)."""
     model = _make_model(provider, api_keys, _FAST_MODELS, temperature=0.0)
-    return _build_structured_subagent(checkpointer, model, SCORER_SYSTEM_PROMPT)
+    return _build_structured_subagent(checkpointer, model, SCORER_SYSTEM_PROMPT, ScorerResponse)
 
 
 # ========================================================================================================================

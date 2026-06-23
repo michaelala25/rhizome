@@ -28,6 +28,7 @@ from typing import Any, TYPE_CHECKING
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
@@ -399,22 +400,23 @@ class AgentSession:
     def _extract_structured_response(state_values: dict[str, Any]) -> Any | None:
         """Extract a structured response from a run's final state, if one exists.
 
-        Remark: langchain documents structured output arriving under a "structured_response" key in the
-        final state [1]; in practice we have not been able to replicate this — even with
-        ProviderStrategy, the structured response arrives as a JSON string in the final AIMessage's
-        content. So: try the documented path first, then fall back to parsing the final message.
+        An agent built with a ``response_format`` (``ProviderStrategy(Schema)``) gets its parsed output
+        under the documented "structured_response" state key [1] — as an instantiated pydantic model. We
+        normalize that to a plain dict so every consumer reads the same shape regardless of how the
+        response was produced. As a fallback (agents with no ``response_format`` that still emit JSON
+        prose), we parse the final message's content.
 
         [1] - https://docs.langchain.com/oss/python/langchain/structured-output
 
-        Returns the raw parsed object (typically a dict) — instantiating an actual schema is the
-        caller's concern, since the session doesn't know the agent's response format. Returns ``None``
-        when nothing parses; for ordinary prose agents that is the normal case, so parse failures log
-        at debug, not warning. (Corollary: a prose response that happens to be valid JSON is reported
-        as structured — acceptable, since only structured-agent consumers read this field.)
+        Returns a dict (or the raw parsed object) — instantiating a specific schema is the caller's
+        concern, since the session doesn't know the agent's response format. Returns ``None`` when
+        nothing parses; for ordinary prose agents that is the normal case, so parse failures log at
+        debug, not warning. (Corollary: a prose response that happens to be valid JSON is reported as
+        structured — acceptable, since only structured-agent consumers read this field.)
         """
         structured = state_values.get("structured_response")
         if structured is not None:
-            return structured
+            return structured.model_dump() if isinstance(structured, BaseModel) else structured
 
         messages = state_values.get("messages", [])
         response = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
