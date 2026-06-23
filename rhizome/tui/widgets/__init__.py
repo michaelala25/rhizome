@@ -7,26 +7,6 @@ from rhizome.app.model import CallbackGroup, Emitter, ViewModelBase
 # Shared widgets
 from .shared.topic_tree import TopicTree
 
-# Legacy widgets (in-place re-exports — sourced from .legacy)
-from .legacy.entry_list import EntryList
-from .legacy.explorer_viewer import ExplorerViewer
-from .legacy.flashcard_list import FlashcardList
-from .legacy.interrupt import InterruptWidgetBase
-from .legacy.navigable import NavigableWidgetMixin, WidgetDeactivated
-from .legacy.choices import Choices
-from .legacy.multiple_choices import MultipleChoices
-from .legacy.sql_confirmation import SqlConfirmation
-from .legacy.warning import WarningChoices
-from .legacy.message import ChatMessage, MarkdownChatMessage, RichChatMessage
-from .legacy.options_editor import OptionsEditor
-from .legacy.resource.linker import ResourceLinker
-from .legacy.resource.list_view import ResourceList
-from .legacy.resource.loader import ResourceLoader
-from .legacy.resource.viewer import ResourceViewer
-from .legacy.status_bar import StatusBar
-from .legacy.thinking import Spinner, ThinkingIndicator
-from .legacy.tool_call_list import ToolCallList
-
 # Kept-in-place (slated for rewrite but still wired into both legacy and new code paths)
 from .commit_proposal.commit_proposal import CommitProposal
 from .flashcard_proposal.flashcard_proposal import FlashcardProposal
@@ -42,30 +22,8 @@ __all__ = [
     "ViewModelBase",
     "register_panel",
 
-    "ChatMessage",
-    "Choices",
     "CommitProposal",
-    "EntryList",
     "FlashcardProposal",
-    "ExplorerViewer",
-    "FlashcardList",
     "FlashcardReview",
-    "InterruptWidgetBase",
-    "MarkdownChatMessage",
-    "NavigableWidgetMixin",
-    "MultipleChoices",
-    "OptionsEditor",
-    "ResourceLinker",
-    "ResourceList",
-    "ResourceLoader",
-    "ResourceViewer",
-    "RichChatMessage",
-    "Spinner",
-    "SqlConfirmation",
-    "StatusBar",
-    "ThinkingIndicator",
-    "ToolCallList",
     "TopicTree",
-    "WarningChoices",
-    "WidgetDeactivated",
 ]
