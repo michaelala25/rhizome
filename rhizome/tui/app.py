@@ -17,7 +17,7 @@ from rhizome.config import get_default_db_path
 from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
-from rhizome.app.commands import CommandRegistry, CommandRegistryService
+from rhizome.app.commands import CommandRegistry, CommandRegistryService, CommandUsageError, RAW
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.db import SessionFactoryService, get_engine, get_session_factory
 from rhizome.app.sql_session import NotifyingSessionFactory
@@ -169,6 +169,7 @@ class RhizomeApp(App):
         self.commands.register(
             "close", lambda: self._main_screen_action("close_tab"), help="Close the current chat session tab."
         )
+        self.commands.register("rename", self._rename_tab, parser=RAW, help="Rename the current chat tab.")
         self.commands.register("logs", self._open_logs, help="Open the logs viewer tab.")
 
     def _main_screen_action(self, name: str) -> None:
@@ -176,6 +177,16 @@ class RhizomeApp(App):
         screen = self.screen
         if isinstance(screen, MainScreen):
             getattr(screen, f"action_{name}")()
+
+    def _rename_tab(self, name: str) -> None:
+        """Rename the active chat tab. ``name`` is the RAW remainder of ``/rename`` — blank is a usage
+        error surfaced back in the feed."""
+        name = name.strip()
+        if not name:
+            raise CommandUsageError("Usage: /rename <name>")
+        screen = self.screen
+        if isinstance(screen, MainScreen):
+            screen.rename_active_tab(name)
 
     def _open_logs(self) -> None:
         screen = self.screen

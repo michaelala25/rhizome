@@ -80,6 +80,11 @@ class ChatTabPane(TabPane):
         tab_widget = tabbed_content.get_tab(self.id)
         tab_widget.label = self._truncated_label()
 
+    def rename(self, name: str) -> None:
+        """Set a new full name and re-truncate the displayed tab label."""
+        self.full_name = name
+        self._update_tab_label()
+
     def notify_database_committed(self, event: DatabaseCommitted) -> None:
         """No-op for now: the workspace's resource panels don't yet refresh on DB commit. TODO: wire to
         ``self.workspace.model.resource_loader`` once it grows a refresh entry point, so entries the agent
@@ -176,6 +181,12 @@ class MainScreen(Screen):
         """Return the currently active TabPane (any type)."""
         tabs = self.query_one("#tabs", TabbedContent)
         return tabs.active_pane
+
+    def rename_active_tab(self, name: str) -> None:
+        """Rename the active chat tab's label. No-op when the active pane isn't a chat tab."""
+        pane = self.active_pane
+        if isinstance(pane, ChatTabPane):
+            pane.rename(name)
 
     def post_feedback(self, text: str, severity: str = "information") -> None:
         """Post a UserFeedback message to the active tab pane."""
