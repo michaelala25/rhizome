@@ -140,6 +140,17 @@ def test_allocate_each_candidate_stamps_its_own_ttl():
     assert ttls(out) == {"0": "1h", "1": "5m"}
 
 
+def test_allocate_candidate_may_yield_multiple_targets_placed_greedily():
+    msgs = [HumanMessage(content=str(i), id=str(i)) for i in range(5)]
+    candidates = [
+        Breakpoint("single", lambda ms: ms[0], cache_control("5m")),
+        Breakpoint("multi", lambda ms: [ms[1], ms[2], ms[3], ms[4]], cache_control("1h")),
+    ]
+    # budget 3: single takes ms[0]; multi places ms[1], ms[2] in its OWN order, then the budget runs out.
+    out = allocate(msgs, candidates, budget=3)
+    assert ttls(out) == {"0": "5m", "1": "1h", "2": "1h"}
+
+
 def test_allocate_skips_non_applicable_and_preserves_identity_when_empty():
     msgs = [HumanMessage(content="a", id="a")]
     same = allocate(msgs, [Breakpoint("none", lambda ms: None, cache_control("5m"))])
@@ -233,6 +244,28 @@ async def test_prepare_branch_leaf_is_none_when_marker_leads_the_body():
     )
     assert ttls(out.messages) == {"leaf": "5m"}                         # only the floor
     assert cache_control_of(out.messages[0]) is None                   # not on the marker
+
+
+async def test_prepare_branch_up_is_nearest_first_and_budget_capped():
+    # Lineage with three ancestor markers + the leaf's own; no global resources, so after before_tail +
+    # branch_leaf there are 2 slots for branch_up -> the TWO nearest ancestors, dropping the deepest.
+    engine = cached_engine(ttl="dynamic")
+    msgs = [
+        HumanMessage(content="root", id="root"),
+        HumanMessage(content="<m>", id=branch_marker_message_id(1)),    # ancestor A (deepest)
+        HumanMessage(content="a", id="a"),
+        HumanMessage(content="<m>", id=branch_marker_message_id(2)),    # ancestor B
+        HumanMessage(content="b", id="b"),
+        HumanMessage(content="<m>", id=branch_marker_message_id(3)),    # ancestor C (nearest)
+        HumanMessage(content="c", id="c"),
+        HumanMessage(content="<m>", id=branch_marker_message_id(4)),    # the leaf's own marker
+        HumanMessage(content="leaf", id="leaf"),
+    ]
+    out = await engine.prepare(Req(msgs), RootAgentContext(node_id=4))
+    # before_tail=leaf (5m); branch_leaf=before marker(4)="c" (1h); branch_up nearest-first = before
+    # marker(3)="b", before marker(2)="a" -> fills the budget; the deepest ("root", before marker(1)) drops.
+    assert ttls(out.messages) == {"leaf": "5m", "c": "1h", "b": "1h", "a": "1h"}
+    assert "root" not in ttls(out.messages)
 
 
 async def test_prepare_honors_the_live_ttl():

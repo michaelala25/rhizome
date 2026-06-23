@@ -134,7 +134,8 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
            node-specific, so it must stay OUT of any cross-branch prefix; ending the prefix just before it
            is what stays byte-identical across siblings and survives local-resource churn (local resources
            float to AFTER the marker, so they fall under before_tail, not here).
-        4. branch_up — ancestor fork points higher in the lineage (STUB).
+        4. branch_up — the message before each ANCESTOR branch marker, nearest-first, filling whatever budget
+           is left: cousin+ warmth beyond branch_leaf's siblings (see ``_bp_branch_up``).
         5. semi_perm — before the first semi-permanent message, so reclamation reprices only from there
            (STUB; dormant until anything tags semi-permanent).
 
@@ -304,6 +305,16 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         return next((m for m in reversed(messages) if pin_of(m) == "head"), None)
 
     @staticmethod
+    def _before_marker(messages: list[BaseMessage], index: int) -> BaseMessage | None:
+        """The message immediately before the marker at ``index`` — the breakpoint target that ends a cached
+        prefix JUST before a (node-specific) marker, keeping the marker out of the shared prefix. ``None``
+        when nothing eligible precedes it (the marker leads the body, or a ``SystemMessage`` sits there)."""
+        if index <= 0:
+            return None
+        prev = messages[index - 1]
+        return None if isinstance(prev, SystemMessage) else prev
+
+    @staticmethod
     def _bp_branch_leaf(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> BaseMessage | None:
         """The cross-branch stable boundary: the message IMMEDIATELY BEFORE this node's branch marker. The
         marker is node-specific (id + parent name), so ending the cached prefix just before it keeps that
@@ -318,17 +329,38 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
             return None
         marker_id = branch_marker_message_id(ctx.node_id)
         index = next((i for i, m in enumerate(messages) if m.id == marker_id), None)
-        if index is None or index == 0:
-            return None
-        prev = messages[index - 1]
-        return None if isinstance(prev, SystemMessage) else prev
+        return None if index is None else RootPromptEngine._before_marker(messages, index)
 
     @staticmethod
-    def _bp_branch_up(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> BaseMessage | None:
-        """TODO(branch-up): ancestor fork points higher in the lineage (cross-sibling warmth of the shared
-        mid-lineage). Needs an ancestor-selection heuristic for when only ~1 slot remains; deferred, so it
-        resolves to ``None`` and the slot falls to the next candidate."""
-        return None
+    def _bp_branch_up(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> list[BaseMessage]:
+        """Ancestor fork points higher in the lineage: the message immediately before each ANCESTOR branch
+        marker (every ``branch-marker-*`` except this node's own). Each such boundary is a prefix shared
+        with a WIDER set of relatives than ``branch_leaf``'s — before the parent's marker is the prefix all
+        cousins share, before the grandparent's a shorter prefix shared more widely, and so on: a graduated
+        staircase of fallback read points between ``head`` and ``branch_leaf``. So this earns its low-priority
+        slots only when navigation actually jumps between distant subtrees (cousin+), which ``branch_leaf``
+        does NOT already cover (it covers siblings).
+
+        Policy (first pass): NEAREST-first — closest ancestor to the leaf, then upward — so the scarce
+        leftover slots cache the most lineage and cover the most common (nearest) switches. ``allocate``
+        takes them greedily until the budget runs out; each rides the same stable TTL the candidate carries
+        (1h under ``dynamic``).
+
+        Worth playing with later (presumes more budget than we have): vary the TTL by ancestor DEPTH — e.g.
+        a 1h block at a deep near-root ancestor (rarely invalidated) vs. a 5m block at the grandparent, or
+        alternating root-ward / leaf-ward placements — which would want per-target descriptors rather than
+        one ``cache_control`` per candidate."""
+        if ctx is None or ctx.node_id is None:
+            return []
+        own = branch_marker_message_id(ctx.node_id)
+        ancestor_markers = [
+            i for i, m in enumerate(messages)
+            if (m.id or "").startswith(BRANCH_MARKER_PREFIX) and m.id != own
+        ]
+        return [
+            target for i in reversed(ancestor_markers)            # nearest (highest index) first
+            if (target := RootPromptEngine._before_marker(messages, i)) is not None
+        ]
 
     @staticmethod
     def _bp_semi_perm(messages: list[BaseMessage]) -> BaseMessage | None:
