@@ -52,6 +52,8 @@ class StatusBarModel(ViewModelBase):
                 Options.Agent.Model,
                 Options.Agent.Anthropic.AdaptiveThinking,
                 Options.Agent.Anthropic.Effort,
+                Options.Agent.Anthropic.PromptCache,
+                Options.Agent.Anthropic.PromptCacheTTL,
             ):
                 options.subscribe_on_changed(spec, self._on_dirty)
 
@@ -115,3 +117,13 @@ class StatusBarModel(ViewModelBase):
         if self._options is None or self._options.get(Options.Agent.Provider) != "anthropic":
             return None
         return self._options.get(Options.Agent.Anthropic.Effort)
+
+    @property
+    def prompt_cache_ttl(self) -> str | None:
+        """The Anthropic prompt-cache breakpoint TTL ('5m'/'1h'/'dynamic'), or ``None`` under any other
+        provider or while caching is off (in which case the view drops the segment)."""
+        if self._options is None or self._options.get(Options.Agent.Provider) != "anthropic":
+            return None
+        if self._options.get(Options.Agent.Anthropic.PromptCache) != "enabled":
+            return None
+        return self._options.get(Options.Agent.Anthropic.PromptCacheTTL)

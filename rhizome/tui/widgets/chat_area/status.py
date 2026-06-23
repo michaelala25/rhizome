@@ -5,7 +5,7 @@ it does:
 
 - line 1 — active mode (left), model name + the active provider's knobs (right)
 - line 2 — answer verbosity (left), context-window fill (right)
-- line 3 — the prompt's token breakdown by category (left), cache read/write split (right)
+- line 3 — the prompt's token breakdown by category (left), cache TTL + read/write split (right)
 
 Every value is a projection the VM owns (``StatusBarModel``); the view paints it and repaints on the VM's
 ``OnDirty``. The usage report (``UsageReport``) carries the provider's ground-truth totals plus a
@@ -142,7 +142,7 @@ class StatusBar(ViewBase[StatusBarModel]):
         report = vm.usage_report
         if report is not None and report.usage is not None:
             breakdown_line = self._breakdown_text(report)
-            self._right_align(breakdown_line, self._cache_text(report))
+            self._right_align(breakdown_line, self._cache_text(report, vm.prompt_cache_ttl))
             lines.append(breakdown_line)
 
         parts: list[Text | str] = []
@@ -209,15 +209,20 @@ class StatusBar(ViewBase[StatusBarModel]):
             text.append(_fmt(tokens), style=color)
         return text
 
-    def _cache_text(self, report: UsageReport) -> Text:
-        """Right of line 3: the cache read/write split of this prompt's input — read is cheap, new is
-        premium. Empty when the prompt neither hit nor wrote the cache (a cold first call on the thread)."""
+    def _cache_text(self, report: UsageReport, ttl: str | None) -> Text:
+        """Right of line 3: the active cache TTL (when caching is on) and the cache read/write split of this
+        prompt's input — read is cheap, new is premium. The read/write split is empty when the prompt
+        neither hit nor wrote the cache (a cold first call on the thread); the TTL still shows."""
         usage = report.usage
         text = Text()
-        if not usage.cache_read_tokens and not usage.cache_creation_tokens:
-            return text
-        text.append("cache: ", style=_LABEL)
-        text.append(f"{_fmt(usage.cache_read_tokens)} read", style="rgb(120,180,120)")
-        text.append(" · ", style=_DIM)
-        text.append(f"{_fmt(usage.cache_creation_tokens)} new", style="rgb(220,160,80)")
+        if ttl is not None:
+            text.append("ttl ", style=_LABEL)
+            text.append(ttl, style=_MODEL)
+        if usage.cache_read_tokens or usage.cache_creation_tokens:
+            if text.plain:
+                text.append("   ", style=_DIM)
+            text.append("cache: ", style=_LABEL)
+            text.append(f"{_fmt(usage.cache_read_tokens)} read", style="rgb(120,180,120)")
+            text.append(" · ", style=_DIM)
+            text.append(f"{_fmt(usage.cache_creation_tokens)} new", style="rgb(220,160,80)")
         return text
