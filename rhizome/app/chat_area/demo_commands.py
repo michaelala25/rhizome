@@ -96,8 +96,7 @@ def register_demo_commands(area: "ChatAreaModel") -> None:
         result = await area.present_interrupt(interrupt)
         _report("sql-confirmation cancelled" if result is None else f"sql-confirmation resolved: {result!r}")
 
-    async def _test_flashcards() -> None:
-        from types import SimpleNamespace
+    async def _test_flashcards(*, live_runtime: bool) -> None:
         from fsrs import Card
 
         def _starter_card(card_id: int) -> Card:
@@ -143,27 +142,41 @@ def register_demo_commands(area: "ChatAreaModel") -> None:
             async def commit(self, *_): return
         def _fake_session_factory(): return _FakeSession()
 
-        # Fake scorer — tweak the mapping to exercise different auto-score outcomes. ID 205 is
-        # intentionally omitted to exercise the failure-fallback path.
+        # The model mints a stateless scorer session off ``runtime.new(KEY)`` and awaits
+        # ``session.invoke(...)``, reading ``.structured_response`` as a ``{"results": [...]}`` dict.
+        # By default a fake runtime returns canned scores (offline, deterministic) — ID 205 is omitted
+        # to exercise the failure-fallback path. ``--live-runtime`` swaps in the area's real runtime to
+        # exercise the genuine ``flashcard_scorer`` agent (needs an API key).
         auto_score_results = {101: 3, 102: 1, 103: 2, 204: 4}
 
-        class _FakeScorer:
+        class _FakeScorerResult:
+            def __init__(self, results_by_id: dict[int, int]):
+                self.structured_response = {
+                    "results": [
+                        {"flashcard_id": i, "score": s, "feedback": ""}
+                        for i, s in results_by_id.items()
+                    ]
+                }
+
+        class _FakeScorerSession:
             def __init__(self, results_by_id: dict[int, int]):
                 self._results_by_id = results_by_id
-                self.structured_response = None
-            async def ainvoke(self, prompt: str):
+            async def invoke(self, _messages):
                 await asyncio.sleep(1.5)
-                results = [
-                    SimpleNamespace(flashcard_id=i, score=s, feedback="")
-                    for i, s in self._results_by_id.items()
-                ]
-                self.structured_response = SimpleNamespace(results=results)
+                return _FakeScorerResult(self._results_by_id)
 
+        class _FakeRuntime:
+            def __init__(self, results_by_id: dict[int, int]):
+                self._results_by_id = results_by_id
+            def new(self, _key):
+                return _FakeScorerSession(self._results_by_id)
+
+        runtime = area.runtime if live_runtime else _FakeRuntime(auto_score_results)
         interrupt = FlashcardReviewInterruptModel(
             cards=sample_cards,
             session_factory=_fake_session_factory,
             auto_score_enabled=True,
-            auto_scorer=_FakeScorer(auto_score_results),
+            agent_runtime=runtime,
         )
         result = await area.present_interrupt(interrupt)
         _report(
@@ -248,7 +261,10 @@ def register_demo_commands(area: "ChatAreaModel") -> None:
                  help="Spawn a MultipleChoices interrupt with 3 questions.")
     reg.register("test-sql-confirmation", _test_sql_confirmation,
                  help="Spawn a SqlConfirmation interrupt with sample preview.")
-    reg.register("test-flashcards", _test_flashcards, help="Spawn a FlashcardReview interrupt with sample data.")
+    reg.register("test-flashcards", _test_flashcards,
+                 help="Spawn a FlashcardReview interrupt with sample data.",
+                 parser=DefaultParser(flags=[Flag("live-runtime",
+                                                   help="Auto-score via the real runtime instead of canned scores.")]))
     reg.register("test-commit-proposal", _test_commit_proposal,
                  help="Spawn a CommitProposal interrupt with sample data.",
                  parser=DefaultParser(flags=[Flag("big", help="Spawn 10× the sample entries.")]))
