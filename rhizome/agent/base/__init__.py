@@ -9,7 +9,7 @@ INVARIANT — **nothing in this package imports from elsewhere in ``rhizome.agen
 makes it a true leaf: ``engine``, ``state``, and ``tools`` may all import from ``base``, never the reverse.
 """
 
-from .cleanup import accumulate_cleanups, CleanupRequest, Strategy
+from .cleanup import accumulate_cleanups, CleanupRequest, HydrateRequest, Strategy
 from .payload import AgentPayload, MessagePayload, PayloadQueue, StateUpdatePayload
 from .resources import ConsumedResources
 
@@ -22,6 +22,7 @@ __all__ = [
     # cleanup request vocabulary
     "Strategy",
     "CleanupRequest",
+    "HydrateRequest",
     "accumulate_cleanups",
     # resource-consumption snapshot
     "ConsumedResources",

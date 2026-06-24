@@ -10,11 +10,18 @@
   context (``ctx.app_state``) rather than returning a state update: that store is the single source of
   truth both the user and the agent write through, and the prompt engine commits the change into
   ``RootAgentState["mode"]`` at the next compile (see ``rhizome/agent/app_context.py``).
+
+- ``cleanup_context`` / ``hydrate`` are the two sides of context reclamation: ``cleanup_context`` files a
+  ``CleanupRequest`` to clear a group now, ``hydrate`` files a ``HydrateRequest`` to keep one longer. Both
+  only express intent onto the relevant ``pending_*`` channel; the prompt engine is the sole emitter of the
+  edits and applies them at the next compile, honoring them only while auto-compaction is on (see
+  ``engine.cleanup``).
 """
 
 from langchain.tools import tool
+from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolRuntime
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
 from ..app_context import VALID_MODES
@@ -40,6 +47,21 @@ _ASK_USER_INPUT_DESC = (
 _SET_MODE_DESC = (
     "Set the active session mode. Accepted values: 'idle', 'learn', 'review'. The switch takes effect "
     "from your next step; you do not need to repeat it."
+)
+
+_CLEANUP_CONTEXT_DESC = (
+    "Free up context space by clearing earlier reclaimable content you no longer need. Bulky tool results "
+    "are tagged inline with a '[reclaimable · <group>]' marker, where <group> is the source tool's name; "
+    "pass that group here to clear every result in it. The content is replaced with a short placeholder — "
+    "the tool call and its result stay in place, just emptied — and read-only results can always be "
+    "re-fetched by calling the tool again. Takes effect from your next step."
+)
+
+_HYDRATE_DESC = (
+    "Keep reclaimable content in context longer. Reclaimable tool results (tagged '[reclaimable · "
+    "<group>]') are otherwise cleared automatically once they age out; pass a group here to push that "
+    "back when you still need it. Repeatedly keeping the same group eventually makes it permanent. Use "
+    "this instead of cleanup_context when content is still useful. Takes effect from your next step."
 )
 
 
@@ -72,4 +94,35 @@ def build_app_tools() -> dict:
         store.set_mode(mode)
         return f"Mode is now: {mode}."
 
-    return {"ask_user_input": ask_user_input_tool, "set_mode": set_mode_tool}
+    @tool_visibility(ToolVisibility.LOW)
+    @tool("cleanup_context", description=_CLEANUP_CONTEXT_DESC)
+    async def cleanup_context_tool(group: str, runtime: ToolRuntime) -> Command:
+        # File the declarative request, with this call's own tool_result in the same update; the engine
+        # reclaims the group at the next compile (it is the sole emitter — see PromptEngine._cleanup).
+        return Command(update={
+            "pending_cleanups": [{"group": group}],
+            "messages": [ToolMessage(
+                content=f"Scheduled reclaimable '{group}' content for cleanup; it clears on your next step.",
+                tool_call_id=runtime.tool_call_id,
+            )],
+        })
+
+    @tool_visibility(ToolVisibility.LOW)
+    @tool("hydrate", description=_HYDRATE_DESC)
+    async def hydrate_tool(group: str, runtime: ToolRuntime) -> Command:
+        # File the keep-it-longer request; the engine pushes the group's expiry out (or settles it) next
+        # compile (sole emitter — see PromptEngine._cleanup / engine.cleanup.apply_hydrations).
+        return Command(update={
+            "pending_hydrations": [{"group": group}],
+            "messages": [ToolMessage(
+                content=f"Keeping reclaimable '{group}' content in context longer.",
+                tool_call_id=runtime.tool_call_id,
+            )],
+        })
+
+    return {
+        "ask_user_input": ask_user_input_tool,
+        "set_mode": set_mode_tool,
+        "cleanup_context": cleanup_context_tool,
+        "hydrate": hydrate_tool,
+    }

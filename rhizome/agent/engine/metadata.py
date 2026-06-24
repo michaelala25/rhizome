@@ -13,8 +13,9 @@ functions below are the read/write surface: they apply per-field defaults and ke
 keys.
 
 Axes today: *position* (read by ``RootPromptEngine.prepare`` to float a message to a pin anchor),
-*lifetime* (a compile-born message's reclamation eligibility), the cleanup *group* / *strategy* that
-steer reclamation, and *role* (a message's conversational origin, used to count genuine user turns).
+*lifetime* (a compile-born message's reclamation eligibility), the cleanup *group* / *strategy* / per-message
+*expire_after* / *hydrations* that steer reclamation, *role* (a message's conversational origin, used to
+count genuine user turns), and *reclaim_ineligible* (a sticky "the auto-tagger already passed on this one").
 """
 
 from typing import Literal, TypedDict
@@ -61,7 +62,10 @@ class MessageMetadata(TypedDict, total=False):
     lifetime: Lifetime
     group: str
     strategy: Strategy
+    expire_after: int
+    hydrations: int
     role: Role
+    reclaim_ineligible: bool
 
 
 def meta(message: BaseMessage) -> MessageMetadata:
@@ -128,6 +132,32 @@ def strategy_of(message: BaseMessage) -> Strategy | None:
     return meta(message).get("strategy")
 
 
+# ----- expiry override ----- #
+
+def set_expire_after(message: BaseMessage, turns: int) -> BaseMessage:
+    """Tag ``message`` with its own auto-expiry age — the number of genuine user turns after it past which
+    it auto-reclaims — overriding the engine default. In place; returns it for chaining."""
+    message.additional_kwargs.setdefault(META_KEY, {})["expire_after"] = turns
+    return message
+
+
+def expire_after_of(message: BaseMessage) -> int | None:
+    """``message``'s own auto-expiry age in user turns, or ``None`` to defer to the engine default."""
+    return meta(message).get("expire_after")
+
+
+def set_hydrations(message: BaseMessage, count: int) -> BaseMessage:
+    """Record how many times ``message`` has been hydrated (kept longer). In place; returns it. The engine
+    promotes a message to ``permanent`` once this passes its cap, so a repeatedly-kept result settles."""
+    message.additional_kwargs.setdefault(META_KEY, {})["hydrations"] = count
+    return message
+
+
+def hydrations_of(message: BaseMessage) -> int:
+    """How many times ``message`` has been hydrated (default ``0``)."""
+    return meta(message).get("hydrations", 0)
+
+
 # ----- role ----- #
 
 def set_role(message: BaseMessage, role: Role) -> BaseMessage:
@@ -139,6 +169,22 @@ def set_role(message: BaseMessage, role: Role) -> BaseMessage:
 def role_of(message: BaseMessage) -> Role | None:
     """``message``'s tagged role, or ``None`` when untagged."""
     return meta(message).get("role")
+
+
+# ----- reclaim eligibility ----- #
+
+def set_reclaim_ineligible(message: BaseMessage) -> BaseMessage:
+    """Mark ``message`` as already evaluated and passed over by the auto-tagger, so future ``_identify``
+    passes skip it. In place; returns it for chaining. The flag is metadata only (never on the wire), so
+    setting it is free for the prompt cache — see ``cleanup.mark_reclaim_ineligible`` for the re-emit copy."""
+    message.additional_kwargs.setdefault(META_KEY, {})["reclaim_ineligible"] = True
+    return message
+
+
+def is_reclaim_ineligible(message: BaseMessage) -> bool:
+    """Whether the auto-tagger has already evaluated ``message`` and chosen not to tag it (default ``False``).
+    A sticky decision: once set, a later threshold/whitelist change can't retroactively reclaim it."""
+    return meta(message).get("reclaim_ineligible", False)
 
 
 # ----- re-emit helper ----- #

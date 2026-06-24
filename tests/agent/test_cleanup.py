@@ -7,11 +7,24 @@ from rhizome.agent.base import accumulate_cleanups
 from rhizome.agent.engine.cleanup import (
     _effective_strategy,
     apply_cleanup,
+    apply_hydrations,
+    mark_reclaim_ineligible,
     mark_reclaimable,
     promote,
+    reclamation_status,
     STUB_CONTENT,
 )
-from rhizome.agent.engine.metadata import group_of, lifetime_of, set_role, set_strategy
+from rhizome.agent.engine.metadata import (
+    expire_after_of,
+    group_of,
+    hydrations_of,
+    is_reclaim_ineligible,
+    lifetime_of,
+    set_expire_after,
+    set_hydrations,
+    set_role,
+    set_strategy,
+)
 
 
 # ----- marking ----- #
@@ -32,6 +45,21 @@ def test_mark_reclaimable_tags_group_marks_and_is_idempotent():
 def test_mark_reclaimable_without_group_uses_a_bare_marker():
     marked = mark_reclaimable(ToolMessage(content="x", tool_call_id="a", id="m"))
     assert marked.content.endswith("[reclaimable]") and group_of(marked) is None
+
+
+def test_mark_reclaimable_can_bake_a_per_message_expire_after():
+    marked = mark_reclaimable(ToolMessage(content="x", tool_call_id="a", id="m"), "g", expire_after=3)
+    assert marked.additional_kwargs["rhizome"]["expire_after"] == 3   # rides as a per-message override
+
+
+def test_mark_reclaim_ineligible_is_offwire_and_idempotent():
+    original = ToolMessage(content="data", tool_call_id="a", name="t", id="m")
+    stamped = mark_reclaim_ineligible(original)
+    # Off-wire: a same-id copy with content untouched (no marker) — the prompt cache never sees the change.
+    assert stamped is not original and stamped.id == "m" and stamped.content == "data"
+    assert is_reclaim_ineligible(stamped) and not is_reclaim_ineligible(original)
+    assert lifetime_of(stamped) == "permanent"                       # eligibility, not lifetime
+    assert mark_reclaim_ineligible(stamped) is stamped               # idempotent
 
 
 # ----- request reducer ----- #
@@ -89,6 +117,7 @@ def test_promote_freezes_lifetime_preserving_content():
     frozen = promote(m)
     assert frozen.id == "m" and frozen.content == m.content     # byte-identical -> cache spine preserved
     assert lifetime_of(frozen) == "permanent" and group_of(frozen) == "g"
+    assert is_reclaim_ineligible(frozen)                        # settled -> auto-tagger won't re-tag it
     assert promote(frozen) is frozen                            # no-op once permanent
 
 
@@ -102,3 +131,53 @@ def test_apply_cleanup_expires_after_user_turns_counting_only_user_role():
     assert [e.id for e in apply_cleanup([sp, system, user], expire_after=1)] == ["a"]
     assert apply_cleanup([sp, system, user], expire_after=2) == []      # needs 2 user turns, only 1
     assert apply_cleanup([sp, system], expire_after=1) == []            # no user turns after -> kept
+
+
+def test_apply_cleanup_per_message_expire_after_overrides_the_engine_default():
+    sp = set_expire_after(_semi("a", "g"), 2)                           # this message's own age is 2 turns
+    u1 = set_role(HumanMessage(content="u", id="u1"), "user")
+    u2 = set_role(HumanMessage(content="u", id="u2"), "user")
+    assert apply_cleanup([sp, u1], expire_after=1) == []               # 1 turn < its own 2 -> kept (own wins)
+    assert [e.id for e in apply_cleanup([sp, u1, u2], expire_after=1)] == ["a"]   # 2 turns >= 2 -> reclaimed
+
+
+def test_apply_cleanup_per_message_expire_after_fires_with_engine_default_off():
+    sp = set_expire_after(_semi("a", "g"), 1)
+    u1 = set_role(HumanMessage(content="u", id="u1"), "user")
+    assert [e.id for e in apply_cleanup([sp, u1], expire_after=None)] == ["a"]   # own age fires, default off
+
+
+# ----- apply_hydrations (keep longer) ----- #
+
+def test_apply_hydrations_bumps_expiry_and_counts_for_the_group():
+    [out] = apply_hydrations([_semi("a", "search")], [{"group": "search"}],
+                             default_expiry=5, bump=5, max_hydrations=3)
+    assert out.id == "a" and lifetime_of(out) == "semi-permanent"
+    assert expire_after_of(out) == 10 and hydrations_of(out) == 1    # default 5 + bump 5, first hydration
+    # A second hydration bumps from the message's own tag (10 -> 15) and counts again.
+    [out2] = apply_hydrations([out], [{"group": "search"}], default_expiry=5, bump=5, max_hydrations=3)
+    assert expire_after_of(out2) == 15 and hydrations_of(out2) == 2
+
+
+def test_apply_hydrations_promotes_after_max():
+    sp = set_hydrations(_semi("a", "search"), 2)                     # already hydrated twice
+    [out] = apply_hydrations([sp], [{"group": "search"}], default_expiry=5, bump=5, max_hydrations=3)
+    assert lifetime_of(out) == "permanent" and is_reclaim_ineligible(out)   # the 3rd keep settles it
+
+
+def test_apply_hydrations_touches_only_the_requested_group_semi_perm():
+    keep = HumanMessage(content="x", id="p")                         # not semi-permanent
+    out = apply_hydrations([_semi("a", "search"), _semi("b", "files"), keep],
+                           [{"group": "search"}], default_expiry=5, bump=5, max_hydrations=3)
+    assert [e.id for e in out] == ["a"]
+
+
+# ----- reclamation_status (the agent's view) ----- #
+
+def test_reclamation_status_summarizes_per_group_with_min_turns():
+    a = _semi("a", "search")                                         # default-expiry path
+    b = set_expire_after(_semi("b", "search"), 2)                    # its own expiry of 2 turns
+    user = set_role(HumanMessage(content="u", id="u"), "user")       # one user turn after both
+    # search: 2 messages; min turns-left = min(5-1, 2-1) = 1 (the soonest cleanup)
+    assert reclamation_status([a, b, user], default_expiry=5) == {"search": (2, 1)}
+    assert reclamation_status([], default_expiry=5) == {}

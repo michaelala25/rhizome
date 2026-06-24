@@ -17,10 +17,10 @@ from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, Sy
 from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
 from .base import ensure_message_id, ingest_payloads, PromptEngine
-from .cache import allocate, Breakpoint, cache_control, CacheControl, OptionReader
-from .cleanup import promote
+from .cache import allocate, Breakpoint, cache_control, CacheControl, is_annotatable, OptionReader
+from .cleanup import promote, reclamation_status
 from .dump import dump_report, dump_request
-from .metadata import lifetime_of, pin, Pin, pin_of
+from .metadata import lifetime_of, pin, Pin, pin_of, set_role
 from .resources import (
     block_builder,
     global_resource_message_id,
@@ -90,6 +90,14 @@ _MODE_GUIDES: dict[str, tuple[str, str]] = {
 
 
 # ========================================================================================================================
+# RECLAMATION STATUS REMINDER
+# ========================================================================================================================
+
+RECLAMATION_STATUS_MESSAGE_ID = "reclamation-status"
+"""Fixed id for the derived staged-cleanup reminder (built fresh each ``prepare``, never persisted)."""
+
+
+# ========================================================================================================================
 # ROOT ENGINE
 # ========================================================================================================================
 
@@ -100,9 +108,10 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
     ``compile`` persists the durable facts — resource context messages and their consumed snapshot, the
     vector-index reminder and its snapshot, branch markers — and ``prepare`` arranges the floating blocks
     for each request and places the Anthropic cache-control breakpoints over the result. Implemented:
-    global and local resource context, the index reminder, branch markers, modes, and breakpoint
-    placement. Still roadmap: the index rendered as a derived message, and semi-permanent reclamation
-    (whose machinery lives on ``PromptEngine``).
+    global and local resource context, the index reminder, branch markers, modes, breakpoint placement, and
+    semi-permanent reclamation (the machinery lives on ``PromptEngine``; the ``semi_perm`` breakpoint, the
+    auto-tagger whitelist, the live ``AutoCompact`` gating, and the derived staged-cleanup reminder are this
+    engine's wiring). Still roadmap: the index rendered as a derived message (the reminder already is one).
 
     Target prompt layout (positions assigned by tag, arranged per-request by ``prepare``):
 
@@ -110,12 +119,12 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         [global resources]           pin: head
         ── breakpoint: head ──       only when global resources exist (protect the large pinned block)
         [inherited segments]         lineage, partitioned by one branch marker per ancestor node
-        ── breakpoint: branch_up ──  ancestor fork points (STUB — deferred)
+        ── breakpoint: branch_up ──  ancestor fork points, nearest-first (fills leftover budget)
         ── breakpoint: branch_leaf ─ IMMEDIATELY BEFORE the leaf marker (the line below)
         [leaf branch marker]         node-specific id + content -> kept OUT of the cross-branch prefix
         [local resources]            pin: branch (this node's boundary, after the marker)
         [leaf segment]
-        ── breakpoint: semi_perm ──  before the first semi-permanent message (STUB — reclamation story)
+        ── breakpoint: semi_perm ──  before the first semi-permanent message (reclamation reprices below it)
         [semi-permanent span]
         ── breakpoint: before_tail ─ always (the floor; excludes the volatile tail)
         [tail / pin: tail]           derived ephemerals: index reminder, status, volatile reminders
@@ -136,8 +145,10 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
            float to AFTER the marker, so they fall under before_tail, not here).
         4. branch_up — the message before each ANCESTOR branch marker, nearest-first, filling whatever budget
            is left: cousin+ warmth beyond branch_leaf's siblings (see ``_bp_branch_up``).
-        5. semi_perm — before the first semi-permanent message, so reclamation reprices only from there
-           (STUB; dormant until anything tags semi-permanent).
+        5. semi_perm — before the first semi-permanent message, so reclamation (which rewrites only
+           semi-permanent messages) reprices from there down, never the settled prefix above. Resolves to
+           nothing until something is tagged semi-permanent, so it costs no slot on a thread that never
+           reclaims.
 
     Each placed breakpoint carries its own TTL, set by ``prompt_cache_ttl``: an explicit ``5m`` / ``1h``
     applies uniformly, while ``dynamic`` puts 5m on the volatile ``before_tail`` floor (rewritten every
@@ -165,20 +176,41 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
                  prompt_cache: OptionReader | None = None,
                  prompt_cache_ttl: OptionReader | None = None,
                  local_resource_placement: OptionReader | None = None,
+                 auto_compact: OptionReader | None = None,
+                 auto_compact_after: OptionReader | None = None,
+                 auto_compact_threshold: OptionReader | None = None,
                  debug: bool = False, **kwargs) -> None:
-        """Adds prompt-cache and layout configuration to the base engine; all other arguments forward to
-        ``PromptEngine``. ``cache_supported`` is the provider gate, baked at build time (the runtime
-        rebuilds the engine on a provider change, so a snapshot bool is correct — Anthropic places
+        """Adds prompt-cache, layout, and reclamation configuration to the base engine; all other arguments
+        forward to ``PromptEngine``. ``cache_supported`` is the provider gate, baked at build time (the
+        runtime rebuilds the engine on a provider change, so a snapshot bool is correct — Anthropic places
         breakpoints, other providers cannot). ``prompt_cache`` / ``prompt_cache_ttl`` /
-        ``local_resource_placement`` are live option handles read fresh on each ``prepare``, so flipping the
-        cache toggle, its TTL, or where local resources sit takes effect without a rebuild. ``debug`` is the
-        launch flag that gates the per-``prepare`` prompt/usage dumps (off by default)."""
+        ``local_resource_placement`` and the ``auto_compact`` trio (the master toggle, the expiry age, and
+        the size threshold) are live option handles read fresh on each compile/prepare, so flipping any of
+        them takes effect without a rebuild — and toggling ``auto_compact`` neither rebuilds nor disturbs the
+        cached prefix (it only gates compile-side tagging/cleanup and the tail reminder). The ``after`` /
+        ``threshold`` handles read as ints. ``debug`` gates the per-``prepare`` prompt/usage dumps."""
         super().__init__(*args, **kwargs)
         self._cache_supported = cache_supported
         self._prompt_cache = prompt_cache
         self._prompt_cache_ttl = prompt_cache_ttl
         self._local_resource_placement = local_resource_placement
+        self._auto_compact = auto_compact
+        self._auto_compact_after = auto_compact_after
+        self._auto_compact_threshold = auto_compact_threshold
         self._debug = debug
+
+    # ----- reclamation policy (live options override the base constants) ---- #
+
+    def _reclaim_on(self) -> bool:
+        return self._auto_compact is None or self._auto_compact.get() == "enabled"
+
+    def _effective_threshold(self) -> int:
+        ref = self._auto_compact_threshold
+        return ref.get() if ref is not None else super()._effective_threshold()
+
+    def _effective_expiry(self) -> int | None:
+        ref = self._auto_compact_after
+        return ref.get() if ref is not None else super()._effective_expiry()
 
     async def compile(self, state: dict[str, Any], ctx: "RootAgentContext | None") -> dict[str, Any] | None:
         update: dict[str, Any] = {}
@@ -238,6 +270,13 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
                 anchor = None
             (buckets[anchor] if anchor in buckets else inline).append(m)
 
+        # Derived ephemeral: the staged-cleanup reminder, rebuilt from current state and floated to the tail
+        # (so its ticking counts only reprice the volatile suffix). Built off request.messages — the tagged
+        # set this request carries — never persisted.
+        reminder = self._reclamation_reminder(request.messages)
+        if reminder is not None:
+            buckets["tail"].append(reminder)
+
         if not any(buckets.values()):
             result = request
         else:
@@ -268,6 +307,32 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
             dump_request(result, node)
             dump_report(self.report({"messages": result.messages}), node)
         return result
+
+    # ----- reclamation reminder -------------------------------------------- #
+
+    def _reclamation_reminder(self, messages: list[BaseMessage]) -> BaseMessage | None:
+        """The derived staged-cleanup reminder (a tail-pinned ``<system-reminder>``): per reclaimable group,
+        its size and the soonest turn it auto-clears, pointing the agent at ``hydrate`` / ``cleanup_context``.
+        Built fresh each ``prepare`` from the request's own messages, never persisted, and only when
+        reclamation is on and something is staged — so toggling ``AutoCompact`` and the counts ticking down
+        touch only the volatile tail, never the cached prefix. ``None`` when off or nothing is staged."""
+        if not self._reclaim_on():
+            return None
+        status = reclamation_status(messages, self._effective_expiry())
+        if not status:
+            return None
+        lines = []
+        for group, (count, turns) in sorted(status.items()):
+            when = "no expiry" if turns is None else "due now" if turns <= 0 else f"~{turns} turn(s) left"
+            lines.append(f"- {group}: {count} message(s), {when}")
+        body = (
+            "Context auto-compaction is on. These earlier tool results are staged to be cleared to a short "
+            "placeholder as they age out (you can re-run the tool to fetch one again). To keep a group in "
+            "context longer, call hydrate(group); to clear one now, call cleanup_context(group).\n"
+            + "\n".join(lines)
+        )
+        content = f"<system-reminder>\n{body}\n</system-reminder>"
+        return pin(set_role(HumanMessage(content=content, id=RECLAMATION_STATUS_MESSAGE_ID), "system"), "tail")
 
     # ----- cache breakpoints ----------------------------------------------- #
 
@@ -320,14 +385,20 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         return next((m for m in reversed(messages) if pin_of(m) == "head"), None)
 
     @staticmethod
-    def _before_marker(messages: list[BaseMessage], index: int) -> BaseMessage | None:
-        """The message immediately before the marker at ``index`` — the breakpoint target that ends a cached
-        prefix JUST before a (node-specific) marker, keeping the marker out of the shared prefix. ``None``
-        when nothing eligible precedes it (the marker leads the body, or a ``SystemMessage`` sits there)."""
-        if index <= 0:
-            return None
-        prev = messages[index - 1]
-        return None if isinstance(prev, SystemMessage) else prev
+    def _before_index(messages: list[BaseMessage], index: int) -> BaseMessage | None:
+        """The latest cache-annotatable message strictly before position ``index`` — the breakpoint target
+        that ends a stable prefix JUST before some boundary message (a node-specific branch marker, or the
+        first semi-permanent message), keeping that message and everything after it out of the
+        shared/stable prefix. Skips back over messages with no annotatable content (the block-less tool-use
+        ``AIMessage`` that precedes its tool result is the common case — a breakpoint can't ride an empty
+        block, so it would otherwise be dropped and the prefix left unprotected). ``None`` when nothing
+        eligible precedes it (the boundary leads the body, or only a ``SystemMessage`` sits before it)."""
+        i = index - 1
+        while i >= 0 and not isinstance(messages[i], SystemMessage):
+            if is_annotatable(messages[i]):
+                return messages[i]
+            i -= 1
+        return None
 
     @staticmethod
     def _bp_branch_leaf(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> BaseMessage | None:
@@ -344,7 +415,7 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
             return None
         marker_id = branch_marker_message_id(ctx.node_id)
         index = next((i for i, m in enumerate(messages) if m.id == marker_id), None)
-        return None if index is None else RootPromptEngine._before_marker(messages, index)
+        return None if index is None else RootPromptEngine._before_index(messages, index)
 
     @staticmethod
     def _bp_branch_up(messages: list[BaseMessage], ctx: "RootAgentContext | None") -> list[BaseMessage]:
@@ -374,15 +445,18 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         ]
         return [
             target for i in reversed(ancestor_markers)            # nearest (highest index) first
-            if (target := RootPromptEngine._before_marker(messages, i)) is not None
+            if (target := RootPromptEngine._before_index(messages, i)) is not None
         ]
 
     @staticmethod
     def _bp_semi_perm(messages: list[BaseMessage]) -> BaseMessage | None:
-        """TODO(semi-perm): the message before the first semi-permanent one, so reclamation reprices only
-        from there. Reserved slot — dormant until message reclamation lands (separate story); nothing tags
-        semi-permanent yet, so it resolves to ``None``."""
-        return None
+        """The message before the first semi-permanent one. Reclamation only ever rewrites semi-permanent
+        messages (in place, to a stub), so ending a cached prefix just before the span means a reclamation
+        reprices from there down and never the settled prefix above. As the front of the span gets reclaimed
+        (each stub promotes to ``permanent``), the boundary advances and those stubs join the stable prefix.
+        ``None`` until something is tagged semi-permanent, or when a semi-permanent message leads the body."""
+        index = next((i for i, m in enumerate(messages) if lifetime_of(m) == "semi-permanent"), None)
+        return None if index is None else RootPromptEngine._before_index(messages, index)
 
     # ----- usage classification -------------------------------------------- #
 
@@ -398,6 +472,8 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         if is_local_resource_message(message):
             return "local_resource"
         mid = message.id or ""
+        if mid == RECLAMATION_STATUS_MESSAGE_ID:
+            return "reclamation_status"
         if mid.startswith(MODE_GUIDE_PREFIX):
             return "guide"
         if mid.startswith(BRANCH_MARKER_PREFIX):

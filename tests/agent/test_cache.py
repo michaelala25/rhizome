@@ -22,7 +22,9 @@ from rhizome.agent.engine.resources import (
     INDEX_RESOURCE_MESSAGE_ID,
     local_resource_message_id,
 )
-from rhizome.agent.engine.root import branch_marker_message_id, RootPromptEngine
+from rhizome.agent.engine.root import (
+    branch_marker_message_id, RECLAMATION_STATUS_MESSAGE_ID, RootPromptEngine,
+)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -266,6 +268,54 @@ async def test_prepare_branch_up_is_nearest_first_and_budget_capped():
     # marker(3)="b", before marker(2)="a" -> fills the budget; the deepest ("root", before marker(1)) drops.
     assert ttls(out.messages) == {"leaf": "5m", "c": "1h", "b": "1h", "a": "1h"}
     assert "root" not in ttls(out.messages)
+
+
+async def test_prepare_semi_perm_breaks_before_the_first_semi_permanent_message():
+    engine = cached_engine()
+    sp = set_lifetime(HumanMessage(content="big", id="sp"), "semi-permanent")
+    out = await engine.prepare(Req([
+        HumanMessage(content="u", id="u"), sp, AIMessage(content="a", id="a"),
+    ]), None)
+    # semi_perm -> the message BEFORE the span ("u"); before_tail -> the last message ("a"). The
+    # semi-permanent message itself stays uncached, so a reclamation reprices only from there down.
+    assert ttls(out.messages) == {"u": "5m", "a": "5m"}
+    assert cache_control_of(next(m for m in out.messages if m.id == "sp")) is None
+
+
+def test_bp_semi_perm_targets_the_message_before_the_span_or_none():
+    a = HumanMessage(content="a", id="a")
+    sp = set_lifetime(HumanMessage(content="b", id="b"), "semi-permanent")
+    assert RootPromptEngine._bp_semi_perm([a, sp]).id == "a"        # before the first semi-perm message
+    assert RootPromptEngine._bp_semi_perm([a]) is None             # nothing tagged -> no boundary
+    assert RootPromptEngine._bp_semi_perm([sp]) is None            # semi-perm leads the body -> no boundary
+
+
+def test_before_index_skips_back_over_unannotatable_messages():
+    # A tool result is always preceded by its tool-use AIMessage, which is often block-less; a breakpoint
+    # can't ride an empty block, so the resolver skips back to the last stampable message ("u").
+    u = HumanMessage(content="u", id="u")
+    empty = AIMessage(content="", id="a", tool_calls=[{"name": "t", "args": {}, "id": "tc"}])
+    sp = set_lifetime(HumanMessage(content="big", id="sp"), "semi-permanent")
+    assert RootPromptEngine._bp_semi_perm([u, empty, sp]).id == "u"
+    assert RootPromptEngine._bp_semi_perm([empty, sp]) is None      # only a block-less message precedes -> none
+
+
+async def test_prepare_renders_the_reclamation_reminder_at_the_tail():
+    engine = cached_engine()                                            # no auto_compact ref -> on by default
+    sp = set_lifetime(HumanMessage(content="big", id="sp"), "semi-permanent")
+    out = await engine.prepare(Req([sp, HumanMessage(content="u", id="u")]), None)
+    reminder = next((m for m in out.messages if m.id == RECLAMATION_STATUS_MESSAGE_ID), None)
+    # Derived, floated to the very tail, and never cached (it ticks down every turn).
+    assert reminder is not None and reminder is out.messages[-1]
+    assert pin_of(reminder) == "tail" and cache_control_of(reminder) is None
+
+
+async def test_prepare_suppresses_the_reminder_when_auto_compact_is_off():
+    engine = RootPromptEngine(cache_supported=True, prompt_cache=Ref("enabled"),
+                              prompt_cache_ttl=Ref("5m"), auto_compact=Ref("disabled"))
+    sp = set_lifetime(HumanMessage(content="big", id="sp"), "semi-permanent")
+    out = await engine.prepare(Req([sp, HumanMessage(content="u", id="u")]), None)
+    assert all(m.id != RECLAMATION_STATUS_MESSAGE_ID for m in out.messages)
 
 
 async def test_prepare_honors_the_live_ttl():

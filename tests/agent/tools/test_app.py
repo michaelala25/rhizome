@@ -25,6 +25,16 @@ def set_mode_tool():
     return build_app_tools()["set_mode"]
 
 
+@pytest.fixture
+def cleanup_context_tool():
+    return build_app_tools()["cleanup_context"]
+
+
+@pytest.fixture
+def hydrate_tool():
+    return build_app_tools()["hydrate"]
+
+
 def _runtime_with(app_state) -> SimpleNamespace:
     """A minimal stand-in for the ToolRuntime the tool reads ``ctx.app_state`` off of."""
     return SimpleNamespace(context=SimpleNamespace(app_state=app_state))
@@ -94,9 +104,30 @@ async def test_set_mode_graceful_when_store_unwired(set_mode_tool):
     assert "unavailable" in out.lower()
 
 
+async def test_cleanup_context_files_a_request_and_acknowledges(cleanup_context_tool):
+    """Files a declarative CleanupRequest onto ``pending_cleanups`` (the engine is the sole emitter of the
+    actual edits) plus this call's own tool_result, in one Command update."""
+    runtime = SimpleNamespace(tool_call_id="tc-1")
+    cmd = await cleanup_context_tool.coroutine(group="search", runtime=runtime)
+    assert cmd.update["pending_cleanups"] == [{"group": "search"}]
+    msg = cmd.update["messages"][0]
+    assert msg.tool_call_id == "tc-1" and "search" in msg.content
+
+
+async def test_hydrate_files_a_request_and_acknowledges(hydrate_tool):
+    """The keep-it-longer mirror: files a HydrateRequest onto ``pending_hydrations`` plus its tool_result."""
+    runtime = SimpleNamespace(tool_call_id="tc-2")
+    cmd = await hydrate_tool.coroutine(group="query", runtime=runtime)
+    assert cmd.update["pending_hydrations"] == [{"group": "query"}]
+    msg = cmd.update["messages"][0]
+    assert msg.tool_call_id == "tc-2" and "query" in msg.content
+
+
 def test_app_tools_register_low_visibility():
     """Guards the decorator order: registered under the *tool* names (not the function names) and at
     LOW — the level the old app.py silently failed to apply."""
     build_app_tools()
     assert TOOL_VISIBILITY["ask_user_input"] is ToolVisibility.LOW
     assert TOOL_VISIBILITY["set_mode"] is ToolVisibility.LOW
+    assert TOOL_VISIBILITY["cleanup_context"] is ToolVisibility.LOW
+    assert TOOL_VISIBILITY["hydrate"] is ToolVisibility.LOW

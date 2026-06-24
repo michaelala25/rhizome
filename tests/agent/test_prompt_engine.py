@@ -18,8 +18,10 @@ from rhizome.agent.engine.base import (
     payload_message,
     PromptEngine,
 )
-from rhizome.agent.engine.cleanup import mark_reclaimable
-from rhizome.agent.engine.metadata import lifetime_of, meta, pin, pin_of, role_of, set_lifetime, set_role
+from rhizome.agent.engine.cleanup import mark_reclaimable, promote
+from rhizome.agent.engine.metadata import (
+    expire_after_of, is_reclaim_ineligible, lifetime_of, meta, pin, pin_of, role_of, set_lifetime, set_role,
+)
 from rhizome.agent.base import MessagePayload, PayloadQueue, StateUpdatePayload
 from rhizome.agent.engine.resources import (
     global_resource_message_id,
@@ -575,17 +577,25 @@ def test_lifetime_defaults_to_permanent():
     assert lifetime_of(set_lifetime(m, "semi-permanent")) == "semi-permanent"
 
 
-async def test_identify_autotags_whitelisted_bulky_tool_results():
-    engine = RootPromptEngine(reclaim_tools=frozenset({"search"}), reclaim_threshold=5)
+async def test_identify_tags_bulky_and_marks_the_rest_ineligible():
+    # Threshold is now an approximate token count (~chars/4 + overhead), so the sizes separate clearly.
+    engine = RootPromptEngine(reclaim_tools=frozenset({"search"}), reclaim_threshold=20)
     state = {"messages": [
-        ToolMessage(content="x" * 10, tool_call_id="a", name="search", id="big"),   # whitelisted + large
-        ToolMessage(content="x" * 10, tool_call_id="b", name="other", id="off"),    # not whitelisted
+        ToolMessage(content="x" * 100, tool_call_id="a", name="search", id="big"),  # whitelisted + bulky
+        ToolMessage(content="x" * 100, tool_call_id="b", name="other", id="off"),   # not whitelisted
         ToolMessage(content="xx", tool_call_id="c", name="search", id="small"),     # under threshold
     ]}
     update = await engine.compile(state, None)
-    tagged = {m.id: m for m in update["messages"]}
-    assert set(tagged) == {"big"}                # only the whitelisted, bulky result re-emitted
-    assert lifetime_of(tagged["big"]) == "semi-permanent" and tagged["big"].tool_call_id == "a"
+    out = {m.id: m for m in update["messages"]}
+    # The bulky whitelisted result is tagged semi-permanent, identity preserved, inline marker baked.
+    assert lifetime_of(out["big"]) == "semi-permanent" and out["big"].tool_call_id == "a"
+    assert out["big"].content.endswith("[reclaimable · search]")
+    # Every other tool result is stamped ineligible (evaluated once), content left untouched (no marker).
+    assert lifetime_of(out["off"]) == "permanent" and is_reclaim_ineligible(out["off"])
+    assert lifetime_of(out["small"]) == "permanent" and is_reclaim_ineligible(out["small"])
+    assert out["off"].content == "x" * 100 and out["small"].content == "xx"
+    # A second pass re-sizes nothing — the stamps make identification idempotent across runs.
+    assert await engine.compile({"messages": list(update["messages"])}, None) is None
 
 
 async def test_identify_skips_already_tagged_and_is_inert_by_default():
@@ -596,6 +606,17 @@ async def test_identify_skips_already_tagged_and_is_inert_by_default():
     # With no policy configured, nothing auto-tags even a large result.
     big = ToolMessage(content="x" * 100, tool_call_id="a", name="search", id="m")
     assert await RootPromptEngine().compile({"messages": [big]}, None) is None
+
+
+async def test_identify_leaves_a_settled_frozen_result_alone():
+    # A branch freeze promotes an inherited semi-perm result to permanent + ineligible (``promote``); the
+    # auto-tagger must not re-tag it on a later compile even though it is still bulky + whitelisted —
+    # otherwise the freeze oscillates and the inline marker doubles every turn.
+    frozen = promote(mark_reclaimable(
+        ToolMessage(content="R" * 400, tool_call_id="a", name="search", id="m"), group="search"))
+    assert lifetime_of(frozen) == "permanent" and is_reclaim_ineligible(frozen)
+    engine = RootPromptEngine(reclaim_tools=frozenset({"search"}), reclaim_threshold=20)
+    assert await engine.compile({"messages": [frozen]}, None) is None
 
 
 async def test_identification_is_a_base_engine_capability():
@@ -631,6 +652,35 @@ async def test_cleanup_pass_expires_old_semi_permanent_messages():
     update = await engine.compile({"messages": [sp, user]}, None)
     stub = next(m for m in update["messages"] if m.id == "m")
     assert lifetime_of(stub) == "permanent" and "reclaim" in stub.content   # one user turn past expiry
+
+
+async def test_auto_compact_toggle_off_disables_identification_and_cleanup():
+    # The master toggle gates everything compile-side. A bulky whitelisted result is neither tagged nor
+    # stamped while off; a filed request is drained without acting (so it can't fire on re-enable).
+    off = RootPromptEngine(reclaim_tools=frozenset({"search"}), auto_compact=_Ref("disabled"),
+                           auto_compact_threshold=_Ref(20))
+    big = ToolMessage(content="x" * 200, tool_call_id="a", name="search", id="m")
+    assert await off.compile({"messages": [big]}, None) is None
+    sp = mark_reclaimable(ToolMessage(content="big", tool_call_id="a", name="search", id="m"), group="search")
+    up = await off.compile({"messages": [sp], "pending_cleanups": [{"group": "search"}]}, None)
+    assert up == {"pending_cleanups": None}                              # drained, no edits emitted
+
+
+async def test_compile_hydrates_via_pending_hydrations_and_drains():
+    eng = RootPromptEngine(reclaim_tools=frozenset({"search"}), auto_compact=_Ref("enabled"),
+                           auto_compact_after=_Ref(5))
+    sp = mark_reclaimable(ToolMessage(content="big", tool_call_id="a", name="search", id="m"), group="search")
+    up = await eng.compile({"messages": [sp], "pending_hydrations": [{"group": "search"}]}, None)
+    kept = next(m for m in up["messages"] if m.id == "m")
+    assert expire_after_of(kept) == 10 and up["pending_hydrations"] is None   # default 5 + bump 5, drained
+
+
+async def test_live_threshold_option_overrides_the_constant():
+    # The engine sizes against the live AutoCompactThreshold, not the build-time constant (here 0).
+    eng = RootPromptEngine(reclaim_tools=frozenset({"search"}), auto_compact_threshold=_Ref(10_000))
+    big = ToolMessage(content="x" * 200, tool_call_id="a", name="search", id="m")    # ~56 tok, under 10k
+    update = await eng.compile({"messages": [big]}, None)
+    assert is_reclaim_ineligible(update["messages"][0])                  # under the live threshold -> skipped
 
 
 async def test_freeze_inherited_promotes_semi_permanent_before_the_branch_marker():

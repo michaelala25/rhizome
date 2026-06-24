@@ -7,11 +7,12 @@ snapshot and live options is the whole point of the two binding shapes (see ``fa
 - ``provider`` / ``model`` / ``temperature`` / ``adaptive_thinking`` / ``effort`` / ``web_tools`` are
   ``Annotated[T, spec]`` snapshots — they shape the model and tool set, so a change to any of them rebuilds
   the agent (they form its invalidation set).
-- ``parallel_tool_calling`` / ``prompt_cache`` / ``prompt_cache_ttl`` / ``local_resource_placement`` are
+- ``parallel_tool_calling`` / ``prompt_cache`` / ``prompt_cache_ttl`` / ``local_resource_placement`` and the
+  ``auto_compact`` trio (the reclamation master toggle, expiry age, and size threshold) are
   ``Annotated[OptionRef[T], spec]`` live handles — behavioral knobs read fresh, so flipping them never
   rebuilds. Parallel-tool calling is honored per model call by ``ParallelToolCallsMiddleware``; the cache
-  knobs and the placement knob flow to ``RootPromptEngine``, which reads them each ``prepare`` to place
-  (and TTL) its Anthropic cache-control breakpoints and to lay out local resources.
+  knobs, the placement knob, and the reclamation knobs flow to ``RootPromptEngine``, which reads them each
+  compile/prepare to place (and TTL) its breakpoints, lay out local resources, and gate context reclamation.
 
 The builder returns ``(agent, engine)``. To register the declaration on a factory::
 
@@ -128,6 +129,13 @@ def _root_tools() -> list:
     return [tool for group in groups for tool in group.values()]
 
 
+# Reclamation whitelist (the dormant machinery on ``PromptEngine`` is inert until wired here): the
+# read-only, potentially-bulky tools whose results are safe to auto-tag reclaimable, because the agent can
+# simply re-run the tool to get them back. The on/off master, size threshold, and expiry age are live
+# options (``Options.Agent.AutoCompact*``), read by the engine each turn — see ``build_root_agent``.
+_RECLAIM_TOOLS = frozenset({"query", "aggregate", "execute_sql", "read_guides"})
+
+
 def build_root_agent(
     *,
     # Services (injected by service accessor)
@@ -146,6 +154,9 @@ def build_root_agent(
     prompt_cache:             Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCache],
     prompt_cache_ttl:         Annotated[OptionRef[str], Options.Agent.Anthropic.PromptCacheTTL],
     local_resource_placement: Annotated[OptionRef[str], Options.Agent.LocalResourcePlacement],
+    auto_compact:             Annotated[OptionRef[str], Options.Agent.AutoCompact],
+    auto_compact_after:       Annotated[OptionRef[int], Options.Agent.AutoCompactAfter],
+    auto_compact_threshold:   Annotated[OptionRef[int], Options.Agent.AutoCompactThreshold],
 ) -> tuple[CompiledStateGraph, RootPromptEngine]:
     """Build the root conversation agent and its prompt engine, returning ``(agent, engine)``.
 
@@ -196,6 +207,7 @@ def build_root_agent(
     # the next turn without a rebuild. Placement is a layout knob (honored for every provider), not gated
     # on `cache_supported`.
     engine = RootPromptEngine(
+        reclaim_tools=_RECLAIM_TOOLS,
         system_prompt=system_prompt,
         tools=tools,
         max_input_tokens=compute_chat_model_max_tokens(chat_model),
@@ -203,6 +215,9 @@ def build_root_agent(
         prompt_cache=prompt_cache,
         prompt_cache_ttl=prompt_cache_ttl,
         local_resource_placement=local_resource_placement,
+        auto_compact=auto_compact,
+        auto_compact_after=auto_compact_after,
+        auto_compact_threshold=auto_compact_threshold,
         debug=app_config.debug,
     )
 

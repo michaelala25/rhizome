@@ -29,12 +29,20 @@ class CleanupRequest(TypedDict):
     """Optional hint (e.g. summary guidance) for the strategies that consume one."""
 
 
-def accumulate_cleanups(
-    left: list[CleanupRequest] | None, right: list[CleanupRequest] | None
-) -> list[CleanupRequest]:
-    """Reducer for ``pending_cleanups``: append filed requests (parallel tools compose), with ``None`` as
-    the drain signal the cleanup pass writes once it has consumed them — mirroring the ``None``-clears
-    convention of ``state.merge_typeddict_field``."""
+class HydrateRequest(TypedDict):
+    """A declarative request to keep a cleanup ``group`` in context longer, filed onto
+    ``BaseAgentState.pending_hydrations`` by the agent's ``hydrate`` tool. The engine's cleanup pass resolves
+    it (push each group message's expiry out, or promote it to ``permanent`` once hydrated enough) and is the
+    sole emitter of the edits — the mirror of ``CleanupRequest`` on the keep-it side."""
+
+    group: str
+
+
+def accumulate_cleanups(left: list | None, right: list | None) -> list:
+    """Reducer for the declarative lifetime-request channels (``pending_cleanups`` and ``pending_hydrations``
+    both use it): append filed requests (parallel tools compose), with ``None`` as the drain signal the
+    cleanup pass writes once it has consumed them — mirroring the ``None``-clears convention of
+    ``state.merge_typeddict_field``. Element-type-agnostic, so both channels share it."""
     if right is None:
         return []
     return (left or []) + right

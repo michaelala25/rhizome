@@ -59,8 +59,8 @@ from langchain_core.messages import (
 from rhizome.logs import get_logger
 
 from ..base import AgentPayload, MessagePayload, StateUpdatePayload, Strategy
-from .cleanup import apply_cleanup, mark_reclaimable
-from .metadata import lifetime_of, role_of, set_role
+from .cleanup import apply_cleanup, apply_hydrations, mark_reclaim_ineligible, mark_reclaimable
+from .metadata import is_reclaim_ineligible, lifetime_of, role_of, set_role
 from .usage import (
     estimate_message_tokens,
     estimate_system_tokens,
@@ -188,27 +188,36 @@ class PromptEngine[C]:
       stub). Strategy is ``stub | stub+store | summarize | summarize+store`` (only ``stub`` built today),
       resolved message > request > engine default; ``apply_cleanup`` is the single owner of the mechanism.
 
-    Request / execute split — the engine is the *only* emitter of cleanup edits. Everyone else — the
-    workflow tools, app hooks, and the agent's own ``cleanup_context`` tool — files a declarative
-    ``CleanupRequest{group, strategy?, reason?}`` onto the ``pending_cleanups`` channel on
-    ``BaseAgentState`` (state, not context, so a request raised mid-stream survives a crash). The engine's
-    one cleanup pass drains it and owns the policy: eligibility (resolved at fulfillment, so a since-pinned
-    message is simply skipped) and the strategy default. A coarse auto-compact gate — letting it ignore
-    requests wholesale — will ride on the (not-yet-built) auto-expiry trigger.
+    Request / execute split — the engine is the *only* emitter of lifetime edits. Everyone else — the
+    workflow tools, app hooks, and the agent's own ``cleanup_context`` / ``hydrate`` tools — files a
+    declarative ``CleanupRequest{group, strategy?, reason?}`` / ``HydrateRequest{group}`` onto the
+    ``pending_cleanups`` / ``pending_hydrations`` channels on ``BaseAgentState`` (state, not context, so a
+    request raised mid-stream survives a crash). The engine's one cleanup pass drains them and owns the
+    policy: eligibility (resolved at fulfillment, so a since-pinned message is simply skipped), the strategy
+    default, and the master gate — ``_reclaim_on()`` off honors nothing and just drains.
 
     Triggers and ownership — expiry is counted in user messages (a role metadata tag separates a real
     user turn from injected ``<system>`` human messages); budget-pressure, oldest-first reclamation is
     the intended north star. Default is opt-in replacement: a message reclaims on expiry unless the agent
-    pinned it to ``permanent`` first. At a branch, inherited semi-permanent messages freeze to
-    ``permanent`` so children share the parent's cached prefix (branch-point reclamation is deferred).
-    Workflow tools scope one run by minting a run id into their proposal state and tagging that run's
-    chatter ``group=<workflow>:<run-id>``, swept on accept.
+    keeps it (``hydrate`` pushes its expiry out, and after ``MAX_HYDRATIONS`` keeps promotes it to
+    ``permanent``). At a branch, inherited semi-permanent messages freeze to ``permanent`` so children share
+    the parent's cached prefix (branch-point reclamation is deferred). The reclamation policy (on/off,
+    threshold, expiry age) is read through ``_reclaim_on`` / ``_effective_threshold`` / ``_effective_expiry``
+    — constants here, live options on the root engine. Workflow tools scope one run by minting a run id into
+    their proposal state and tagging that run's chatter ``group=<workflow>:<run-id>``, swept on accept.
     """
 
     DEFAULT_REPAIR_REASON = "Tool call was interrupted before a result could be recorded."
 
     DEFAULT_CLEANUP_STRATEGY: Strategy = "stub"
     """Engine default for reclaiming a message, when neither the message nor the request names one."""
+
+    HYDRATE_BUMP_TURNS = 5
+    """User turns ``hydrate`` adds to a kept message's expiry each time the agent keeps it."""
+
+    MAX_HYDRATIONS = 3
+    """After this many hydrations a kept message is promoted to ``permanent`` instead of bumped again — it
+    has been kept enough times to simply settle (the freeze fallback, so ``hydrate`` needs no twin tool)."""
 
     def __init__(
         self,
@@ -330,44 +339,95 @@ class PromptEngine[C]:
         return "other"
 
     # ----- message lifetime ------------------------------------------------ #
+    # Reclamation policy read through three accessors so a richer engine can source it from live options
+    # without the base knowing about them: the base returns its build-time constants, ``RootPromptEngine``
+    # overrides these to read its ``AutoCompact`` / ``AutoCompactAfter`` / ``AutoCompactThreshold`` handles.
+
+    def _reclaim_on(self) -> bool:
+        """Whether reclamation is active at all. The base engine has no master toggle, so it is always on
+        (identification is still gated by the ``reclaim_tools`` whitelist); the root engine overrides this
+        to read its live ``AutoCompact`` toggle."""
+        return True
+
+    def _effective_threshold(self) -> int:
+        """The auto-tagger's size threshold, in approximate tokens (the root engine overrides to read its
+        live ``AutoCompactThreshold``)."""
+        return self._reclaim_threshold
+
+    def _effective_expiry(self) -> int | None:
+        """The default auto-expiry age in user turns, or ``None`` for off (the root engine overrides to read
+        its live ``AutoCompactAfter``)."""
+        return self._expire_after
 
     def _identify(self, state: dict[str, Any], update: dict[str, Any]) -> None:
-        """Identification stage: auto-tag matching tool results ``semi-permanent``, re-emitting each with
-        the inline marker (replace-in-place by id, so a message is marked exactly once). Tools that
-        self-tagged at construction are already ``semi-permanent`` and skipped."""
-        marked = [
-            mark_reclaimable(m, group=m.name)
-            for m in state.get("messages", [])
-            if isinstance(m, ToolMessage) and lifetime_of(m) == "permanent" and self._should_autotag(m)
-        ]
-        if marked:
-            update.setdefault("messages", []).extend(marked)
+        """Identification stage: evaluate each un-evaluated permanent tool result exactly once. A match
+        auto-tags ``semi-permanent`` and bakes the inline marker; a miss stamps ``reclaim_ineligible`` so
+        no later pass re-sizes it (the off-wire stamp is cache-free; see ``mark_reclaim_ineligible``). Both
+        re-emit in place by id. Tools that self-tagged are already ``semi-permanent`` and skipped, as are
+        messages a prior pass found ineligible.
+
+        Inert unless an auto-tagger is configured AND reclamation is on: an empty ``reclaim_tools`` opts out
+        of auto-tagging entirely, and ``_reclaim_on()`` off (the master toggle) pauses it — either way it
+        stamps nothing (self-tagging tools and explicit requests still work)."""
+        if not self._reclaim_tools or not self._reclaim_on():
+            return
+        emitted: list[BaseMessage] = []
+        for m in state.get("messages", []):
+            if not isinstance(m, ToolMessage) or lifetime_of(m) != "permanent" or is_reclaim_ineligible(m):
+                continue
+            emitted.append(mark_reclaimable(m, group=m.name) if self._should_autotag(m)
+                           else mark_reclaim_ineligible(m))
+        if emitted:
+            update.setdefault("messages", []).extend(emitted)
 
     def _should_autotag(self, message: ToolMessage) -> bool:
-        """The auto-tagger's policy: a whitelisted tool whose textual result passes the size threshold."""
+        """The auto-tagger's policy: a whitelisted tool whose textual result passes the size threshold (an
+        approximate token count, the same estimator ``report`` uses)."""
         return (
             message.name in self._reclaim_tools
             and isinstance(message.content, str)
-            and len(message.content) >= self._reclaim_threshold
+            and estimate_message_tokens(message) >= self._effective_threshold()
         )
 
     def _cleanup(self, state: dict[str, Any], ctx: "C | None", update: dict[str, Any]) -> None:
-        """Cleanup stage: reclaim messages — explicit ``CleanupRequest``s drained from ``pending_cleanups``
-        plus, when ``expire_after`` is set, those past their user-turn expiry — the engine the sole emitter
-        of the edits (``apply_cleanup`` resolves eligibility + strategy). Drains the request queue (writes
-        ``None``) once consumed. Branch-point promotion of inherited semi-permanent messages is the root
-        engine's ``_freeze_inherited`` concern."""
-        requests = state.get("pending_cleanups") or []
-        if not requests and self._expire_after is None:
+        """Cleanup stage: apply the filed lifetime requests and age expiry — the engine the sole emitter of
+        the edits. Reclaim (``CleanupRequest``s from ``pending_cleanups`` plus messages past their user-turn
+        expiry — own ``expire_after`` else ``_effective_expiry()``), then hydrate (``HydrateRequest``s from
+        ``pending_hydrations`` — push expiry out, or promote once hydrated enough). Hydrate edits land LAST,
+        so a deliberate keep wins over the same message's auto-expiry this turn. Drains both queues once
+        consumed. When reclamation is toggled off, honors nothing but still drains, so a stray request never
+        fires on re-enable. Branch-point promotion of inherited messages is ``_freeze_inherited``'s concern."""
+        cleanups = state.get("pending_cleanups") or []
+        hydrations = state.get("pending_hydrations") or []
+        messages = state.get("messages", [])
+
+        if not self._reclaim_on():
+            if cleanups:
+                update["pending_cleanups"] = None
+            if hydrations:
+                update["pending_hydrations"] = None
             return
+
+        # A per-message ``expire_after`` can fire even with the engine default off, so the cheap skip keys on
+        # the presence of a target (a request of either kind, or any semi-permanent message), not the default.
+        if not cleanups and not hydrations and not any(lifetime_of(m) == "semi-permanent" for m in messages):
+            return
+
         edits = apply_cleanup(
-            state.get("messages", []), requests,
-            expire_after=self._expire_after, default_strategy=self.DEFAULT_CLEANUP_STRATEGY,
+            messages, cleanups,
+            expire_after=self._effective_expiry(), default_strategy=self.DEFAULT_CLEANUP_STRATEGY,
         )
+        if hydrations:
+            edits = edits + apply_hydrations(
+                messages, hydrations, default_expiry=self._effective_expiry(),
+                bump=self.HYDRATE_BUMP_TURNS, max_hydrations=self.MAX_HYDRATIONS,
+            )
         if edits:
             update.setdefault("messages", []).extend(edits)
-        if requests:
+        if cleanups:
             update["pending_cleanups"] = None   # drain (the reducer resets to [])
+        if hydrations:
+            update["pending_hydrations"] = None
 
 
 # ========================================================================================================================

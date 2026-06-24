@@ -29,8 +29,9 @@ step's output may persist in the checkpoint.
   `PromptCompilerMiddleware` shim, and the reusable compile primitives (id minting, payload ingestion,
   orphan repair). The base engine is a minimal *working* engine; richer engines override `compile`/`prepare`.
 - **`root.py`** — `RootPromptEngine`, the root conversation agent's engine: resource context, the
-  vector-index reminder, branch markers, modes, and the cache-breakpoint placement *policy* (which laid-out
-  message is the head / branch / tail boundary). Holds the branch-marker and mode-guide id schemes.
+  vector-index reminder, branch markers, modes, the cache-breakpoint placement *policy* (which laid-out
+  message is the head / branch / tail boundary), and the staged-cleanup reminder it derives at the tail.
+  Reads the live `AutoCompact` options to gate reclamation. Holds the branch-marker and mode-guide id schemes.
 - **`cache.py`** — the cache-breakpoint *mechanism* `RootPromptEngine.prepare` drives: the `cache_control`
   descriptors, `apply_cache_control` (mark a COPY of a message — `prepare` is view-only), and `allocate`
   over an ordered `Breakpoint` candidate list, where priority IS list order and the budget IS the integer
@@ -38,9 +39,9 @@ step's output may persist in the checkpoint.
 - **`resources.py`** — the resource-context helpers `RootPromptEngine` drives: `ConsumedResources` (the
   per-thread consumed snapshot), `resource_deltas`, the well-known message-id scheme for resource/index
   blocks, and the tree-grouping / block-building helpers.
-- **`cleanup.py`** / **`metadata.py`** — the message-lifetime machinery: marking messages reclaimable and
-  reclaiming them on request (`cleanup`), over the per-message tag schema carried in `additional_kwargs`
-  (`metadata`).
+- **`cleanup.py`** / **`metadata.py`** — the message-lifetime machinery: marking messages reclaimable, then
+  reclaiming (`apply_cleanup`) or keeping (`apply_hydrations`) them on request and summarizing what's staged
+  (`reclamation_status`), over the per-message tag schema carried in `additional_kwargs` (`metadata`).
 - **`payload.py`** — the input language (`MessagePayload`, `StateUpdatePayload`, `AgentPayload`) and the
   live `PayloadQueue` a session shares with its engine.
 

@@ -705,6 +705,37 @@ class Options(CallbackHost, metaclass=OptionsMeta):
             choices=["leaf", "inline"],
         )
 
+        AutoCompact = ToggleOptionSpec(
+            name="auto_compact",
+            scope=OptionScope.Session,
+            default="enabled",
+            help=(
+                "Automatically reclaim context. Bulky read-only tool results are tagged reclaimable and, "
+                "once they age out, cleared to a short placeholder (re-run the tool to fetch them again); "
+                "the agent can keep one longer with the hydrate tool. Disabling stops all tagging and "
+                "cleanup and hides the staged-cleanup reminder — read live each turn, so toggling it "
+                "neither rebuilds the agent nor invalidates the prompt cache."
+            ),
+        )
+
+        AutoCompactAfter = IntRangeOptionSpec(
+            name="auto_compact_after",
+            scope=OptionScope.Session,
+            default=5,
+            help="User turns a reclaimable tool result survives before it is automatically cleared.",
+            min=1,
+            max=50,
+        )
+
+        AutoCompactThreshold = IntRangeOptionSpec(
+            name="auto_compact_threshold",
+            scope=OptionScope.Session,
+            default=500,
+            help="Approximate token size a read-only tool result must exceed to be tagged reclaimable.",
+            min=50,
+            max=5000,
+        )
+
         class Anthropic(OptionNamespace):
             name = "anthropic"
             description = "Only used when agent.provider is anthropic."

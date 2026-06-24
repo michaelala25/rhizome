@@ -12,7 +12,7 @@ from typing import Annotated, TypedDict
 
 from rhizome.resources_new import ResourceTreeNode
 
-from .base import accumulate_cleanups, CleanupRequest, ConsumedResources
+from .base import accumulate_cleanups, CleanupRequest, ConsumedResources, HydrateRequest
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +151,11 @@ class BaseAgentState(_AgentState):
     ``cleanup_context``, drained by the engine's cleanup pass each compile — the engine stays the sole
     emitter of the actual edits. State, not context, so a request raised mid-stream survives a crash.
     Appended via ``accumulate_cleanups``; the pass writes ``None`` to drain."""
+
+    pending_hydrations: Annotated[list[HydrateRequest], accumulate_cleanups]
+    """Declarative hydrate requests (``cleanup.HydrateRequest``) filed by the agent's ``hydrate`` tool — the
+    keep-it-longer mirror of ``pending_cleanups``, drained by the same cleanup pass (which pushes each group
+    message's expiry out or promotes it to ``permanent``). Same reducer, same drain-on-``None`` convention."""
 
 
 class RootAgentState(BaseAgentState):

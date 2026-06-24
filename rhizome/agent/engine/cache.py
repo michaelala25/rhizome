@@ -65,6 +65,15 @@ def cache_control_of(message: BaseMessage) -> CacheControl | None:
     return None
 
 
+def is_annotatable(message: BaseMessage) -> bool:
+    """Whether a cache breakpoint can ride ``message`` — i.e. it has a content block to stamp. Mirrors the
+    eligibility ``apply_cache_control`` enforces (it returns ``None`` otherwise): a non-empty ``str`` or
+    ``list`` body. An empty tool-use ``AIMessage`` (the block-less message that precedes its tool result)
+    is the case that matters — a resolver aiming a breakpoint just before a span skips back over these."""
+    content = message.content
+    return isinstance(content, (str, list)) and bool(content)
+
+
 def apply_cache_control(message: BaseMessage, cc: CacheControl) -> BaseMessage | None:
     """Return a COPY of ``message`` carrying ``cc`` on its last content block; ``None`` when there is no
     block to annotate (empty content). A ``str`` body becomes a single text block; a list body has its last
