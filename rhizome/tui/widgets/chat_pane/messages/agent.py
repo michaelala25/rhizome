@@ -59,13 +59,13 @@ class AgentMessage(ViewBase[AgentMessageModel]):
     AgentMessage.--commit-selectable {{
         border: round rgb(140, 120, 50);
     }}
-    AgentMessage.--commit-selectable.--commit-cursor {{
+    AgentMessage.--commit-selectable:focus {{
         border: round rgb(220, 190, 60);
     }}
     AgentMessage.--commit-selected {{
         border: round rgb(60, 160, 80);
     }}
-    AgentMessage.--commit-selected.--commit-cursor {{
+    AgentMessage.--commit-selected:focus {{
         border: round rgb(80, 200, 100);
     }}
     AgentMessage .msg-header {{
@@ -145,19 +145,18 @@ class AgentMessage(ViewBase[AgentMessageModel]):
             # tokens, so the stream API is never needed.
             self._markdown.update(self._vm.body)
             self._rendered = len(self._vm.body)
-            self._apply_commit_decoration()
 
-    def _apply_commit_decoration(self) -> None:
-        self.set_class(self._vm.is_selectable and not self._vm.is_selected, "--commit-selectable")
-        self.set_class(self._vm.is_selected, "--commit-selected")
-        self.set_class(self._vm.is_cursor, "--commit-cursor")
+    def set_commit_decoration(self, *, selectable: bool, selected: bool) -> None:
+        """Reflect commit-mode selection state, driven by the chat-area view (the selection SSOT lives on
+        ``ChatAreaModel``). The focused message additionally gets the brighter ``:focus`` border for free.
+        ``selectable=False, selected=False`` clears the decoration."""
+        self.set_class(selectable and not selected, "--commit-selectable")
+        self.set_class(selected, "--commit-selected")
         try:
             checkbox = self.query_one(".commit-checkbox", Static)
         except Exception:
             return
-        checkbox.update("■" if self._vm.is_selected else "□")
-        if self._vm.is_cursor:
-            self.scroll_visible()
+        checkbox.update("■" if selected else "□")
 
     def _open_stream(self) -> None:
         if self._markdown is None:
@@ -175,7 +174,6 @@ class AgentMessage(ViewBase[AgentMessageModel]):
         if self._drain_task is None:
             self._drain_task = asyncio.create_task(self._drain_loop())
         self._wakeup.set()
-        self._apply_commit_decoration()
 
     async def _drain_loop(self) -> None:
         try:

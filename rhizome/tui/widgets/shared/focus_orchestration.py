@@ -124,8 +124,12 @@ class FocusOrchestrationMixin(Widget):
     # PUBLIC API
     # ====================================================================================================
 
-    def focus_neighbour(self, direction: Direction) -> str | None:
+    def focus_neighbour(self, direction: Direction, graph: FocusGraph | None = None) -> str | None:
         """Move focus to the neighbour of the currently-focused node in `direction`.
+
+        By default the move is computed against `self._get_focus_graph()`. Pass `graph` to traverse a
+        *different* graph over the same widgets instead — e.g. a narrower overlay graph dispatched from a
+        separate key, while the default key keeps driving the main graph.
 
         Returns the node id that received focus, or None if no move happened — i.e., nothing was
         focused, no edge exists in that direction, or no candidate was available/resolvable.
@@ -136,11 +140,11 @@ class FocusOrchestrationMixin(Widget):
         On a non-None return, callers can use the returned id to apply widget-specific follow-up
         (cursor seeding, etc.) without the mixin having to know about it.
         """
-        current = self._current_focus_node()
+        graph = graph if graph is not None else self._get_focus_graph()
+        current = self._current_focus_node(graph)
         if current is None:
             return None
 
-        graph = self._get_focus_graph()
         targets = graph.edges.get(current, {}).get(direction)
         if targets is None:
             return None
@@ -240,12 +244,13 @@ class FocusOrchestrationMixin(Widget):
         """
         return candidates[0] if candidates else None
 
-    def _current_focus_node(self) -> str | None:
+    def _current_focus_node(self, graph: FocusGraph | None = None) -> str | None:
         """Determine the node id that currently owns focus.
 
         Default walks up from `self.screen.focused`, returning the id of the first ancestor whose
         `id` is a key in the current graph. Returns None if nothing is focused or no ancestor is
-        in the graph.
+        in the graph. Resolves against `self._get_focus_graph()` by default; pass `graph` to resolve
+        against the same explicit graph `focus_neighbour` is traversing.
 
         Override only when "current node" isn't derivable from DOM ancestry — rare.
         """
@@ -253,7 +258,7 @@ class FocusOrchestrationMixin(Widget):
         if focused is None:
             return None
 
-        graph = self._get_focus_graph()
+        graph = graph if graph is not None else self._get_focus_graph()
         node_ids = set(graph.edges.keys()) | {graph.source}
 
         # Walk up from the focused widget, stopping at `self`. This boundary matters for nested

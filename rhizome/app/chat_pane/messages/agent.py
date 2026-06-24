@@ -41,12 +41,6 @@ class AgentMessageModel(ViewModelBase):
         # renders it dimmed and borderless; commit selection excludes it (not a committable answer).
         self.thinking: bool = thinking
 
-        # Commit-mode decoration. Set by the chat-pane VM while in COMMIT state; the view paints
-        # borders + a checkbox in the header off these flags.
-        self.is_selectable: bool = False
-        self.is_selected: bool = False
-        self.is_cursor: bool = False
-
     @property
     def is_empty(self) -> bool:
         return self.body == ""
@@ -79,32 +73,4 @@ class AgentMessageModel(ViewModelBase):
         if self.cancelled:
             return
         self.cancelled = True
-        self.emit(self.Callbacks.OnDirty)
-
-    def set_selectable(self, selectable: bool) -> None:
-        if self.is_selectable == selectable:
-            return
-        self.is_selectable = selectable
-        self.emit(self.Callbacks.OnDirty)
-
-    def set_selected(self, selected: bool) -> None:
-        if self.is_selected == selected:
-            return
-        self.is_selected = selected
-        self.emit(self.Callbacks.OnDirty)
-
-    def set_cursor(self, cursor: bool) -> None:
-        if self.is_cursor == cursor:
-            return
-        self.is_cursor = cursor
-        self.emit(self.Callbacks.OnDirty)
-
-    def clear_commit_decoration(self) -> None:
-        if not (self.is_selectable or self.is_selected or self.is_cursor):
-            return
-        
-        self.is_selectable = False
-        self.is_selected = False
-        self.is_cursor = False
-        
         self.emit(self.Callbacks.OnDirty)

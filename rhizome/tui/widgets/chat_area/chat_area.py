@@ -22,6 +22,7 @@ from textual import on
 from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.events import DescendantFocus
 from textual.widget import Widget
 
 from rhizome.agent.app_context import VALID_VERBOSITIES
@@ -75,6 +76,15 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         # graph built in ``_get_focus_graph``). Not priority — they bubble up from the focused input.
         Keybind.ChatNavUp.  as_binding("focus_neighbour('up')",   show=False),
         Keybind.ChatNavDown.as_binding("focus_neighbour('down')", show=False),
+        # Commit mode (gated by ``check_action`` — inert, and falling through, outside commit mode). Plain
+        # up/down walk the message-only commit graph; space toggles the focused message; ctrl+j submits;
+        # esc exits. up/down + ctrl+j + esc are priority so they beat the scroll container / the focused
+        # input, then ``check_action`` returns None to let the key fall through when commit isn't the owner.
+        Keybind.ChatCommitNavUp.  as_binding("focus_message_neighbour('up')",   show=False, priority=True),
+        Keybind.ChatCommitNavDown.as_binding("focus_message_neighbour('down')", show=False, priority=True),
+        Keybind.ChatCommitToggle.as_binding("commit_toggle", show=False),
+        Keybind.ChatCommitCancel.as_binding("commit_cancel", show=False, priority=True),
+        Keybind.ChatCommitSubmit.as_binding("commit_submit", show=False, priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -138,12 +148,20 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         # (no rule on the outermost level); deeper nodes get a real DepthWrapper, created on demand.
         self._depth_wrappers: dict[int, Widget] = {}
 
+        # Commit mode: the feed-node id of the last-focused selectable message. It is the entry point the
+        # main (ctrl) graph re-enters the message cluster at, and the cluster's lone representative there —
+        # so the same message lives in both the main graph and the message-only commit graph (it's the
+        # "sticky" one). ``None`` until a message is focused / no message exists.
+        self._commit_entry_id: str | None = None
+
         self._vm.subscribe(self._vm.Callbacks.OnFeedAppended, self._on_feed_append)
         self._vm.subscribe(self._vm.Callbacks.OnFeedRemoved, self._on_feed_remove)
         self._vm.subscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
         self._vm.subscribe(self._vm.Callbacks.OnCursorMoved, self._on_cursor_moved)
         self._vm.subscribe(self._vm.Callbacks.OnInterruptChanged, self._on_interrupt_changed)
         self._vm.subscribe(self._vm.Callbacks.OnHint, self._on_hint)
+        self._vm.subscribe(self._vm.Callbacks.OnCommitModeChanged, self._on_commit_mode_changed)
+        self._vm.subscribe(self._vm.Callbacks.OnCommitSelectionChanged, self._on_commit_selection_changed)
 
     def on_unmount(self) -> None:
         super().on_unmount()
@@ -153,6 +171,8 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         self._vm.unsubscribe(self._vm.Callbacks.OnCursorMoved, self._on_cursor_moved)
         self._vm.unsubscribe(self._vm.Callbacks.OnInterruptChanged, self._on_interrupt_changed)
         self._vm.unsubscribe(self._vm.Callbacks.OnHint, self._on_hint)
+        self._vm.unsubscribe(self._vm.Callbacks.OnCommitModeChanged, self._on_commit_mode_changed)
+        self._vm.unsubscribe(self._vm.Callbacks.OnCommitSelectionChanged, self._on_commit_selection_changed)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="message-area"):
@@ -301,6 +321,11 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
                 self._mount_item(node.id, item, node_ids, cursor)
         self._scroll_end()
 
+        # Repaint commit decoration for the now-visible branch (after refresh, so freshly-mounted widgets
+        # have composed their checkbox child) and re-anchor the entry message onto it.
+        if self._vm.commit_active:
+            self.call_after_refresh(self._refresh_commit_decoration)
+
     def _on_interrupt_changed(self, node: ConversationNode) -> None:
         # Input is locked while an interrupt is pending on the *visible* branch; off-path interrupts
         # don't touch it (a cursor move re-derives the lockout in _on_cursor_moved).
@@ -345,16 +370,156 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
             raise SkipAction()
 
     # ------------------------------------------------------------------
+    # Commit mode (view-side selection + focus)
+    # ------------------------------------------------------------------
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Gate the commit-mode bindings. Returning ``None`` (not ``False``) makes Textual treat the
+        binding as absent, so the keystroke propagates normally — a text-cursor move in the input,
+        scrolling at a message boundary, the root-level space toggle — whenever commit mode isn't the
+        owner of that key. Plain up/down + space act only with a message focused; submit/cancel anywhere."""
+        if action in ("focus_message_neighbour", "commit_toggle"):
+            return True if self._vm.commit_active and self._focused_node_item() is not None else None
+        if action in ("commit_submit", "commit_cancel"):
+            return True if self._vm.commit_active else None
+        return super().check_action(action, parameters)
+
+    def action_focus_message_neighbour(self, direction: Direction) -> None:
+        """Plain up/down in commit mode: step the message-only commit graph. At a boundary the move
+        fails and we ``SkipAction`` so the keystroke falls through to the scroll container."""
+        if self.focus_neighbour(direction, graph=self._commit_focus_graph()) is None:
+            raise SkipAction()
+
+    def action_commit_toggle(self) -> None:
+        target = self._focused_node_item()
+        if target is None:
+            raise SkipAction()
+        self._vm.toggle_commit_selection(*target)
+
+    def action_commit_submit(self) -> None:
+        self._vm.submit_commit(self._vm.chat_input.buffer)
+
+    def action_commit_cancel(self) -> None:
+        self._vm.exit_commit_mode()
+
+    def on_descendant_focus(self, event: DescendantFocus) -> None:
+        """Track the last-focused selectable message — the point the main graph re-enters the cluster at.
+        The focused message is the one that lives in both graphs (the "sticky" one)."""
+        if self._vm.commit_active and self._focused_node_item() is not None:
+            self._commit_entry_id = event.widget.id
+
+    def _on_commit_mode_changed(self, active: bool) -> None:
+        if not active:
+            self._clear_commit_decoration()
+            self._commit_entry_id = None
+            self.focus_first()
+            return
+        # Entering: decorate the visible selectable messages, then drop focus onto the entry message
+        # (re-anchored to the bottom-most one in _refresh_commit_decoration) so up/down + space work at once.
+        self._refresh_commit_decoration()
+        widget = self._mounted.get(self._item_id_from_node(self._commit_entry_id))
+        if widget is not None:
+            widget.focus()
+        else:
+            self.focus_first()
+
+    def _on_commit_selection_changed(
+        self, node: ConversationNode, item: ConversationItem, staged: bool
+    ) -> None:
+        widget = self._mounted.get(item.id)
+        if widget is not None and hasattr(widget, "set_commit_decoration"):
+            widget.set_commit_decoration(selectable=True, selected=staged)
+
+    def _refresh_commit_decoration(self) -> None:
+        """Paint commit decoration on every visible selectable message (selectable + its staged state from
+        the VM's global selection) and make them focusable. Re-anchors the entry message onto the
+        now-visible branch, since a cursor move remounts a different feed."""
+        message_ids = self._commit_message_ids()
+        if self._commit_entry_id not in message_ids:
+            self._commit_entry_id = message_ids[-1] if message_ids else None
+        for _node, items in self._segments(self._vm.cursor):
+            for item in items:
+                widget = self._mounted.get(item.id)
+                if widget is None or not hasattr(widget, "set_commit_decoration"):
+                    continue
+                if self._vm.is_commit_selectable(item.entry):
+                    widget.set_commit_decoration(selectable=True, selected=self._vm.is_committed(item.id))
+                    widget.can_focus = True
+
+    def _clear_commit_decoration(self) -> None:
+        for widget in self._mounted.values():
+            if hasattr(widget, "set_commit_decoration"):
+                widget.set_commit_decoration(selectable=False, selected=False)
+                widget.can_focus = False
+
+    def _commit_message_ids(self) -> list[str]:
+        """Selectable, mounted message node ids in visible (top→bottom) order — the commit graph's nodes."""
+        ids: list[str] = []
+        for _node, items in self._segments(self._vm.cursor):
+            for item in items:
+                if item.id in self._mounted and self._vm.is_commit_selectable(item.entry):
+                    ids.append(self._feed_node_id(item.id))
+        return ids
+
+    def _commit_focus_graph(self) -> FocusGraph:
+        """Vertical chain over the selectable messages only — the graph plain up/down traverses."""
+        ids = self._commit_message_ids()
+        edges: dict[str, dict[Direction, str]] = {}
+        for i, node_id in enumerate(ids):
+            edge: dict[Direction, str] = {}
+            if i > 0:
+                edge["up"] = ids[i - 1]
+            if i + 1 < len(ids):
+                edge["down"] = ids[i + 1]
+            edges[node_id] = edge
+        source = self._commit_entry_id if self._commit_entry_id in ids else (ids[-1] if ids else "")
+        return FocusGraph(source=source, edges=edges)
+
+    def _focused_node_item(self) -> tuple[ConversationNode, ConversationItem] | None:
+        """(node, item) for the currently-focused selectable message, or None when focus is elsewhere."""
+        focused = self.screen.focused
+        if focused is None or focused.id is None:
+            return None
+        item_id = self._item_id_from_node(focused.id)
+        if item_id is None:
+            return None
+        for node, items in self._segments(self._vm.cursor):
+            for item in items:
+                if item.id == item_id and self._vm.is_commit_selectable(item.entry):
+                    return node, item
+        return None
+
+    @staticmethod
+    def _item_id_from_node(node_id: str | None) -> int | None:
+        prefix = "feed-item-"
+        if node_id is None or not node_id.startswith(prefix):
+            return None
+        try:
+            return int(node_id[len(prefix):])
+        except ValueError:
+            return None
+
+    # ------------------------------------------------------------------
     # Focus orchestration (FocusOrchestrationMixin seams)
     # ------------------------------------------------------------------
 
     def _navigable_node_ids(self) -> list[str]:
-        """Mounted, navigable feed items in visible (top→bottom) order, as focus-graph node ids."""
+        """Mounted, navigable feed items in visible (top→bottom) order, as focus-graph node ids.
+
+        In commit mode the messages are navigated by the separate commit focus graph (plain up/down), so
+        the main graph (ctrl+up/down) carries only the *one* entry message as the message cluster's lone
+        representative — ctrl-nav steps over the remaining widgets and re-enters the cluster there."""
+        commit = self._vm.commit_active
         ids: list[str] = []
         for _node, items in self._segments(self._vm.cursor):
             for item in items:
-                if item.entry.is_navigable and item.id in self._mounted:
-                    ids.append(self._feed_node_id(item.id))
+                if item.id not in self._mounted:
+                    continue
+                node_id = self._feed_node_id(item.id)
+                if item.entry.is_navigable:
+                    ids.append(node_id)
+                elif commit and node_id == self._commit_entry_id and self._vm.is_commit_selectable(item.entry):
+                    ids.append(node_id)
         return ids
 
     def _get_focus_graph(self) -> FocusGraph:
