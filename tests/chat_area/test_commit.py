@@ -10,9 +10,9 @@ from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area import commit
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.options import Options, OptionScope
-from rhizome.app.chat_pane.chat_input import ChatInputModel
-from rhizome.app.chat_pane.messages.agent import AgentMessageModel
-from rhizome.app.chat_pane.messages.static import ChatMessageModel
+from rhizome.app.chat_area.chat_input import ChatInputModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.messages.static import ChatMessageModel
 from rhizome.tui.types import Mode, Role
 
 from tests.agent.fakes import build_runtime, EchoModel

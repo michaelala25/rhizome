@@ -20,13 +20,13 @@ from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.options import Options, OptionScope
 from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.agent.engine import MessagePayload, UsageReport
-from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
-from rhizome.app.chat_pane.messages.agent import AgentMessageModel
-from rhizome.app.chat_pane.messages.shell import ShellCommandModel
-from rhizome.app.chat_pane.messages.static import ChatMessageModel
-from rhizome.app.chat_pane.messages.tool import ToolMessageModel
-from rhizome.app.chat_pane.thinking import ThinkingIndicatorModel
-from rhizome.app.chat_pane.welcome_message import WelcomeMessageModel
+from rhizome.app.chat_area.interrupts.user_choices import UserChoicesModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.messages.shell import ShellCommandModel
+from rhizome.app.chat_area.messages.static import ChatMessageModel
+from rhizome.app.chat_area.messages.tool import ToolMessageModel
+from rhizome.app.chat_area.thinking import ThinkingIndicatorModel
+from rhizome.app.chat_area.welcome_message import WelcomeMessageModel
 from rhizome.tui.types import Mode, Role
 
 from tests.agent.fakes import ai_contents, build_runtime, EchoModel, ToolOnceModel

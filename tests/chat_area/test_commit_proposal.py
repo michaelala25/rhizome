@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from rhizome.agent.state import CommitProposalEntry
 from rhizome.app.chat_area.stream_router import ChatAreaStreamRouter
-from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptModel
+from rhizome.app.chat_area.interrupts.commit_proposal import CommitProposalInterruptModel
 
 
 def _commit_interrupt_value() -> dict:

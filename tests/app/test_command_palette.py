@@ -1,7 +1,7 @@
 """The command palette pulls from its CommandRegistryService lazily and across merged scopes."""
 
 from rhizome.app.commands import Command, CommandRegistry
-from rhizome.app.chat_pane.command_palette import CommandPaletteModel
+from rhizome.app.chat_area.command_palette import CommandPaletteModel
 
 
 def _registry(*names: str) -> CommandRegistry:

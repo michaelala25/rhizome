@@ -30,8 +30,8 @@ from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.chat_area.conversation_graph import ConversationItem, ConversationNode, Cursor
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.types import Mode
-from rhizome.tui.widgets.chat_pane.chat_input import ChatInput
-from rhizome.tui.widgets.chat_pane.command_palette import CommandPalette
+from rhizome.tui.widgets.chat_area.chat_input import ChatInput
+from rhizome.tui.widgets.chat_area.command_palette import CommandPalette
 from rhizome.tui.widgets.options_editor import OptionsEditor
 from rhizome.tui.widgets.browser import Browser
 from rhizome.tui.widgets.chat_area.status import StatusBar
@@ -39,7 +39,7 @@ from rhizome.tui.widgets.shared.focus_orchestration import Direction, FocusGraph
 from rhizome.tui.widgets.view_base import ViewBase
 # Feed dispatch: import the manifest for its registry side effect (see feed_views.py / feed_registry.py).
 from rhizome.tui.widgets.chat_area import feed_views  # noqa: F401
-from rhizome.tui.widgets.chat_pane.feed_registry import view_for
+from rhizome.tui.widgets.chat_area.feed_registry import view_for
 
 
 # Mode cycle order for shift+tab (idle → learn → review → idle). The view owns this rotation; the VM

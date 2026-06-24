@@ -23,16 +23,16 @@ from typing import Any, Callable, TYPE_CHECKING
 from langchain_core.messages import AIMessageChunk
 
 from rhizome.agent.streaming import AgentStreamingContext, RunStateView
-from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
-from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptModel
-from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptModel
-from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
-from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
-from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
-from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesModel
-from rhizome.app.chat_pane.messages.agent import AgentMessageModel
-from rhizome.app.chat_pane.messages.tool import ToolMessageModel
-from rhizome.app.chat_pane.thinking import ThinkingIndicatorModel
+from rhizome.app.chat_area.interrupts.base import InterruptModelBase
+from rhizome.app.chat_area.interrupts.commit_proposal import CommitProposalInterruptModel
+from rhizome.app.chat_area.interrupts.flashcard_review import FlashcardReviewInterruptModel
+from rhizome.app.chat_area.interrupts.multi_choices import MultiUserChoicesModel
+from rhizome.app.chat_area.interrupts.sql import SqlConfirmationModel
+from rhizome.app.chat_area.interrupts.user_choices import UserChoicesModel
+from rhizome.app.chat_area.interrupts.warning import WarningUserChoicesModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.messages.tool import ToolMessageModel
+from rhizome.app.chat_area.thinking import ThinkingIndicatorModel
 from rhizome.tui.types import Mode, Role
 
 from .conversation_graph import Cursor
@@ -43,8 +43,7 @@ if TYPE_CHECKING:
 
 # Maps the ``"type"`` key on a graph interrupt-value dict to the VM factory building the matching
 # feed entry. The agent graph emits these strings, so we follow rather than rename them. The VM
-# classes are bridge-imported from ``chat_pane`` — they're view-models slated to move here wholesale
-# when the old pane retires.
+# classes live in this package's ``interrupts`` module.
 _INTERRUPT_VM_FACTORIES: dict[str, Callable[[dict[str, Any]], InterruptModelBase]] = {
     "choices": UserChoicesModel.from_interrupt,
     "warning": WarningUserChoicesModel.from_interrupt,

@@ -18,8 +18,8 @@ Mode and verbosity travel as ``StateUpdatePayload``s into per-branch agent state
 them through checkpoint copy and diverge after. Eager sends reach the *current* run's next model
 call; idle sends wait in the backlog for the next run.
 
-Feed-entry and interrupt VM classes are bridge-imported from ``chat_pane`` for now — they're already
-view-models and move here wholesale when the old pane retires.
+Feed-entry and interrupt VM classes (``messages``, ``interrupts``, ``chat_input``, ``command_palette``)
+live alongside this one in the ``chat_area`` package — they're the view-models the feed composes.
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ from typing import Any, Callable, Coroutine
 from rhizome.agent.app_context import AppContextHookService
 from rhizome.agent.engine import MessagePayload, StateUpdatePayload
 from rhizome.agent.runtime import AgentRuntime
-from rhizome.app.chat_pane.chat_input import ChatInputModel
-from rhizome.app.chat_pane.command_palette import CommandPaletteModel
-from rhizome.app.chat_pane.interrupts.base import CANCELLED
-from rhizome.app.chat_pane.messages.shell import ShellCommandModel
-from rhizome.app.chat_pane.messages.static import ChatMessageModel
-from rhizome.app.chat_pane.welcome_message import WelcomeMessageModel
+from rhizome.app.chat_area.chat_input import ChatInputModel
+from rhizome.app.chat_area.command_palette import CommandPaletteModel
+from rhizome.app.chat_area.interrupts.base import CANCELLED
+from rhizome.app.chat_area.messages.shell import ShellCommandModel
+from rhizome.app.chat_area.messages.static import ChatMessageModel
+from rhizome.app.chat_area.welcome_message import WelcomeMessageModel
 from rhizome.app.browser.browser import BrowserModel
 from rhizome.app.commands import CommandError, CommandRegistry, CommandRegistryService, DefaultParser, Flag, RAW
 from rhizome.app.model import ViewModelBase
@@ -137,7 +137,7 @@ class ChatAreaModel(ViewModelBase):
         # Command registry + input + palette. The conversation registers its commands on the registry the
         # workspace injects (parented to the app-global scope), or on a bare fallback when constructed
         # standalone. The palette reads the registry's rows lazily; the input + palette are
-        # conversation-agnostic VMs bridge-imported from chat_pane. This layer subscribes to the input's
+        # conversation-agnostic VMs. This layer subscribes to the input's
         # OnSubmitted and routes (chat / shell / slash).
         self._commands: CommandRegistryService = command_registry if command_registry is not None else CommandRegistry()
         self._register_commands()

@@ -1,0 +1,18 @@
+"""FlashcardProposalInterrupt — view for ``FlashcardProposalInterruptModel``.
+
+Trivial subclass of ``FlashcardProposal`` — the interrupt semantics live entirely on the VM,
+which auto-resolves its future when the lifecycle reaches DONE. This view exists so the type
+relation between the interrupt VM and its rendering is explicit (and so the typed ``self._vm``
+carries ``InterruptModelBase`` surface for any future hooks).
+"""
+
+from __future__ import annotations
+
+from rhizome.app.chat_area.interrupts.flashcard_proposal import FlashcardProposalInterruptModel
+from rhizome.tui.widgets.chat_area.feed_registry import register_feed_view
+from rhizome.tui.widgets.flashcard_proposal.flashcard_proposal import FlashcardProposal
+
+
+@register_feed_view(FlashcardProposalInterruptModel)
+class FlashcardProposalInterrupt(FlashcardProposal):
+    _vm: FlashcardProposalInterruptModel  # type: ignore[assignment]

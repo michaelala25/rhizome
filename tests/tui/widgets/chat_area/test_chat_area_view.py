@@ -12,7 +12,7 @@ from textual.widgets import Static
 from rhizome.agent.app_context import VALID_VERBOSITIES
 from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
-from rhizome.app.chat_pane.chat_input import ChatInputModel
+from rhizome.app.chat_area.chat_input import ChatInputModel
 from rhizome.tui.widgets.chat_area.branch import BranchPoint
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea, DepthWrapper
 from rhizome.tui.widgets.chat_area.status import StatusBar

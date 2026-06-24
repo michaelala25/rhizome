@@ -10,8 +10,8 @@ from textual.app import App, ComposeResult
 
 from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
-from rhizome.app.chat_pane.chat_input import ChatInputModel
-from rhizome.app.chat_pane.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.chat_input import ChatInputModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea
 from rhizome.tui.types import Mode
 

@@ -15,14 +15,14 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from rhizome.app.commands import DefaultParser, Flag
-from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptModel
-from rhizome.app.chat_pane.interrupts.flashcard_proposal import FlashcardProposalInterruptModel
-from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptModel
-from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
-from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
-from rhizome.app.chat_pane.interrupts.test import TestInterruptModel
-from rhizome.app.chat_pane.interrupts.user_choices import UserChoicesModel
-from rhizome.app.chat_pane.interrupts.warning import WarningUserChoicesModel
+from rhizome.app.chat_area.interrupts.commit_proposal import CommitProposalInterruptModel
+from rhizome.app.chat_area.interrupts.flashcard_proposal import FlashcardProposalInterruptModel
+from rhizome.app.chat_area.interrupts.flashcard_review import FlashcardReviewInterruptModel
+from rhizome.app.chat_area.interrupts.multi_choices import MultiUserChoicesModel
+from rhizome.app.chat_area.interrupts.sql import SqlConfirmationModel
+from rhizome.app.chat_area.interrupts.test import TestInterruptModel
+from rhizome.app.chat_area.interrupts.user_choices import UserChoicesModel
+from rhizome.app.chat_area.interrupts.warning import WarningUserChoicesModel
 from rhizome.app.commit_proposal.commit_proposal import Entry, EntryType
 from rhizome.app.flashcard_proposal import Flashcard
 from rhizome.db import Topic

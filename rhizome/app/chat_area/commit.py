@@ -16,8 +16,8 @@ can gather messages from several branches.
 
 from __future__ import annotations
 
-from rhizome.app.chat_pane.messages.agent import AgentMessageModel
-from rhizome.app.chat_pane.messages.static import ChatMessageModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.messages.static import ChatMessageModel
 from rhizome.tui.types import Mode, Role
 
 from .conversation_graph import ConversationGraph, ConversationItem, ConversationNode
