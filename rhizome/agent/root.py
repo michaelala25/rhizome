@@ -108,6 +108,14 @@ def _supports_temperature(provider: str, model: str) -> bool:
     return not (match is not None and (int(match.group(1)), int(match.group(2))) >= (4, 7))
 
 
+def _supports_adaptive_thinking(provider: str, model: str) -> bool:
+    """Whether Anthropic's ``adaptive thinking`` parameter is accepted. Supported on Opus 4.6+"""
+    if provider != "anthropic":
+        return True
+    match = _OPUS_VERSION.search(model)
+    return (match is not None and (int(match.group(1)), int(match.group(2))) >= (4, 6))
+
+
 def _supports_effort(provider: str, model: str) -> bool:
     """Whether Anthropic's ``effort`` parameter is accepted. Anthropic-only, and the Haiku tier (plus
     Sonnet 4.5 and earlier) errors on it, so the builder omits it there."""
@@ -172,10 +180,11 @@ def build_root_agent(
     # `effort` is the depth/spend dial, gated like temperature since Haiku (and older Sonnet) reject it.
     model_kwargs: dict = {}
     adaptive = provider == "anthropic" and adaptive_thinking == "enabled"
-    if adaptive:
+    if adaptive and _supports_adaptive_thinking(provider, model):
         model_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
     if _supports_effort(provider, model):
         model_kwargs["effort"] = effort
+
     # Drop temperature whenever thinking is on: extended thinking required it unset and adaptive is assumed
     # the same, so this is defensive (and already a no-op on 4.7+, which rejects temperature outright).
     if _supports_temperature(provider, model) and not adaptive:
