@@ -67,11 +67,9 @@ PoolParams   = tuple[frozenset[int] | None, str]            # (topics, search)
 
 # TODO: wire ``reload()`` into the panel's ``DatabaseCommitted`` path. Today nothing fires it, so
 # flashcard CRUD that happens outside this panel (creates / deletes / edits in another pane) will
-# leave stale rows in both caches until something else invalidates them. Mirror the pattern in
-# ``rhizome/app/resource_viewer/viewer.py`` (which calls ``self._loader.reload()`` from its
-# ``notify_database_committed``): in the entries tab's parent widget, on a ``DatabaseCommitted``
-# event whose ``tables`` touch ``flashcards`` or ``flashcard_entry``, call
-# ``self._linked_flashcards.reload()``.
+# leave stale rows in both caches until something else invalidates them. In the entries tab's parent
+# widget, on a ``DatabaseCommitted`` event whose ``tables`` touch ``flashcards`` or
+# ``flashcard_entry``, call ``self._linked_flashcards.reload()``.
 class LinkedFlashcardsPanelModel(SearchableModelMixin):
     """Sub-VM driving the linked-flashcards panel. See module docstring."""
 

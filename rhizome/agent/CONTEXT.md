@@ -9,9 +9,9 @@
 > trim it back.
 
 This is the agent stack: everything needed to build a language-model agent, hold a conversation with
-it, persist that conversation, and branch it into a tree. It is a ground-up rewrite of `rhizome/agent_legacy/`,
-built around a clean separation between *how an agent is built* (the factory), *who owns the live
-conversations* (the runtime), and *how those conversations are arranged* (the graph).
+it, persist that conversation, and branch it into a tree. It is built around a clean separation between
+*how an agent is built* (the factory), *who owns the live conversations* (the runtime), and *how those
+conversations are arranged* (the graph).
 
 Everything here is provider-neutral and framework-thin: LangGraph supplies the compiled agent and the
 checkpointer, and we own the orchestration on top.

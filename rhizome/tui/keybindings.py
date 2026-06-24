@@ -178,8 +178,6 @@ class Keybind(Enum):
     ChatCancel              = ("chat.cancel",                "ctrl+c")
     ChatNavUp               = ("chat.nav_up",                "ctrl+up")
     ChatNavDown             = ("chat.nav_down",              "ctrl+down")
-    ChatFocusResourceViewer = ("chat.focus_resource_viewer", "alt+r")
-    ChatCloseResourceViewer = ("chat.close_resource_viewer", "alt+w")
 
     # Chat pane — branch navigation (alt+arrows here walk the branch graph, not the focus graph)
     ChatBranchSiblingLeft  = ("chat.branch.sibling_left",  "alt+left")
