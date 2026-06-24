@@ -28,7 +28,7 @@ import asyncio
 from typing import Any, Callable, Coroutine
 
 from rhizome.agent.app_context import AppContextHookService
-from rhizome.agent.engine import MessagePayload
+from rhizome.agent.engine import MessagePayload, StateUpdatePayload
 from rhizome.agent.runtime import AgentRuntime
 from rhizome.app.chat_pane.chat_input import ChatInputModel
 from rhizome.app.chat_pane.command_palette import CommandPaletteModel
@@ -45,6 +45,7 @@ from rhizome.db import SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 from rhizome.tui.types import Mode, Role
 
+from . import commit
 from .branch import BranchPointModel
 from .conversation_graph import ConversationGraph, ConversationItem, ConversationNode, Cursor
 from .demo_commands import register_demo_commands
@@ -55,13 +56,15 @@ from .stream_router import ChatAreaStreamRouter
 class ChatAreaModel(ViewModelBase):
 
     class Callbacks(ViewModelBase.Callbacks):
-        OnCursorMoved      = "OnCursorMoved"
-        OnFeedAppended     = "OnFeedAppended"
-        OnFeedRemoved      = "OnFeedRemoved"
-        OnFeedCleared      = "OnFeedCleared"
-        OnNodeRenamed      = "OnNodeRenamed"
-        OnBusyChanged      = "OnBusyChanged"
-        OnInterruptChanged = "OnInterruptChanged"
+        OnCursorMoved            = "OnCursorMoved"
+        OnFeedAppended           = "OnFeedAppended"
+        OnFeedRemoved            = "OnFeedRemoved"
+        OnFeedCleared            = "OnFeedCleared"
+        OnNodeRenamed            = "OnNodeRenamed"
+        OnBusyChanged            = "OnBusyChanged"
+        OnInterruptChanged       = "OnInterruptChanged"
+        OnCommitModeChanged      = "OnCommitModeChanged"
+        OnCommitSelectionChanged = "OnCommitSelectionChanged"
 
     def __init__(
         self,
@@ -80,13 +83,15 @@ class ChatAreaModel(ViewModelBase):
     ) -> None:
         super().__init__()
         self.make_callback_groups({
-            self.Callbacks.OnCursorMoved:      Cursor,                                # the new cursor
-            self.Callbacks.OnFeedAppended:     (ConversationNode, ConversationItem),
-            self.Callbacks.OnFeedRemoved:      (ConversationNode, ConversationItem),
-            self.Callbacks.OnFeedCleared:      ConversationNode,
-            self.Callbacks.OnNodeRenamed:      ConversationNode,
-            self.Callbacks.OnBusyChanged:      (ConversationNode, bool),              # see _notify_stream_complete
-            self.Callbacks.OnInterruptChanged: ConversationNode,
+            self.Callbacks.OnCursorMoved:            Cursor,                                # the new cursor
+            self.Callbacks.OnFeedAppended:           (ConversationNode, ConversationItem),
+            self.Callbacks.OnFeedRemoved:            (ConversationNode, ConversationItem),
+            self.Callbacks.OnFeedCleared:            ConversationNode,
+            self.Callbacks.OnNodeRenamed:            ConversationNode,
+            self.Callbacks.OnBusyChanged:            (ConversationNode, bool),              # see _notify_stream_complete
+            self.Callbacks.OnInterruptChanged:       ConversationNode,
+            self.Callbacks.OnCommitModeChanged:      bool,                                  # commit mode on/off
+            self.Callbacks.OnCommitSelectionChanged: (ConversationNode, ConversationItem, bool),  # (node, item, staged?)
         })
 
         self.runtime = runtime
@@ -140,6 +145,14 @@ class ChatAreaModel(ViewModelBase):
         self.chat_input = ChatInputModel(self.command_palette)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
+        # Commit mode — a *global chat-area* UI state, not a per-branch/agent one: the user turns it on,
+        # checks off selectable messages from anywhere in the graph, and submits the lot as one commit
+        # payload. Keyed by globally-unique feed-item id; the (node, item) refs are what the payload build
+        # reads (see commit.py). The agent has no commit mode — it gets the staged payload + an
+        # instruction turn and runs its commit tools.
+        self._commit_active: bool = False
+        self._commit_selection: dict[int, tuple[ConversationNode, ConversationItem]] = {}
+
         # Status bar — a fixed chat-area element (not a swappable panel). A projection of the
         # checked-out node's live mode/verbosity (its LocalAppContextStore) plus the model name (from
         # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible branch.
@@ -166,6 +179,9 @@ class ChatAreaModel(ViewModelBase):
         self.emit(self.Callbacks.OnFeedAppended, node, item)
 
     def _on_graph_feed_removed(self, node: ConversationNode, item: ConversationItem) -> None:
+        # A removed item can no longer be committed — drop any commit selection on it. The view sheds the
+        # widget's decoration with the unmount, so no commit-selection event is needed here.
+        self._commit_selection.pop(item.id, None)
         self.emit(self.Callbacks.OnFeedRemoved, node, item)
 
     def _on_graph_feed_cleared(self, node: ConversationNode) -> None:
@@ -502,6 +518,12 @@ class ChatAreaModel(ViewModelBase):
         through. Slash commands go straight to the registry — its ``RAW`` parser keeps a command's free-text
         remainder intact (so ``/branch Can't Stop`` just works), with no special-casing here.
         """
+        # In commit mode the input is a commit-instructions box: any submission (Enter, even empty) hands
+        # the staged selection to the agent rather than routing as chat / shell / slash.
+        if self._commit_active:
+            self.submit_commit(text)
+            return
+
         stripped = text.lstrip()
 
         if stripped.startswith("!"):
@@ -588,6 +610,8 @@ class ChatAreaModel(ViewModelBase):
                      parser=DefaultParser(flags=[Flag(
                          "global", short="-g",
                          help="Edit global (Root) options instead of this conversation's session options.")]))
+        reg.register("commit", self.enter_commit_mode,
+                     help="Enter commit mode: stage messages across branches as knowledge entries.")
         reg.register("clear", self._cmd_clear, help="Clear the message feed.")
         reg.register("echo", lambda text: text, parser=RAW, help="Echo arguments back as a system message.")
 
@@ -646,9 +670,116 @@ class ChatAreaModel(ViewModelBase):
         self.hint("/clear isn't wired up under the conversation graph yet")
 
     # ------------------------------------------------------------------
-    # Commit mode (stubs)
+    # Commit mode
     # ------------------------------------------------------------------
+    #
+    # Commit mode is a *global chat-area* UI state (see __init__): while on, the user walks the graph
+    # checking off selectable messages from any branch; submitting hands the lot to the *current* leaf's
+    # agent as a commit payload, and the proposal surfaces there as an ordinary inline interrupt.
+    # Selection is the SSOT both the view's decoration and the payload build read; the highlight cursor
+    # and key handling are view-side. The agent has no commit mode — "commit" is a workflow its tools run
+    # on a staged payload.
+
+    @property
+    def commit_active(self) -> bool:
+        return self._commit_active
+
+    @property
+    def commit_selection_count(self) -> int:
+        return len(self._commit_selection)
+
+    def is_committed(self, item_id: int) -> bool:
+        """Whether a feed item is currently staged — drives the view's "selected" decoration."""
+        return item_id in self._commit_selection
+
+    def is_commit_selectable(self, entry: Any) -> bool:
+        """Whether a feed entry may be staged — the single eligibility policy used by the toggle guard
+        and by the view (which items are navigable / decorated). Honours the ``CommitSelectable`` option
+        (``learn_only`` / ``all_agent`` / ``all``)."""
+        return commit.is_selectable(entry, level=self._commit_level())
+
+    def _commit_level(self) -> str:
+        """The selectability level from options, falling back to the module default when no option
+        service is in scope (a standalone area)."""
+        if self._options is None:
+            return commit.DEFAULT_LEVEL
+        return self._options.get(Options.CommitSelectable)
 
     def enter_commit_mode(self) -> None:
-        """TODO: commit mode is being reworked — selection/cursor mechanics move view-side."""
-        raise NotImplementedError
+        """Turn on commit mode and switch the input into its commit-instructions state. Refused while an
+        interrupt is pending on the current branch — that already owns the input."""
+        if self._commit_active:
+            return
+        if self._cursor.node.pending_interrupt is not None:
+            self.hint("resolve the pending prompt before entering commit mode")
+            return
+        self._commit_active = True
+        self.chat_input.set_state(ChatInputModel.State.COMMIT)
+        self.emit(self.Callbacks.OnCommitModeChanged, True)
+
+    def exit_commit_mode(self, *, clear: bool = True) -> None:
+        """Turn off commit mode and (by default) drop the selection, restoring the input to its
+        cursor-appropriate state (CHAT, or disabled if an interrupt is pending)."""
+        if not self._commit_active:
+            return
+        self._commit_active = False
+        if clear:
+            self._commit_selection.clear()
+        self._sync_chat_input()
+        self.emit(self.Callbacks.OnCommitModeChanged, False)
+
+    def toggle_commit_selection(self, node: ConversationNode, item: ConversationItem) -> None:
+        """Stage / unstage one feed item. No-op outside commit mode or for an ineligible entry. Emits
+        ``OnCommitSelectionChanged`` so the view re-decorates just that item."""
+        if not self._commit_active or not self.is_commit_selectable(item.entry):
+            return
+        if item.id in self._commit_selection:
+            del self._commit_selection[item.id]
+            staged = False
+        else:
+            self._commit_selection[item.id] = (node, item)
+            staged = True
+        self.emit(self.Callbacks.OnCommitSelectionChanged, node, item, staged)
+
+    def submit_commit(self, instructions: str = "") -> None:
+        """Hand the staged selection to the current branch's agent as a commit payload, then leave commit
+        mode. Soft-fails (hint, stays in mode) on an empty selection or a frozen / busy leaf, so the user
+        can fix and resubmit. ``instructions`` is the optional free-text from the input.
+        """
+        if not self._commit_active:
+            return
+        if not self._commit_selection:
+            self.hint("no messages selected — space to stage a message, esc to cancel")
+            return
+
+        target = self._cursor
+        node = target.node
+        if node.frozen:
+            self.hint("this branch is frozen — descend into one of its children to commit here")
+            return
+        if node.busy:
+            self.hint("the agent is already responding on this branch")
+            return
+
+        payload = commit.build_payload(self.conversation_graph, self._commit_selection)
+
+        # The payload rides into the branch's agent state as commit_proposal_state (the engine merges it,
+        # None → adopt wholesale, at the run's first model call); a USER turn alongside both shows the
+        # request in the feed and gives the agent a turn to run its commit tools.
+        self.conversation_graph.send(target, StateUpdatePayload(data={
+            "commit_proposal_state": {"payload": payload, "proposal": [], "proposal_diff": None},
+        }))
+
+        n = len(payload)
+        plural = "" if n == 1 else "s"
+        request = instructions.strip() or f"Commit the {n} selected message{plural} into knowledge entries."
+        if instructions.strip():
+            self.chat_input.accept_submission(instructions)
+        else:
+            self.chat_input.set_buffer("")
+        self.append_message(request, Role.USER, cursor=target)
+
+        # Leave commit mode (the selection's been handed off) before the run starts, so the input returns
+        # to normal and the proposal comes back as an ordinary inline interrupt on this branch.
+        self.exit_commit_mode(clear=True)
+        self.submit(cursor=target)

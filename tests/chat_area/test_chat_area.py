@@ -204,7 +204,7 @@ async def test_browse_command_appends_browser_with_factory_else_hints():
 
 
 def test_real_commands_always_registered_demo_commands_gated_on_debug():
-    real = {"idle", "learn", "review", "branch", "rename-branch", "browse", "options", "clear", "echo"}
+    real = {"idle", "learn", "review", "branch", "rename-branch", "browse", "options", "commit", "clear", "echo"}
     demo = {"test-interrupt", "test-choices", "test-warning-choices", "test-multiple-choices",
             "test-sql-confirmation", "test-flashcards", "test-commit-proposal", "test-flashcard-proposal"}
 
