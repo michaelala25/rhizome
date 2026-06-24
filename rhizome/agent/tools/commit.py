@@ -305,32 +305,28 @@ def build_commit_tools() -> dict:
 
         result = interrupt({"type": "commit_proposal", "entries": entries, "topic_map": topic_map})
 
-        choice = result["choice"]
-        modified_entries = result.get("entries", [])
-        new_proposal = [CommitProposalEntry(**e) for e in modified_entries]
+        # The proposal surface resolves into {"accepted": [...] | None, "edit_instructions": str}: cancel
+        # is ``accepted is None``; approve vs. revise is whether ``edit_instructions`` is set. ``accepted``
+        # carries the kept entries (the user's edits + exclusions applied) back in the proposal dict shape.
+        accepted = result.get("accepted") if isinstance(result, dict) else None
+        if accepted is None:
+            return Command(update={
+                "commit_proposal_state": None,
+                "messages": [ToolMessage(
+                    content="User cancelled the proposal.",
+                    tool_call_id=runtime.tool_call_id,
+                )],
+            })
 
+        edit_instructions = (result.get("edit_instructions") or "").strip()
+        new_proposal = [CommitProposalEntry(**e) for e in accepted]
         originals_by_id = {e["id"]: e for e in proposal}
-        diff_parts = _build_commit_diff(proposal, modified_entries, originals_by_id)
+        diff_parts = _build_commit_diff(proposal, accepted, originals_by_id)
         diff_text = "\n".join(diff_parts)
 
-        if choice == "Approve":
+        if edit_instructions:
             msg_lines = [
-                f"User approved {len(new_proposal)} entry/entries.",
-                *diff_parts,
-                "Call commit_proposal_accept to write them to the database.",
-            ]
-            return Command(update={
-                "commit_proposal_state": CommitProposalState(
-                    payload=commit_state["payload"] if commit_state else [],
-                    proposal=new_proposal,
-                    proposal_diff=None,
-                ),
-                "messages": [ToolMessage(content="\n".join(msg_lines), tool_call_id=runtime.tool_call_id)],
-            })
-        elif choice == "Edit":
-            instructions = result.get("instructions", "")
-            msg_lines = [
-                f"User requested edits: {instructions}",
+                f"User requested edits: {edit_instructions}",
                 *diff_parts,
                 f"Proposal state updated ({len(new_proposal)} entry/entries remaining).",
                 "Use commit_proposal_edit to make further changes, then "
@@ -347,14 +343,20 @@ def build_commit_tools() -> dict:
                 ),
                 "messages": [ToolMessage(content="\n".join(msg_lines), tool_call_id=runtime.tool_call_id)],
             })
-        else:
-            return Command(update={
-                "commit_proposal_state": None,
-                "messages": [ToolMessage(
-                    content="User cancelled the proposal.",
-                    tool_call_id=runtime.tool_call_id,
-                )],
-            })
+
+        msg_lines = [
+            f"User approved {len(new_proposal)} entry/entries.",
+            *diff_parts,
+            "Call commit_proposal_accept to write them to the database.",
+        ]
+        return Command(update={
+            "commit_proposal_state": CommitProposalState(
+                payload=commit_state["payload"] if commit_state else [],
+                proposal=new_proposal,
+                proposal_diff=None,
+            ),
+            "messages": [ToolMessage(content="\n".join(msg_lines), tool_call_id=runtime.tool_call_id)],
+        })
 
     @tool_visibility(ToolVisibility.LOW)
     @tool("commit_proposal_edit", description=(
@@ -454,9 +456,6 @@ def build_commit_tools() -> dict:
                 )
                 created.append({"id": entry.id, "title": entry.title})
             await session.commit()
-
-        # TODO: notify the app that a commit landed, once the conversation layer exposes an app-action
-        # hook on the context (the data browser / status bar want to refresh on a commit).
 
         msg = f"Committed {len(created)} knowledge entry/entries to the database."
         return Command(update={

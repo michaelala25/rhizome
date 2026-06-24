@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessageChunk
 
 from rhizome.agent.streaming import AgentStreamingContext, RunStateView
 from rhizome.app.chat_pane.interrupts.base import InterruptModelBase
+from rhizome.app.chat_pane.interrupts.commit_proposal import CommitProposalInterruptModel
 from rhizome.app.chat_pane.interrupts.flashcard_review import FlashcardReviewInterruptModel
 from rhizome.app.chat_pane.interrupts.multi_choices import MultiUserChoicesModel
 from rhizome.app.chat_pane.interrupts.sql import SqlConfirmationModel
@@ -280,9 +281,13 @@ class ChatAreaStreamRouter(AgentStreamingContext):
             )
         itype = value.get("type")
         if itype == "flashcard_review":
-            # The one interrupt that needs the run context: the review widget pulls the agent runtime
-            # (its auto-scorer's handle) and the DB session factory off it.
+            # The review widget pulls the agent runtime (its auto-scorer's handle) and the DB session
+            # factory off the run context.
             return FlashcardReviewInterruptModel.from_interrupt(value, context)
+        if itype == "commit_proposal":
+            # The proposal widget reads the DB session factory off the run context for its in-widget
+            # topic-reassignment browser.
+            return CommitProposalInterruptModel.from_interrupt(value, context)
         factory = _INTERRUPT_VM_FACTORIES.get(itype)
         if factory is None:
             raise ValueError(f"Unknown interrupt type: {itype!r}")
