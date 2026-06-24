@@ -110,3 +110,10 @@ def test_workspace_registry_parents_to_global_and_backs_the_chat_area():
 
     assert reg.resolve("branch") is not None     # conversation command, registered by the chat area
     assert reg.resolve("ping") is not None        # global command, reached via the parent chain
+
+
+def test_workspace_app_context_hooks_carry_the_model_fact():
+    # The workspace registers a workspace-scope "model" app-context fact; it threads through the chat area
+    # into the conversation graph's hooks (the engine renders these as ephemeral tail context).
+    graph = WorkspaceModel(make_root_accessor()).chat_area.conversation_graph
+    assert "model" in graph.app_context_hooks

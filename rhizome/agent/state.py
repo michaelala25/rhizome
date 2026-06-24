@@ -172,7 +172,7 @@ class RootAgentState(BaseAgentState):
     """Active conversation mode: ``"idle"``, ``"learn"``, or ``"review"``. Per-branch state —
     inherited through ``branch`` via checkpoint copy, divergent across siblings afterward.
 
-    The engine-committed *snapshot* of the mode, NOT its source of truth. The live ``AppContextStore``
+    The engine-committed *snapshot* of the mode, NOT its source of truth. The live ``LocalAppContextStore``
     on the context (``ctx.app_state``) is the SSOT both the user (view) and the agent (the ``set_mode``
     tool) write through. The prompt engine diffs that store against this field at compile and, on a
     switch, commits the new value here and narrates it (full guide on first entry, concise reminder on

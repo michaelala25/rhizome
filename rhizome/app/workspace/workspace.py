@@ -29,6 +29,7 @@ for the workspace, so its state survives the view being rebuilt or the panel bei
 
 from __future__ import annotations
 
+from rhizome.agent.app_context import AppContextHooks, AppContextHookService
 from rhizome.agent.runtime import AgentRuntime, AgentRuntimeService
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.commands import CommandRegistry, CommandRegistryService
@@ -60,6 +61,13 @@ class WorkspaceModel(OrchestratorModel):
         root_options = services.get(OptionService).at_scope(OptionScope.Root)
         self._options = Options(OptionScope.Session, parent=root_options)
         self._services.register(OptionService, self._options)
+
+        # Per-workspace app-context hooks: a child of the app-root registry (where host/render-capability
+        # facts live), so those fall through while workspace-scope facts live here. The active model is one
+        # — read live from this workspace's options each render, so a model switch shows without a rebuild.
+        self._app_context_hooks = AppContextHooks(parent=services.try_get(AppContextHookService))
+        self._app_context_hooks.register("model", self._model_fact)
+        self._services.register(AppContextHookService, self._app_context_hooks)
 
         # Declare the runtime at THIS scope so it builds here — one AgentRuntime per workspace. Its build
         # deps (factory, checkpointer, options) inject from the scope: factory + checkpointer resolve from
@@ -93,6 +101,12 @@ class WorkspaceModel(OrchestratorModel):
         # lives inside the chat area, owned by ``ChatAreaModel``.)
         self._register_view_model(ChatAreaModel, self._build_chat_area)
         self._register_view_model(ResourceLoaderModel, self._build_resource_loader)
+
+    def _model_fact(self) -> str | None:
+        """App-context fact (registered on this workspace's hooks): the active model id, read live from this
+        workspace's options each render so it tracks a model switch. ``None`` when no model is set."""
+        model = self._options.get(Options.Agent.Model)
+        return f"You are running as the model `{model}`." if model else None
 
     def bootstrap(self) -> None:
         """Surface the workspace's initial panels — the second construction phase, called by the view at
@@ -133,6 +147,7 @@ class WorkspaceModel(OrchestratorModel):
             resource_index=self._resource_index,
             local_resources_factory=self._local_resources_factory,
             options=self._options,
+            app_context_hooks=self._app_context_hooks,
             session_factory=self._session_factory,
             show_welcome=self._show_welcome,
             debug=app_config.debug if app_config is not None else False,

@@ -241,6 +241,27 @@ def _build_structured_subagent(
     return agent, engine
 
 
+def _build_plain_subagent(
+    checkpointer, model, system_prompt: str,
+) -> tuple[CompiledStateGraph, PromptEngine]:
+    """Build a toolless, one-shot subagent that returns plain text (no structured-output binding) — the
+    caller reads the prose off ``InvokeResult.response``. Carries the base ``PromptEngine`` (history repair +
+    payload ingestion, no request shaping), like the structured kinds but without a ``response_format``."""
+    engine = PromptEngine(
+        system_prompt=system_prompt, max_input_tokens=compute_chat_model_max_tokens(model)
+    )
+    agent = create_agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=[],
+        middleware=[PromptCompilerMiddleware(engine)],
+        context_schema=BaseAgentContext,
+        state_schema=BaseAgentState,
+        checkpointer=checkpointer,
+    )
+    return agent, engine
+
+
 def build_flashcard_answerer(
     *,
     checkpointer: AgentCheckpointerService,
@@ -465,6 +486,39 @@ def build_commit_subagent(
 # ========================================================================================================================
 
 
+# ========================================================================================================================
+# CONTEXT-RECLAMATION SUMMARIZER SUBAGENT
+# ========================================================================================================================
+# Toolless, one-shot, plain-text. The root prompt engine provisions one fresh session per reclaimed tool
+# result (concurrently) to condense it under the ``summarize`` cleanup strategy — see
+# ``engine.root.RootPromptEngine._summarize_one``. Fast tier, temperature 0 for stable output. No prompt
+# caching: each call's bulky input differs and runs in parallel, so there is no shared prefix worth caching
+# beyond the small system prompt (the same deferral as ``flashcard_scorer``'s cache TODO).
+
+SUMMARIZER_KEY = "summarizer"
+
+SUMMARIZER_SYSTEM_PROMPT = """\
+You compress a single tool result so it costs less of an agent's context window while staying useful to \
+that agent later.
+
+Preserve concrete facts, identifiers (IDs, names, paths), numbers, and structure. Drop filler, repetition, \
+and verbose formatting. Do not add commentary, interpretation, or preamble — only condense what is present. \
+Output the summary text and nothing else.
+"""
+
+
+def build_summarizer(
+    *,
+    checkpointer: AgentCheckpointerService,
+    api_keys: APIKeyService,
+    provider: Annotated[str, Options.Agent.Provider],
+) -> tuple[CompiledStateGraph, PromptEngine]:
+    """Summarizer: condenses one bulky tool result for context reclamation (the ``summarize`` strategy).
+    Fast tier, temperature 0 for determinism; plain text (no structured output, no tools)."""
+    model = _make_model(provider, api_keys, _FAST_MODELS, temperature=0.0)
+    return _build_plain_subagent(checkpointer, model, SUMMARIZER_SYSTEM_PROMPT)
+
+
 def register_subagents(factory: AgentFactory) -> None:
     """Register every subagent kind on *factory*. Called from ``root.build_agent_factory`` at app
     composition, so the per-workspace ``AgentRuntime`` can mint these by key off one populated registry. The
@@ -483,5 +537,9 @@ def register_subagents(factory: AgentFactory) -> None:
     )
     factory.register(
         FLASHCARD_SCORER_KEY, build=build_flashcard_scorer,
+        context_schema=BaseAgentContext, state_schema=BaseAgentState,
+    )
+    factory.register(
+        SUMMARIZER_KEY, build=build_summarizer,
         context_schema=BaseAgentContext, state_schema=BaseAgentState,
     )

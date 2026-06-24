@@ -1,9 +1,22 @@
-"""Live app settings shared by the conversation view and the agent.
+"""App-context channels shared by the conversation view and the agent.
 
-``AppContextStore`` is the single source of truth for per-branch app settings — the active mode and the
-answer-verbosity preference — while a conversation is live. It hangs off the agent context, so it follows
-the same rules as the resource stores: a communication *channel*, not a checkpointed answer. The reference
-is fixed for a run (langgraph's contract), but the object behind it mutates, and writers reach through it.
+Two app→engine channels live here:
+
+- ``LocalAppContextStore`` — per-branch (node-local) app *settings* (mode, verbosity): an SSOT that answers
+  "what is the current value", written by both the user (view) and the agent (tools), diffed into
+  checkpointed state by the prompt engine.
+- ``AppContextHooks`` (+ the ``AppContextHookService`` DI protocol) — app-published *facts* about the
+  environment, a SCOPED registry chained like ``OptionService`` (app → workspace): app-scope facts
+  (host/render capabilities) live at the root and fall through to every workspace; workspace-scope facts
+  (the active model) live on a child that shadows by key. ``register`` / ``unregister`` are scope-local; the
+  engine reads the merged effective set via ``fragments()`` and renders it as ephemeral tail context each
+  ``prepare`` — never checkpointed, so facts re-derive per process. No SSOT, answers no "what is the value"
+  query — hence "hooks", not "store".
+
+``LocalAppContextStore`` hangs off the agent context directly (a node-local channel); the resolved
+(workspace-scoped) ``AppContextHooks`` is threaded onto the context by the conversation graph. Both follow
+the resource-store rule: a communication *channel*, not a checkpointed answer — the reference is fixed for a
+run (langgraph's contract), but the object behind it is live.
 
 Mode has two writers, one cell:
 
@@ -24,6 +37,8 @@ Per-branch, like ``local_resources``: one instance per conversation node, seeded
 branch via ``copy_from``.
 """
 
+from typing import Callable, Protocol
+
 from rhizome.utils.callbacks import CallbackHost
 
 VALID_MODES: tuple[str, ...] = ("idle", "learn", "review")
@@ -35,7 +50,7 @@ VALID_VERBOSITIES: tuple[str, ...] = ("terse", "standard", "verbose", "auto")
 the same TUI-independence reason as ``VALID_MODES``."""
 
 
-class AppContextStore(CallbackHost):
+class LocalAppContextStore(CallbackHost):
     """SSOT for live per-branch app settings (mode, verbosity). See the module docstring."""
 
     class Callbacks:
@@ -83,8 +98,83 @@ class AppContextStore(CallbackHost):
         self.emit(self.Callbacks.OnVerbosityChanged, old, verbosity)
         return True
 
-    def copy_from(self, other: "AppContextStore") -> None:
+    def copy_from(self, other: "LocalAppContextStore") -> None:
         """Adopt ``other``'s settings by value — branch seeding, mirroring ``ResourceContextStore``.
         Silent (no event): seeding a fresh child node is not a user/agent change."""
         self._mode = other._mode
         self._verbosity = other._verbosity
+
+
+# ========================================================================================================================
+# Service: AppContextHookService
+#   Shape : protocol + first-party impl (AppContextHooks, below)
+#   Scope : root (app) -> workspace (scoped; a child shadows its parent by key and merges for rendering)
+# ========================================================================================================================
+
+type ContextProducer = Callable[[], str | None]
+"""An app-published fact: called at render time (every ``prepare``), returns the fact's current text or
+``None`` to omit it this turn. Must be cheap and synchronous — it runs on every wire request."""
+
+
+class AppContextHookService(Protocol):
+    """Consumer + registrant facing slice of a scoped app-context hook registry: publish/withdraw a fact at
+    this scope, and read the merged effective set the engine renders. Consumers depend on this protocol; the
+    concrete ``AppContextHooks`` satisfies it and adds the scope plumbing."""
+
+    def register(self, key: str, fact: "ContextProducer | str") -> None: ...
+    def unregister(self, key: str) -> None: ...
+    def fragments(self) -> list[str]: ...
+
+
+class AppContextHooks(AppContextHookService):
+    """Scoped registry of app-published environment facts, rendered as one tail ``<system-reminder>``.
+
+    Scoped like ``OptionService`` / ``CommandRegistry``: a child created with ``parent=`` shadows the parent
+    by key and merges for rendering, so app-scope facts (host/render capabilities) registered at the root
+    reach every workspace, while workspace-scope facts (the active model) live on a child. ``register`` /
+    ``unregister`` are scope-LOCAL — a child can't withdraw a parent's fact, only shadow it (register the
+    same key, e.g. a producer returning ``None`` to hide it).
+
+    The engine reads the merged effective set via ``fragments()`` and folds it into one ephemeral tail
+    message (never checkpointed — facts re-derive per process). The app owns content and wording; the engine
+    owns placement and caching. Not a ``CallbackHost``: nothing observes a change — the engine reads the
+    current set when it renders. Producers are held by strong reference (a plain dict), unlike callback
+    subscribers, because a fact must survive for as long as it is registered.
+    """
+
+    def __init__(self, parent: "AppContextHooks | None" = None) -> None:
+        self._parent = parent
+        self._producers: dict[str, ContextProducer] = {}   # THIS scope only; insertion-ordered
+
+    def register(self, key: str, fact: ContextProducer | str) -> None:
+        """Publish ``fact`` under ``key`` at THIS scope (shadowing a parent's same key). A bare string is a
+        static fact; a callable is re-evaluated each render, so it can track live state — or return ``None``
+        to hide itself this turn."""
+        self._producers[key] = (lambda value=fact: value) if isinstance(fact, str) else fact
+
+    def unregister(self, key: str) -> None:
+        """Drop the fact at ``key`` from THIS scope (no-op if absent here). Scope-local: it cannot remove a
+        parent-scope fact — shadow that with a local key returning ``None`` to hide it instead."""
+        self._producers.pop(key, None)
+
+    def __contains__(self, key: str) -> bool:
+        """Whether ``key`` is registered at THIS scope (the parent chain is not consulted)."""
+        return key in self._producers
+
+    def _effective(self) -> dict[str, ContextProducer]:
+        """The merged key→producer map: the parent chain first, then this scope shadowing by key (a child
+        override keeps the parent's render position but supplies the new producer)."""
+        merged = self._parent._effective() if self._parent is not None else {}
+        merged.update(self._producers)
+        return merged
+
+    def fragments(self) -> list[str]:
+        """The engine's read side: each effective producer's current text (parent facts first, then this
+        scope's), dropping ``None`` and empty strings. The engine joins and wraps these, so this stays
+        ignorant of prompt formatting."""
+        out: list[str] = []
+        for producer in self._effective().values():
+            fragment = producer()
+            if fragment:
+                out.append(fragment)
+        return out

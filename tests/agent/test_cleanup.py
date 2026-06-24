@@ -87,27 +87,38 @@ def _semi(id_: str, group: str, content: str = "data") -> ToolMessage:
     return mark_reclaimable(ToolMessage(content=content, tool_call_id=id_, name=group, id=id_), group=group)
 
 
-def test_apply_cleanup_stubs_group_promotes_and_keeps_adjacency():
-    stub = apply_cleanup([_semi("a", "search")], [{"group": "search"}])[0]
+async def test_apply_cleanup_stubs_group_promotes_and_keeps_adjacency():
+    stub = (await apply_cleanup([_semi("a", "search")], [{"group": "search"}]))[0]
     assert stub.id == "a" and stub.tool_call_id == "a"          # identity + adjacency preserved
     assert stub.content == STUB_CONTENT and lifetime_of(stub) == "permanent"   # settled stub
 
 
-def test_apply_cleanup_skips_wrong_group_and_ineligible():
+async def test_apply_cleanup_skips_wrong_group_and_ineligible():
     permanent = HumanMessage(content="keep", id="p")            # not semi-permanent -> ineligible
-    edits = apply_cleanup([_semi("a", "search"), _semi("b", "files"), permanent], [{"group": "search"}])
+    edits = await apply_cleanup([_semi("a", "search"), _semi("b", "files"), permanent], [{"group": "search"}])
     assert [e.id for e in edits] == ["a"]                       # only the matching-group semi-perm message
 
 
-def test_apply_cleanup_dedupes_across_requests():
-    edits = apply_cleanup([_semi("a", "search")], [{"group": "search"}, {"group": "search"}])
+async def test_apply_cleanup_dedupes_across_requests():
+    edits = await apply_cleanup([_semi("a", "search")], [{"group": "search"}, {"group": "search"}])
     assert [e.id for e in edits] == ["a"]                       # reclaimed once despite two requests
 
 
-def test_apply_cleanup_unimplemented_strategy_falls_back_to_stub():
-    tagged = set_strategy(_semi("a", "search"), "summarize")    # only stub is built; others fall back
-    stub = apply_cleanup([tagged], [{"group": "search"}])[0]
+async def test_apply_cleanup_summarize_without_a_summarizer_falls_back_to_stub():
+    tagged = set_strategy(_semi("a", "search"), "summarize")    # summarize strategy, but no summarizer wired
+    stub = (await apply_cleanup([tagged], [{"group": "search"}]))[0]
     assert stub.content == STUB_CONTENT and lifetime_of(stub) == "permanent"
+
+
+async def test_apply_cleanup_summarizes_when_a_summarizer_is_provided():
+    tagged = set_strategy(_semi("a", "search"), "summarize")
+
+    async def summarize(targets):                               # the engine injects this (a subagent batch)
+        return {m.id: f"summary of {m.id}" for m in targets}
+
+    out = (await apply_cleanup([tagged], [{"group": "search"}], summarize=summarize))[0]
+    assert out.id == "a" and lifetime_of(out) == "permanent" and is_reclaim_ineligible(out)
+    assert "summary of a" in out.content and out.content != STUB_CONTENT   # condensed, not emptied
 
 
 # ----- promote (branch freeze) ----- #
@@ -123,28 +134,28 @@ def test_promote_freezes_lifetime_preserving_content():
 
 # ----- apply_cleanup: age expiry ----- #
 
-def test_apply_cleanup_expires_after_user_turns_counting_only_user_role():
+async def test_apply_cleanup_expires_after_user_turns_counting_only_user_role():
     sp = _semi("a", "g")
     user = set_role(HumanMessage(content="next", id="u1"), "user")
     system = set_role(HumanMessage(content="<system>x</system>", id="s1"), "system")
     # One genuine user turn after the semi-perm message; the system message does not count.
-    assert [e.id for e in apply_cleanup([sp, system, user], expire_after=1)] == ["a"]
-    assert apply_cleanup([sp, system, user], expire_after=2) == []      # needs 2 user turns, only 1
-    assert apply_cleanup([sp, system], expire_after=1) == []            # no user turns after -> kept
+    assert [e.id for e in await apply_cleanup([sp, system, user], expire_after=1)] == ["a"]
+    assert await apply_cleanup([sp, system, user], expire_after=2) == []   # needs 2 user turns, only 1
+    assert await apply_cleanup([sp, system], expire_after=1) == []         # no user turns after -> kept
 
 
-def test_apply_cleanup_per_message_expire_after_overrides_the_engine_default():
+async def test_apply_cleanup_per_message_expire_after_overrides_the_engine_default():
     sp = set_expire_after(_semi("a", "g"), 2)                           # this message's own age is 2 turns
     u1 = set_role(HumanMessage(content="u", id="u1"), "user")
     u2 = set_role(HumanMessage(content="u", id="u2"), "user")
-    assert apply_cleanup([sp, u1], expire_after=1) == []               # 1 turn < its own 2 -> kept (own wins)
-    assert [e.id for e in apply_cleanup([sp, u1, u2], expire_after=1)] == ["a"]   # 2 turns >= 2 -> reclaimed
+    assert await apply_cleanup([sp, u1], expire_after=1) == []          # 1 turn < its own 2 -> kept (own wins)
+    assert [e.id for e in await apply_cleanup([sp, u1, u2], expire_after=1)] == ["a"]   # 2 >= 2 -> reclaimed
 
 
-def test_apply_cleanup_per_message_expire_after_fires_with_engine_default_off():
+async def test_apply_cleanup_per_message_expire_after_fires_with_engine_default_off():
     sp = set_expire_after(_semi("a", "g"), 1)
     u1 = set_role(HumanMessage(content="u", id="u1"), "user")
-    assert [e.id for e in apply_cleanup([sp, u1], expire_after=None)] == ["a"]   # own age fires, default off
+    assert [e.id for e in await apply_cleanup([sp, u1], expire_after=None)] == ["a"]   # own age fires, default off
 
 
 # ----- apply_hydrations (keep longer) ----- #

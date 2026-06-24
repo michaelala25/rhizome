@@ -11,6 +11,7 @@ from typing import Annotated
 import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from rhizome.agent.app_context import AppContextHooks
 from rhizome.agent.checkpointer import AgentCheckpointerService
 from rhizome.agent.context import RootAgentContext
 from rhizome.agent.engine import PromptEngine
@@ -190,12 +191,13 @@ def test_new_builds_context_with_injection_and_framework_fields():
         return object(), PromptEngine()
 
     register(h.runtime, "root", build)                           # context_schema=RootAgentContext
-    ctx = h.runtime.new("root", local_resources=None, hooks=("x",)).agent_context
+    app_hooks = AppContextHooks()
+    ctx = h.runtime.new("root", local_resources=None, app_context_hooks=app_hooks).agent_context
 
     assert isinstance(ctx, RootAgentContext)
     assert ctx.session_factory is session_factory                # service field injected from the scope
     assert ctx.runtime is h.runtime and ctx.pending is not None   # framework fields filled by the runtime
-    assert ctx.hooks == ("x",)                                   # caller kwarg flowed through
+    assert ctx.app_context_hooks is app_hooks                    # caller kwarg flowed through
 
 
 def test_session_queue_is_the_context_pending():

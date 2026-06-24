@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Coroutine
 
+from rhizome.agent.app_context import AppContextHookService
 from rhizome.agent.engine import MessagePayload
 from rhizome.agent.runtime import AgentRuntime
 from rhizome.app.chat_pane.chat_input import ChatInputModel
@@ -72,6 +73,7 @@ class ChatAreaModel(ViewModelBase):
         local_resources_factory: Callable[[], ResourceContextStore] | None = None,
         command_registry: CommandRegistryService | None = None,
         options: OptionService | None = None,
+        app_context_hooks: AppContextHookService | None = None,
         session_factory: SessionFactoryService | None = None,
         show_welcome: bool = False,
         debug: bool = False,
@@ -100,12 +102,17 @@ class ChatAreaModel(ViewModelBase):
         # the view swaps the underlying callable for Textual's ``run_worker`` at mount.
         self._scheduler: Callable[[Coroutine[Any, Any, Any]], Any] = asyncio.create_task
 
+        # Workspace-scoped app-context hooks (injected; None when standalone). Threaded into the graph so
+        # the prompt engine renders the workspace's facts as ephemeral tail context.
+        self._app_context_hooks = app_context_hooks
+
         self.conversation_graph: ConversationGraph = ConversationGraph(
             runtime,
             self._schedule,
             agent_key=agent_key,
             resource_context=resource_context,
             resource_index=resource_index,
+            app_context_hooks=self._app_context_hooks,
             local_resources_factory=local_resources_factory,
         )
         self.conversation_graph.make_root()   # opens the topology — mints the root node after wiring
@@ -134,7 +141,7 @@ class ChatAreaModel(ViewModelBase):
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
         # Status bar — a fixed chat-area element (not a swappable panel). A projection of the
-        # checked-out node's live mode/verbosity (its AppContextStore) plus the model name (from
+        # checked-out node's live mode/verbosity (its LocalAppContextStore) plus the model name (from
         # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible branch.
         self.status_bar = StatusBarModel(self._options, self._cursor.node.app_state)
 
@@ -313,16 +320,16 @@ class ChatAreaModel(ViewModelBase):
 
     @property
     def mode(self) -> Mode:
-        """The checked-out branch's active mode — read off its ``AppContextStore`` (the SSOT)."""
+        """The checked-out branch's active mode — read off its ``LocalAppContextStore`` (the SSOT)."""
         return Mode(self._cursor.node.app_state.mode)
 
     @property
     def verbosity(self) -> str:
-        """The checked-out branch's answer verbosity — read off its ``AppContextStore`` (the SSOT)."""
+        """The checked-out branch's answer verbosity — read off its ``LocalAppContextStore`` (the SSOT)."""
         return self._cursor.node.app_state.verbosity
 
     def set_mode(self, mode: Mode, *, cursor: Cursor | None = None, silent: bool = False) -> None:
-        """Switch the branch's mode by writing its live ``AppContextStore`` — the single source of truth
+        """Switch the branch's mode by writing its live ``LocalAppContextStore`` — the single source of truth
         both the user (here) and the agent (the ``set_mode`` tool) write through.
 
         The store is always live, so the change needs no eager send: the prompt engine reads it at the
@@ -337,9 +344,9 @@ class ChatAreaModel(ViewModelBase):
             self.append_message(text, Role.SYSTEM, cursor=target, to_agent=False)
 
     def set_verbosity(self, verbosity: str, *, cursor: Cursor | None = None) -> None:
-        """Switch the branch's answer verbosity by writing its live ``AppContextStore`` — the per-branch
+        """Switch the branch's answer verbosity by writing its live ``LocalAppContextStore`` — the per-branch
         SSOT the status bar projects, mirroring ``set_mode``. No prompt-engine consumer reads it yet
-        (see ``AppContextStore``), so this is the view-facing setting only for now."""
+        (see ``LocalAppContextStore``), so this is the view-facing setting only for now."""
         target = self._resolve(cursor)
         self.conversation_graph.node(target).app_state.set_verbosity(verbosity)
 

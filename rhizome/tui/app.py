@@ -17,6 +17,7 @@ from rhizome.config import AppConfig, AppConfigService, get_default_db_path
 from rhizome.credentials import APIKeyService, CredentialsAPIKeyService
 from rhizome.logs import get_logger, initialize_global_logger
 from rhizome.tui.log_handler import TUILogHandler
+from rhizome.agent.app_context import AppContextHooks, AppContextHookService
 from rhizome.app.commands import CommandRegistry, CommandRegistryService, CommandUsageError, RAW
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.db import SessionFactoryService, get_engine, get_session_factory
@@ -90,6 +91,9 @@ class RhizomeApp(App):
         # here, reachable via ``at_scope``; the root scope dispenses only Root. ``Options`` satisfies the
         # ``OptionService`` protocol directly, so the bare instance is registered under the key.
         self.services.register(OptionService, self.options)
+        # Root app-context hooks. Per-workspace child registries parent here, so app-scope facts (host /
+        # render capabilities) fall through to every workspace; the workspace adds its own (e.g. the model).
+        self.services.register(AppContextHookService, AppContextHooks())
         # API keys (injected resolver) + the optional embedding service. EmbeddingService is registered
         # only when a provider is configured, so consumers that ``try_get`` it degrade gracefully when
         # embeddings aren't set up. The Voyage impl is deferred-imported so its REST/splitter deps stay

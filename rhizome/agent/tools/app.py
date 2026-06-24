@@ -6,7 +6,7 @@
   stream router uses to build the matching feed widget (see ``rhizome/app/chat_area/stream_router``);
   whatever that widget resolves with is what ``interrupt()`` returns here.
 
-- ``set_mode`` switches the active conversation mode. It writes the live ``AppContextStore`` on the
+- ``set_mode`` switches the active conversation mode. It writes the live ``LocalAppContextStore`` on the
   context (``ctx.app_state``) rather than returning a state update: that store is the single source of
   truth both the user and the agent write through, and the prompt engine commits the change into
   ``RootAgentState["mode"]`` at the next compile (see ``rhizome/agent/app_context.py``).
@@ -25,6 +25,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
 from ..app_context import VALID_MODES
+from ..base import CleanupRequest
 from .visibility import ToolVisibility, tool_visibility
 
 
@@ -54,7 +55,8 @@ _CLEANUP_CONTEXT_DESC = (
     "are tagged inline with a '[reclaimable · <group>]' marker, where <group> is the source tool's name; "
     "pass that group here to clear every result in it. The content is replaced with a short placeholder — "
     "the tool call and its result stay in place, just emptied — and read-only results can always be "
-    "re-fetched by calling the tool again. Takes effect from your next step."
+    "re-fetched by calling the tool again. Pass strategy='summarize' to instead replace the content with a "
+    "concise summary (slower, but keeps the gist) rather than emptying it. Takes effect from your next step."
 )
 
 _HYDRATE_DESC = (
@@ -96,13 +98,18 @@ def build_app_tools() -> dict:
 
     @tool_visibility(ToolVisibility.LOW)
     @tool("cleanup_context", description=_CLEANUP_CONTEXT_DESC)
-    async def cleanup_context_tool(group: str, runtime: ToolRuntime) -> Command:
+    async def cleanup_context_tool(group: str, runtime: ToolRuntime, strategy: str = "stub") -> Command:
         # File the declarative request, with this call's own tool_result in the same update; the engine
         # reclaims the group at the next compile (it is the sole emitter — see PromptEngine._cleanup).
+        # ``strategy`` rides along: "summarize" condenses the content, anything else empties it to a stub.
+        request: CleanupRequest = {"group": group}
+        if strategy == "summarize":
+            request["strategy"] = "summarize"
+        verb = "summarized" if strategy == "summarize" else "cleared"
         return Command(update={
-            "pending_cleanups": [{"group": group}],
+            "pending_cleanups": [request],
             "messages": [ToolMessage(
-                content=f"Scheduled reclaimable '{group}' content for cleanup; it clears on your next step.",
+                content=f"Scheduled reclaimable '{group}' content to be {verb} on your next step.",
                 tool_call_id=runtime.tool_call_id,
             )],
         })

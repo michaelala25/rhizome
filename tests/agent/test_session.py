@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.prebuilt.tool_node import ToolRuntime
 
+from rhizome.agent.app_context import AppContextHooks
 from rhizome.agent.session import AgentSession, InvokeResult
 from rhizome.agent.state import RootAgentState
 from rhizome.app.options import Options
@@ -100,15 +101,16 @@ def test_update_context_guards_and_applies():
 
     s._busy = True
     with pytest.raises(RuntimeError):
-        s.update_context(hooks=("x",))               # no edits while a run is in flight
+        s.update_context(app_context_hooks=AppContextHooks())   # no edits while a run is in flight
     s._busy = False
 
     for framework_field in ("pending", "runtime"):
         with pytest.raises(ValueError):
             s.update_context(**{framework_field: object()})   # framework-owned, off-limits
 
-    s.update_context(hooks=("x",))
-    assert s.agent_context.hooks == ("x",)
+    app_hooks = AppContextHooks()
+    s.update_context(app_context_hooks=app_hooks)
+    assert s.agent_context.app_context_hooks is app_hooks
     assert s._queue is s.agent_context.pending       # queue re-pinned to the (unchanged) pending
 
 

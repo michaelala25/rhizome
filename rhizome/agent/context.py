@@ -15,13 +15,14 @@ Field conventions, honoured by ``AgentRuntime.new``:
 """
 
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from rhizome.db import ReadOnlySessionFactoryService, SessionFactoryService
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
 
-from .app_context import AppContextStore
+from .app_context import AppContextHookService, LocalAppContextStore
 from .engine import PayloadQueue
+from .engine_events import EngineEventsChannel
 from .topology import TopologyView
 
 if TYPE_CHECKING:
@@ -62,15 +63,24 @@ class RootAgentContext(BaseAgentContext):
     prompt engine calls ``consume()`` on it at compile (lazy, incremental ingestion) and emits a
     per-thread "what's queryable" reminder describing its loaded set."""
 
-    app_state: AppContextStore | None = None
+    app_state: LocalAppContextStore | None = None
     """Node-local store of live app settings (the active mode today). The single source of truth both the
     user (view) and the agent (the ``set_mode`` tool) write through; the prompt engine diffs it against
     ``RootAgentState["mode"]`` at compile and commits the change, narrating it via guides/headers. A live
     channel, never checkpointed — re-supplied per session and carried across a branch by ``copy_from``.
     ``None`` outside the conversation graph that wires it."""
 
-    hooks: tuple[Any, ...] = ()
-    """App context hooks: opaque payloads an engine may render as ephemeral context."""
+    app_context_hooks: AppContextHookService | None = None
+    """The workspace-scoped app-context hook registry (``AppContextHookService``), threaded in by the graph.
+    The prompt engine reads its merged effective facts lazily in ``prepare`` and folds them into a single
+    tail ``<system-reminder>`` — view-only, never checkpointed, so the facts re-derive per process. The app
+    owns the content; the engine owns placement. ``None`` outside a graph that wires it."""
+
+    engine_events: EngineEventsChannel | None = None
+    """Per-node engine→app event channel (a pure ``CallbackHost``). The engine emits side-band status the
+    token/tool stream doesn't carry — slow context compaction today — and the app subscribes to drive UI
+    (e.g. a spinner). Per node, and every event carries the node id, so a compacting branch only signals its
+    own view. ``None`` outside a graph that wires it."""
 
     topology: TopologyView | None = None
     """Shared, graph-global handle to the live topology snapshot — the conversation layer wires the one

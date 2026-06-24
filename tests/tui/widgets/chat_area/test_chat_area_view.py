@@ -58,7 +58,7 @@ async def test_branch_feed_renders_under_a_depth_wrapper():
 
 async def test_status_bar_reflects_mode_and_verbosity():
     """The docked StatusBar repaints from the VM's status_bar projection: a mode/verbosity change on
-    the VM (writing the leaf's AppContextStore) lands in the bar's rendered text."""
+    the VM (writing the leaf's LocalAppContextStore) lands in the bar's rendered text."""
     vm = make_vm()
     async with _Harness(vm).run_test() as pilot:
         await pilot.pause()

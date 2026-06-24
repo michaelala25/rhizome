@@ -1,7 +1,7 @@
-"""Tests for StatusBarModel — the status bar's projection over the per-branch AppContextStore
+"""Tests for StatusBarModel — the status bar's projection over the per-branch LocalAppContextStore
 (mode/verbosity) and the conversation-global OptionService (model name)."""
 
-from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.app_context import LocalAppContextStore
 from rhizome.app.chat_area.status import StatusBarModel
 from rhizome.app.options import Options, OptionScope
 
@@ -23,7 +23,7 @@ def _options() -> Options:
 
 def test_projects_initial_mode_verbosity_and_model():
     options = _options()
-    bar = StatusBarModel(options, AppContextStore(mode="learn", verbosity="verbose"))
+    bar = StatusBarModel(options, LocalAppContextStore(mode="learn", verbosity="verbose"))
 
     assert bar.mode == "learn"
     assert bar.verbosity == "verbose"
@@ -31,14 +31,14 @@ def test_projects_initial_mode_verbosity_and_model():
 
 
 def test_no_options_leaves_model_blank():
-    bar = StatusBarModel(None, AppContextStore())
+    bar = StatusBarModel(None, LocalAppContextStore())
     assert bar.model_name == ""
     assert bar.mode == "idle"
     assert bar.verbosity == "auto"
 
 
 def test_reacts_to_app_state_mode_and_verbosity_changes():
-    app_state = AppContextStore()
+    app_state = LocalAppContextStore()
     bar = StatusBarModel(None, app_state)
     rec = DirtyRecorder(bar)
 
@@ -51,8 +51,8 @@ def test_reacts_to_app_state_mode_and_verbosity_changes():
 
 
 def test_set_app_state_swaps_subscription_and_rereads():
-    first = AppContextStore(mode="learn")
-    second = AppContextStore(mode="review", verbosity="terse")
+    first = LocalAppContextStore(mode="learn")
+    second = LocalAppContextStore(mode="review", verbosity="terse")
     bar = StatusBarModel(None, first)
     rec = DirtyRecorder(bar)
 
@@ -70,7 +70,7 @@ def test_set_app_state_swaps_subscription_and_rereads():
 
 def test_reacts_to_model_option_change():
     options = _options()
-    bar = StatusBarModel(options, AppContextStore())
+    bar = StatusBarModel(options, LocalAppContextStore())
     rec = DirtyRecorder(bar)
 
     new_model = "claude-sonnet-4-6"
@@ -83,7 +83,7 @@ def test_reacts_to_model_option_change():
 
 def test_provider_change_rereads_conditional_model():
     options = _options()
-    bar = StatusBarModel(options, AppContextStore())
+    bar = StatusBarModel(options, LocalAppContextStore())
 
     options.set(Options.Agent.Provider, "openai")
     # Model's effective value is conditional on Provider; the bar re-reads it off the option service

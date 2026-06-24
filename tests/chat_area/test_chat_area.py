@@ -130,7 +130,7 @@ async def test_mode_and_verbosity_write_the_app_state_store():
     area.set_mode(Mode.LEARN)
     area.set_verbosity("verbose")
 
-    # Mode and verbosity are both live SSOT settings on the node's AppContextStore now — the setters
+    # Mode and verbosity are both live SSOT settings on the node's LocalAppContextStore now — the setters
     # write the store directly, never the payload queue. (Verbosity has no prompt-engine consumer yet,
     # so it does not reach agent state; mode's commit into state is the engine's job at compile time.)
     assert node.app_state.mode == "learn"
@@ -222,7 +222,7 @@ def test_real_commands_always_registered_demo_commands_gated_on_debug():
     reason="mode→display now flows store -> (prompt-engine store/state alignment) -> state -> router. "
            "That alignment is pending, and this harness runs the base PromptEngine which has none, so "
            "state['mode'] stays unset and the router tags IDLE. Re-enable once the engine commits "
-           "AppContextStore.mode into RootAgentState.",
+           "LocalAppContextStore.mode into RootAgentState.",
     strict=False,
 )
 async def test_mode_set_while_idle_tags_that_same_runs_segments():

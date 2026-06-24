@@ -4,7 +4,7 @@ The status bar shows facts that are owned elsewhere; this VM stores none of them
 is a lazy ``@property`` that peeks at its SSOT on read, and every subscription routes to a single
 ``OnDirty`` so the view repaints. The two sources:
 
-- **mode + verbosity** — per-branch, on the checked-out node's ``AppContextStore``. Because they are
+- **mode + verbosity** — per-branch, on the checked-out node's ``LocalAppContextStore``. Because they are
   per-branch, the chat area re-points this VM at the current leaf's store on every cursor move via
   ``set_app_state``, which swaps the subscription onto the new store.
 - **model name + provider-specific knobs** — conversation-global, on the ``OptionService``. The provider
@@ -21,7 +21,7 @@ so it stays stored state rather than a property.
 
 from __future__ import annotations
 
-from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.app_context import LocalAppContextStore
 from rhizome.agent.engine import UsageReport
 from rhizome.app.model import ViewModelBase
 from rhizome.app.options import OptionService, Options
@@ -32,12 +32,12 @@ class StatusBarModel(ViewModelBase):
     def __init__(
         self,
         options: OptionService | None = None,
-        app_state: AppContextStore | None = None,
+        app_state: LocalAppContextStore | None = None,
     ) -> None:
         super().__init__()
 
         self._options = options
-        self._app_state: AppContextStore | None = None
+        self._app_state: LocalAppContextStore | None = None
 
         # Latest usage report for the checked-out branch. Pushed live by the stream router during a run on
         # the visible branch, and re-read from the leaf node's cache on every cursor move. The view paints
@@ -64,7 +64,7 @@ class StatusBarModel(ViewModelBase):
         self.emit(self.Callbacks.OnDirty)
 
     # ------------------------------------------------------------------
-    # Per-branch source: mode + verbosity (the current leaf's AppContextStore)
+    # Per-branch source: mode + verbosity (the current leaf's LocalAppContextStore)
     # ------------------------------------------------------------------
 
     @property
@@ -75,18 +75,18 @@ class StatusBarModel(ViewModelBase):
     def verbosity(self) -> str:
         return self._app_state.verbosity if self._app_state is not None else "auto"
 
-    def set_app_state(self, app_state: AppContextStore) -> None:
+    def set_app_state(self, app_state: LocalAppContextStore) -> None:
         """Point the bar at a node's live settings store, swapping the subscription off any previous one.
         The chat area calls this on every cursor move so the bar tracks the checked-out branch."""
         if app_state is self._app_state:
             return
         if self._app_state is not None:
-            self._app_state.unsubscribe(AppContextStore.Callbacks.OnModeChanged, self._on_dirty)
-            self._app_state.unsubscribe(AppContextStore.Callbacks.OnVerbosityChanged, self._on_dirty)
+            self._app_state.unsubscribe(LocalAppContextStore.Callbacks.OnModeChanged, self._on_dirty)
+            self._app_state.unsubscribe(LocalAppContextStore.Callbacks.OnVerbosityChanged, self._on_dirty)
 
         self._app_state = app_state
-        app_state.subscribe(AppContextStore.Callbacks.OnModeChanged, self._on_dirty)
-        app_state.subscribe(AppContextStore.Callbacks.OnVerbosityChanged, self._on_dirty)
+        app_state.subscribe(LocalAppContextStore.Callbacks.OnModeChanged, self._on_dirty)
+        app_state.subscribe(LocalAppContextStore.Callbacks.OnVerbosityChanged, self._on_dirty)
         self.emit(self.Callbacks.OnDirty)
 
     def set_usage_report(self, report: UsageReport | None) -> None:

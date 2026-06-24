@@ -25,8 +25,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import Callable
 
-from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.app_context import AppContextHookService, LocalAppContextStore
 from rhizome.agent.engine import UsageReport
+from rhizome.agent.engine_events import EngineEventsChannel
 from rhizome.agent.graph import AgentGraph, AgentNode, Cursor, WorkerScheduler
 from rhizome.agent.runtime import AgentRuntime
 from rhizome.agent.session import AgentSession
@@ -49,19 +50,22 @@ class ConversationItem[E]:
 
 class ConversationNode[E](AgentNode):
     """An ``AgentNode`` carrying the app-facing state of one conversation branch, plus the node-local
-    resource store and app-settings store.
+    resource store, app-settings store, and engine-events channel.
 
     The agent-layer fields (session, worker) arrive through the base constructor; ``resources``,
-    ``app_state``, and the conversation bookkeeping are added here. Both stores are read-only handles on
-    purpose: the SAME objects are wired into the session's frozen compile context, so they must never be
-    swapped — branching copies *content* into them (``copy_from``), never rebinds them.
+    ``app_state``, ``engine_events``, and the conversation bookkeeping are added here. All three are
+    read-only handles on purpose: the SAME objects are wired into the session's frozen compile context, so
+    they must never be swapped. The two stores are seeded from the parent on a branch (``copy_from``); the
+    engine-events channel is not — each node gets a fresh one carrying its own id (a stateless bus has
+    nothing to copy).
     """
 
     def __init__(
         self,
         session: AgentSession,
         resources: ResourceContextStore | None,
-        app_state: AppContextStore | None,
+        app_state: LocalAppContextStore | None,
+        engine_events: EngineEventsChannel | None,
         scheduler: WorkerScheduler,
     ) -> None:
         super().__init__(session, scheduler)
@@ -73,6 +77,11 @@ class ConversationNode[E](AgentNode):
         self._app_state = app_state
         # Node-local app-settings store (mode), the SAME object wired into the session's compile context.
         # Read-only handle for the same reason as ``resources``; content copied across on branch.
+
+        self._engine_events = engine_events
+        # Per-node engine→app event channel, the SAME object wired into the session's compile context.
+        # Read-only handle like the stores, but never seeded on branch: a stateless bus has nothing to
+        # copy, and each node's channel carries its own id.
 
         self.feed: list[ConversationItem[E]] = []
         # Display items for this branch segment. The visible conversation at a cursor is the
@@ -104,9 +113,14 @@ class ConversationNode[E](AgentNode):
         return self._resources
 
     @property
-    def app_state(self) -> AppContextStore | None:
+    def app_state(self) -> LocalAppContextStore | None:
         """The node-local app-settings store (never reassigned — see the class docstring)."""
         return self._app_state
+
+    @property
+    def engine_events(self) -> EngineEventsChannel | None:
+        """The per-node engine→app event channel (never reassigned — see the class docstring)."""
+        return self._engine_events
 
     def derive(
         self, parent: "ConversationNode[E]", merged_from: "ConversationNode[E] | None" = None
@@ -157,12 +171,16 @@ class ConversationGraph[E](AgentGraph[ConversationNode[E]]):
         agent_key: str = "root",
         resource_context: ResourceContextStore | None = None,
         resource_index: ResourceIndexStore | None = None,
+        app_context_hooks: AppContextHookService | None = None,
         local_resources_factory: Callable[[], ResourceContextStore] | None = None,
     ) -> None:
         self.resource_context = resource_context
         # Graph-global context store, shared by every node's compile context.
         self.resource_index = resource_index
         # Graph-global index store, one instance for the whole graph.
+        self.app_context_hooks = app_context_hooks
+        # The workspace-scoped app-context hook service, shared by every node's compile context; the engine
+        # renders its facts as ephemeral tail context. None disables the channel (the engine renders nothing).
         self._local_resources_factory = local_resources_factory
         # Produces a fresh node-local context store per node; None disables local stores.
 
@@ -184,21 +202,24 @@ class ConversationGraph[E](AgentGraph[ConversationNode[E]]):
         return self.resource_context, self.resource_index
 
     def _make_node(self, node_id: int) -> ConversationNode[E]:
-        """Build a node carrying fresh node-local stores (resources + app settings), wired (alongside the
-        graph-global context and index stores, the shared topology view, and this node's id) into the
-        session's compile context."""
+        """Build a node carrying fresh node-local stores (resources + app settings) and a fresh per-node
+        engine-events channel, wired (alongside the graph-global context/index stores and app-context
+        hooks, the shared topology view, and this node's id) into the session's compile context."""
         local = self._local_resources_factory() if self._local_resources_factory else None
-        app_state = AppContextStore()
+        app_state = LocalAppContextStore()
+        engine_events = EngineEventsChannel(node_id)
         session = self._runtime.new(
             self._agent_key,
             local_resources=local,
             global_resources=self.resource_context,
             resource_index=self.resource_index,
+            app_context_hooks=self.app_context_hooks,
             topology=self._topology,
             node_id=node_id,
             app_state=app_state,
+            engine_events=engine_events,
         )
-        return ConversationNode(session, local, app_state, self._scheduler)
+        return ConversationNode(session, local, app_state, engine_events, self._scheduler)
 
     # -------------------------------------------------------------
     # Feed

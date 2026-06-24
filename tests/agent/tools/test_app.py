@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.app_context import LocalAppContextStore
 from rhizome.agent.tools import TOOL_VISIBILITY, ToolVisibility, build_app_tools
 from rhizome.agent.tools import app as app_module
 
@@ -83,14 +83,14 @@ async def test_multiple_questions_emit_multiple_choice_interrupt(ask_tool, inter
 
 async def test_set_mode_writes_the_store(set_mode_tool):
     """The tool writes the live store (the SSOT) — it does NOT return a state-update Command."""
-    store = AppContextStore(mode="idle")
+    store = LocalAppContextStore(mode="idle")
     out = await set_mode_tool.coroutine(mode="learn", runtime=_runtime_with(store))
     assert store.mode == "learn"
     assert out == "Mode is now: learn."
 
 
 async def test_set_mode_rejects_invalid_mode(set_mode_tool):
-    store = AppContextStore(mode="idle")
+    store = LocalAppContextStore(mode="idle")
     out = await set_mode_tool.coroutine(mode="bogus", runtime=_runtime_with(store))
     assert store.mode == "idle"          # store left untouched
     assert "Invalid mode" in out

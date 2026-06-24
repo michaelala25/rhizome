@@ -10,8 +10,9 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Syst
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from rhizome.agent.app_context import AppContextStore
+from rhizome.agent.app_context import AppContextHooks, LocalAppContextStore
 from rhizome.agent.context import RootAgentContext
+from rhizome.agent.engine_events import EngineEventsChannel
 from rhizome.agent.engine.base import (
     ingest_payloads,
     patch_orphaned_tool_calls,
@@ -31,7 +32,9 @@ from rhizome.agent.engine.resources import (
     local_resource_message_id,
     resource_deltas,
 )
-from rhizome.agent.engine.root import branch_marker_message_id, mode_guide_message_id, RootPromptEngine
+from rhizome.agent.engine.root import (
+    APP_CONTEXT_MESSAGE_ID, branch_marker_message_id, mode_guide_message_id, RootPromptEngine,
+)
 from rhizome.agent.topology import NodeInfo, TopologySnapshot, TopologyView
 from rhizome.db.models import Base, Resource, ResourceContent, ResourceSection
 from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceTreeNode
@@ -258,6 +261,34 @@ async def test_prepare_floats_index_to_tail():
     out = await engine.prepare(request, None)
     assert [m.content for m in out.messages] == ["sys", "G", "u1", "u2", "IDX"]
     assert is_index_resource_message(out.messages[-1])
+
+
+async def test_prepare_renders_app_context_hooks_at_tail():
+    engine = RootPromptEngine()
+    hooks = AppContextHooks()
+    hooks.register("model", "You are model X.")
+    hooks.register("host", lambda: "Math rendering supported.")
+    request = _Request([SystemMessage(content="sys"), HumanMessage(content="u1")])
+
+    out = await engine.prepare(request, RootAgentContext(app_context_hooks=hooks))
+    # The body is untouched; the facts fold into one <system-reminder> floated to the very end.
+    assert [m.content for m in out.messages[:2]] == ["sys", "u1"]
+    tail = out.messages[-1]
+    assert tail.id == APP_CONTEXT_MESSAGE_ID and pin_of(tail) == "tail"
+    assert "You are model X." in tail.content and "Math rendering supported." in tail.content
+
+
+async def test_prepare_emits_no_app_context_message_when_absent_or_empty():
+    engine = RootPromptEngine()
+    base = [SystemMessage(content="sys"), HumanMessage(content="u1")]
+
+    out_none = await engine.prepare(_Request(list(base)), RootAgentContext())          # no hooks wired
+    assert all(m.id != APP_CONTEXT_MESSAGE_ID for m in out_none.messages)
+
+    empty = AppContextHooks()
+    empty.register("hidden", lambda: None)                                             # everything hidden
+    out_empty = await engine.prepare(_Request(list(base)), RootAgentContext(app_context_hooks=empty))
+    assert all(m.id != APP_CONTEXT_MESSAGE_ID for m in out_empty.messages)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -491,12 +522,12 @@ async def test_compile_no_branch_marker_without_topology():
 
 
 # ------------------------------------------------------------------------------------------------
-# Root engine — mode switches: witnessed from the AppContextStore (SSOT), narrated in compile
+# Root engine — mode switches: witnessed from the LocalAppContextStore (SSOT), narrated in compile
 # ------------------------------------------------------------------------------------------------
 
 async def test_compile_first_entry_injects_full_guide_and_allowlist():
     engine = RootPromptEngine()
-    ctx = RootAgentContext(app_state=AppContextStore(mode="learn"))
+    ctx = RootAgentContext(app_state=LocalAppContextStore(mode="learn"))
 
     # Fresh thread (mode baseline idle) -> learn: the full guide under the deterministic guide id.
     update = await engine.compile({"messages": []}, ctx)
@@ -510,7 +541,7 @@ async def test_compile_first_entry_injects_full_guide_and_allowlist():
 
 async def test_compile_reentry_injects_concise_reminder():
     engine = RootPromptEngine()
-    ctx = RootAgentContext(app_state=AppContextStore(mode="learn"))
+    ctx = RootAgentContext(app_state=LocalAppContextStore(mode="learn"))
     # The learn guide is already in context and the committed mode is review, so switching to learn is a
     # re-entry: a concise <system-reminder>, NOT the full guide, under a fresh id (it belongs at the
     # current point, not back where the guide first landed).
@@ -530,12 +561,12 @@ async def test_compile_reentry_injects_concise_reminder():
 async def test_compile_default_idle_is_silent():
     engine = RootPromptEngine()
     # Fresh thread sitting in the default idle mode -> nothing to announce.
-    assert await engine.compile({"messages": []}, RootAgentContext(app_state=AppContextStore())) is None
+    assert await engine.compile({"messages": []}, RootAgentContext(app_state=LocalAppContextStore())) is None
 
 
 async def test_compile_switch_to_idle_announces_allowlist():
     engine = RootPromptEngine()
-    ctx = RootAgentContext(app_state=AppContextStore(mode="idle"))
+    ctx = RootAgentContext(app_state=LocalAppContextStore(mode="idle"))
     # review -> idle: idle has no guide, so a bare <system> notice carrying the (changed) allowlist.
     update = await engine.compile({"mode": "review", "messages": []}, ctx)
     assert update["mode"] == "idle"
@@ -548,7 +579,7 @@ async def test_compile_switch_to_idle_announces_allowlist():
 
 async def test_compile_mode_is_idempotent_after_commit():
     engine = RootPromptEngine()
-    ctx = RootAgentContext(app_state=AppContextStore(mode="learn"))
+    ctx = RootAgentContext(app_state=LocalAppContextStore(mode="learn"))
     # Once committed, a compile whose state already sits at the desired mode says nothing further.
     assert await engine.compile({"mode": "learn", "messages": []}, ctx) is None
 
@@ -706,3 +737,41 @@ async def test_freeze_wins_over_expiry_for_inherited_messages():
     update = await engine.compile({"messages": [inherited, user]}, ctx)
     resolved = [m for m in update["messages"] if m.id == "m"][-1]    # the last writer for this id wins
     assert lifetime_of(resolved) == "permanent" and resolved.content == inherited.content
+
+
+# ------------------------------------------------------------------------------------------------
+# Root engine — the summarize cleanup strategy (subagent provisioning + per-node compaction events)
+# ------------------------------------------------------------------------------------------------
+
+def test_summarizer_hook_present_only_with_runtime_and_key():
+    keyed = RootPromptEngine(summarizer_key="summarizer")
+    assert keyed._summarizer(None) is None                                    # no context
+    assert keyed._summarizer(RootAgentContext()) is None                      # context, but no runtime
+    assert RootPromptEngine()._summarizer(RootAgentContext(runtime=object())) is None   # runtime, but no key
+    assert keyed._summarizer(RootAgentContext(runtime=object())) is not None  # both -> a real summarizer
+
+
+async def test_summarize_batch_fires_compaction_events_and_maps_summaries():
+    # _summarize_one is the only runtime-touching part; override it so the batch logic (events, gather, and
+    # per-target failure handling) is exercised without provisioning a real subagent.
+    class _Engine(RootPromptEngine):
+        async def _summarize_one(self, ctx, message):
+            if message.id == "bad":
+                raise RuntimeError("boom")
+            return f"summary of {message.id}"
+
+    engine = _Engine(summarizer_key="summarizer")
+    channel = EngineEventsChannel(7)
+    starts: list[tuple[int, int]] = []
+    finishes: list[int] = []
+    def on_start(node_id, count): starts.append((node_id, count))
+    def on_finish(node_id): finishes.append(node_id)
+    channel.subscribe(channel.Callbacks.OnCompactionStarted, on_start)
+    channel.subscribe(channel.Callbacks.OnCompactionFinished, on_finish)
+
+    good = ToolMessage(content="x", tool_call_id="a", id="a")
+    bad = ToolMessage(content="y", tool_call_id="b", id="bad")
+    summaries = await engine._summarize_batch(RootAgentContext(engine_events=channel), [good, bad])
+
+    assert summaries == {"a": "summary of a"}        # the failed target is omitted -> apply_cleanup stubs it
+    assert starts == [(7, 2)] and finishes == [7]    # one bracket around the batch, carrying node id + count

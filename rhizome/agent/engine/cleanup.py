@@ -11,6 +11,7 @@ overview), above ``metadata`` (the tag schema) and below ``state`` and the engin
   ``permanent`` — a settled stub.
 """
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain_core.messages import BaseMessage
@@ -112,13 +113,21 @@ DEFAULT_STRATEGY: Strategy = "stub"
 
 STUB_CONTENT = "[Earlier content was cleared to reclaim context.]"
 
+SUMMARY_PREFIX = "[Summarized to reclaim context]\n\n"
 
-def apply_cleanup(
+# Produces summaries for the ``summarize``-strategy messages of one cleanup pass: maps the target messages
+# to ``{message id -> summary text}``. The engine injects it (the root engine runs a summarizer subagent);
+# a target it omits — no summarizer wired, or a failed call — falls back to a stub.
+type Summarizer = Callable[[list[BaseMessage]], Awaitable[dict[str, str]]]
+
+
+async def apply_cleanup(
     messages: list[BaseMessage],
     requests: list[CleanupRequest] = (),
     *,
     expire_after: int | None = None,
     default_strategy: Strategy = DEFAULT_STRATEGY,
+    summarize: Summarizer | None = None,
 ) -> list[BaseMessage]:
     """The engine's sole emitter of cleanup edits. Schedules ``semi-permanent`` messages for reclamation
     from two sources — explicit group ``requests`` and age expiry (a message past its effective expiry age)
@@ -126,9 +135,13 @@ def apply_cleanup(
     since-pinned/``permanent`` message is simply skipped. Strategy precedence is message > request >
     ``default_strategy`` (expiry has no request, so message > default). The expiry age is itself resolved
     message > engine default: ``expire_after`` is the engine default applied to a message that declares no
-    age of its own; a message with neither is never auto-expired (explicit requests still reclaim it). A
-    reclaimed message is promoted to ``permanent`` (a settled stub), advancing the semi-permanent span; the
-    re-emits share their ids, so ``add_messages`` replaces in place."""
+    age of its own; a message with neither is never auto-expired (explicit requests still reclaim it).
+
+    A ``stub`` reclamation is a static placeholder; a ``summarize`` one replaces the content with a generated
+    summary from the injected ``summarize`` callable (run once over all summarize-strategy targets, so the
+    engine can batch/parallelize them). Without a summarizer, or for a target it fails, a ``summarize``
+    strategy falls back to stub. Either way the reclaimed message is promoted to ``permanent`` (advancing the
+    semi-permanent span) and re-emitted under its own id, so ``add_messages`` replaces in place."""
     scheduled: dict[str, tuple[BaseMessage, Strategy]] = {}
     for request in requests:
         group = request.get("group")
@@ -143,7 +156,13 @@ def apply_cleanup(
         threshold = expire_after if threshold is None else threshold
         if threshold is not None and after[i] >= threshold:
             scheduled[m.id] = (m, strategy_of(m) or default_strategy)
-    return [_reclaim(m, strategy) for m, strategy in scheduled.values()]
+
+    summaries: dict[str, str] = {}
+    if summarize is not None:
+        targets = [m for m, strategy in scheduled.values() if _is_summarize(strategy)]
+        if targets:
+            summaries = await summarize(targets)
+    return [_reclaim(m, strategy, summaries.get(m.id)) for m, strategy in scheduled.values()]
 
 
 def _schedulable(message: BaseMessage, scheduled: dict[str, Any]) -> bool:
@@ -228,11 +247,20 @@ def _effective_strategy(message: BaseMessage, request: CleanupRequest, default: 
     return strategy_of(message) or request.get("strategy") or default
 
 
-def _reclaim(message: BaseMessage, strategy: Strategy) -> BaseMessage:
-    """Apply one strategy to one message. Only ``stub`` is implemented; the rest name the space and fall
-    back to ``stub`` (logged) until their transforms land."""
-    if strategy != "stub":
-        _logger.warning("cleanup strategy %r not implemented; falling back to stub", strategy)
+def _is_summarize(strategy: Strategy) -> bool:
+    """Whether ``strategy`` calls for a generated summary (vs a static stub). The ``+store`` variant's
+    archival half is deferred; it summarizes like the bare form for now."""
+    return strategy in ("summarize", "summarize+store")
+
+
+def _reclaim(message: BaseMessage, strategy: Strategy, summary: str | None = None) -> BaseMessage:
+    """Apply one strategy to one message. A ``summarize`` strategy with a produced ``summary`` keeps a
+    condensed form; everything else — a ``stub`` strategy, or a ``summarize`` whose summarizer was absent or
+    failed — falls back to the static stub."""
+    if summary is not None:
+        return _summarize(message, summary)
+    if _is_summarize(strategy):
+        _logger.debug("no summary produced for %s (strategy %r); stubbing", message.id, strategy)
     return _stub(message)
 
 
@@ -242,5 +270,16 @@ def _stub(message: BaseMessage) -> BaseMessage:
     the same id (and ``tool_call_id`` etc.), so it replaces in place and keeps tool adjacency. Replacing the
     content drops the reclaimable marker for free."""
     copy = message.model_copy(update={"content": STUB_CONTENT, "additional_kwargs": detached_kwargs(message)})
+    set_lifetime(copy, "permanent")
+    return set_reclaim_ineligible(copy)
+
+
+def _summarize(message: BaseMessage, summary: str) -> BaseMessage:
+    """Replace ``message``'s content with a generated ``summary`` (prefixed so the agent reads it as a
+    condensed stand-in, not the original) and settle it: ``permanent`` + ``reclaim_ineligible``. The same
+    in-place re-emit as ``_stub`` (shared id, tool adjacency), just retaining useful content."""
+    copy = message.model_copy(update={
+        "content": f"{SUMMARY_PREFIX}{summary}", "additional_kwargs": detached_kwargs(message),
+    })
     set_lifetime(copy, "permanent")
     return set_reclaim_ineligible(copy)

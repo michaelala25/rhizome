@@ -42,7 +42,7 @@ from .engine import compute_chat_model_max_tokens, PromptCompilerMiddleware, Roo
 from .factory import AgentFactory
 from .prompts import compose_system_prompt
 from .state import RootAgentState
-from .subagents import register_subagents
+from .subagents import register_subagents, SUMMARIZER_KEY
 from .tools import (
     build_app_tools,
     build_commit_tools,
@@ -218,6 +218,7 @@ def build_root_agent(
         auto_compact=auto_compact,
         auto_compact_after=auto_compact_after,
         auto_compact_threshold=auto_compact_threshold,
+        summarizer_key=SUMMARIZER_KEY,
         debug=app_config.debug,
     )
 

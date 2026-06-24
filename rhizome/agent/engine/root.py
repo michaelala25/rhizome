@@ -9,16 +9,19 @@ The well-known message ids for resource/index blocks live in ``engine.resources`
 mode-guide id schemes live here, beside the engine that owns them.
 """
 
+import asyncio
 from typing import Any, Callable, TYPE_CHECKING
 
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, SystemMessage
 
+from rhizome.logs import get_logger
 from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
+from ..base import MessagePayload
 from .base import ensure_message_id, ingest_payloads, PromptEngine
 from .cache import allocate, Breakpoint, cache_control, CacheControl, is_annotatable, OptionReader
-from .cleanup import promote, reclamation_status
+from .cleanup import promote, reclamation_status, Summarizer
 from .dump import dump_report, dump_request
 from .metadata import lifetime_of, pin, Pin, pin_of, set_role
 from .resources import (
@@ -44,6 +47,9 @@ from ..prompts import (
 
 if TYPE_CHECKING:
     from ..context import RootAgentContext
+
+
+_logger = get_logger("agent.engine.root")
 
 
 # ========================================================================================================================
@@ -95,6 +101,10 @@ _MODE_GUIDES: dict[str, tuple[str, str]] = {
 
 RECLAMATION_STATUS_MESSAGE_ID = "reclamation-status"
 """Fixed id for the derived staged-cleanup reminder (built fresh each ``prepare``, never persisted)."""
+
+APP_CONTEXT_MESSAGE_ID = "app-context"
+"""Fixed id for the derived app-context block — the app-published environment facts folded into one tail
+``<system-reminder>`` (built fresh each ``prepare`` from ``ctx.app_context_hooks``, never persisted)."""
 
 
 # ========================================================================================================================
@@ -179,6 +189,7 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
                  auto_compact: OptionReader | None = None,
                  auto_compact_after: OptionReader | None = None,
                  auto_compact_threshold: OptionReader | None = None,
+                 summarizer_key: str | None = None,
                  debug: bool = False, **kwargs) -> None:
         """Adds prompt-cache, layout, and reclamation configuration to the base engine; all other arguments
         forward to ``PromptEngine``. ``cache_supported`` is the provider gate, baked at build time (the
@@ -188,7 +199,9 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         the size threshold) are live option handles read fresh on each compile/prepare, so flipping any of
         them takes effect without a rebuild — and toggling ``auto_compact`` neither rebuilds nor disturbs the
         cached prefix (it only gates compile-side tagging/cleanup and the tail reminder). The ``after`` /
-        ``threshold`` handles read as ints. ``debug`` gates the per-``prepare`` prompt/usage dumps."""
+        ``threshold`` handles read as ints. ``summarizer_key`` names the subagent the ``summarize`` cleanup
+        strategy provisions off the runtime (``None`` falls back to stub). ``debug`` gates the per-``prepare``
+        prompt/usage dumps."""
         super().__init__(*args, **kwargs)
         self._cache_supported = cache_supported
         self._prompt_cache = prompt_cache
@@ -198,6 +211,7 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         self._auto_compact_after = auto_compact_after
         self._auto_compact_threshold = auto_compact_threshold
         self._debug = debug
+        self._summarizer_key = summarizer_key   # subagent key for the ``summarize`` strategy (None → stub)
 
     # ----- reclamation policy (live options override the base constants) ---- #
 
@@ -212,6 +226,56 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         ref = self._auto_compact_after
         return ref.get() if ref is not None else super()._effective_expiry()
 
+    # ----- summarize strategy (provision a summarizer subagent off the runtime) ----- #
+
+    def _summarizer(self, ctx: "RootAgentContext | None") -> Summarizer | None:
+        """Override the base hook: summarize ``summarize``-strategy reclamations via a summarizer subagent.
+        ``None`` (→ stub) unless a summarizer key is configured AND a runtime is wired — so offline / keyless
+        runs, and any engine built without the key, stub instead."""
+        if ctx is None or ctx.runtime is None or self._summarizer_key is None:
+            return None
+        return lambda targets: self._summarize_batch(ctx, targets)
+
+    async def _summarize_batch(self, ctx: "RootAgentContext", targets: list[BaseMessage]) -> dict[str, str]:
+        """Summarize each target concurrently (one fresh one-shot session apiece), bracketing the slow work
+        with compaction events on this node's channel. Returns ``{id: summary}``; a target whose summary
+        fails is omitted, so ``apply_cleanup`` stubs it instead — a failed summarizer never derails the run."""
+        events = ctx.engine_events
+        if events is not None:
+            events.compaction_started(len(targets))
+        try:
+            results = await asyncio.gather(
+                *(self._summarize_one(ctx, m) for m in targets), return_exceptions=True
+            )
+        finally:
+            if events is not None:
+                events.compaction_finished()
+        summaries: dict[str, str] = {}
+        for message, result in zip(targets, results):
+            if isinstance(result, str) and result.strip():
+                summaries[message.id] = result
+            else:
+                _logger.warning("summarize failed for %s; stubbing instead (%r)", message.id, result)
+        return summaries
+
+    async def _summarize_one(self, ctx: "RootAgentContext", message: BaseMessage) -> str:
+        """Run one fresh summarizer session over ``message``'s content and return the summary text."""
+        session = ctx.runtime.new(self._summarizer_key)
+        result = await session.invoke(
+            [MessagePayload(data=self._summary_input(message), role=MessagePayload.Role.USER)]
+        )
+        if result.response is None:
+            raise ValueError("summarizer returned no response")
+        content = result.response.content
+        return content if isinstance(content, str) else str(content)
+
+    @staticmethod
+    def _summary_input(message: BaseMessage) -> str:
+        """The text handed to the summarizer: the tool's name (for relevance) then its result content."""
+        body = message.content if isinstance(message.content, str) else str(message.content)
+        name = getattr(message, "name", None)
+        return f"Tool: {name}\n\n{body}" if name else body
+
     async def compile(self, state: dict[str, Any], ctx: "RootAgentContext | None") -> dict[str, Any] | None:
         update: dict[str, Any] = {}
 
@@ -220,8 +284,8 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         if patches:
             update["messages"] = list(patches)
 
-        self._identify(state, update)        # stage 1 — base capability (see PromptEngine._identify)
-        self._cleanup(state, ctx, update)    # stage 2 — reclaim (stub)
+        self._identify(state, update)              # stage 1 — base capability (see PromptEngine._identify)
+        await self._cleanup(state, ctx, update)    # stage 2 — reclaim (stub/summarize)
 
         if ctx is not None:
             # Branch marker first — it anchors this node's segment boundary (see _compile_branch_marker).
@@ -270,9 +334,13 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
                 anchor = None
             (buckets[anchor] if anchor in buckets else inline).append(m)
 
-        # Derived ephemeral: the staged-cleanup reminder, rebuilt from current state and floated to the tail
-        # (so its ticking counts only reprice the volatile suffix). Built off request.messages — the tagged
-        # set this request carries — never persisted.
+        # Derived ephemeral tail blocks, rebuilt each prepare and never persisted (so their churn reprices
+        # only the volatile suffix, never the cached prefix): the app-published context facts, then the
+        # staged-cleanup reminder. Both built off this request's own messages / context.
+        app_context = self._app_context_reminder(ctx)
+        if app_context is not None:
+            buckets["tail"].append(app_context)
+
         reminder = self._reclamation_reminder(request.messages)
         if reminder is not None:
             buckets["tail"].append(reminder)
@@ -333,6 +401,22 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         )
         content = f"<system-reminder>\n{body}\n</system-reminder>"
         return pin(set_role(HumanMessage(content=content, id=RECLAMATION_STATUS_MESSAGE_ID), "system"), "tail")
+
+    # ----- app-context reminder -------------------------------------------- #
+
+    def _app_context_reminder(self, ctx: "RootAgentContext | None") -> BaseMessage | None:
+        """The derived app-context block (a tail-pinned ``<system-reminder>``): the app-published environment
+        facts (``ctx.app_context_hooks``) folded into one message, rebuilt fresh each ``prepare`` and never
+        persisted — so a fact changing reprices only the volatile tail. ``None`` when no hooks are wired or
+        every producer yields nothing this turn, so an empty registry touches neither the prompt nor the
+        cache."""
+        if ctx is None or ctx.app_context_hooks is None:
+            return None
+        fragments = ctx.app_context_hooks.fragments()
+        if not fragments:
+            return None
+        content = "<system-reminder>\n" + "\n".join(fragments) + "\n</system-reminder>"
+        return pin(set_role(HumanMessage(content=content, id=APP_CONTEXT_MESSAGE_ID), "system"), "tail")
 
     # ----- cache breakpoints ----------------------------------------------- #
 
@@ -474,6 +558,8 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
         mid = message.id or ""
         if mid == RECLAMATION_STATUS_MESSAGE_ID:
             return "reclamation_status"
+        if mid == APP_CONTEXT_MESSAGE_ID:
+            return "app_context"
         if mid.startswith(MODE_GUIDE_PREFIX):
             return "guide"
         if mid.startswith(BRANCH_MARKER_PREFIX):
@@ -647,7 +733,7 @@ class RootPromptEngine(PromptEngine["RootAgentContext"]):
     def _compile_mode(
         self, state: dict[str, Any], ctx: "RootAgentContext", update: dict[str, Any]
     ) -> None:
-        """Witness a mode switch on the ``AppContextStore`` (the SSOT) and react.
+        """Witness a mode switch on the ``LocalAppContextStore`` (the SSOT) and react.
 
         ``app_state.mode`` carries desire (the user via the view, or the agent via ``set_mode``);
         ``RootAgentState["mode"]`` is the engine-committed fact. They match in steady state, so the diff is

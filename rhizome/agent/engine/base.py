@@ -59,7 +59,7 @@ from langchain_core.messages import (
 from rhizome.logs import get_logger
 
 from ..base import AgentPayload, MessagePayload, StateUpdatePayload, Strategy
-from .cleanup import apply_cleanup, apply_hydrations, mark_reclaim_ineligible, mark_reclaimable
+from .cleanup import apply_cleanup, apply_hydrations, mark_reclaim_ineligible, mark_reclaimable, Summarizer
 from .metadata import is_reclaim_ineligible, lifetime_of, role_of, set_role
 from .usage import (
     estimate_message_tokens,
@@ -261,8 +261,8 @@ class PromptEngine[C]:
         if patches:
             update["messages"] = list(patches)
 
-        self._identify(state, update)        # stage 1 — auto-tag bulky tool results semi-permanent
-        self._cleanup(state, ctx, update)    # stage 2 — reclaim (stub)
+        self._identify(state, update)              # stage 1 — auto-tag bulky tool results semi-permanent
+        await self._cleanup(state, ctx, update)    # stage 2 — reclaim (stub/summarize)
 
         if ctx is not None and ctx.pending is not None:
             ingest_payloads(ctx.pending.drain(), update)
@@ -389,7 +389,7 @@ class PromptEngine[C]:
             and estimate_message_tokens(message) >= self._effective_threshold()
         )
 
-    def _cleanup(self, state: dict[str, Any], ctx: "C | None", update: dict[str, Any]) -> None:
+    async def _cleanup(self, state: dict[str, Any], ctx: "C | None", update: dict[str, Any]) -> None:
         """Cleanup stage: apply the filed lifetime requests and age expiry — the engine the sole emitter of
         the edits. Reclaim (``CleanupRequest``s from ``pending_cleanups`` plus messages past their user-turn
         expiry — own ``expire_after`` else ``_effective_expiry()``), then hydrate (``HydrateRequest``s from
@@ -413,9 +413,10 @@ class PromptEngine[C]:
         if not cleanups and not hydrations and not any(lifetime_of(m) == "semi-permanent" for m in messages):
             return
 
-        edits = apply_cleanup(
+        edits = await apply_cleanup(
             messages, cleanups,
             expire_after=self._effective_expiry(), default_strategy=self.DEFAULT_CLEANUP_STRATEGY,
+            summarize=self._summarizer(ctx),
         )
         if hydrations:
             edits = edits + apply_hydrations(
@@ -428,6 +429,12 @@ class PromptEngine[C]:
             update["pending_cleanups"] = None   # drain (the reducer resets to [])
         if hydrations:
             update["pending_hydrations"] = None
+
+    def _summarizer(self, ctx: "C | None") -> Summarizer | None:
+        """Hook: the batch summarizer for ``summarize``-strategy reclamations, or ``None`` to fall back to
+        stub. Base engines have none (stub-only); the root engine overrides it to run a summarizer subagent
+        off ``ctx.runtime`` and bracket the work with compaction events."""
+        return None
 
 
 # ========================================================================================================================
