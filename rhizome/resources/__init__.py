@@ -1,7 +1,34 @@
-from .context_message import (
-    CONTEXT_MESSAGE_ID_PREFIX,
-    build_resource_context_message,
-    resource_context_message_id,
+"""Resource loading layer: the content-free skeleton (``ResourceTree``), load-state descriptions and
+their arithmetic, the per-channel stores (context stuffing + vector index), and content building."""
+
+from .content import build_index_block, build_resource_block
+from .index import ResourceVectorStore
+from .store import (
+    aggregate,
+    close_upward,
+    expand,
+    load_delta,
+    normalize,
+    ResourceContextStore,
+    ResourceIndexStore,
+    ResourceLoadDelta,
+    ResourceStore,
 )
-from .manager import ResourceLoadType, ResourceTreeNodeKey, ResourceTreeNodeKind, ResourceManager
-from .vector_store import EXPECTED_DIM, ChunkMeta, ResourceVectorStore
+from .tree import ResourceTree, ResourceTreeNode
+
+__all__ = [
+    "aggregate",
+    "build_index_block",
+    "build_resource_block",
+    "close_upward",
+    "expand",
+    "load_delta",
+    "normalize",
+    "ResourceContextStore",
+    "ResourceIndexStore",
+    "ResourceLoadDelta",
+    "ResourceStore",
+    "ResourceTree",
+    "ResourceTreeNode",
+    "ResourceVectorStore",
+]

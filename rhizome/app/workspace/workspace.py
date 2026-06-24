@@ -38,7 +38,7 @@ from rhizome.app.orchestrator import OrchestratorModel
 from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.config import AppConfigService
 from rhizome.db import SessionFactoryService
-from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceVectorStore
+from rhizome.resources import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceVectorStore
 from rhizome.utils.services import ServiceAccessor
 
 

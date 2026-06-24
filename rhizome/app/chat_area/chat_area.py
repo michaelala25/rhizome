@@ -42,7 +42,7 @@ from rhizome.app.model import ViewModelBase
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.options_editor import OptionsEditorModel
 from rhizome.db import SessionFactoryService
-from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
+from rhizome.resources import ResourceContextStore, ResourceIndexStore
 from rhizome.tui.types import Mode, Role
 
 from . import commit

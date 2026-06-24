@@ -12,7 +12,7 @@ from textual.app import App, ComposeResult
 
 from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.db.models import Base, Resource, ResourceSection, Topic, TopicResource
-from rhizome.resources_new import (
+from rhizome.resources import (
     ResourceContextStore,
     ResourceIndexStore,
     ResourceTree,

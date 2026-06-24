@@ -10,7 +10,7 @@ from langchain.agents.middleware.types import AgentState as _AgentState
 
 from typing import Annotated, TypedDict
 
-from rhizome.resources_new import ResourceTreeNode
+from rhizome.resources import ResourceTreeNode
 
 from .base import accumulate_cleanups, CleanupRequest, ConsumedResources, HydrateRequest
 

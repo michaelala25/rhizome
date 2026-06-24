@@ -1,4 +1,8 @@
-"""Resource extraction pipeline — automatic section discovery for documents."""
+"""Resource extraction pipeline — automatic section discovery for documents.
+
+TODO (carry-over): no live consumer at the moment; kept intact pending re-integration into the new
+resource flow.
+"""
 
 from rhizome.resources.extraction.protocol import (
     DocumentExtractor,

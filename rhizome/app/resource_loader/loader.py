@@ -1,4 +1,4 @@
-"""Resource-loader VM — the panel's view-model over the ``resources_new`` stores.
+"""Resource-loader VM — the panel's view-model over the ``resources`` stores.
 
 What it is
 ----------
@@ -49,7 +49,7 @@ from rhizome.db.operations import (
     fetch_resource_metadata,
     fetch_topic_resource_links,
 )
-from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceTreeNode
+from rhizome.resources import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceTreeNode
 
 from .topic_tree import TopicTreeModel
 

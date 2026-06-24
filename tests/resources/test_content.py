@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from rhizome.db.models import Base, Resource, ResourceContent, ResourceSection
-from rhizome.resources_new import build_index_block, build_resource_block, ResourceTreeNode as N
+from rhizome.resources import build_index_block, build_resource_block, ResourceTreeNode as N
 
 RAW = "0123456789AB"  # 12 chars: s10=[0:4)"0123", s11=[4:8)"4567", s12=[8:12)"89AB"
 

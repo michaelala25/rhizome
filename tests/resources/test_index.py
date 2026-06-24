@@ -19,8 +19,8 @@ from rhizome.db.models import (
     ResourceContent,
     ResourceSection,
 )
-from rhizome.resources_new import ResourceIndexStore, ResourceTree, ResourceTreeNode as N
-from rhizome.resources_new.index import EXPECTED_DIM, ResourceVectorStore
+from rhizome.resources import ResourceIndexStore, ResourceTree, ResourceTreeNode as N
+from rhizome.resources.index import EXPECTED_DIM, ResourceVectorStore
 
 
 def _emb(dim: int) -> bytes:

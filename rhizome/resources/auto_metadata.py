@@ -3,6 +3,9 @@
 Uses the first *token_budget* tokens of the document (counted
 approximately) to generate a concise title and summary via a single
 structured LLM call.
+
+TODO (carry-over): no live consumer at the moment (used previously by the retired resource viewer).
+Kept pending re-wiring into the new resource-creation flow.
 """
 
 from __future__ import annotations

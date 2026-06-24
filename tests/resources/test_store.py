@@ -2,7 +2,7 @@
 
 import pytest
 
-from rhizome.resources_new import (
+from rhizome.resources import (
     load_delta,
     normalize,
     ResourceContextStore,

@@ -31,7 +31,7 @@ from rhizome.agent.engine_events import EngineEventsChannel
 from rhizome.agent.graph import AgentGraph, AgentNode, Cursor, WorkerScheduler
 from rhizome.agent.runtime import AgentRuntime
 from rhizome.agent.session import AgentSession
-from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
+from rhizome.resources import ResourceContextStore, ResourceIndexStore
 from rhizome.utils.data_structures import Path
 
 

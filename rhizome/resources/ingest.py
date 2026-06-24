@@ -1,4 +1,9 @@
-"""Resource ingestion — text extraction, token estimation, and resource creation."""
+"""Resource ingestion — text extraction, token estimation, and resource creation.
+
+TODO (carry-over): no live consumer at the moment — the resource viewer that drove ingestion was
+retired. Kept as a utility pending re-wiring into the new resource flow; note it does not yet compute
+chunk embeddings (see ``embeddings.py``).
+"""
 
 from __future__ import annotations
 

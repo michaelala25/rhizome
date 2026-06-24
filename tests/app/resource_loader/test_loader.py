@@ -1,4 +1,4 @@
-"""ResourceLoaderModel — the two-axis load-state controller over the resources_new stores.
+"""ResourceLoaderModel — the two-axis load-state controller over the resources stores.
 
 Most tests run against an in-memory ``ResourceTree`` (no DB) and exercise the store-writing logic
 directly; the display metadata they need is seeded straight onto the VM (``_seed``). One DB-backed
@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from rhizome.app.resource_loader import ContextScope, ResourceLoaderModel
 from rhizome.db.models import Base, Resource, ResourceSection, Topic, TopicResource
-from rhizome.resources_new import (
+from rhizome.resources import (
     ResourceContextStore,
     ResourceIndexStore,
     ResourceTree,

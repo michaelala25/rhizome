@@ -1,4 +1,9 @@
-"""Embedding helpers — chunking, embedding, and storage for resource documents."""
+"""Embedding helpers — chunking, embedding, and storage for resource documents.
+
+TODO (carry-over): not currently wired into the live ingest path. ``index.py`` reads *precomputed*
+chunk embeddings, but the producer side here lost its consumer when the resource viewer was retired.
+Kept as the compute half of the pipeline pending re-integration into the new ingest flow.
+"""
 
 from __future__ import annotations
 

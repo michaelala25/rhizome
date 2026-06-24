@@ -16,7 +16,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage, SystemMessage
 
 from rhizome.logs import get_logger
-from rhizome.resources_new import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
+from rhizome.resources import ResourceContextStore, ResourceLoadDelta, ResourceTreeNode
 
 from ..base import MessagePayload
 from .base import ensure_message_id, ingest_payloads, PromptEngine

@@ -233,7 +233,7 @@ subclasses, which carry them across a branch/merge edge through the `AgentNode.d
 
 ## Seams to the rest of the app
 
-- **Resources** (`rhizome/resources_new/`) reach an agent as stores on its context, which the prompt
+- **Resources** (`rhizome/resources/`) reach an agent as stores on its context, which the prompt
   engine reads at compile time. The abstract layer here is unaware of them; the conversation layer wires
   them in.
 - **The app** (`rhizome/app/chat_area/`) drives all of this: `ConversationGraph` extends `AgentGraph`,

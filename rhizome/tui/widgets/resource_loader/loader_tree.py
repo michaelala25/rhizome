@@ -37,7 +37,7 @@ from rich.text import Text
 from textual.widgets._tree import TOGGLE_STYLE, TreeNode
 
 from rhizome.app.resource_loader import ContextScope, ResourceDisplayNode, ResourceLoaderModel
-from rhizome.resources_new import ResourceTreeNode
+from rhizome.resources import ResourceTreeNode
 from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.shared.multiline_tree import MultilineTree
 

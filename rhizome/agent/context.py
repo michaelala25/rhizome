@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rhizome.db import ReadOnlySessionFactoryService, SessionFactoryService
-from rhizome.resources_new import ResourceContextStore, ResourceIndexStore
+from rhizome.resources import ResourceContextStore, ResourceIndexStore
 
 from .app_context import AppContextHookService, LocalAppContextStore
 from .engine import PayloadQueue

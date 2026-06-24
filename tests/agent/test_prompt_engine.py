@@ -37,7 +37,7 @@ from rhizome.agent.engine.root import (
 )
 from rhizome.agent.topology import NodeInfo, TopologySnapshot, TopologyView
 from rhizome.db.models import Base, Resource, ResourceContent, ResourceSection
-from rhizome.resources_new import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceTreeNode
+from rhizome.resources import ResourceContextStore, ResourceIndexStore, ResourceTree, ResourceTreeNode
 
 from .fakes import ai_contents, drive, EchoModel, make_build, make_runtime, register, user
 

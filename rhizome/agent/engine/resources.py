@@ -11,7 +11,7 @@ from typing import Iterable, TYPE_CHECKING
 
 from langchain_core.messages import BaseMessage
 
-from rhizome.resources_new import (
+from rhizome.resources import (
     build_index_block,
     build_resource_block,
     load_delta,

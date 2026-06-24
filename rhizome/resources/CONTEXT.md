@@ -1,20 +1,30 @@
 # rhizome/resources/
 
-Resource processing services — higher-level operations on document resources that go beyond simple CRUD.
+The resource loading layer: how documents become the text — and the search index — an agent sees. The
+package splits in two: the **load-state stores**, which are the de facto API, and a set of **carry-over
+ingestion utilities** kept around but not yet wired into the live flow.
 
-## Modules
+## The stores (de facto API)
 
-- **manager.py** — `ResourceManager`: tracks load state in minimum-description-length (MDL) form — a flat `dict[NodeKey, LoadMode]` where `NodeKey = tuple[Literal["resource","section"], int]`. An entry at a node means "this node and every descendant are loaded at this mode" unless a descendant overrides with its own entry. The `ResourceLoader` widget pushes full snapshots via `set_state()` on every user toggle; `AgentSession.stream()` calls `consume()` at the start of each stream to get the key-level diff against the last consumed snapshot. Owns a `ResourceVectorStore` (exposed via the `vector_store` property) that is rebuilt inside `consume()` whenever the set of LOADED MDL entries changes — CS-only toggles skip the rebuild. Also hosts the embedding lifecycle (`ensure_embedded()`, `is_embedding_in_progress()`) used by the loader to compute vector-store embeddings on demand. Exports `LoadMode`, `NodeKey`, `NodeKind`, `ResourceManager`.
-- **context_message.py** — Builds the `HumanMessage` blocks injected into the agent graph for context-stuffed content. `build_resource_context_message(resource, cs_entries)` takes a resource (with `content` and `sections` eagerly loaded — see `db.operations.get_resource_with_content_and_sections`) plus the subset of MDL entries that are CS'd, and returns a `HumanMessage` with deterministic id `rhizome-resource-ctx-{resource_id}` for in-place replacement via `add_messages`. One text block per CS entry: a `("resource", rid)` entry emits the full `raw_text`, a `("section", sid)` entry emits `raw_text[start_offset : same-or-shallower-next)`. No per-DB-section splitting and no deduplication needed — the MDL invariant guarantees CS entries never overlap.
-- **vector_store.py** — `ResourceVectorStore`: a flat FAISS (`IndexFlatIP`) index over the currently-LOADED resource chunks. `ChunkMeta` carries the hydrated per-chunk attribution (resource name, section breadcrumb, `context_tag`, text). `rebuild((meta, embedding_bytes)[])` and `query(vec, k)` both offload the CPU-bound FAISS work to `asyncio.to_thread`. Embedding dim is hard-coded to `EXPECTED_DIM = 1024` (voyage-3.5); byte-length-mismatched chunks are skipped with a warning. Rebuilds run from scratch on every LOADED-scope change — fine at our expected scale (≤~100k chunks) and avoids incremental add/remove bookkeeping.
+A content-free skeleton, the load-state arithmetic over it, the per-channel stores, and the content
+builders that turn loaded nodes into model-visible text. See each module's docstring for detail.
 
-The manager rebuild path is pure offset math: each LOADED entry becomes an interval over `raw_text` (via `db.operations.compute_section_end_offsets`), and chunks are filtered by offset overlap. The `ResourceChunkSection` M2M is not consulted — it's a convenience for `link_chunks_to_sections` but the same information lives in `ResourceSection.start_offset` + the section tree.
+- **`tree.py`** — `ResourceTree` / `ResourceTreeNode`: the resource/section hierarchy as a content-free skeleton (ids + structure only, never content). Built eagerly, owned once per workspace, shared by every store; `refresh()` re-pulls it after resource/section CRUD.
+- **`store.py`** — load-state arithmetic plus the store objects (`ResourceContextStore`, `ResourceIndexStore`). A *description* is a set of tree nodes meaning "these subtrees are loaded", kept in canonical minimal form so set equality is a sound "nothing changed" check and set difference a well-defined delta. The algorithms are free functions over `(sets, tree)`; the stores are dumb containers. Cross-store policy (global/local disjointness) and consumption bookkeeping deliberately live with the writer/consumer, not here.
+- **`content.py`** — `build_resource_block` (context channels: a loaded subtree rendered as context-stuffed text) and `build_index_block` (index channel: a metadata-only listing of everything searchable). Free functions over the DB session; the prompt engine wraps their output in well-known-id messages.
+- **`index.py`** — `ResourceVectorStore`: a flat FAISS index over the *precomputed* embeddings of the currently-loaded chunks. It never calls an embedding model — producing those bytes happens at ingest time.
 
-## Subpackages
+## Carry-over ingestion utilities (pending re-wiring)
 
-- **`extraction/`** — Automatic section/subsection discovery pipeline. Combines format-specific heuristic extraction with LLM-based refinement to produce hierarchical section trees from documents.
+These have no live consumer right now — their previous driver was retired — and are kept pending re-integration into the new resource-creation flow. Each carries a TODO at the top of its file.
+
+- **`ingest.py`** — text extraction, token estimation, and resource creation.
+- **`embeddings.py`** — chunking plus the Voyage embedding round-trip that produces the bytes `index.py` reads.
+- **`auto_metadata.py`** — LLM title/summary generation from a resource's opening tokens.
+- **`extraction/`** — automatic section/subsection discovery (format heuristics + LLM refinement).
 
 ## Relationship to Other Modules
 
-- **`rhizome/db/`** — This package does NOT handle persistence. Database models (`Resource`, `ResourceSection`, `ResourceChunk`) and operations live in `rhizome/db/`.
-- **`rhizome/tui/widgets/`** — `ResourceLoader` holds the authoritative MDL state and pushes snapshots to `ResourceManager.set_state()` on every user toggle. This package has no dependency on the TUI layer.
+- **`rhizome/db/`** — This package does NOT handle persistence. Resource models (`Resource`, `ResourceSection`, `ResourceChunk`) and operations live in `rhizome/db/`.
+- **`rhizome/agent/`** — the prompt engine holds the stores on its context and calls into `content.py` / `index.py` each turn to assemble what the model sees; see `rhizome/agent/engine/`.
+- **`rhizome/app/resource_loader/`** — the panel VM that writes load-state into the stores (and owns the cross-store global/local policy) on every user toggle.
