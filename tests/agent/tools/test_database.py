@@ -81,10 +81,19 @@ async def _count(sessions, model, **eq) -> int:
 # query
 # ------------------------------------------------------------------------------------------------------
 
-async def test_query_all_reports_total(sessions):
+async def test_query_scan_renders_compact_table(sessions):
     out = await run_query(sessions, REG, "topic")
     assert "topic: 4 row(s) matched; showing 4" in out
-    assert "name: Programming" in out
+    assert "columns:" in out and "name" in out      # column header declared once
+    assert '"Programming"' in out                    # value sits in a positional JSON-array row
+    assert "name: Programming" not in out            # not the repeated-key vertical shape
+
+
+async def test_query_scan_table_is_json_safe(sessions):
+    # A value containing the would-be delimiter stays unambiguous as a JSON string in the table.
+    await run_insert(sessions, REG, "topic", values={"name": "A, B and C", "parent_id": 1})
+    out = await run_query(sessions, REG, "topic", filter={"name": {"$contains": "A, B"}})
+    assert '"A, B and C"' in out
 
 
 async def test_query_filter_and_relationship_traversal(sessions):
@@ -93,19 +102,36 @@ async def test_query_filter_and_relationship_traversal(sessions):
     assert "Partition of India" not in out
 
 
-async def test_query_projection_returns_requested_columns_in_full(sessions):
-    long_text = "x" * 500
+async def test_query_default_omits_content_and_truncates_long_text(sessions):
+    long_note = "x" * 500
     await run_insert(sessions, REG, "knowledge_entry",
-                     values={"topic_id": 1, "title": "Long", "content": long_text})
-    # Default view truncates long text...
+                     values={"topic_id": 1, "title": "Long", "content": "the full body",
+                             "additional_notes": long_note, "entry_type": "fact"})
     default = await run_query(sessions, REG, "knowledge_entry", filter={"title": "Long"})
-    assert "truncated" in default or "chars; request" in default
-    assert long_text not in default
-    # ...explicit projection returns it in full and only the requested columns.
-    projected = await run_query(sessions, REG, "knowledge_entry", filter={"title": "Long"},
+    # content is omitted from the default projection — flagged as available, not shown inline...
+    assert "the full body" not in default
+    assert "content" in default                  # named in the "omitted columns" note
+    # ...and a long default-shown column is truncated with a terse char-count marker.
+    assert long_note not in default
+    assert "[500 chars]" in default
+
+
+async def test_query_explicit_projection_returns_full_text(sessions):
+    long_text = "y" * 500
+    await run_insert(sessions, REG, "knowledge_entry",
+                     values={"topic_id": 1, "title": "Full", "content": long_text, "entry_type": "fact"})
+    projected = await run_query(sessions, REG, "knowledge_entry", filter={"title": "Full"},
                                 columns=["content"])
     assert long_text in projected
     assert "additional_notes" not in projected
+
+
+async def test_query_elides_null_but_keeps_falsy(sessions):
+    # difficulty is unset (null) on entry 1; speed_testable defaults to False (a real value).
+    out = await run_query(sessions, REG, "knowledge_entry", filter={"id": 1},
+                          columns=["id", "difficulty", "speed_testable"])
+    assert "speed_testable: False" in out   # falsy-but-real value is kept
+    assert "difficulty" not in out          # null column is dropped entirely
 
 
 async def test_query_limit_offset_flags_more_rows(sessions):

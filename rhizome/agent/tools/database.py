@@ -14,12 +14,19 @@ Conventions:
   called with ``confirm=True``, return the matched count plus a sample of affected rows instead of writing.
   The agent re-issues the identical call with ``confirm=True`` to apply it. ``insert`` writes directly —
   creating rows has no blast radius to preview.
-- *Column projection.* ``query`` returns every exposed column by default (long text truncated); pass
-  ``columns`` to select a subset, which is then returned in full.
+- *Column projection.* ``query`` returns a lean default set of columns (long text truncated); pass
+  ``columns`` to select any columns — including ones omitted by default — returned in full.
+- *Two render shapes.* A default (scan) query prints a compact table — the column header declared once,
+  then one positional JSON-array row each. An explicit-``columns`` query prints vertical ``key: value``
+  blocks instead, so the requested long-text columns render in full and readably.
+- *Blanks.* In the vertical shape a blank column (``null`` / empty string) is dropped from its row
+  (absence reads as "unset"); in the table shape it is a ``null`` slot. A falsy-but-real value (``False``,
+  ``0``) is always kept.
 """
 
 import enum
 import functools
+import json
 from datetime import datetime
 
 from langchain.tools import tool
@@ -65,7 +72,7 @@ def _require_filter(filter_, op: str) -> None:
 def _projection(spec: TableSpec, columns: list[str] | None) -> list[str]:
     exposed = spec.column_names()
     if not columns:
-        return exposed
+        return spec.default_column_names()
     bad = [c for c in columns if c not in exposed]
     if bad:
         raise DatabaseToolError(
@@ -84,6 +91,12 @@ def _validate_writable(spec: TableSpec, row: dict) -> None:
         )
 
 
+def _is_blank(value) -> bool:
+    """Whether a value carries nothing worth showing — ``None`` or an empty string. Deliberately *not*
+    falsy: ``False`` and ``0`` are real data and are always rendered."""
+    return value is None or value == ""
+
+
 def _render_value(value, *, truncate: bool) -> str:
     if value is None:
         return "null"
@@ -93,19 +106,51 @@ def _render_value(value, *, truncate: bool) -> str:
         return value.isoformat()
     text = str(value)
     if truncate and len(text) > TRUNCATE_CHARS:
-        return f"{text[:TRUNCATE_CHARS]}… ({len(text)} chars; request this column explicitly for full text)"
+        return f"{text[:TRUNCATE_CHARS]}… [{len(text)} chars]"
     return text
 
 
 def _format_rows(columns: list[str], rows, *, truncate: bool) -> str:
-    """Render rows (positional tuples aligned with ``columns``) as ``---``-separated blocks."""
+    """Render rows (positional tuples aligned with ``columns``) as ``---``-separated ``key: value`` blocks.
+    The shape for reading whole records: blank columns (null / empty string) are dropped from a block —
+    absence reads as "unset" — and long text renders in full and naturally (see ``_is_blank``)."""
     if not rows:
         return "(no rows)"
     blocks = []
     for row in rows:
-        blocks.append("\n".join(f"  {col}: {_render_value(val, truncate=truncate)}"
-                                for col, val in zip(columns, row)))
+        block = "\n".join(f"  {col}: {_render_value(val, truncate=truncate)}"
+                          for col, val in zip(columns, row) if not _is_blank(val))
+        blocks.append(block or "  (no non-empty columns)")
     return "\n---\n".join(blocks)
+
+
+def _json_cell(value, *, truncate: bool) -> str:
+    """One table cell as a JSON token. Blanks (null / empty string) collapse to ``null``; ``bool`` stays a
+    real JSON bool (not a 0/1 int); long text is truncated to a terse char-count marker. JSON quoting makes
+    every value unambiguous regardless of commas / newlines / quotes it contains."""
+    if _is_blank(value):
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    if isinstance(value, enum.Enum):
+        return json.dumps(str(value.value), ensure_ascii=False)
+    if isinstance(value, datetime):
+        return json.dumps(value.isoformat())
+    text = str(value)
+    if truncate and len(text) > TRUNCATE_CHARS:
+        text = f"{text[:TRUNCATE_CHARS]}… [{len(text)} chars]"
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _format_table(columns: list[str], rows, *, truncate: bool) -> str:
+    """Render rows as a compact table: the caller prints the column header once, and each row is a single
+    positional JSON array aligned to it. The shape for scanning many rows — column names are not repeated,
+    and a fixed arity (blanks are ``null`` slots) keeps every row trivially zippable against the header."""
+    if not rows:
+        return "(no rows)"
+    return "\n".join("[" + ", ".join(_json_cell(v, truncate=truncate) for v in row) + "]" for row in rows)
 
 
 def _identity(model: type, identity: tuple) -> str:
@@ -163,6 +208,7 @@ async def run_query(session_factory, registry, table, *, filter=None, columns=No
                     order_by=None, limit=DEFAULT_LIMIT, offset=0) -> str:
     spec = _resolve(registry, table, "query")
     model = spec.model
+    explicit = bool(columns)            # did the agent project columns itself?
     proj = _projection(spec, columns)
     clause = compile_filter(model, filter or {})
 
@@ -182,7 +228,20 @@ async def run_query(session_factory, registry, table, *, filter=None, columns=No
         header += f" from offset {offset}"
     if total > offset + len(rows):
         header += f" (more rows match — raise limit/offset or narrow the filter)"
-    return f"{header}\n{_format_rows(proj, rows, truncate=columns is None)}"
+
+    # An explicit projection is a "read these records" request — render vertical key:value blocks so the
+    # requested (often long-text) columns show in full and readably. The default projection is a "scan" —
+    # render a compact table whose column header is declared once, here, with the omitted columns named
+    # alongside it (disambiguating "omitted" from "null on this row" and pointing at how to fetch them).
+    if explicit:
+        body = _format_rows(proj, rows, truncate=False)
+    else:
+        cols_line = f"columns: {', '.join(proj)}"
+        omitted = [c for c in spec.column_names() if c not in proj]
+        if omitted:
+            cols_line += f" (also available via columns=[...]: {', '.join(omitted)})"
+        body = f"{cols_line}\n{_format_table(proj, rows, truncate=True)}"
+    return f"{header}\n{body}"
 
 
 @report_errors
@@ -331,10 +390,10 @@ async def run_delete(session_factory, registry, table, *, filter, confirm=False)
 
 _QUERY_DESC = (
     "Read rows from a database table. `filter` is a Mongo-style filter object (see the Database section of "
-    "the system prompt for tables, columns, and the filter language). By default every exposed column is "
-    "returned (long text truncated); pass `columns` to project a subset, returned in full. `order_by` "
-    "takes specs like ['-created_at', 'title'] (leading '-' = descending). Results are capped at "
-    f"{MAX_LIMIT} rows."
+    "the system prompt for tables, columns, and the filter language). A lean default set of columns is "
+    "returned with long text truncated; pass `columns` to project any columns — including ones omitted by "
+    "default — returned in full. `order_by` takes specs like ['-created_at', 'title'] (leading '-' = "
+    f"descending). Results are capped at {MAX_LIMIT} rows."
 )
 _AGGREGATE_DESC = (
     "Aggregate rows of a table instead of listing them — counts and min/max/avg/sum, optionally grouped. "

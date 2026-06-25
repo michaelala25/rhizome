@@ -40,6 +40,10 @@ _ALL_OPS = frozenset(OPERATIONS)
 # Column keys never offered for writing by default — surrogate keys and server-managed timestamps.
 _NEVER_WRITABLE = frozenset({"created_at", "updated_at"})
 
+# Column keys omitted from the default query projection — server-managed timestamps, low signal in a
+# scoping read. Still exposed, so an explicit ``columns=[...]`` brings them back. Mirrors _NEVER_WRITABLE.
+_NEVER_DEFAULT = frozenset({"created_at", "updated_at"})
+
 
 # ========================================================================================================================
 # ERRORS & WRITE HOOKS
@@ -111,6 +115,9 @@ class TableSpec:
     ops: frozenset[str]
     hidden: frozenset[str] = frozenset()
     """Column keys never exposed — kept out of query output and the schema doc, and rejected on write."""
+    default_hidden: frozenset[str] = frozenset()
+    """Columns exposed but omitted from the default query projection (long text, dead columns). Returned
+    only when named explicitly in ``columns=[...]``; server-managed timestamps are dropped globally."""
     writable: frozenset[str] | None = None
     """Insert/update-able columns. ``None`` defaults to every exposed, non-PK, non-timestamp column."""
     name: str | None = None
@@ -140,6 +147,12 @@ class TableSpec:
 
     def column_names(self) -> list[str]:
         return [c.key for c in self.columns()]
+
+    def default_column_names(self) -> list[str]:
+        """The projection a query returns when none is named explicitly: exposed columns minus the global
+        timestamps and this table's ``default_hidden``. All remain requestable via ``columns=[...]``."""
+        omit = _NEVER_DEFAULT | self.default_hidden
+        return [c for c in self.column_names() if c not in omit]
 
     def relationship_names(self) -> list[str]:
         """Exposed relationship keys — usable as filter traversal targets (dotted paths / subfilters)."""
@@ -171,6 +184,9 @@ _SPECS: list[TableSpec] = [
         KnowledgeEntry,
         "The atomic units of knowledge — a titled fact, exposition, or overview belonging to one topic.",
         ops=_ALL_OPS,
+        # content is long text — omitted from the default read and fetched explicitly; difficulty and
+        # speed_testable are dead columns pending removal.
+        default_hidden=frozenset({"content", "difficulty", "speed_testable"}),
         writable=frozenset(
             {"topic_id", "title", "content", "additional_notes", "entry_type", "difficulty", "speed_testable"}
         ),
