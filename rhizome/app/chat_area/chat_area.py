@@ -33,6 +33,7 @@ from rhizome.agent.runtime import AgentRuntime
 from rhizome.app.chat_area.chat_input import ChatInputModel
 from rhizome.app.chat_area.command_palette import CommandPaletteModel
 from rhizome.app.chat_area.interrupts.base import CANCELLED
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
 from rhizome.app.chat_area.messages.shell import ShellCommandModel
 from rhizome.app.chat_area.messages.static import ChatMessageModel
 from rhizome.app.chat_area.welcome_message import WelcomeMessageModel
@@ -63,6 +64,7 @@ class ChatAreaModel(ViewModelBase):
         OnNodeRenamed            = "OnNodeRenamed"
         OnBusyChanged            = "OnBusyChanged"
         OnInterruptChanged       = "OnInterruptChanged"
+        OnVisibilityChanged      = "OnVisibilityChanged"
         OnCommitModeChanged      = "OnCommitModeChanged"
         OnCommitSelectionChanged = "OnCommitSelectionChanged"
 
@@ -90,6 +92,7 @@ class ChatAreaModel(ViewModelBase):
             self.Callbacks.OnNodeRenamed:            ConversationNode,
             self.Callbacks.OnBusyChanged:            (ConversationNode, bool),              # see _notify_stream_complete
             self.Callbacks.OnInterruptChanged:       ConversationNode,
+            self.Callbacks.OnVisibilityChanged:      None,                                  # a display filter toggled
             self.Callbacks.OnCommitModeChanged:      bool,                                  # commit mode on/off
             self.Callbacks.OnCommitSelectionChanged: (ConversationNode, ConversationItem, bool),  # (node, item, staged?)
         })
@@ -157,6 +160,12 @@ class ChatAreaModel(ViewModelBase):
         # checked-out node's live mode/verbosity (its LocalAppContextStore) plus the model name (from
         # options). The per-branch sources re-point in ``set_cursor`` so the bar tracks the visible branch.
         self.status_bar = StatusBarModel(self._options, self._cursor.node.app_state)
+
+        # Display-only filters: watch the options that decide which feed entries the view mounts, and
+        # re-emit a single view-facing tick. The handler is a bound method of this long-lived VM, so the
+        # weakly-held ``subscribe_on_changed`` subscription stays alive. None when standalone (no options).
+        if self._options is not None:
+            self._options.subscribe_on_changed(Options.ShowThinking, self._on_show_thinking_changed)
 
         # Seed the root feed with the welcome banner when the composition root opts in (the workspace
         # does; a standalone area stays empty). The greeting name comes from options when present.
@@ -329,6 +338,31 @@ class ChatAreaModel(ViewModelBase):
         """Clear the entire conversation slate (every branch). TODO: semantics under the graph are
         unsettled — see also the eventual ``clear_branch`` (delete one branch)."""
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Feed visibility (display-only filters)
+    # ------------------------------------------------------------------
+    #
+    # Whether a feed entry produces a widget at all — a pure *display* decision driven by options, kept
+    # off the model: the entry stays in the graph regardless, so toggling a filter is lossless and a
+    # hidden segment reappears when re-enabled. The view consults ``is_visible`` when mounting; a change
+    # fires ``OnVisibilityChanged`` and the view reconciles the now-visible set (see ChatArea).
+
+    def is_visible(self, entry: Any) -> bool:
+        """Whether a feed entry should be mounted in the view. Hides adaptive-thinking segments when
+        ``ShowThinking`` is off; everything else is always visible."""
+        if isinstance(entry, AgentMessageModel) and entry.thinking:
+            return self._show_thinking()
+        return True
+
+    def _show_thinking(self) -> bool:
+        """The ``ShowThinking`` option, defaulting to shown when no option service is in scope."""
+        if self._options is None:
+            return True
+        return self._options.get(Options.ShowThinking) == "enabled"
+
+    def _on_show_thinking_changed(self, prev: Any, new: Any) -> None:
+        self.emit(self.Callbacks.OnVisibilityChanged)
 
     # ------------------------------------------------------------------
     # Per-branch agent state (mode / verbosity)

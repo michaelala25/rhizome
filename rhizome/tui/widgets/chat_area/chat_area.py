@@ -159,6 +159,7 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         self._vm.subscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
         self._vm.subscribe(self._vm.Callbacks.OnCursorMoved, self._on_cursor_moved)
         self._vm.subscribe(self._vm.Callbacks.OnInterruptChanged, self._on_interrupt_changed)
+        self._vm.subscribe(self._vm.Callbacks.OnVisibilityChanged, self._on_visibility_changed)
         self._vm.subscribe(self._vm.Callbacks.OnHint, self._on_hint)
         self._vm.subscribe(self._vm.Callbacks.OnCommitModeChanged, self._on_commit_mode_changed)
         self._vm.subscribe(self._vm.Callbacks.OnCommitSelectionChanged, self._on_commit_selection_changed)
@@ -170,6 +171,7 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         self._vm.unsubscribe(self._vm.Callbacks.OnFeedCleared, self._on_feed_clear)
         self._vm.unsubscribe(self._vm.Callbacks.OnCursorMoved, self._on_cursor_moved)
         self._vm.unsubscribe(self._vm.Callbacks.OnInterruptChanged, self._on_interrupt_changed)
+        self._vm.unsubscribe(self._vm.Callbacks.OnVisibilityChanged, self._on_visibility_changed)
         self._vm.unsubscribe(self._vm.Callbacks.OnHint, self._on_hint)
         self._vm.unsubscribe(self._vm.Callbacks.OnCommitModeChanged, self._on_commit_mode_changed)
         self._vm.unsubscribe(self._vm.Callbacks.OnCommitSelectionChanged, self._on_commit_selection_changed)
@@ -229,21 +231,32 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
             self._depth_wrappers[node_id] = wrapper
             self._container_for_node(node_ids[i - 1], cursor).mount(wrapper)
 
-    def _mount_item(self, node_id: int, item: ConversationItem, node_ids: tuple[int, ...], cursor: Cursor) -> None:
-        """Mount ``item``'s widget into ``node_id``'s container, before any deeper wrapper already there.
+    def _mount_item(
+        self,
+        node_id: int,
+        item: ConversationItem,
+        node_ids: tuple[int, ...],
+        cursor: Cursor,
+        *,
+        before: Widget | None = None,
+    ) -> None:
+        """Mount ``item``'s widget into ``node_id``'s container at the right position.
 
-        Items in a non-leaf node's feed (e.g. a branch indicator appended just before the cursor descends)
-        must mount *above* the deeper wrapper holding their subtree — otherwise they'd land beneath their
-        own subtree's rule. On the leaf there's no deeper wrapper, so the plain append is correct.
+        ``before`` is the next already-mounted sibling to land in front of — passed by ``_reconcile`` so an
+        item un-hidden mid-feed (a thinking segment revealed by ``ShowThinking``) slots into order instead
+        of at the container tail. When ``None`` (a fresh in-order mount / a live append), the item goes
+        before this node's deeper wrapper if one exists, else appends: items in a non-leaf node's feed
+        (e.g. a branch indicator) must mount *above* the deeper wrapper holding their subtree, or they'd
+        land beneath their own subtree's rule. On the leaf there's no deeper wrapper, so append is correct.
         """
         widget = self._build_entry_widget(item)
         container = self._container_for_node(node_id, cursor)
-        idx = node_ids.index(node_id)
-        deeper = self._depth_wrappers.get(node_ids[idx + 1]) if idx + 1 < len(node_ids) else None
-        if deeper is not None and deeper in container.children:
-            container.mount(widget, before=deeper)
-        else:
-            container.mount(widget)
+        if before is None:
+            idx = node_ids.index(node_id)
+            deeper = self._depth_wrappers.get(node_ids[idx + 1]) if idx + 1 < len(node_ids) else None
+            if deeper is not None and deeper in container.children:
+                before = deeper
+        container.mount(widget, before=before)
         self._mounted[item.id] = widget
 
     def _scroll_end(self) -> None:
@@ -258,6 +271,8 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         node_ids = self._node_ids(cursor)
         if node.id not in node_ids:
             return  # appended into a pinned, non-visible branch; surfaces on the next cursor move
+        if not self._vm.is_visible(item.entry):
+            return  # hidden by a display filter (e.g. thinking off); a toggle reconciles it back in
         self._ensure_wrapper_chain(node_ids, cursor)
         self._mount_item(node.id, item, node_ids, cursor)
         self._scroll_end()
@@ -296,6 +311,11 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
     def _on_cursor_moved(self, cursor: Cursor) -> None:
         self._reconcile(cursor)
 
+    def _on_visibility_changed(self) -> None:
+        # A display filter toggled (e.g. ShowThinking): reconcile mounts/unmounts only the now-(in)visible
+        # entries — a keyed diff, so the rest of the feed and the current focus are left untouched.
+        self._reconcile(self._vm.cursor)
+
     def _reconcile(self, cursor: Cursor) -> None:
         """Diff mounted widgets + wrappers against the visible feed for ``cursor``.
 
@@ -306,7 +326,9 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         node_ids = self._node_ids(cursor)
         node_id_set = set(node_ids)
         segments = self._segments(cursor)
-        live_ids = {item.id for _, items in segments for item in items}
+        # The live set honours the display filters (is_visible): an item the filter now hides counts as
+        # stale and is torn down below; one it now reveals is absent from ``_mounted`` and mounts back in.
+        live_ids = {item.id for _, items in segments for item in items if self._vm.is_visible(item.entry)}
 
         for stale_node in [nid for nid in self._depth_wrappers if nid not in node_id_set]:
             self._depth_wrappers.pop(stale_node).remove()
@@ -315,10 +337,14 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
 
         self._ensure_wrapper_chain(node_ids, cursor)
         for node, items in segments:
-            for item in items:
-                if item.id in self._mounted:
+            for idx, item in enumerate(items):
+                if item.id in self._mounted or item.id not in live_ids:
                     continue
-                self._mount_item(node.id, item, node_ids, cursor)
+                # Anchor before the next already-mounted sibling so a revealed-mid-feed item lands in
+                # order rather than at the tail; None ⇒ the deeper-wrapper / append fallback in _mount_item.
+                after = next((it for it in items[idx + 1:] if it.id in self._mounted), None)
+                before = self._mounted[after.id] if after is not None else None
+                self._mount_item(node.id, item, node_ids, cursor, before=before)
         self._scroll_end()
 
         # Repaint commit decoration for the now-visible branch (after refresh, so freshly-mounted widgets

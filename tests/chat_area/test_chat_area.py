@@ -152,6 +152,41 @@ async def test_welcome_banner_seeds_the_root_feed_only_when_requested():
 
 
 # ------------------------------------------------------------------------------------------------
+# Feed visibility (display-only filters)
+# ------------------------------------------------------------------------------------------------
+
+async def test_show_thinking_option_gates_is_visible_and_emits_a_toggle_tick():
+    options = Options(OptionScope.Session)
+    area = ChatAreaModel(build_runtime(lambda: EchoModel(), state_schema=RootAgentState), options=options)
+
+    thinking = AgentMessageModel(thinking=True)
+    answer = AgentMessageModel(thinking=False)
+
+    # Shown by default — both an answer and a thinking segment are visible.
+    assert area.is_visible(thinking) is True
+    assert area.is_visible(answer) is True
+
+    ticks: list[bool] = []
+    def on_vis() -> None:                                        # local var keeps the weak-held sub alive
+        ticks.append(True)
+    area.subscribe(area.Callbacks.OnVisibilityChanged, on_vis)
+
+    options.set(Options.ShowThinking, "disabled")
+    assert area.is_visible(thinking) is False                   # thinking hidden...
+    assert area.is_visible(answer) is True                      # ...answers untouched
+    assert len(ticks) == 1                                      # one view-facing reconcile tick
+
+    options.set(Options.ShowThinking, "enabled")
+    assert area.is_visible(thinking) is True
+    assert len(ticks) == 2
+
+
+async def test_is_visible_defaults_to_shown_without_an_option_service():
+    area = make_area()                                          # no options in scope
+    assert area.is_visible(AgentMessageModel(thinking=True)) is True
+
+
+# ------------------------------------------------------------------------------------------------
 # Slash commands
 # ------------------------------------------------------------------------------------------------
 

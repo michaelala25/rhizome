@@ -13,8 +13,11 @@ from rhizome.agent.app_context import VALID_VERBOSITIES
 from rhizome.agent.state import RootAgentState
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.chat_area.chat_input import ChatInputModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.options import Options, OptionScope
 from rhizome.tui.widgets.chat_area.branch import BranchPoint
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea, DepthWrapper
+from rhizome.tui.widgets.chat_area.messages.agent import AgentMessage
 from rhizome.tui.widgets.chat_area.status import StatusBar
 from rhizome.tui.types import Mode, Role
 
@@ -30,8 +33,8 @@ class _Harness(App):
         yield ChatArea(self._vm)
 
 
-def make_vm() -> ChatAreaModel:
-    return ChatAreaModel(build_runtime(lambda: EchoModel(), state_schema=RootAgentState))
+def make_vm(options: Options | None = None) -> ChatAreaModel:
+    return ChatAreaModel(build_runtime(lambda: EchoModel(), state_schema=RootAgentState), options=options)
 
 
 async def test_branch_feed_renders_under_a_depth_wrapper():
@@ -188,3 +191,61 @@ async def test_interrupt_resolution_returns_focus_to_the_input():
         vm.emit(vm.Callbacks.OnInterruptChanged, node)
         await pilot.pause()
         assert pilot.app.focused is chat.query_one("#chat-input")
+
+
+async def test_show_thinking_toggle_mounts_and_unmounts_segments_in_place():
+    """Toggling ShowThinking reconciles only the thinking segments: hiding unmounts the interleaved one,
+    revealing remounts it back into its original middle slot (not appended at the feed tail)."""
+    options = Options(OptionScope.Session)
+    vm = make_vm(options)
+    async with _Harness(vm).run_test() as pilot:
+        await pilot.pause()
+        # answer / thinking / answer, interleaved on the root feed.
+        a1, t, a2 = AgentMessageModel(), AgentMessageModel(thinking=True), AgentMessageModel()
+        for seg, text in ((a1, "first"), (t, "hmm"), (a2, "second")):
+            seg.append_token(text)
+            vm.append_item(seg)
+        await pilot.pause()
+
+        chat = pilot.app.query_one(ChatArea)
+        inner = chat.query_one("#message-area-inner")
+
+        def segments() -> list[AgentMessage]:
+            return [w for w in inner.children if isinstance(w, AgentMessage)]
+
+        # All three shown by default, thinking in the middle.
+        assert [w.has_class("--thinking") for w in segments()] == [False, True, False]
+
+        # Hide: the thinking segment unmounts; the two answers stay.
+        options.set(Options.ShowThinking, "disabled")
+        await pilot.pause()
+        assert [w.has_class("--thinking") for w in segments()] == [False, False]
+
+        # Reveal: it remounts between the answers — positional accuracy, not appended at the tail.
+        options.set(Options.ShowThinking, "enabled")
+        await pilot.pause()
+        assert [w.has_class("--thinking") for w in segments()] == [False, True, False]
+
+
+async def test_visibility_toggle_preserves_focus():
+    """A visibility reconcile is a keyed diff — it mounts/unmounts only the affected segments and never
+    routes focus, so a widget the user is on (here the branch indicator) keeps focus across the toggle."""
+    options = Options(OptionScope.Session)
+    vm = make_vm(options)
+    async with _Harness(vm).run_test() as pilot:
+        await vm.branch(name="alt")                  # navigable BranchPoint in the root feed; cursor -> alt
+        await pilot.pause()
+        t = AgentMessageModel(thinking=True)
+        t.append_token("hmm")
+        vm.append_item(t)                            # a thinking segment on the 'alt' branch
+        await pilot.pause()
+
+        chat = pilot.app.query_one(ChatArea)
+        bp = chat.query_one(f"#{chat._navigable_node_ids()[0]}")
+        bp.focus()
+        await pilot.pause()
+        assert pilot.app.focused is bp
+
+        options.set(Options.ShowThinking, "disabled")
+        await pilot.pause()
+        assert pilot.app.focused is bp               # toggle reconciled the feed but left focus put

@@ -621,6 +621,19 @@ class Options(CallbackHost, metaclass=OptionsMeta):
         choices=["debug", "default", "essential_only"],
     )
 
+    ShowThinking = ToggleOptionSpec(
+        name="show_thinking",
+        scope=OptionScope.Session,
+        default="enabled",
+        # ``immediate`` so toggling it in the editor hides/reveals thinking live (a display-only filter:
+        # the segments stay in the conversation either way, so disabling and re-enabling is lossless).
+        immediate=True,
+        help=(
+            "Show the agent's adaptive-thinking summaries in the chat feed. Disabling hides them from "
+            "view only — they keep streaming underneath and reappear if you re-enable it."
+        ),
+    )
+
     class Agent(OptionNamespace):
         name = "agent"
 
