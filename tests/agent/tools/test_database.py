@@ -170,8 +170,8 @@ async def test_aggregate_group_by_counts_per_group(sessions):
     # Entries sit one each under topics 2, 3, 4 — the list_topics entry-count use case.
     out = await run_aggregate(sessions, REG, "knowledge_entry", group_by="topic_id")
     assert "3 group(s)" in out
-    assert "topic_id=2 | count=1" in out
-    assert "topic_id=3 | count=1" in out
+    assert "columns: topic_id, count" in out        # group/metric labels declared once
+    assert "[2, 1]" in out and "[3, 1]" in out       # one positional row per group
 
 
 async def test_aggregate_multiple_metrics(sessions):

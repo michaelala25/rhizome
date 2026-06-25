@@ -16,9 +16,10 @@ Conventions:
   creating rows has no blast radius to preview.
 - *Column projection.* ``query`` returns a lean default set of columns (long text truncated); pass
   ``columns`` to select any columns — including ones omitted by default — returned in full.
-- *Two render shapes.* A default (scan) query prints a compact table — the column header declared once,
-  then one positional JSON-array row each. An explicit-``columns`` query prints vertical ``key: value``
-  blocks instead, so the requested long-text columns render in full and readably.
+- *Two render shapes.* A default (scan) query — and a grouped ``aggregate`` — prints a compact table: the
+  column header declared once, then one positional JSON-array row each. An explicit-``columns`` query
+  prints vertical ``key: value`` blocks instead, so the requested long-text columns render in full and
+  readably.
 - *Blanks.* In the vertical shape a blank column (``null`` / empty string) is dropped from its row
   (absence reads as "unset"); in the table shape it is a ``null`` slot. A falsy-but-real value (``False``,
   ``0``) is always kept.
@@ -165,6 +166,12 @@ def _fmt_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
+def _token_note(body: str) -> str:
+    """The shared ``~N tokens`` size hint for a rendered tool body — the budget signal both ``query`` and
+    ``aggregate`` append so the agent can gauge an output's context cost (see ``_approx_tokens``)."""
+    return f"~{_fmt_tokens(_approx_tokens(body))} tokens"
+
+
 def _identity(model: type, identity: tuple) -> str:
     pk = [c.key for c in inspect(model).primary_key]
     if len(pk) == 1:
@@ -256,10 +263,9 @@ async def run_query(session_factory, registry, table, *, filter=None, columns=No
     if offset:
         header += f" from offset {offset}"
     if shown:
-        body_tokens = _approx_tokens(body)
-        note = f"~{_fmt_tokens(body_tokens)} tokens"
+        note = _token_note(body)
         if total > offset + shown:
-            full = body_tokens * total // shown
+            full = _approx_tokens(body) * total // shown
             note += (f"; full match ≈ {_fmt_tokens(full)} — raise limit/offset, narrow the filter, "
                      f"or project fewer columns")
         header += f" ({note})"
@@ -294,19 +300,19 @@ async def run_aggregate(session_factory, registry, table, *, filter=None, group_
     async with session_factory() as session:
         rows = (await session.execute(stmt)).all()
 
-    # No group_by: a single aggregate row over the whole (filtered) table.
+    # No group_by: a single aggregate row over the whole (filtered) table — already minimal, keep inline.
     if not groups:
         values = ", ".join(f"{m}={_render_value(v, truncate=False)}" for m, v in zip(metrics, rows[0]))
         return f"{spec.table_name}: {values}"
 
-    header = f"{spec.table_name}: {len(rows)} group(s)" + (" (capped)" if len(rows) == MAX_LIMIT else "")
-    lines = []
-    for row in rows:
-        keys = ", ".join(f"{c}={_render_value(v, truncate=False)}" for c, v in zip(groups, row))
-        vals = ", ".join(f"{m}={_render_value(v, truncate=False)}"
-                         for m, v in zip(metrics, row[len(groups):]))
-        lines.append(f"  {keys} | {vals}")
-    return f"{header}\n" + "\n".join(lines)
+    # Grouped: a table — one row per group, columns = group keys then metrics. The same compact columnar
+    # shape as a query scan (header declared once, positional JSON rows), so the group/metric labels are
+    # not repeated down every row.
+    columns = [*groups, *metrics]
+    body = f"columns: {', '.join(columns)}\n{_format_table(columns, rows, truncate=False)}"
+    capped = " (capped)" if len(rows) == MAX_LIMIT else ""
+    header = f"{spec.table_name}: {len(rows)} group(s){capped} ({_token_note(body)})"
+    return f"{header}\n{body}"
 
 
 @report_errors
