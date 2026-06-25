@@ -24,10 +24,12 @@ class Events:
 
     def __init__(self, graph: ConversationGraph[str]) -> None:
         self.appended, self.removed, self.cleared, self.renamed = [], [], [], []
+        self.topology: list[bool] = []
         graph.subscribe(graph.Callbacks.OnFeedAppended, self.on_appended)
         graph.subscribe(graph.Callbacks.OnFeedRemoved, self.on_removed)
         graph.subscribe(graph.Callbacks.OnFeedCleared, self.on_cleared)
         graph.subscribe(graph.Callbacks.OnNodeRenamed, self.on_renamed)
+        graph.subscribe(graph.Callbacks.OnTopologyChanged, self.on_topology)
 
     def on_appended(self, node, item) -> None:
         self.appended.append((node, item))
@@ -40,6 +42,9 @@ class Events:
 
     def on_renamed(self, node) -> None:
         self.renamed.append(node)
+
+    def on_topology(self) -> None:
+        self.topology.append(True)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -60,6 +65,20 @@ async def test_feed_ids_are_graph_wide_and_events_carry_node_and_item():
     assert (a.id, b.id, c.id) == (0, 1, 2)
     assert (a.entry, c.entry) == ("a", "c")
     assert events.appended == [(root, a), (root, b), (child, c)]
+
+
+async def test_topology_changed_fires_on_branch_and_merge():
+    graph = make_graph()
+    events = Events(graph)
+    root = graph.root
+
+    a = (await graph.branch(root)).node
+    b = (await graph.branch(root)).node
+    await graph.merge(a, b)
+
+    # make_root predates the subscription, so only the two branches + the merge are recorded; the
+    # signal is nullary (on_topology takes no payload), so subscribers re-read the graph to repaint.
+    assert len(events.topology) == 3
 
 
 async def test_frozen_feeds_are_sealed_but_removal_is_allowed():

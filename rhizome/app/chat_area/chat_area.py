@@ -63,6 +63,7 @@ class ChatAreaModel(ViewModelBase):
         OnFeedCleared            = "OnFeedCleared"
         OnNodeRenamed            = "OnNodeRenamed"
         OnBusyChanged            = "OnBusyChanged"
+        OnTopologyChanged        = "OnTopologyChanged"
         OnInterruptChanged       = "OnInterruptChanged"
         OnVisibilityChanged      = "OnVisibilityChanged"
         OnCommitModeChanged      = "OnCommitModeChanged"
@@ -91,6 +92,7 @@ class ChatAreaModel(ViewModelBase):
             self.Callbacks.OnFeedCleared:            ConversationNode,
             self.Callbacks.OnNodeRenamed:            ConversationNode,
             self.Callbacks.OnBusyChanged:            (ConversationNode, bool),              # see _notify_stream_complete
+            self.Callbacks.OnTopologyChanged:        None,                                  # branch/merge changed the graph
             self.Callbacks.OnInterruptChanged:       ConversationNode,
             self.Callbacks.OnVisibilityChanged:      None,                                  # a display filter toggled
             self.Callbacks.OnCommitModeChanged:      bool,                                  # commit mode on/off
@@ -136,6 +138,7 @@ class ChatAreaModel(ViewModelBase):
         graph.subscribe(graph.Callbacks.OnFeedCleared, self._on_graph_feed_cleared)
         graph.subscribe(graph.Callbacks.OnNodeRenamed, self._on_graph_node_renamed)
         graph.subscribe(graph.Callbacks.OnNodeBusyChanged, self._on_graph_busy_changed)
+        graph.subscribe(graph.Callbacks.OnTopologyChanged, self._on_graph_topology_changed)
 
         # Command registry + input + palette. The conversation registers its commands on the registry the
         # workspace injects (parented to the app-global scope), or on a bare fallback when constructed
@@ -203,6 +206,11 @@ class ChatAreaModel(ViewModelBase):
         # Relayed from the agent layer's worker pinpoints, so the payload always agrees with
         # ``node.busy`` — the idle edge fires only after the run's teardown has settled.
         self.emit(self.Callbacks.OnBusyChanged, node, busy)
+
+    def _on_graph_topology_changed(self) -> None:
+        # A branch/merge changed the node set — pure pass-through for subscribers that visualize the
+        # graph (e.g. the conversation-graph viewer panel).
+        self.emit(self.Callbacks.OnTopologyChanged)
 
     # ------------------------------------------------------------------
     # Cursor & navigation

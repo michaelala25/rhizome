@@ -1,11 +1,11 @@
 """Workspace view — the ``PanelOrchestrator`` half of ``WorkspaceModel``.
 
 Lays out the workspace's panel slots and routes each surfaced panel VM to its slot. Two slots exist
-today: the chat area (center, always present) and the resource loader (left, opened on demand via
-``/resources``); an auxiliary (right) slot gets created alongside its panel view as it lands. Both panels
-are bound at module import (the ``register_panel`` calls below). slot-left collapses to zero width while
-empty (``_sync_slot_visibility``), so the closed resource loader reserves no space. (The status bar is not
-a panel — it is docked inside the chat area itself.)
+today: the chat area (center, always present) and a left slot the resource loader and conversation-graph
+viewer share one-at-a-time (opened on demand via ``/resources`` / ``/graph``). The panels are bound at
+module import (the ``register_panel`` calls below). slot-left collapses to zero width while empty
+(``_sync_slot_visibility``), so a closed left panel reserves no space. (The status bar is not a panel — it
+is docked inside the chat area itself.)
 
 Mounted by ``ChatTabPane`` (one Workspace per chat tab) — it backs the tab's content, with the screen
 reaching the conversation through ``pane.workspace`` (e.g. to focus the chat input on a tab switch).
@@ -18,10 +18,12 @@ from textual.containers import Horizontal
 from textual.css.query import NoMatches
 
 from rhizome.app.chat_area.chat_area import ChatAreaModel
+from rhizome.app.graph_viewer import GraphViewerModel
 from rhizome.app.model import ViewModelBase
 from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.app.workspace.workspace import WorkspaceModel
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea
+from rhizome.tui.widgets.graph_viewer import GraphViewer
 from rhizome.tui.widgets.panel_orchestrator import PanelOrchestrator, PanelSlot, register_panel
 from rhizome.tui.widgets.resource_loader import ResourceLoader
 from rhizome.utils.services import ServiceAccessor
@@ -30,6 +32,7 @@ from rhizome.utils.services import ServiceAccessor
 # Bind the panels (VM type -> view -> slot). Import side effect, populated once.
 register_panel(ChatAreaModel, slot="slot-center")(ChatArea)
 register_panel(ResourceLoaderModel, slot="slot-left")(ResourceLoader)
+register_panel(GraphViewerModel, slot="slot-left")(GraphViewer)
 
 
 class Workspace(PanelOrchestrator[WorkspaceModel]):

@@ -2,10 +2,10 @@
 
 The workspace is the composition root for the conversation stack: it opens the workspace-scoped service
 container, declares the per-workspace ``AgentRuntime`` there, and owns the panel VMs surfaced within it.
-``ChatAreaModel`` is the always-present center panel; the resource loader is an on-demand panel (opened
-via ``/resources``), and an auxiliary right panel is owned here too (stubbed until its VM lands). The
-status bar is not a panel — it is a fixed element of the chat area, owned by ``ChatAreaModel``. Everything
-else is a panel for now — the panel/chrome distinction is deferred.
+``ChatAreaModel`` is the always-present center panel; the resource loader and the conversation-graph
+viewer are on-demand left-hand panels (``/resources`` / ``/graph``), mutually exclusive in ``slot-left``.
+The status bar is not a panel — it is a fixed element of the chat area, owned by ``ChatAreaModel``.
+Everything else is a panel for now — the panel/chrome distinction is deferred.
 
 Two-phase construction
 ----------------------
@@ -33,6 +33,8 @@ from rhizome.agent.app_context import AppContextHooks, AppContextHookService
 from rhizome.agent.runtime import AgentRuntime, AgentRuntimeService
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.commands import CommandRegistry, CommandRegistryService
+from rhizome.app.graph_viewer import GraphViewerModel
+from rhizome.app.model import ViewModelBase
 from rhizome.app.options import Options, OptionScope, OptionService
 from rhizome.app.orchestrator import OrchestratorModel
 from rhizome.app.resource_loader import ResourceLoaderModel
@@ -43,6 +45,11 @@ from rhizome.utils.services import ServiceAccessor
 
 
 class WorkspaceModel(OrchestratorModel):
+
+    # Panels that share ``slot-left``: surfacing one closes any other, so the slot holds one tool at a
+    # time (the single-panel-per-slot configuration the view supports). ``/resources`` and ``/graph``
+    # both toggle through ``_toggle_left_tool``.
+    _LEFT_PANEL_TOOLS = (ResourceLoaderModel, GraphViewerModel)
 
     def __init__(self, services: ServiceAccessor, *, show_welcome: bool = False) -> None:
         super().__init__()
@@ -81,8 +88,10 @@ class WorkspaceModel(OrchestratorModel):
         # workspace panel, so it belongs on the orchestrator, not the conversation.
         self._commands = CommandRegistry(parent=services.try_get(CommandRegistryService))
         self._services.register(CommandRegistryService, self._commands)
-        self._commands.register("resources", lambda: self.toggle(ResourceLoaderModel),
+        self._commands.register("resources", lambda: self._toggle_left_tool(ResourceLoaderModel),
                                 help="Toggle the resource loader panel.")
+        self._commands.register("graph", lambda: self._toggle_left_tool(GraphViewerModel),
+                                help="Toggle the conversation-graph viewer panel.")
 
         # Resource layer: one ``ResourceTree`` per workspace, shared by the conversation graph's stores
         # and the loader panel. Construction is side-effect-free — no DB is touched until a refresh, which
@@ -101,6 +110,7 @@ class WorkspaceModel(OrchestratorModel):
         # lives inside the chat area, owned by ``ChatAreaModel``.)
         self._register_view_model(ChatAreaModel, self._build_chat_area)
         self._register_view_model(ResourceLoaderModel, self._build_resource_loader)
+        self._register_view_model(GraphViewerModel, self._build_graph_viewer)
 
     def _model_fact(self) -> str | None:
         """App-context fact (registered on this workspace's hooks): the active model id, read live from this
@@ -117,6 +127,20 @@ class WorkspaceModel(OrchestratorModel):
         (``toggle``); custody persists once built, so toggling it shut and back open keeps its state."""
         self.request_mount(self._get_view_model(ChatAreaModel))
 
+    def _toggle_left_tool(self, vm_cls: type[ViewModelBase]) -> None:
+        """Toggle a ``slot-left`` tool, keeping the slot to one at a time: close ``vm_cls`` if it is
+        already surfaced, else close whichever other left-hand tool is open, then surface ``vm_cls``.
+        The ``PanelOrchestrator`` shows one panel per slot, so doing the mutual exclusion here keeps the
+        surfaced set in step with what the slot actually shows."""
+        for vm in self.surfaced_view_models():
+            if type(vm) is vm_cls:
+                self.request_unmount(vm)
+                return
+        for vm in self.surfaced_view_models():
+            if isinstance(vm, self._LEFT_PANEL_TOOLS):
+                self.request_unmount(vm)
+        self.request_mount(self._get_view_model(vm_cls))
+
     # ------------------------------------------------------------------
     # Typed panel accessors
     # ------------------------------------------------------------------
@@ -130,6 +154,11 @@ class WorkspaceModel(OrchestratorModel):
     def resource_loader(self) -> ResourceLoaderModel:
         """The resource-loader panel — one instance, custody held for the workspace's life."""
         return self._get_view_model(ResourceLoaderModel)
+
+    @property
+    def graph_viewer(self) -> GraphViewerModel:
+        """The conversation-graph viewer panel — one instance, custody held for the workspace's life."""
+        return self._get_view_model(GraphViewerModel)
 
     # ------------------------------------------------------------------
     # Panel descriptors
@@ -166,6 +195,11 @@ class WorkspaceModel(OrchestratorModel):
         )
         chat_area.subscribe(chat_area.Callbacks.OnCursorMoved, self._on_chat_cursor_moved)
         return loader
+
+    def _build_graph_viewer(self, _orch: OrchestratorModel) -> GraphViewerModel:
+        """Build the graph-viewer panel over the chat area it reflects: it reads the conversation graph,
+        tracks the cursor, and quick-navs back through ``ChatAreaModel``."""
+        return GraphViewerModel(self.chat_area)
 
     def _on_chat_cursor_moved(self, cursor) -> None:
         """Re-point the loader's local-context channel at the new conversation leaf's node-local store."""

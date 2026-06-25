@@ -85,8 +85,7 @@ class MergeTreeDemo(App):
     Screen { background: $surface-darken-2; }
     #header { dock: top; height: 1; background: $primary; color: $text; text-style: bold; padding: 0 1; }
     #hint   { dock: bottom; height: 1; background: $surface; padding: 0 1; }
-    #scroll { width: 1fr; height: 1fr; overflow: auto auto; align-horizontal: center; }
-    #canvas { padding: 1 2; }
+    #scroll { width: 1fr; height: 1fr; overflow: auto auto; align-horizontal: center; padding: 1 2; }
     """
 
     BINDINGS = [
@@ -124,6 +123,15 @@ class MergeTreeDemo(App):
 
     def on_merge_tree_node_highlighted(self, event: MergeTreeView.NodeHighlighted) -> None:
         self._show_hint(" → ".join(str(n) for n in event.path))
+
+    def on_merge_tree_cursor_moved(self, event: MergeTreeView.CursorMoved) -> None:
+        # This app owns the scroll container, so it reveals the cursor cell the widget publishes.
+        if event.region is None:
+            return
+        canvas = self.query_one("#canvas", MergeTreeView)
+        self.query_one("#scroll").scroll_to_region(
+            event.region.translate(canvas.virtual_region.offset), animate=False
+        )
 
     def action_next_tree(self) -> None:
         self._idx = (self._idx + 1) % len(self._examples)

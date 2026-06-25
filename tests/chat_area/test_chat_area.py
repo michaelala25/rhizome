@@ -649,3 +649,25 @@ async def test_plain_chat_blocked_while_busy_keeps_the_buffer():
 
     user_msgs = [e.content for e in entries(node) if isinstance(e, ChatMessageModel) and e.role == Role.USER]
     assert user_msgs == ["first"]                   # "second" never reached the feed
+
+
+async def test_branch_re_emits_topology_changed():
+    """ChatAreaModel relays the graph's OnTopologyChanged to its own subscribers (e.g. the graph
+    viewer) — the same pass-through pattern as the feed/rename events."""
+    area = make_area(lambda: EchoModel())
+
+    class Topo:
+        def __init__(self) -> None:
+            self.count = 0
+
+        def bump(self) -> None:
+            self.count += 1
+
+    topo = Topo()                                   # strongly held — callbacks are weakref'd
+    area.subscribe(area.Callbacks.OnTopologyChanged, topo.bump)
+
+    await area.branch()                             # first fork: continuation + new branch
+
+    assert topo.count >= 1
+    graph = area.conversation_graph
+    assert len(graph.children(graph.root)) >= 2

@@ -5,8 +5,9 @@ from rhizome.app.model import ViewModelBase
 
 class ViewBase[T: ViewModelBase](Widget):
     """Minimal MVVM view base. Holds a typed reference to its view-model, wires the standard ``dirty``
-    → ``_refresh`` and ``focus`` → ``Widget.focus`` subscriptions, and forwards Textual ``on_focus`` /
-    ``on_blur`` events to the VM's ``notify_focused`` / ``notify_blurred`` hooks.
+    → ``_refresh``, ``focus`` → ``Widget.focus``, and ``scroll-visible`` → ``Widget.scroll_visible``
+    subscriptions, and forwards Textual ``on_focus`` / ``on_blur`` events to the VM's
+    ``notify_focused`` / ``notify_blurred`` hooks.
 
     Subclasses override ``_refresh`` to actually paint based on VM state. Multi-VM views (e.g. a parent
     widget whose VM orchestrates sub-VMs) can subscribe additional handlers in their own ``__init__``
@@ -26,6 +27,7 @@ class ViewBase[T: ViewModelBase](Widget):
 
         self._vm.subscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._vm.subscribe(self._vm.Callbacks.RequestFocus, self.focus)
+        self._vm.subscribe(self._vm.Callbacks.RequestScrollVisible, self._on_request_scroll_visible)
 
     @property
     def model(self):
@@ -34,12 +36,18 @@ class ViewBase[T: ViewModelBase](Widget):
     def on_unmount(self) -> None:
         self._vm.unsubscribe(self._vm.Callbacks.OnDirty, self._refresh)
         self._vm.unsubscribe(self._vm.Callbacks.RequestFocus, self.focus)
+        self._vm.unsubscribe(self._vm.Callbacks.RequestScrollVisible, self._on_request_scroll_visible)
 
     def on_focus(self, event: Focus) -> None:
         self._vm.notify_focused()
 
     def on_blur(self, event: Blur) -> None:
         self._vm.notify_blurred()
+
+    def _on_request_scroll_visible(self, top: bool = True) -> None:
+        # Deferred a frame: the widget may have only just been (re)mounted by whatever prompted the
+        # request (e.g. a cursor move bringing a feed item on-screen), so it isn't laid out yet.
+        self.call_after_refresh(self.scroll_visible, top=top)
 
     def _refresh(self) -> None:
         pass

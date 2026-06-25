@@ -21,16 +21,20 @@ testable on its own — call :func:`build_layout` / :func:`render` directly to d
               edge connects adjacent ranks and long edges route as a tidy chain.
   4. RELAX  — barycenter sweeps nudge each node toward the average column of its neighbours, with a
               mean-preserving min-gap (isotonic) step so nothing drifts; then DECLASH slides a merge off any
-              column it shares with an unconnected neighbour (which would draw a phantom vertical).
+              column it shares with an unconnected neighbour (which would draw a phantom vertical). The
+              min-gap is per-node — a labeled node reserves enough room that its label clears the neighbour
+              to its right (see :func:`_gap_after`), so it falls back to the plain ``COL_GAP`` for unlabeled
+              or single-glyph graphs.
   5. ROUTE  — paint edges into a character grid. Each gap assigns edges to horizontal *tracks* so stacked
               merges stay legible; box glyphs merge bitwise into ┬/┴/┼. Where two *unrelated* edges cross,
               one rides over the other: two straight runs make a double-line bridge ╪/╫, while a stroke
               passing over a turn draws the foreground heavy and the background light (┠/┩/╃ …) so the
               corner never collapses into a phantom junction.
 
-Presentation is per-node (``marker`` / ``style`` on the `GraphNode`), so the widget stays domain-agnostic.
-Cursor / keyboard navigation is intentionally not implemented yet — the widget is focusable so it can grow
-one without an API change.
+Presentation is per-node (``marker`` / ``style`` / ``label`` on the `GraphNode`), so the widget stays
+domain-agnostic. A node's label is laid out beside it and the layout reserves horizontal room for it; the
+widget fits whatever label it is handed, leaving any truncation policy to the consumer. The widget owns a
+navigable cursor (arrows move, ``enter`` selects), posting `NodeHighlighted` / `NodeSelected` outward.
 """
 
 from __future__ import annotations
@@ -39,8 +43,10 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Hashable, Sequence
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual.binding import Binding
+from textual.geometry import Region
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static
@@ -49,6 +55,15 @@ from textual.widgets import Static
 COL_GAP = 4   # minimum columns between two nodes sharing a rank
 V_GAP = 2     # blank grid rows between consecutive ranks (so STRIDE rows per rank)
 STRIDE = V_GAP + 1
+
+
+def _gap_after(node: Hashable, label_w: dict[Hashable, int]) -> int:
+    """Minimum columns from ``node``'s marker to the next marker on its rank — wide enough that ``node``'s
+    label clears the neighbour. A label of width ``L`` is drawn two columns right of the marker (see
+    ``render``), so it runs through ``col+1+L`` and the next marker must sit at ``col+L+3`` or beyond. The
+    ``COL_GAP`` floor means an absent or one-cell label needs no extra room, so unlabeled / single-glyph
+    graphs lay out exactly as they did before labels were fit."""
+    return max(COL_GAP, label_w.get(node, 0) + 3)
 
 
 @dataclass(frozen=True)
@@ -282,7 +297,8 @@ def _ranks(topo: list, parents: dict) -> dict[Hashable, int]:
     return rank
 
 
-def _home_x(root: Hashable, children: dict, parents: dict, order: list) -> dict[Hashable, float]:
+def _home_x(root: Hashable, children: dict, parents: dict, order: list,
+            label_w: dict[Hashable, int]) -> dict[Hashable, float]:
     """Starting columns from a plain tree layout of the home-parent forest.
 
     A node's *home* parent is its first parent. Following home parents upward always reaches the root, so the
@@ -304,11 +320,12 @@ def _home_x(root: Hashable, children: dict, parents: dict, order: list) -> dict[
 
     width: dict[Hashable, float] = {}
 
-    # Subtree width in columns: a leaf claims COL_GAP, a parent the sum of its children. Disjoint bands, so
-    # nothing in the home tree can overlap horizontally.
+    # Subtree width in columns: a leaf claims its own label-aware gap, a parent the sum of its children.
+    # Disjoint bands, so nothing in the home tree can overlap horizontally, and a wide label already seeds
+    # its leaf far enough from the next that relaxation barely has to nudge it.
     def measure(nid: Hashable) -> float:
         kids = home_children[nid]
-        width[nid] = sum(measure(k) for k in kids) if kids else float(COL_GAP)
+        width[nid] = sum(measure(k) for k in kids) if kids else float(_gap_after(nid, label_w))
         return width[nid]
 
     measure(root)
@@ -352,19 +369,27 @@ def _proper(edges: list, rank: dict) -> tuple[list[_Virtual], list[tuple]]:
     return virtuals, out_edges
 
 
-def _isotonic(desired: list[float], gap: float) -> list[float]:
-    """Closest positions to `desired` (in order) keeping each at least `gap` past the previous.
+def _isotonic(desired: list[float], gaps: list[float]) -> list[float]:
+    """Closest positions to `desired` (in order) keeping each at least `gaps[i]` past the previous.
 
-    Substituting q_i = desired_i - i*gap turns the gap constraint into "q must be non-decreasing", the
-    classic isotonic-regression / pool-adjacent-violators problem. The L2 fit pools tied runs at their mean,
-    so the centroid is preserved — no sideways drift, unlike a naive left-to-right push.
+    `gaps` holds the per-pair minimum spacing (``gaps[i]`` between points ``i`` and ``i+1``), so a labeled
+    node can demand more room than its neighbours. Substituting q_i = desired_i - G_i, where G_i is the
+    cumulative required offset ``sum(gaps[:i])``, turns the variable-gap constraint into "q must be non-
+    decreasing" — the classic isotonic-regression / pool-adjacent-violators problem. The L2 fit pools tied
+    runs at their mean, so the centroid is preserved — no sideways drift, unlike a naive left-to-right push.
+    (A uniform ``gaps`` of all ``COL_GAP`` reduces to G_i = i*COL_GAP, the plain even-spacing case.)
     """
+    cum, offset = 0.0, [0.0]
+    for g in gaps:
+        cum += g
+        offset.append(cum)                # offset[i] = G_i, the cumulative min-spacing before point i
+
     blocks: list[list[float]] = []        # each: [count, sum]; a block's shared position = sum/count
     for i, d in enumerate(desired):
         # Append this point as its own block, then while the previous block sits at or above it (the
         # non-decreasing order is violated) merge the two into one block at their combined mean. Merging at
         # the mean is what preserves the centre of mass — a squeezed cluster stays centred.
-        blocks.append([1.0, d - i * gap])
+        blocks.append([1.0, d - offset[i]])
         while len(blocks) >= 2 and blocks[-2][1] / blocks[-2][0] >= blocks[-1][1] / blocks[-1][0]:
             c2, s2 = blocks.pop()
             c1, s1 = blocks.pop()
@@ -372,27 +397,33 @@ def _isotonic(desired: list[float], gap: float) -> list[float]:
     out: list[float] = []
     for count, total in blocks:
         out.extend([total / count] * int(count))      # every point in a block shares the block's position
-    return [v + i * gap for i, v in enumerate(out)]    # undo the −i*gap shift to restore real spacing
+    return [v + offset[i] for i, v in enumerate(out)]  # undo the −G_i shift to restore real spacing
 
 
-def _relax(x: dict, layers: dict[int, list], parents: dict, children: dict, iters: int = 6) -> None:
+def _relax(x: dict, layers: dict[int, list], parents: dict, children: dict,
+           label_w: dict[Hashable, int], iters: int = 6) -> None:
     """Barycenter sweeps: alternately pull each node toward its parents' / children's average column,
-    re-spacing each rank to keep `COL_GAP`. Order within a rank is fixed, so no crossings are created."""
+    re-spacing each rank to keep every node's label-aware min gap. Order within a rank is fixed, so no
+    crossings are created."""
     # Two complementary passes per iteration. Down alone aligns children under parents but ignores how the
     # children spread; up alone centres parents over children but ignores the parents above. Alternating a
     # few times settles to a layout balanced from both directions. (`else x[n]`: a node with nothing to
     # average against on that side holds still — the root has no parents, a leaf has no children.)
     ordered = sorted(layers)
+    # Each rank's per-pair min spacing is fixed (the rank's left→right order never changes), so the gap a
+    # node demands to fit its own label is governed by the node on the left of every pair.
+    rank_gaps = {r: [_gap_after(nodes[i], label_w) for i in range(len(nodes) - 1)]
+                 for r, nodes in layers.items()}
     for _ in range(iters):
         for r in ordered:                                   # downward: node → mean column of its parents
             nodes = layers[r]
             want = [sum(x[p] for p in parents[n]) / len(parents[n]) if parents[n] else x[n] for n in nodes]
-            for n, pos in zip(nodes, _isotonic(want, COL_GAP)):
+            for n, pos in zip(nodes, _isotonic(want, rank_gaps[r])):
                 x[n] = pos
         for r in reversed(ordered):                         # upward: node → mean column of its children
             nodes = layers[r]
             want = [sum(x[c] for c in children[n]) / len(children[n]) if children[n] else x[n] for n in nodes]
-            for n, pos in zip(nodes, _isotonic(want, COL_GAP)):
+            for n, pos in zip(nodes, _isotonic(want, rank_gaps[r])):
                 x[n] = pos
 
 
@@ -479,7 +510,8 @@ def _assign_tracks(rank: dict, col: dict, edges: list[tuple]) -> tuple[dict, dic
     return rank_row, edge_jog, height
 
 
-def _declash(rank: dict, col: dict, edges: list[tuple], movable: set, iters: int = 6) -> None:
+def _declash(rank: dict, col: dict, edges: list[tuple], movable: set,
+             label_w: dict[Hashable, int], iters: int = 6) -> None:
     """Nudge each merge node out of any column it shares with an *unconnected* node one rank above or below.
 
     A shared column draws a phantom vertical: the merge reads as if it drops straight out of (or into) a node
@@ -499,8 +531,11 @@ def _declash(rank: dict, col: dict, edges: list[tuple], movable: set, iters: int
         return any(col[m] == c and (n, m) not in connected
                    for adj in (rank[n] - 1, rank[n] + 1) for m in by_rank.get(adj, []))
 
-    def clear(n, c) -> bool:                                # c keeps COL_GAP from row-mates and is no phantom
-        return (all(abs(col[m] - c) >= COL_GAP for m in by_rank[rank[n]] if m is not n)
+    def spaced(n, c, m) -> bool:                            # the label-aware gap holds — left node sets it
+        return (col[m] - c >= _gap_after(n, label_w)) if c < col[m] else (c - col[m] >= _gap_after(m, label_w))
+
+    def clear(n, c) -> bool:                                # keeps each row-mate's gap and is no phantom
+        return (all(spaced(n, c, m) for m in by_rank[rank[n]] if m is not n)
                 and not phantom(n, c))
 
     # Process in a stable (rank, column) order — `movable` is a set, so iterating it directly would make the
@@ -523,9 +558,12 @@ def _declash(rank: dict, col: dict, edges: list[tuple], movable: set, iters: int
 def build_layout(nodes: Sequence[GraphNode]) -> Layout:
     """Run the whole pipeline: adjacency → rank → home-x → virtuals → relax → declash → grid coordinates."""
     order, parents, children, edges, root = _adjacency(nodes)
+    # Label widths feed every column-placement stage (home-x bands, relax spacing, declash clearance) so a
+    # node's label never collides with a same-rank neighbour. Keyed by id; absent (virtuals / unlabeled) → 0.
+    label_w = {n.id: cell_len(n.label) for n in nodes if n.label}
     topo = _topo_order(order, parents, children)
     rank = _ranks(topo, parents)                            # stage 1: rows (fixed from here on)
-    x = _home_x(root, children, parents, order)             # stage 2: rough columns from the home tree
+    x = _home_x(root, children, parents, order, label_w)    # stage 2: rough columns from the home tree
     virtuals, pedges = _proper(edges, rank)                 # stage 3: long edges → chains of one-rank hops
 
     # Seed each waypoint proportionally along the straight line between its edge's real endpoints, so a long
@@ -553,16 +591,21 @@ def build_layout(nodes: Sequence[GraphNode]) -> Layout:
     for r in layers:
         layers[r].sort(key=lambda n: (x[n], seq[n]))
 
-    _relax(x, layers, pparents, pchildren)                  # stage 4: settle the columns
+    _relax(x, layers, pparents, pchildren, label_w)         # stage 4: settle the columns
 
     # Snap floats to integer grid columns, shifting so the leftmost node lands at column 2 (a small margin).
     col = {n: int(round(x[n] - min(x.values()))) + 2 for n in all_nodes}
 
     # Stage 4.5: slide merge columns off any phantom vertical alignment, then re-seat at the left margin.
     is_merge = {nid for nid in order if len(parents[nid]) >= 2}
-    _declash(rank, col, pedges, is_merge)
+    _declash(rank, col, pedges, is_merge, label_w)
     col = {n: c - (min(col.values()) - 2) for n, c in col.items()}
-    width = max(col.values()) + 3
+
+    # Canvas wide enough for the node columns AND for every label, which is drawn two columns right of its
+    # marker (``col + 2 + width``) and would otherwise be clipped at the right edge — most visibly for a
+    # lone node in a chain, whose label has the whole right side free yet still needs the room reserved.
+    label_right = max((col[nid] + 2 + w for nid, w in label_w.items()), default=0)
+    width = max(max(col.values()) + 3, label_right + 1)
 
     # Stage 5-prep: give each edge a horizontal track so merges sharing a gap stay legible, and resolve the
     # logical ranks into grid rows (taller wherever a gap carries more than one track).
@@ -656,6 +699,12 @@ class MergeTree(Static, can_focus=True):
     in the diagram. Arrows move structurally (up = parent, down = first child, left/right = siblings); `enter`
     selects. It owns the cursor outright (no view-model), so a consumer reacts to :class:`NodeHighlighted` /
     :class:`NodeSelected`, or drives the cursor itself with :meth:`set_cursor`.
+
+    Keeping the cursor on-screen is the consumer's call, not the widget's: the diagram is one painted
+    `Static`, so the cursor has no child widget to scroll to, and the widget does not assume which ancestor
+    scrolls. Instead it *publishes* the cursor cell — :class:`CursorMoved` carries its :meth:`cursor_region`
+    (in this widget's own content coordinates) on every settle — and whoever owns the scroll container
+    translates that and reveals it.
     """
 
     DEFAULT_CSS = """
@@ -692,6 +741,18 @@ class MergeTree(Static, can_focus=True):
             self.path = path
             self.node = node
 
+    class CursorMoved(Message):
+        """Posted whenever the cursor's position settles — a key move, a programmatic `set_cursor`, or a
+        graph rebuild. ``region`` is the cursor cell in the widget's own content coordinates (``None`` when
+        there is no cursor), so the owner of the scroll container can reveal it; unlike `NodeHighlighted`
+        (a user move only), this fires for every change of position, which is what a viewport must track."""
+
+        def __init__(self, path: tuple, node: Hashable | None, region: Region | None) -> None:
+            super().__init__()
+            self.path = path
+            self.node = node
+            self.region = region
+
     def __init__(self, nodes: Sequence[GraphNode] = (), *, show_labels: bool = True, **kwargs) -> None:
         super().__init__(**kwargs)
         self._show_labels = show_labels
@@ -711,8 +772,18 @@ class MergeTree(Static, can_focus=True):
         self._rebuild()
 
     def set_cursor(self, path: Sequence[Hashable]) -> None:
-        """Move the cursor programmatically (repaints; does NOT post `NodeHighlighted` — the caller drove it)."""
+        """Move the cursor programmatically (repaints; posts `CursorMoved` so a viewport can follow, but not
+        `NodeHighlighted` — the caller, not the user, drove it)."""
         self.cursor = tuple(path)
+
+    def cursor_region(self) -> Region | None:
+        """The cursor tip's cell, in this widget's own content coordinates — the geometry an enclosing scroll
+        container needs to reveal it. Pure layout (no on-screen position), so it is valid the moment the
+        graph is built; ``None`` when there is no cursor or no layout yet."""
+        if self._layout is None or not self.cursor or self.cursor[-1] not in self._layout.col:
+            return None
+        tip = self.cursor[-1]
+        return Region(self._layout.col[tip], self._layout.row(tip), 1, 1)
 
     # -- internals ------------------------------------------------------------
 
@@ -727,6 +798,9 @@ class MergeTree(Static, can_focus=True):
         # paint explicitly below, since the layout changed even when the recovered cursor is unchanged.
         self.set_reactive(MergeTree.cursor, self._recovered_cursor())
         self._paint()
+        # `set_reactive` is silent, so `watch_cursor` won't run — publish the cursor here too, so a viewport
+        # re-anchors after a rebuild (the layout, hence the cell, may have shifted even if the path did not).
+        self._post_cursor_moved()
 
     def _index(self) -> None:
         self._children = {n.id: [] for n in self._graph_nodes}
@@ -754,6 +828,13 @@ class MergeTree(Static, can_focus=True):
 
     def watch_cursor(self) -> None:
         self._paint()
+        self._post_cursor_moved()
+
+    def _post_cursor_moved(self) -> None:
+        """Publish where the cursor now sits, so a viewport can follow. Fires for user moves, programmatic
+        `set_cursor`, and rebuilds alike — every path that settles the cursor routes through here."""
+        tip = self.cursor[-1] if self.cursor else None
+        self.post_message(self.CursorMoved(self.cursor, tip, self.cursor_region()))
 
     def _paint(self) -> None:
         if self._layout is None:

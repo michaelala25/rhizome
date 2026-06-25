@@ -181,6 +181,12 @@ class AgentGraph[N: AgentNode](CallbackHost):
         ``on_complete``). The payload always agrees with ``node.busy`` at emit time. ``invoke()``
         runs are await-shaped (the caller already knows) and do not fire this."""
 
+        OnTopologyChanged = "OnTopologyChanged"
+        """Nullary — fired after any topology mutation (root mint, branch, merge) republishes the
+        snapshot; the single emit site is ``_publish_topology``. Subscribers re-read the graph
+        (nodes / edges / frozen) to repaint; the prompt engine ignores it, pulling the live
+        ``TopologyView`` snapshot at compile time instead."""
+
     def __init__(
         self,
         runtime: AgentRuntime,
@@ -191,6 +197,7 @@ class AgentGraph[N: AgentNode](CallbackHost):
         super().__init__()
         self.make_callback_groups({
             self.Callbacks.OnNodeBusyChanged: (AgentNode, bool),
+            self.Callbacks.OnTopologyChanged: None,
         })
 
         self._runtime = runtime
@@ -284,10 +291,12 @@ class AgentGraph[N: AgentNode](CallbackHost):
         })
 
     def _publish_topology(self) -> None:
-        """Rebuild and publish the topology snapshot — called wherever the topology changes (root /
-        branch / merge). Readers pick it up on their next compile through the context's ``TopologyView``;
-        no per-node state is written."""
+        """Rebuild and publish the topology snapshot, then fire ``OnTopologyChanged`` — called wherever
+        the topology changes (root / branch / merge). Snapshot readers pick it up on their next compile
+        through the context's ``TopologyView``; callback subscribers (e.g. a graph visualizer) repaint
+        now. No per-node state is written."""
         self._topology.publish(self._build_topology_snapshot())
+        self.emit(self.Callbacks.OnTopologyChanged)
 
     def node(self, at: "Cursor[N] | N | int") -> N:
         """Resolve a cursor, node, or node id to a node belonging to this graph."""

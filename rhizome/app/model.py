@@ -111,6 +111,7 @@ class ViewModelBase(CallbackHost):
         """
         OnDirty = "OnDirty"
         RequestFocus = "RequestFocus"
+        RequestScrollVisible = "RequestScrollVisible"
         OnHint = "OnHint"
 
     # Whether this VM is part of the chat pane's ctrl+up/ctrl+down navigation rotation. Default False;
@@ -126,9 +127,10 @@ class ViewModelBase(CallbackHost):
         super().__init__()
 
         self.make_callback_groups({
-            ViewModelBase.Callbacks.OnDirty:      None,
-            ViewModelBase.Callbacks.RequestFocus: None,
-            ViewModelBase.Callbacks.OnHint:       str,
+            ViewModelBase.Callbacks.OnDirty:              None,
+            ViewModelBase.Callbacks.RequestFocus:         None,
+            ViewModelBase.Callbacks.RequestScrollVisible: bool,
+            ViewModelBase.Callbacks.OnHint:               str,
         })
 
 
@@ -148,6 +150,21 @@ class ViewModelBase(CallbackHost):
         if emitter is None:
             emitter = self
         emitter.emit(self.Callbacks.RequestFocus)
+
+
+    def request_scroll_visible(self, top: bool = True, emitter: Emitter | None = None) -> None:
+        """Request that this VM's view scroll itself into the viewport. Emits on
+        ``Callbacks.RequestScrollVisible``; the canonical subscriber is ``ViewBase``, which defers a
+        ``Widget.scroll_visible(top=...)`` to after the next refresh — the requested widget may have
+        only just been mounted (e.g. a feed item brought on-screen by a cursor move), so it isn't laid
+        out yet.
+
+        ``top`` aligns the widget to the top of the scroll region rather than merely making it visible.
+        Accepts an optional ``emitter`` so the emit can join a caller's ``emit_once`` batch on this VM.
+        """
+        if emitter is None:
+            emitter = self
+        emitter.emit(self.Callbacks.RequestScrollVisible, top)
 
 
     def hint(self, msg: str, emitter: Emitter | None = None) -> None:
