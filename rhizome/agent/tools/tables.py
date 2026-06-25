@@ -294,6 +294,9 @@ def render_schema_reference(registry: dict[str, TableSpec] = ALLOWED_TABLES) -> 
         _FILTER_LANGUAGE,
         "",
         "## Tables",
+        "",
+        "(In a table's column list, `*` marks a column omitted from the default `query` output — still "
+        "queryable and filterable, returned only when named explicitly in `columns=[...]`.)",
     ]
     for spec in registry.values():
         mapper = inspect(spec.model)
@@ -301,8 +304,9 @@ def render_schema_reference(registry: dict[str, TableSpec] = ALLOWED_TABLES) -> 
         out.append(f"### {spec.table_name} — {spec.description}")
         out.append(f"Operations: {', '.join(op for op in OPERATIONS if spec.allows(op))}")
 
+        default_cols = set(spec.default_column_names())
         out.append("Columns:")
-        out += [f"  - {_render_column(c)}" for c in spec.columns()]
+        out += [f"  - {_render_column(c)}" + ("" if c.key in default_cols else " *") for c in spec.columns()]
 
         rels = [r for r in mapper.relationships if r.key not in spec.hidden]
         if rels:

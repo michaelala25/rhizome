@@ -136,7 +136,9 @@ async def test_query_elides_null_but_keeps_falsy(sessions):
 
 async def test_query_limit_offset_flags_more_rows(sessions):
     out = await run_query(sessions, REG, "topic", order_by=["id"], limit=2)
-    assert "showing 2" in out and "more rows match" in out
+    assert "showing 2" in out
+    # Budget hint: this output's size plus the projected cost of pulling the whole match.
+    assert "tokens" in out and "full match" in out and "raise limit" in out
 
 
 async def test_query_unknown_table_lists_allowed(sessions):

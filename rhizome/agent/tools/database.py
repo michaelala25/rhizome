@@ -153,6 +153,18 @@ def _format_table(columns: list[str], rows, *, truncate: bool) -> str:
     return "\n".join("[" + ", ".join(_json_cell(v, truncate=truncate) for v in row) + "]" for row in rows)
 
 
+def _approx_tokens(text: str) -> int:
+    """A cheap, provider-neutral token estimate — roughly 4 characters per token. Deliberately rough: it
+    exists so the agent can gauge an output's context cost and decide whether to paginate or narrow the
+    projection, not to bill anything. A pure function of the rendered text, like the rest of the output."""
+    return max(1, len(text) // 4)
+
+
+def _fmt_tokens(n: int) -> str:
+    """Human-readable token count: ``920``, ``5.8k``."""
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def _identity(model: type, identity: tuple) -> str:
     pk = [c.key for c in inspect(model).primary_key]
     if len(pk) == 1:
@@ -223,12 +235,6 @@ async def run_query(session_factory, registry, table, *, filter=None, columns=No
         rows = (await session.execute(stmt)).all()
         total = await session.scalar(select(func.count()).select_from(model).where(clause))
 
-    header = f"{spec.table_name}: {total} row(s) matched; showing {len(rows)}"
-    if offset:
-        header += f" from offset {offset}"
-    if total > offset + len(rows):
-        header += f" (more rows match — raise limit/offset or narrow the filter)"
-
     # An explicit projection is a "read these records" request — render vertical key:value blocks so the
     # requested (often long-text) columns show in full and readably. The default projection is a "scan" —
     # render a compact table whose column header is declared once, here, with the omitted columns named
@@ -241,6 +247,22 @@ async def run_query(session_factory, registry, table, *, filter=None, columns=No
         if omitted:
             cols_line += f" (also available via columns=[...]: {', '.join(omitted)})"
         body = f"{cols_line}\n{_format_table(proj, rows, truncate=True)}"
+
+    # Budget hint: how big this output is, and — when the match is truncated — the projected cost of
+    # pulling the whole thing (extrapolated from the page actually rendered). Lets the agent decide to
+    # paginate, narrow the filter, or project fewer columns *before* flooding context with the rest.
+    shown = len(rows)
+    header = f"{spec.table_name}: {total} row(s) matched; showing {shown}"
+    if offset:
+        header += f" from offset {offset}"
+    if shown:
+        body_tokens = _approx_tokens(body)
+        note = f"~{_fmt_tokens(body_tokens)} tokens"
+        if total > offset + shown:
+            full = body_tokens * total // shown
+            note += (f"; full match ≈ {_fmt_tokens(full)} — raise limit/offset, narrow the filter, "
+                     f"or project fewer columns")
+        header += f" ({note})"
     return f"{header}\n{body}"
 
 
