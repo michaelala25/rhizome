@@ -180,3 +180,76 @@ async def test_ctrl_right_from_the_left_panel_returns_to_the_chat_area():
         await pilot.press("ctrl+right")
         await pilot.pause()
         assert pilot.app.focused is ws.query_one("#chat-input")
+
+
+async def test_ctrl_r_cycles_the_resource_loader_mount_focus_dismiss():
+    """ctrl+r tri-state: absent -> mount + focus; present but unfocused -> focus; present + focused ->
+    dismiss. (ctrl+r is unclaimed by the chat input / loader tree, so it reaches the workspace.)"""
+    accessor = make_root_accessor(session_factory=await _schema_factory())
+    async with _Harness(accessor).run_test() as pilot:
+        await pilot.pause()
+        ws = pilot.app.query_one(Workspace)
+        left = ws.query_one("#slot-left", PanelSlot)
+
+        # Absent -> mount + focus.
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        await pilot.pause()                                  # let the loader's load() resolve
+        loader = left.current
+        assert isinstance(loader, ResourceLoader)
+        assert pilot.app.focused is not None and loader in pilot.app.focused.ancestors_with_self
+
+        # Present + focused -> dismiss.
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert left.current is None
+
+        # Re-mount, move focus to the chat input, then ctrl+r focuses the loader (does not dismiss it).
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        await pilot.pause()
+        loader = left.current
+        assert isinstance(loader, ResourceLoader)
+        ws.query_one("#chat-input").focus()
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert left.current is loader                        # still mounted...
+        assert pilot.app.focused is not None and loader in pilot.app.focused.ancestors_with_self
+
+
+async def test_ctrl_g_mounts_the_graph_viewer():
+    """ctrl+g surfaces the graph viewer into the left slot from the resting (chat input) focus."""
+    accessor = make_root_accessor(session_factory=await _schema_factory())
+    async with _Harness(accessor).run_test() as pilot:
+        await pilot.pause()
+        ws = pilot.app.query_one(Workspace)
+        left = ws.query_one("#slot-left", PanelSlot)
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert isinstance(left.current, GraphViewer)
+
+
+async def test_swapping_left_panels_focuses_the_incomer_not_chat():
+    """Surfacing a different panel into an occupied slot evicts the incumbent and focuses the incomer.
+    The eviction must skip the empty-slot focus handoff, so focus lands in the new panel rather than
+    bouncing back to the chat input."""
+    accessor = make_root_accessor(session_factory=await _schema_factory())
+    async with _Harness(accessor).run_test() as pilot:
+        await pilot.pause()
+        ws = pilot.app.query_one(Workspace)
+        left = ws.query_one("#slot-left", PanelSlot)
+
+        await pilot.press("ctrl+g")                          # graph viewer occupies slot-left
+        await pilot.pause()
+        assert isinstance(left.current, GraphViewer)
+
+        await pilot.press("ctrl+r")                          # swap the loader in (evicts the graph viewer)
+        await pilot.pause()
+        await pilot.pause()
+        assert isinstance(left.current, ResourceLoader)
+        surfaced = {type(vm) for vm in ws.model.surfaced_view_models()}
+        assert ResourceLoaderModel in surfaced and GraphViewerModel not in surfaced   # model reconciled
+        focused = pilot.app.focused
+        assert focused is not None and left.current in focused.ancestors_with_self     # incomer focused

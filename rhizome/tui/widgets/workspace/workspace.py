@@ -62,6 +62,8 @@ class Workspace(PanelOrchestrator[WorkspaceModel], FocusOrchestrationMixin):
     BINDINGS = [
         Keybind.OuterFocusLeft. as_binding("focus_neighbour('left')",  show=False),
         Keybind.OuterFocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.WorkspaceToggleResources.as_binding("toggle_resources", show=False),
+        Keybind.WorkspaceToggleGraph.    as_binding("toggle_graph",     show=False),
     ]
 
     DEFAULT_CSS = """
@@ -134,3 +136,27 @@ class Workspace(PanelOrchestrator[WorkspaceModel], FocusOrchestrationMixin):
         """When a side slot empties, rest focus on the outer graph's source — the chat area, which then
         delegates inward to its input."""
         return self._resolve_node(self._get_focus_graph().source)
+
+    # ------------------------------------------------------------------
+    # Panel toggles (ctrl+r / ctrl+g)
+    # ------------------------------------------------------------------
+    # Tri-state for an on-demand panel: absent -> surface it; present but unfocused -> focus it; present
+    # and focused -> dismiss it. Surface / dismiss is the model's generic ``toggle`` (mutual exclusion
+    # falls out of the slot); the focus check is view-side, reading the live focus chain via the outer
+    # graph's current node.
+
+    def action_toggle_resources(self) -> None:
+        self._cycle_left_panel(ResourceLoaderModel)
+
+    def action_toggle_graph(self) -> None:
+        self._cycle_left_panel(GraphViewerModel)
+
+    def _cycle_left_panel(self, vm_cls: type[ViewModelBase]) -> None:
+        slot_id = next((sid for sid, slot in self._slots.items()
+                        if slot.current is not None and type(slot.current.model) is vm_cls), None)
+        if slot_id is None:
+            self.model.toggle(vm_cls)                # absent -> surface (mounts, evicting any incumbent)
+        elif self._current_focus_node() == slot_id:
+            self.model.toggle(vm_cls)                # present + focused -> dismiss
+        else:
+            self._slots[slot_id].current.focus()     # present + unfocused -> focus

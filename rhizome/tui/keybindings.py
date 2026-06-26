@@ -172,6 +172,12 @@ class Keybind(Enum):
     ResourceToggleGlobal = ("resource.toggle_global", "g")
     ResourceToggleLocal  = ("resource.toggle_local",  "l")
 
+    # Workspace — on-demand left-hand panels, tri-state (mount / focus / dismiss). Not priority, so a
+    # focused widget that also binds the key wins (e.g. a proposal's ctrl+r reset); only an unclaimed
+    # press reaches the workspace.
+    WorkspaceToggleResources = ("workspace.toggle_resources", "ctrl+r")
+    WorkspaceToggleGraph     = ("workspace.toggle_graph",     "ctrl+g")
+
     # Chat pane
     ChatCycleMode           = ("chat.cycle_mode",            "shift+tab")
     ChatCycleVerbosity      = ("chat.cycle_verbosity",       "ctrl+b")
