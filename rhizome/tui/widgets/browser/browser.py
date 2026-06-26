@@ -101,8 +101,8 @@ class Browser(NavigableFeedItemViewBase[BrowserModel], FocusOrchestrationMixin):
         # Cross-region fall-through only — fires when the focused region's own alt+arrow action
         # raised SkipAction (i.e., the step had no in-graph target). Up/down have no cross-region
         # meaning, so they're left for the regions alone.
-        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
-        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
+        Keybind.InnerFocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.InnerFocusLeft .as_binding("focus_neighbour('left')",  show=False),
     ]
 
     def compose(self):

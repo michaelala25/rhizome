@@ -15,6 +15,7 @@ import time
 from enum import Enum
 
 from textual import on
+from textual.actions import SkipAction
 from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
@@ -171,3 +172,21 @@ class ChatInput(TextArea):
             return
 
         super()._on_key(event)  # pyright: ignore[reportUnusedCoroutine]
+
+    # ------------------------------------------------------------------
+    # Ctrl+Left/Right: word-nav vs. panel hand-off
+    # ------------------------------------------------------------------
+    # When ``CtrlNavFromChatInput`` is on, plain Ctrl+Left/Right leave the input for the Workspace's outer
+    # (panel) focus nav — ``SkipAction`` lets the key bubble past us to the ancestor binding for the same
+    # key. Off, they stay word-wise cursor movement. Only the non-selecting variant is intercepted:
+    # Ctrl+Shift+Left/Right (word selection) always edits text.
+
+    def action_cursor_word_left(self, select: bool = False) -> None:
+        if not select and self._vm.ctrl_panel_nav_enabled:
+            raise SkipAction()
+        super().action_cursor_word_left(select)
+
+    def action_cursor_word_right(self, select: bool = False) -> None:
+        if not select and self._vm.ctrl_panel_nav_enabled:
+            raise SkipAction()
+        super().action_cursor_word_right(select)

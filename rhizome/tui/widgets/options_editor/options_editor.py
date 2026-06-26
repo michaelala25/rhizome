@@ -60,8 +60,8 @@ class OptionsEditor(NavigableFeedItemViewBase[OptionsEditorModel], FocusOrchestr
         Keybind.OptionsDismiss.as_binding("dismiss", "Dismiss", show=True),
 
         # Focus graph navigation
-        Keybind.FocusUp.  as_binding("focus_neighbour('up')",   show=False),
-        Keybind.FocusDown.as_binding("focus_neighbour('down')", show=False),
+        Keybind.InnerFocusUp.  as_binding("focus_neighbour('up')",   show=False),
+        Keybind.InnerFocusDown.as_binding("focus_neighbour('down')", show=False),
 
         # Fall-through for key-events not processed by children - indicates cursor navigation at boundaries
         # (up from first action item, down from last option row) - translates to a focus_neighbour + set cursor.

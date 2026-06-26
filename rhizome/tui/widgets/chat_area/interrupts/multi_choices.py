@@ -77,8 +77,8 @@ class MultiUserChoices(NavigableFeedItemViewBase[MultiUserChoicesModel]):
         Keybind.CursorUp.             as_binding("move_cursor(-1)", "Up",                show=False),
         Keybind.CursorDown.           as_binding("move_cursor(1)",  "Down",              show=False),
         Keybind.MenuConfirm.          as_binding("confirm",         "Confirm",           show=True),
-        Keybind.FocusLeft.            as_binding("prev_question",   "Previous question", show=True),
-        Keybind.FocusRight.           as_binding("next_question",   "Next question",     show=True),
+        Keybind.InnerFocusLeft.       as_binding("prev_question",   "Previous question", show=True),
+        Keybind.InnerFocusRight.      as_binding("next_question",   "Next question",     show=True),
         # Legacy bound ctrl+enter to ctrl+j (Textual emits ctrl+j for ctrl+enter in many terminals).
         Keybind.InterruptSubmit.      as_binding("submit",          "Submit answers",    show=True, priority=True),
         Keybind.DialogCancel.         as_binding("cancel",          "Cancel",            show=True),

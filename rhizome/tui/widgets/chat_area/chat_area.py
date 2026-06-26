@@ -72,10 +72,12 @@ class ChatArea(ViewBase[ChatAreaModel], FocusOrchestrationMixin):
         # it fires while the chat input holds focus (ctrl+b would otherwise be a cursor move there).
         Keybind.ChatCycleMode.as_binding("cycle_mode", "Cycle mode", show=False),
         Keybind.ChatCycleVerbosity.as_binding("cycle_verbosity", "Cycle verbosity", show=False, priority=True),
-        # ctrl+up / ctrl+down: step focus across navigable feed items and the chat input (the focus
-        # graph built in ``_get_focus_graph``). Not priority — they bubble up from the focused input.
-        Keybind.ChatNavUp.  as_binding("focus_neighbour('up')",   show=False),
-        Keybind.ChatNavDown.as_binding("focus_neighbour('down')", show=False),
+        # ctrl+up / ctrl+down: OUTER focus nav within the chat panel — step across navigable feed items and
+        # the chat input (the focus graph built in ``_get_focus_graph``). ctrl+left/right are deliberately
+        # unbound here, so they fall through to the ``Workspace``'s outer graph for the panel hop. Not
+        # priority — they bubble up from the focused input.
+        Keybind.OuterFocusUp.  as_binding("focus_neighbour('up')",   show=False),
+        Keybind.OuterFocusDown.as_binding("focus_neighbour('down')", show=False),
         # Commit mode (gated by ``check_action`` — inert, and falling through, outside commit mode). Plain
         # up/down walk the message-only commit graph; space toggles the focused message; ctrl+j submits;
         # esc exits. up/down + ctrl+j + esc are priority so they beat the scroll container / the focused

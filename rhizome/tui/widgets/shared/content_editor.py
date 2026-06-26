@@ -113,8 +113,8 @@ class ContentEditor(Vertical, FocusOrchestrationMixin):
     """
 
     BINDINGS = [
-        Keybind.FocusUp.   as_binding("focus_up",     show=False),
-        Keybind.FocusDown. as_binding("focus_down",   show=False),
+        Keybind.InnerFocusUp.  as_binding("focus_up",     show=False),
+        Keybind.InnerFocusDown.as_binding("focus_down",   show=False),
         Keybind.EditAccept.as_binding("accept_edits", show=False, priority=True),
     ]
 

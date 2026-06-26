@@ -634,6 +634,18 @@ class Options(CallbackHost, metaclass=OptionsMeta):
         ),
     )
 
+    CtrlNavFromChatInput = ToggleOptionSpec(
+        name="ctrl_nav_from_chat_input",
+        scope=OptionScope.Session,
+        default="disabled",
+        help=(
+            "How Ctrl+Left / Ctrl+Right behave while the chat input is focused — the keys overlap between "
+            "the input and panel navigation. 'enabled': move focus to an adjacent panel (outer navigation). "
+            "'disabled': move the text cursor by word within the input (standard editing); reach panels by "
+            "stepping into the feed with Ctrl+Up first."
+        ),
+    )
+
     class Agent(OptionNamespace):
         name = "agent"
 

@@ -74,12 +74,19 @@ class Keybind(Enum):
     PrevTab   = ("root.prev_tab",   "ctrl+pageup")
     FocusChat = ("root.focus_chat", "ctrl+l")
 
-    # Global navigation — focus orchestration (alt+arrows) and cursor movement (arrows). Root-level: in play
-    # all over the app, so a new view should avoid colliding with these.
-    FocusLeft   = ("root.focus_left",   "alt+left")
-    FocusRight  = ("root.focus_right",  "alt+right")
-    FocusUp     = ("root.focus_up",     "alt+up")
-    FocusDown   = ("root.focus_down",   "alt+down")
+    # Global focus navigation — two UI tiers over the one recursive orchestrator tree (see
+    # focus_orchestration.py). INNER (alt+arrows): navigation *within* a self-contained widget — a feed-item
+    # proposal, the browser, the resource loader. OUTER (ctrl+arrows): structural navigation *between* the
+    # workspace panels and across the chat feed. Both tiers are root-level — in play all over the app, so a
+    # new view should avoid colliding with them. (Cursor movement — plain arrows — is also root-level.)
+    InnerFocusLeft  = ("root.inner_focus_left",  "alt+left")
+    InnerFocusRight = ("root.inner_focus_right", "alt+right")
+    InnerFocusUp    = ("root.inner_focus_up",    "alt+up")
+    InnerFocusDown  = ("root.inner_focus_down",  "alt+down")
+    OuterFocusLeft  = ("root.outer_focus_left",  "ctrl+left")
+    OuterFocusRight = ("root.outer_focus_right", "ctrl+right")
+    OuterFocusUp    = ("root.outer_focus_up",    "ctrl+up")
+    OuterFocusDown  = ("root.outer_focus_down",  "ctrl+down")
     CursorUp    = ("root.cursor_up",    "up")
     CursorDown  = ("root.cursor_down",  "down")
     CursorLeft  = ("root.cursor_left",  "left")
@@ -156,8 +163,6 @@ class Keybind(Enum):
     # Resource viewer — dual-key shortcuts bind both default keys (rebound together)
     ResourceSelectTopic   = ("resource.select_topic",   "ctrl+t")
     ResourceCreate        = ("resource.create",         "ctrl+n")
-    ResourceFocusTree     = ("resource.focus_tree",     "alt+r,ctrl+up")
-    ResourceFocusLinker   = ("resource.focus_linker",   "alt+l,ctrl+down")
     ResourceFocusSearch   = ("resource.focus_search",   "ctrl+f")
     ResourceConfirmEdits  = ("resource.confirm_edits",  "ctrl+enter,ctrl+j")
     ResourceToggleContext = ("resource.toggle_context", "ctrl+enter,ctrl+j")
@@ -176,8 +181,6 @@ class Keybind(Enum):
     ChatCommitNavUp         = ("chat.commit_nav_up",         "up")
     ChatCommitNavDown       = ("chat.commit_nav_down",       "down")
     ChatCancel              = ("chat.cancel",                "ctrl+c")
-    ChatNavUp               = ("chat.nav_up",                "ctrl+up")
-    ChatNavDown             = ("chat.nav_down",              "ctrl+down")
 
     # Chat pane — branch navigation (alt+arrows here walk the branch graph, not the focus graph)
     ChatBranchSiblingLeft  = ("chat.branch.sibling_left",  "alt+left")

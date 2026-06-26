@@ -23,12 +23,28 @@ The mixin only models one level. Nesting is handled by two existing Textual mech
 Together these mean every orchestrator only reasons about its own immediate children; no widget
 ever has to know about another widget's internal structure.
 
+## Inner and outer tiers
+
+The app drives this one mechanism at two keybinding tiers — a UI distinction, not an implementation one
+(both are ordinary orchestrators with ordinary graphs):
+
+  - **Inner** (alt+<arrows>) — navigation *within* a self-contained widget: a feed-item proposal, the
+    browser, the resource loader.
+  - **Outer** (ctrl+<arrows>) — structural navigation *between* the workspace panels and across the chat
+    feed. `Workspace` is the outer orchestrator over the docked panels; `ChatArea` owns the outer vertical
+    graph across its feed. The two compose through the same fall-through — `ChatArea` binds no
+    ctrl+left/right, so those bubble up to `Workspace` to hop panels.
+
+"Inner" and "outer" are relative, not absolute: a feed item is inner to the chat panel, which is inner to
+the workspace. It's the same recursion all the way down — the tiers just name which key drives which
+structural level.
+
 ## Bindings
 
-The mixin does NOT declare bindings. Subclasses declare alt+<arrows> (and any cursor-navigation
-bindings) in their own `BINDINGS` list, wire `action_*` handlers to `self.focus_neighbour(...)`,
-and decide per-widget what to do with the returned node id (e.g., seed a cursor on the target).
-On a None return, raise `SkipAction()` to bubble.
+The mixin does NOT declare bindings. Subclasses declare their arrow bindings (inner or outer, plus any
+cursor-navigation bindings) in their own `BINDINGS` list, wire `action_*` handlers to
+`self.focus_neighbour(...)`, and decide per-widget what to do with the returned node id (e.g., seed a
+cursor on the target). On a None return, raise `SkipAction()` to bubble.
 """
 
 from __future__ import annotations

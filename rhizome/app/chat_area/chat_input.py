@@ -20,6 +20,7 @@ from textual.events import Blur, Focus
 from textual.widgets import TextArea
 
 from rhizome.app.model import ViewModelBase
+from rhizome.app.options import Options, OptionService
 from rhizome.app.chat_area.command_palette import CommandPaletteModel
 
 
@@ -48,12 +49,15 @@ class ChatInputModel(ViewModelBase):
         DISABLED = "disabled"
         DISABLED_PENDING_INTERRUPT = "disabled_pending_interrupt"
 
-    def __init__(self, palette: CommandPaletteModel) -> None:
+    def __init__(self, palette: CommandPaletteModel, *, options: OptionService | None = None) -> None:
         super().__init__()
 
         self.make_callback_groups({self.Callbacks.OnSubmitted: str})
 
         self._palette = palette
+        # Options service (``None`` when standalone). Read live by ``ctrl_panel_nav_enabled``; the input
+        # never mutates options, so it holds the service rather than a snapshot value.
+        self._options = options
 
         self.state: ChatInputModel.State = ChatInputModel.State.CHAT
         self.buffer: str = ""
@@ -78,6 +82,15 @@ class ChatInputModel(ViewModelBase):
         """Inferred from state: the two ``DISABLED_*`` states gray out the surface; ``CHAT``/``COMMIT``
         are live."""
         return self.state not in (self.State.DISABLED, self.State.DISABLED_PENDING_INTERRUPT)
+
+    @property
+    def ctrl_panel_nav_enabled(self) -> bool:
+        """Whether Ctrl+Left/Right in the input hand off to the Workspace's panel (outer) focus nav rather
+        than moving the text cursor by word. Read live from options; off when standalone (no options), so
+        the input keeps standard word-nav."""
+        if self._options is None:
+            return False
+        return self._options.get(Options.CtrlNavFromChatInput) == "enabled"
 
     @property
     def shell_mode(self) -> bool:

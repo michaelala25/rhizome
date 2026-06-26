@@ -234,10 +234,10 @@ class EntryTab(Vertical, FocusOrchestrationMixin):
         Keybind.BrowserRelink.     as_binding("tab_toggle_relink",           "Link flashcards", show=True),
         Keybind.BrowserMultiSelect.as_binding("tab_toggle_multi_select",     "Multi-select",    show=True),
         Keybind.BrowserCycleMode.  as_binding("tab_cycle_mode",              "Cycle mode",      show=True),
-        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
-        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
-        Keybind.FocusUp   .as_binding("focus_neighbour('up')",    show=False),
-        Keybind.FocusDown .as_binding("focus_neighbour('down')",  show=False),
+        Keybind.InnerFocusLeft .as_binding("focus_neighbour('left')",  show=False),
+        Keybind.InnerFocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.InnerFocusUp   .as_binding("focus_neighbour('up')",    show=False),
+        Keybind.InnerFocusDown .as_binding("focus_neighbour('down')",  show=False),
     ]
 
     # Static focus graph. The ``"dialog"`` node is a pseudo-id that resolves to whichever dialog

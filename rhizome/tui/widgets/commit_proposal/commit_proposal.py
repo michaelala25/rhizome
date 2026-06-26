@@ -308,10 +308,10 @@ class CommitProposal(NavigableFeedItemViewBase[CommitProposalModel], FocusOrches
     """
 
     BINDINGS = [
-        Keybind.FocusUp.   as_binding("focus_neighbour('up')",    show=False),
-        Keybind.FocusDown. as_binding("focus_neighbour('down')",  show=False),
-        Keybind.FocusLeft. as_binding("focus_neighbour('left')",  show=False),
-        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.InnerFocusUp.   as_binding("focus_neighbour('up')",    show=False),
+        Keybind.InnerFocusDown. as_binding("focus_neighbour('down')",  show=False),
+        Keybind.InnerFocusLeft. as_binding("focus_neighbour('left')",  show=False),
+        Keybind.InnerFocusRight.as_binding("focus_neighbour('right')", show=False),
         Keybind.CursorUp.  as_binding("navigate_cursor('up')",    show=False),
         Keybind.CursorDown.as_binding("navigate_cursor('down')",  show=False),
 

@@ -148,7 +148,7 @@ class ChatAreaModel(ViewModelBase):
         self._commands: CommandRegistryService = command_registry if command_registry is not None else CommandRegistry()
         self._register_commands()
         self.command_palette = CommandPaletteModel(self._commands)
-        self.chat_input = ChatInputModel(self.command_palette)
+        self.chat_input = ChatInputModel(self.command_palette, options=self._options)
         self.chat_input.subscribe(self.chat_input.Callbacks.OnSubmitted, self._on_input_submitted)
 
         # Commit mode — a *global chat-area* UI state, not a per-branch/agent one: the user turns it on,

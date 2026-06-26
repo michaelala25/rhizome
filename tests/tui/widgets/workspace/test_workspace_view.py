@@ -13,6 +13,7 @@ from textual.widget import Widget
 
 from rhizome.app.chat_area.messages.static import ChatMessageModel
 from rhizome.app.graph_viewer import GraphViewerModel
+from rhizome.app.options import Options, OptionService
 from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.db.models import Base
 from rhizome.tui.types import Role
@@ -133,3 +134,49 @@ async def test_quick_nav_from_the_graph_viewer_scrolls_the_chat(monkeypatch):
 
         assert chat.cursor.node.id == new.node.id                            # the chat navigated there
         assert any(top is True for _widget, top in scrolls)                  # a feed widget scrolled to top
+
+
+async def test_ctrl_left_from_chat_input_enters_the_left_panel_when_enabled():
+    """The full outer-nav path: with ``CtrlNavFromChatInput`` enabled, Ctrl+Left in the chat input hands
+    off (SkipAction) past the chat area to the Workspace's outer graph, which moves focus into the docked
+    left panel."""
+    accessor = make_root_accessor(session_factory=await _schema_factory())
+    accessor.get(OptionService).set(Options.CtrlNavFromChatInput, "enabled", flush=False)
+    async with _Harness(accessor).run_test() as pilot:
+        await pilot.pause()
+        ws = pilot.app.query_one(Workspace)
+        left = ws.query_one("#slot-left", PanelSlot)
+
+        ws.model.toggle(ResourceLoaderModel)                 # dock the loader into slot-left
+        await pilot.pause()
+        await pilot.pause()                                  # let the loader's load() resolve
+
+        chat_input = ws.query_one("#chat-input")
+        chat_input.focus()
+        await pilot.pause()
+        assert pilot.app.focused is chat_input               # precondition: focus in the input
+
+        await pilot.press("ctrl+left")                       # hand off to outer nav → left panel
+        await pilot.pause()
+        focused = pilot.app.focused
+        assert focused is not None and left.current in focused.ancestors_with_self
+
+
+async def test_ctrl_right_from_the_left_panel_returns_to_the_chat_area():
+    """Reverse outer hop, toggle-independent: the loader binds no left/right, so Ctrl+Right falls through
+    it to the Workspace's outer graph, landing focus back in the chat area's input."""
+    accessor = make_root_accessor(session_factory=await _schema_factory())
+    async with _Harness(accessor).run_test() as pilot:
+        await pilot.pause()
+        ws = pilot.app.query_one(Workspace)
+        left = ws.query_one("#slot-left", PanelSlot)
+
+        ws.model.toggle(ResourceLoaderModel)
+        await pilot.pause()
+        await pilot.pause()
+        left.current.focus()                                 # delegates inward to the loader's tree
+        await pilot.pause()
+
+        await pilot.press("ctrl+right")
+        await pilot.pause()
+        assert pilot.app.focused is ws.query_one("#chat-input")

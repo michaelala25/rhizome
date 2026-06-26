@@ -102,8 +102,8 @@ class ResourceLoader(NavigableViewBase[ResourceLoaderModel], FocusOrchestrationM
     """
 
     BINDINGS = [
-        Keybind.FocusUp.  as_binding("focus_neighbour('up')",   show=False),
-        Keybind.FocusDown.as_binding("focus_neighbour('down')", show=False),
+        Keybind.InnerFocusUp.  as_binding("focus_neighbour('up')",   show=False),
+        Keybind.InnerFocusDown.as_binding("focus_neighbour('down')", show=False),
     ]
 
     # Linear vertical chain through the three focusable regions; alt+up/down walk it.

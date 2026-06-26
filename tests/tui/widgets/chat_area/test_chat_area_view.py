@@ -17,6 +17,7 @@ from rhizome.app.chat_area.messages.agent import AgentMessageModel
 from rhizome.app.options import Options, OptionScope
 from rhizome.tui.widgets.chat_area.branch import BranchPoint
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea, DepthWrapper
+from rhizome.tui.widgets.chat_area.chat_input import ChatInput
 from rhizome.tui.widgets.chat_area.messages.agent import AgentMessage
 from rhizome.tui.widgets.chat_area.status import StatusBar
 from rhizome.tui.types import Mode, Role
@@ -249,3 +250,33 @@ async def test_visibility_toggle_preserves_focus():
         options.set(Options.ShowThinking, "disabled")
         await pilot.pause()
         assert pilot.app.focused is bp               # toggle reconciled the feed but left focus put
+
+
+async def test_ctrl_left_is_word_nav_unless_panel_handoff_is_enabled():
+    """Ctrl+Left steps the input cursor one word left by default. With ``CtrlNavFromChatInput`` enabled it
+    hands off instead (SkipAction → outer panel nav); here nothing catches it, so the cursor holds put —
+    proving the input released the key rather than moving it."""
+    options = Options(OptionScope.Session)
+    vm = make_vm(options)
+    async with _Harness(vm).run_test() as pilot:
+        await pilot.pause()
+        chat = pilot.app.query_one(ChatArea)
+        chat_input = chat.query_one("#chat-input", ChatInput)
+        vm.chat_input.set_buffer("alpha beta")
+        await pilot.pause()
+
+        # Disabled (default): Ctrl+Left moves by word, off the end of "beta".
+        chat_input.focus()
+        chat_input.move_cursor(chat_input.document.end)
+        await pilot.pause()
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        assert chat_input.cursor_location != (0, 10)
+
+        # Enabled: Ctrl+Left is handed off — the cursor doesn't move.
+        options.set(Options.CtrlNavFromChatInput, "enabled")
+        chat_input.move_cursor(chat_input.document.end)
+        await pilot.pause()
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        assert chat_input.cursor_location == (0, 10)

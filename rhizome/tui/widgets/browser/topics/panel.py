@@ -104,10 +104,10 @@ class TopicTreePanel(Vertical, FocusOrchestrationMixin):
     """
 
     BINDINGS = [
-        Keybind.FocusLeft .as_binding("focus_neighbour('left')",  show=False),
-        Keybind.FocusRight.as_binding("focus_neighbour('right')", show=False),
-        Keybind.FocusUp   .as_binding("focus_neighbour('up')",    show=False),
-        Keybind.FocusDown .as_binding("focus_neighbour('down')",  show=False),
+        Keybind.InnerFocusLeft .as_binding("focus_neighbour('left')",  show=False),
+        Keybind.InnerFocusRight.as_binding("focus_neighbour('right')", show=False),
+        Keybind.InnerFocusUp   .as_binding("focus_neighbour('up')",    show=False),
+        Keybind.InnerFocusDown .as_binding("focus_neighbour('down')",  show=False),
         Keybind.BrowserRenameTopic.as_binding("rename", "Rename", show=True),
         # ``c`` creates under the cursor (``(root)`` cursor → no parent); ``shift+c`` always at root.
         Keybind.BrowserCreateTopic.      as_binding("create",      "Create",         show=True),

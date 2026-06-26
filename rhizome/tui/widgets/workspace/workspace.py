@@ -13,19 +13,22 @@ reaching the conversation through ``pane.workspace`` (e.g. to focus the chat inp
 
 from __future__ import annotations
 
+from textual.actions import SkipAction
 from textual.app import ComposeResult
 from textual.containers import Horizontal
-from textual.css.query import NoMatches
+from textual.widget import Widget
 
 from rhizome.app.chat_area.chat_area import ChatAreaModel
 from rhizome.app.graph_viewer import GraphViewerModel
 from rhizome.app.model import ViewModelBase
 from rhizome.app.resource_loader import ResourceLoaderModel
 from rhizome.app.workspace.workspace import WorkspaceModel
+from rhizome.tui.keybindings import Keybind
 from rhizome.tui.widgets.chat_area.chat_area import ChatArea
 from rhizome.tui.widgets.graph_viewer import GraphViewer
 from rhizome.tui.widgets.panel_orchestrator import PanelOrchestrator, PanelSlot, register_panel
 from rhizome.tui.widgets.resource_loader import ResourceLoader
+from rhizome.tui.widgets.shared.focus_orchestration import Direction, FocusGraph, FocusOrchestrationMixin
 from rhizome.utils.services import ServiceAccessor
 
 
@@ -35,7 +38,31 @@ register_panel(ResourceLoaderModel, slot="slot-left")(ResourceLoader)
 register_panel(GraphViewerModel, slot="slot-left")(GraphViewer)
 
 
-class Workspace(PanelOrchestrator[WorkspaceModel]):
+class Workspace(PanelOrchestrator[WorkspaceModel], FocusOrchestrationMixin):
+    """Outer-tier focus host over the docked panels: ctrl+left/right hop between slots, composing with the
+    chat area's own ctrl+up/down feed graph via Textual's keybinding fall-through (``ChatArea`` binds no
+    left/right, so those bubble here). See ``focus_orchestration.py`` for the inner/outer two-tier model."""
+
+    # Mixin listed LAST so ``PanelOrchestrator``'s ``DEFAULT_CSS`` still aggregates (Textual walks only the
+    # first DOMNode base at each MRO step); ``can_focus`` set explicitly since ``ViewBase``'s Widget-default
+    # would otherwise win MRO over the mixin's default.
+    can_focus = True
+
+    # The outer graph: the two docked slots, with the always-present chat area as the resting source.
+    # ``slot-left`` is occupancy-gated in ``_is_node_available``, so a static graph suffices — its left edge
+    # simply yields no move while the slot is empty.
+    FOCUS_GRAPH = FocusGraph(
+        source="slot-center",
+        edges={
+            "slot-center": {"left": "slot-left"},
+            "slot-left":   {"right": "slot-center"},
+        },
+    )
+
+    BINDINGS = [
+        Keybind.OuterFocusLeft. as_binding("focus_neighbour('left')",  show=False),
+        Keybind.OuterFocusRight.as_binding("focus_neighbour('right')", show=False),
+    ]
 
     DEFAULT_CSS = """
     Workspace { layout: vertical; height: 1fr; }
@@ -83,12 +110,27 @@ class Workspace(PanelOrchestrator[WorkspaceModel]):
         for slot in self._slots.values():
             slot.display = slot.current is not None
 
+    # ------------------------------------------------------------------
+    # Outer focus navigation
+    # ------------------------------------------------------------------
+    # Node ids are the slot ids set in ``compose``, so the mixin's ``_current_focus_node`` ancestor-walk maps
+    # focus buried inside a panel back to its containing slot for free. The two seams below adapt the slot
+    # layer to the graph: a slot is a node only while occupied, and focus must land on the docked *view* (a
+    # ``PanelSlot`` is a non-focusable ``Container``) so the view's own ``on_focus`` delegates inward.
+
+    def action_focus_neighbour(self, direction: Direction) -> None:
+        if self.focus_neighbour(direction) is None:
+            raise SkipAction()
+
+    def _is_node_available(self, node_id: str) -> bool:
+        slot = self._slots.get(node_id)
+        return slot is not None and slot.current is not None
+
+    def _resolve_node(self, node_id: str) -> Widget | None:
+        slot = self._slots.get(node_id)
+        return slot.current if slot is not None else None
+
     def hide_focus_target(self, slot_id: str):
-        """When a side slot empties, hand focus back to the chat area's input."""
-        center = self._slots.get("slot-center")
-        if center is None or center.current is None:
-            return None
-        try:
-            return center.current.query_one("#chat-input")
-        except NoMatches:
-            return None
+        """When a side slot empties, rest focus on the outer graph's source — the chat area, which then
+        delegates inward to its input."""
+        return self._resolve_node(self._get_focus_graph().source)
