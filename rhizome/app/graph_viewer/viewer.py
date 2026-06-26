@@ -91,27 +91,38 @@ class GraphViewerModel(ViewModelBase):
     def display_node(self, display_id: Hashable) -> DisplayNode | None:
         return self._index.get(display_id)
 
-    def label_for(self, display_id: Hashable) -> str:
-        """The full (untruncated) human name for a display node — what the view shows for "where the cursor
-        is", so a label the diagram had to clip is still legible. A branch-point node carries no label of
-        its own, so it borrows the name of the conversation node it forks from."""
+    def preview_for(self, display_id: Hashable) -> str:
+        """The full (untruncated) source text for a display node — what the view compacts into the preview
+        box, so text the diagram chip had to clip is still glimpsable. A branch-point node carries no text
+        of its own, so it borrows the name of the conversation node it forks from."""
         dn = self._index.get(display_id)
         if dn is None:
             return ""
-        if dn.label:
-            return dn.label
+        if dn.preview:
+            return dn.preview
         node = self._chat.conversation_graph.node(dn.node_id)
         return node.name or f"#{node.id}"
 
     def display_path_for_chat_cursor(self) -> tuple[Hashable, ...]:
         """The widget id-path that mirrors the chat's checked-out path — so the view can land the
-        highlight on "where the chat is". Branch-point ids are interleaved wherever the path crosses a
-        fork, matching the edges the projection builds."""
+        highlight on "where the chat is" (its tip = the chat's current node, or, in expanded mode, that
+        node's final chunk). Branch-point ids are interleaved wherever the path crosses a fork, matching
+        the edges the projection builds.
+
+        Mode-agnostic: the per-node chunk ids are pulled from the freshly-built display, so this is one
+        chunk per node in collapsed mode and the user/agent-run chain in expanded mode without this method
+        having to know which is live."""
         graph = self._chat.conversation_graph
         nodes = self._chat.cursor.nodes()
+
+        chunks_by_node: dict[int, list[Hashable]] = {}
+        for d in self._display:
+            if d.kind is not DisplayKind.BRANCH_POINT:
+                chunks_by_node.setdefault(d.node_id, []).append(d.id)
+
         out: list[Hashable] = []
         for i, node in enumerate(nodes):
-            out.append(("node", node.id))
+            out.extend(chunks_by_node.get(node.id, (("node", node.id),)))
             is_last = i == len(nodes) - 1
             if not is_last and len(graph.children(node)) >= 2:
                 out.append(("branch", node.id))
@@ -174,8 +185,12 @@ class GraphViewerModel(ViewModelBase):
 
     def _scroll_target_entry(self, dn: DisplayNode, node: ConversationNode) -> ViewModelBase | None:
         """The feed *entry* ``quick_nav`` scrolls into view: the fork indicator for a branch-point node,
-        else the first item in the node's feed (its top). Each entry is a ``ViewModelBase`` whose view
-        scrolls itself via ``request_scroll_visible``. Read live so it tracks late feed appends."""
+        the first of a chunk's own items in expanded mode, else the first item in the node's feed (its
+        top). Each entry is a ``ViewModelBase`` whose view scrolls itself via ``request_scroll_visible``.
+        Read live so it tracks late feed appends."""
         if dn.kind is DisplayKind.BRANCH_POINT:
             return next((it.entry for it in node.feed if isinstance(it.entry, BranchPointModel)), None)
+        if dn.item_ids:
+            first = dn.item_ids[0]
+            return next((it.entry for it in node.feed if it.id == first), None)
         return node.feed[0].entry if node.feed else None

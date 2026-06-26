@@ -14,10 +14,19 @@ from rhizome.app.chat_area.conversation_graph import (
     ConversationNode,
     Cursor,
 )
-from rhizome.app.graph_viewer import GraphViewerModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.messages.static import ChatMessageModel
+from rhizome.app.graph_viewer import DisplayKind, GraphViewerModel, Mode
 from rhizome.app.model import ViewModelBase
+from rhizome.tui.types import Role
 
 from tests.agent.fakes import build_runtime, EchoModel
+
+
+def _agent(text: str) -> AgentMessageModel:
+    msg = AgentMessageModel()
+    msg.body = text
+    return msg
 
 
 class FakeChatArea(ViewModelBase):
@@ -185,3 +194,70 @@ async def test_set_mode_is_equality_guarded():
     changes = DataChanges(vm)
     vm.set_mode(vm.mode)                              # no change
     assert changes.count == 0
+
+
+# ------------------------------------------------------------------
+# Expanded mode
+# ------------------------------------------------------------------
+
+async def test_set_mode_expanded_rebuilds_into_chunks():
+    graph = make_graph()
+    graph.append(graph.root, ChatMessageModel(Role.USER, "hi"))
+    graph.append(graph.root, _agent("hello"))
+    vm = GraphViewerModel(FakeChatArea(graph))
+    changes = DataChanges(vm)
+
+    vm.set_mode(Mode.EXPANDED)
+    assert changes.count == 1
+    kinds = {d.kind for d in vm.display_nodes}
+    assert {DisplayKind.USER_MESSAGE, DisplayKind.AGENT_RUN} <= kinds
+
+
+async def test_expanded_quick_nav_scrolls_to_the_chunks_first_item():
+    graph = make_graph()
+    root = graph.root
+    graph.append(root, ChatMessageModel(Role.USER, "hi"))
+    a1 = graph.append(root, _agent("answer"))        # the run's first item = the scroll target
+    graph.append(root, _agent("more"))
+    chat = FakeChatArea(graph)
+    vm = GraphViewerModel(chat)
+    vm.set_mode(Mode.EXPANDED)
+
+    rec = ScrollRecorder()
+    a1.entry.subscribe(a1.entry.Callbacks.RequestScrollVisible, rec.record)   # strongly held
+
+    vm.quick_nav(("run", a1.id))
+    assert chat.set_cursor_calls[-1] == root.id
+    assert rec.tops == [True]                         # the run's first message scrolled itself to the top
+
+
+async def test_expanded_display_path_lands_on_the_nodes_final_chunk():
+    graph = make_graph()
+    root = graph.root
+    graph.append(root, ChatMessageModel(Role.USER, "hi"))
+    a = graph.append(root, _agent("answer"))
+    vm = GraphViewerModel(FakeChatArea(graph))        # cursor sits at root
+    vm.set_mode(Mode.EXPANDED)
+
+    # The widget path threads the node's chunks; its tip is the final chunk (where the chat sits).
+    assert vm.display_path_for_chat_cursor()[-1] == ("run", a.id)
+
+
+async def test_expanded_display_path_interleaves_branch_point_and_child_chunks():
+    graph = make_graph()
+    root = graph.root
+    graph.append(root, ChatMessageModel(Role.USER, "root q"))
+    ra = graph.append(root, _agent("root a"))
+    a = (await graph.branch(root)).node
+    await graph.branch(root)                          # root forks
+    graph.append(a, ChatMessageModel(Role.USER, "child q"))
+    ca = graph.append(a, _agent("child a"))
+    chat = FakeChatArea(graph)
+    chat.cursor = graph.cursor(a)
+    vm = GraphViewerModel(chat)
+    vm.set_mode(Mode.EXPANDED)
+
+    path = vm.display_path_for_chat_cursor()
+    # root's chunks, then (forked, mid-path) its branch point, then child a's chunks; tip = a's run.
+    assert path[-1] == ("run", ca.id)
+    assert path.index(("branch", root.id)) == path.index(("run", ra.id)) + 1

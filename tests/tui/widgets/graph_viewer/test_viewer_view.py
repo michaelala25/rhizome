@@ -10,7 +10,10 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from rhizome.app.chat_area.chat_area import ChatAreaModel
-from rhizome.app.graph_viewer import GraphViewerModel
+from rhizome.app.chat_area.messages.agent import AgentMessageModel
+from rhizome.app.chat_area.messages.static import ChatMessageModel
+from rhizome.app.graph_viewer import GraphViewerModel, Mode
+from rhizome.tui.types import Role
 from rhizome.tui.widgets.graph_viewer import GraphViewer
 from rhizome.tui.widgets.shared.merge_tree import MergeTree as MergeTreeWidget
 
@@ -19,6 +22,12 @@ from tests.agent.fakes import build_runtime, EchoModel
 
 def make_chat() -> ChatAreaModel:
     return ChatAreaModel(build_runtime(lambda: EchoModel()))
+
+
+def _agent_msg(text: str) -> AgentMessageModel:
+    msg = AgentMessageModel()
+    msg.body = text
+    return msg
 
 
 class _App(App):
@@ -80,7 +89,7 @@ async def test_branch_point_paints_a_red_diamond():
         assert (branch.marker, branch.style) == ("◆", "red")
 
 
-async def test_long_label_truncates_in_graph_but_shows_full_on_current_line():
+async def test_long_label_truncates_in_graph_but_shows_full_in_preview_box():
     chat = make_chat()
     await chat.branch()
     node = chat.cursor.node
@@ -92,12 +101,64 @@ async def test_long_label_truncates_in_graph_but_shows_full_on_current_line():
         assert gnode.label == "experiment-auth…"                   # clipped to MAX_LABEL with an ellipsis
         assert len(gnode.label) == GraphViewer.MAX_LABEL
 
-        # Moving the cursor onto the node recovers its full name on the current-node line.
+        # Moving the cursor onto the node recovers its full name in the preview box below the diagram.
         display_id = ("node", node.id)
         tree.post_message(MergeTreeWidget.CursorMoved((display_id,), display_id, None))
         await pilot.pause()
-        current = pilot.app.query_one("#gv-current", Static)
-        assert "experiment-auth-v2" in current.render().plain
+        preview = pilot.app.query_one("#gv-preview-text", Static)
+        assert "experiment-auth-v2" in preview.render().plain
+
+
+async def test_preview_box_compacts_long_text_to_head_and_tail():
+    chat = make_chat()
+    head, mid, tail = "H" * 80, "M" * 200, "T" * 80
+    chat.append_item(ChatMessageModel(Role.USER, "go"))
+    chat.append_item(_agent_msg(head + mid + tail))      # a long agent run
+    vm = GraphViewerModel(chat)
+    vm.set_mode(Mode.EXPANDED)
+    async with _App(vm).run_test() as pilot:
+        tree = pilot.app.query_one(MergeTreeWidget)
+        run_id = next(n.id for n in tree._graph_nodes if n.id[0] == "run")
+        tree.post_message(MergeTreeWidget.CursorMoved((run_id,), run_id, None))
+        await pilot.pause()
+
+        text = pilot.app.query_one("#gv-preview-text", Static).render().plain
+        n = GraphViewer.PREVIEW_CHARS
+        assert "…" in text
+        assert "H" * n in text and "T" * n in text       # head and tail kept …
+        assert "M" not in text                           # … the middle dropped
+
+
+async def test_ctrl_e_toggles_between_collapsed_and_expanded():
+    chat = make_chat()
+    chat.append_item(ChatMessageModel(Role.USER, "hi"))    # content so expanded differs from collapsed
+    chat.append_item(_agent_msg("hello"))
+    vm = GraphViewerModel(chat)
+    async with _App(vm).run_test() as pilot:
+        tree = pilot.app.query_one(MergeTreeWidget)
+        assert all(n.id[0] == "node" for n in tree._graph_nodes)    # collapsed: one node per conv node
+
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert any(n.id[0] == "msg" for n in tree._graph_nodes)     # expanded: a user-message chunk
+
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert all(n.id[0] == "node" for n in tree._graph_nodes)    # back to collapsed
+
+
+async def test_ctrl_e_reanchors_highlight_on_the_current_chunk():
+    # The two modes use disjoint id schemes, so the widget can't recover its cursor across the switch;
+    # the view must re-anchor it on the chat's current chunk rather than letting it reset to the root.
+    chat = make_chat()
+    chat.append_item(ChatMessageModel(Role.USER, "hi"))
+    run = chat.append_item(_agent_msg("hello"))            # the run's first (and only) item
+    vm = GraphViewerModel(chat)
+    async with _App(vm).run_test() as pilot:
+        tree = pilot.app.query_one(MergeTreeWidget)
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert tree.cursor[-1] == ("run", run.id)          # highlight on the node's final chunk
 
 
 async def test_click_in_empty_panel_area_focuses_the_tree():
