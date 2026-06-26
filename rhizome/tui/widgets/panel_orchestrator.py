@@ -75,10 +75,10 @@ class PanelOrchestrator[U: OrchestratorModel](Orchestrator[U]):
     slot named by its ``PanelRegistration``. Re-surfacing the panel already in a slot refocuses it;
     surfacing a different panel into an occupied slot evicts the current one.
 
-    One view-model type per slot is the supported configuration. If two types were registered to the
-    same slot, surfacing one would remove the other from the screen while it remained in the model's
-    surfaced set; resolving that (evict-and-forget vs. a reveal-on-hide stack) is a placement decision
-    deferred until a slot actually hosts more than one type.
+    Multiple view-model types may register to one slot: the slot holds one at a time, and surfacing a
+    different panel into an occupied slot evicts the incumbent — its view is removed and the model's
+    surfaced record reconciled (via ``request_unmount``) so the two stay in step. This is evict-and-forget;
+    a reveal-on-hide stack would be the alternative if a use case ever called for it.
     """
 
     def __init__(self, vm: U, *children, **kwargs) -> None:
@@ -104,9 +104,16 @@ class PanelOrchestrator[U: OrchestratorModel](Orchestrator[U]):
             slot.current.focus()
             return
 
+        # A different panel occupies the slot: evict it, then reconcile the model so its surfaced record
+        # drops the evicted child too (one panel per slot). The widget is removed *before* the model call
+        # so the re-entrant RequestUnmount finds the slot already clear and skips the empty-slot focus
+        # handoff — the panel being mounted takes focus instead. (A genuine close, driven straight from
+        # ``request_unmount``, still finds the panel in its slot and hands focus back.)
         if slot.current is not None:
+            evicted = slot.current.model
             slot.current.remove()
             slot.current = None
+            self.model.request_unmount(evicted)
 
         view = reg.view_cls(vm)
         slot.mount(view)

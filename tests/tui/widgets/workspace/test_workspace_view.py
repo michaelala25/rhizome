@@ -82,14 +82,14 @@ async def test_graph_viewer_toggles_and_is_mutually_exclusive_with_the_loader():
         left = ws.query_one("#slot-left", PanelSlot)
 
         # /graph opens the viewer into slot-left, which expands.
-        ws.model._toggle_left_tool(GraphViewerModel)
+        ws.model.toggle(GraphViewerModel)
         await pilot.pause()
         assert isinstance(left.current, GraphViewer)
         assert left.current.model is ws.model.graph_viewer
         assert left.display
 
         # /resources swaps it for the loader — one left-hand tool at a time, and the surfaced set agrees.
-        ws.model._toggle_left_tool(ResourceLoaderModel)
+        ws.model.toggle(ResourceLoaderModel)
         await pilot.pause()
         await pilot.pause()  # let the loader's load() resolve
         assert isinstance(left.current, ResourceLoader)
@@ -97,7 +97,7 @@ async def test_graph_viewer_toggles_and_is_mutually_exclusive_with_the_loader():
         assert ResourceLoaderModel in surfaced and GraphViewerModel not in surfaced
 
         # closing the loader empties and collapses the slot.
-        ws.model._toggle_left_tool(ResourceLoaderModel)
+        ws.model.toggle(ResourceLoaderModel)
         await pilot.pause()
         assert left.current is None
         assert not left.display
